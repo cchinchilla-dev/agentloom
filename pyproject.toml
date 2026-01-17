@@ -1,0 +1,109 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentloom"
+version = "0.1.0"
+description = "Production-ready agentic workflow orchestrator with native observability, resilience, and cost control."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "AgentLoom Contributors" }]
+keywords = ["llm", "agents", "workflows", "orchestration", "observability"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Framework :: AsyncIO",
+]
+dependencies = [
+    "pydantic>=2.0,<3.0",
+    "httpx>=0.25",
+    "pyyaml>=6.0",
+    "typer>=0.9",
+    "anyio>=4.0",
+]
+
+[project.optional-dependencies]
+observability = [
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp>=1.20",
+    "prometheus-client>=0.19",
+]
+all = ["agentloom[observability]"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "pre-commit>=3.5",
+    "respx>=0.21",
+    "pytest-cov>=4.0",
+    "types-pyyaml>=6.0.12.20250915",
+]
+
+[project.scripts]
+agentloom = "agentloom.cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/cchinchilla-dev/agentloom"
+Documentation = "https://agentloom.github.io/agentloom"
+Repository = "https://github.com/cchinchilla-dev/agentloom"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentloom"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end tests requiring real API keys",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TC"]
+ignore = [
+    "B008",   # typer.Argument/Option in defaults (standard Typer pattern)
+    "B904",   # raise from in exception handlers (not critical for CLI)
+    "TC001",  # move import into TYPE_CHECKING (too strict for this project)
+    "TC003",  # move stdlib import into TYPE_CHECKING
+    "A002",   # shadowing builtins (format is a common arg name)
+    "N806",   # uppercase in function (WHITE/GRAY/BLACK are DFS constants)
+    "N805",   # self2 in nested class (intentional to avoid shadowing)
+    "B027",   # empty method without abstractmethod (close() has default no-op)
+    "SIM102", # nested if (readability preference)
+    "B009",   # getattr with constant (used to satisfy mypy strict)
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = "agentloom.observability.*"
+# Uses dynamic imports via compat.try_import()
+disable_error_code = ["misc", "union-attr"]
+
+[[tool.mypy.overrides]]
+module = "agentloom.cli.*"
+# CLI uses late imports and typer patterns
+disable_error_code = ["misc"]
+
+[[tool.mypy.overrides]]
+module = "agentloom.tools.registry"
+disable_error_code = ["valid-type"]
