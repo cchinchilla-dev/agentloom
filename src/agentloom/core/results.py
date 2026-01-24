@@ -1,0 +1,63 @@
+"""Result models for step and workflow execution."""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class StepStatus(StrEnum):
+    """Execution status of a step."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    TIMEOUT = "timeout"
+
+
+class TokenUsage(BaseModel):
+    """Token usage for an LLM call."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+class StepResult(BaseModel):
+    """Result from executing a single step."""
+
+    step_id: str
+    status: StepStatus
+    output: Any = None
+    error: str | None = None
+    duration_ms: float = 0.0
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    cost_usd: float = 0.0
+    model: str | None = None
+    provider: str | None = None
+
+
+class WorkflowStatus(StrEnum):
+    """Execution status of a workflow."""
+
+    SUCCESS = "success"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+    BUDGET_EXCEEDED = "budget_exceeded"
+
+
+class WorkflowResult(BaseModel):
+    """Result from executing a complete workflow."""
+
+    workflow_name: str
+    status: WorkflowStatus
+    step_results: dict[str, StepResult] = Field(default_factory=dict)
+    final_state: dict[str, Any] = Field(default_factory=dict)
+    total_duration_ms: float = 0.0
+    total_tokens: int = 0
+    total_cost_usd: float = 0.0
+    error: str | None = None
