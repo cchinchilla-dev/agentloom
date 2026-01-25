@@ -1,0 +1,17 @@
+name: simple-qa
+version: "1.0"
+description: Simple question-answer workflow. Sends a question to an LLM and returns the answer.
+
+config:
+  provider: ollama
+  model: phi3
+  max_retries: 2
+
+state:
+  question: "What is Python in one sentence?"
+
+steps:
+  - id: answer
+    type: llm_call
+    prompt: "Answer this question concisely: {state.question}"
+    output: answer
