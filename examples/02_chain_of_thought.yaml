@@ -1,0 +1,38 @@
+name: chain-of-thought
+version: "1.0"
+description: Multi-step reasoning — breaks down a question, researches each part, then synthesizes.
+
+config:
+  provider: openai
+  model: gpt-4o-mini
+  budget_usd: 0.10
+
+state:
+  topic: "the impact of artificial intelligence on healthcare"
+
+steps:
+  - id: breakdown
+    type: llm_call
+    system_prompt: "You are a research assistant. Break down topics into 3 key subtopics."
+    prompt: "Break down this topic into 3 key subtopics (return as a numbered list): {state.topic}"
+    output: subtopics
+
+  - id: research
+    type: llm_call
+    depends_on: [breakdown]
+    system_prompt: "You are a researcher. Provide a concise 2-3 sentence summary for each subtopic."
+    prompt: |
+      For each of these subtopics, provide a 2-3 sentence research summary:
+      {state.subtopics}
+    output: research_findings
+
+  - id: synthesize
+    type: llm_call
+    depends_on: [research]
+    system_prompt: "You are a technical writer. Create clear, structured summaries."
+    prompt: |
+      Based on these research findings, write a coherent 1-paragraph summary
+      about {state.topic}:
+
+      {state.research_findings}
+    output: final_summary
