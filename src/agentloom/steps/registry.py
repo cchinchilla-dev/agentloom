@@ -7,8 +7,6 @@ from agentloom.steps.base import BaseStep
 
 
 class StepRegistry:
-    """Registry that maps StepType values to executor classes."""
-
     def __init__(self) -> None:
         self._registry: dict[StepType, type[BaseStep]] = {}
 
@@ -23,9 +21,10 @@ class StepRegistry:
 
 
 def create_default_registry() -> StepRegistry:
-    """Create a registry with all built-in step types."""
     from agentloom.steps.llm_call import LLMCallStep
+    from agentloom.steps.router import RouterStep
 
     registry = StepRegistry()
     registry.register(StepType.LLM_CALL, LLMCallStep)
+    registry.register(StepType.ROUTER, RouterStep)
     return registry
