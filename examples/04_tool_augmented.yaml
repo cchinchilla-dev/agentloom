@@ -1,0 +1,28 @@
+name: tool-augmented
+version: "1.0"
+description: Uses a tool (HTTP request) to fetch data, then processes it with an LLM.
+
+config:
+  provider: openai
+  model: gpt-4o-mini
+
+state:
+  url: "https://httpbin.org/json"
+
+steps:
+  - id: fetch_data
+    type: tool
+    tool_name: http_request
+    tool_args:
+      url: "state.url"
+      method: "GET"
+    output: fetched_data
+
+  - id: analyze
+    type: llm_call
+    depends_on: [fetch_data]
+    system_prompt: "You are a data analyst. Describe JSON data in plain language."
+    prompt: |
+      Analyze this JSON response and describe what it contains in plain language:
+      {state.fetched_data}
+    output: analysis
