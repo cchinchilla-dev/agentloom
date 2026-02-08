@@ -23,8 +23,10 @@ class StepRegistry:
 def create_default_registry() -> StepRegistry:
     from agentloom.steps.llm_call import LLMCallStep
     from agentloom.steps.router import RouterStep
+    from agentloom.steps.tool_step import ToolStep
 
     registry = StepRegistry()
     registry.register(StepType.LLM_CALL, LLMCallStep)
     registry.register(StepType.ROUTER, RouterStep)
+    registry.register(StepType.TOOL, ToolStep)
     return registry

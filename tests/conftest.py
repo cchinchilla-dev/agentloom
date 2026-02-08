@@ -16,6 +16,8 @@ from agentloom.core.models import (
 from agentloom.core.results import TokenUsage
 from agentloom.providers.base import BaseProvider, ProviderResponse
 from agentloom.providers.gateway import ProviderGateway
+from agentloom.tools.base import BaseTool
+from agentloom.tools.registry import ToolRegistry
 
 
 class MockProvider(BaseProvider):
@@ -64,6 +66,24 @@ def mock_provider() -> MockProvider:
     return MockProvider()
 
 
+class MockTool(BaseTool):
+    """Mock tool for testing."""
+
+    name = "mock_tool"
+    description = "A mock tool for testing"
+    parameters_schema = {
+        "type": "object",
+        "properties": {"input": {"type": "string"}},
+        "required": ["input"],
+    }
+
+    def __init__(self, result: Any = "mock_result") -> None:
+        self._result = result
+        self.calls: list[dict[str, Any]] = []
+
+    async def execute(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        return self._result
 
 
 @pytest.fixture
@@ -73,6 +93,16 @@ def mock_gateway(mock_provider: MockProvider) -> ProviderGateway:
     return gateway
 
 
+@pytest.fixture
+def mock_tool() -> MockTool:
+    return MockTool()
+
+
+@pytest.fixture
+def tool_registry(mock_tool: MockTool) -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(mock_tool)
+    return registry
 
 
 @pytest.fixture
