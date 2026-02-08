@@ -1,0 +1,59 @@
+name: customer-support-router
+version: "1.0"
+description: Classifies customer intent and routes to the appropriate specialist handler.
+
+config:
+  provider: openai
+  model: gpt-4o-mini
+  budget_usd: 0.05
+
+state:
+  user_message: "My last order arrived damaged and I want a refund"
+  classification: ""
+  response: ""
+
+steps:
+  - id: classify
+    type: llm_call
+    system_prompt: >
+      You are a classifier. Respond with exactly one word:
+      billing, technical, or general.
+    prompt: "Classify this customer message: {state.user_message}"
+    output: classification
+
+  - id: route
+    type: router
+    depends_on: [classify]
+    conditions:
+      - expression: "state.classification.strip().lower() == 'billing'"
+        target: handle_billing
+      - expression: "state.classification.strip().lower() == 'technical'"
+        target: handle_technical
+    default: handle_general
+
+  - id: handle_billing
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      You are a billing support specialist. Be empathetic about billing issues,
+      offer concrete solutions like refunds or credits.
+    prompt: "Help this customer with their billing issue: {state.user_message}"
+    output: response
+
+  - id: handle_technical
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      You are a technical support specialist. Provide clear step-by-step
+      troubleshooting instructions.
+    prompt: "Help this customer with their technical issue: {state.user_message}"
+    output: response
+
+  - id: handle_general
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      You are a friendly general support agent. Be helpful and guide the
+      customer to the right resources.
+    prompt: "Help this customer: {state.user_message}"
+    output: response
