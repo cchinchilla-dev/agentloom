@@ -1,0 +1,43 @@
+name: circuit-breaker-demo
+version: "1.0"
+description: >
+  Demonstrates the circuit breaker pattern. Uses a non-existent model to force
+  provider failures. After 5 consecutive failures the circuit opens, and the
+  remaining step is rejected immediately with CircuitOpenError.
+
+config:
+  provider: ollama
+  model: nonexistent-model-for-demo
+  max_retries: 3
+
+state:
+  prompt_a: "What is 2+2?"
+  prompt_b: "What is the capital of France?"
+  prompt_c: "Summarize quantum computing in one sentence"
+
+steps:
+  # Layer 1: two parallel calls — each retries 3 times (4 attempts each).
+  # Combined: 8 failures on the same circuit breaker (threshold = 5).
+  - id: call_a
+    type: llm_call
+    prompt: "{state.prompt_a}"
+    output: answer_a
+    retry:
+      max_retries: 3
+
+  - id: call_b
+    type: llm_call
+    prompt: "{state.prompt_b}"
+    output: answer_b
+    retry:
+      max_retries: 3
+
+  # Layer 2: depends on a+b, so it runs after the circuit has opened.
+  # This step should be immediately rejected by CircuitOpenError.
+  - id: call_c
+    type: llm_call
+    prompt: "{state.prompt_c}"
+    output: answer_c
+    depends_on: [call_a, call_b]
+    retry:
+      max_retries: 1
