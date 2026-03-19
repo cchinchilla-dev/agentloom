@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run pytest*)",
+      "Bash(uv run ruff*)",
+      "Bash(uv run mypy*)",
+      "Bash(uv run agentloom*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add*)",
+      "Bash(git commit*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "file=$(echo $TOOL_INPUT | jq -r '.file_path // .file_path // empty') && [ -n \"$file\" ] && [[ \"$file\" == *.py ]] && cd /Users/Admin/Workspace/agentloom && uv run ruff format \"$file\" 2>/dev/null; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}

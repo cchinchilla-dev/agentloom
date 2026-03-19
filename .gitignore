@@ -32,4 +32,5 @@ Thumbs.db
 .vscode/
 *.iml
 node_modules/
-.claude/
+.claude/settings.local.json
+.claude/worktrees/
