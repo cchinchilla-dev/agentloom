@@ -1,0 +1,20 @@
+[
+  {"name": "bug", "color": "d73a4a", "description": "Something isn't working"},
+  {"name": "enhancement", "color": "a2eeef", "description": "New feature or request"},
+  {"name": "documentation", "color": "0075ca", "description": "Documentation improvements"},
+  {"name": "breaking", "color": "b60205", "description": "Breaking change"},
+  {"name": "question", "color": "d876e3", "description": "Further information requested"},
+  {"name": "core", "color": "0e8a16", "description": "Core engine, DAG, state"},
+  {"name": "providers", "color": "1d76db", "description": "Provider gateway and adapters"},
+  {"name": "cli", "color": "5319e7", "description": "CLI commands"},
+  {"name": "observability", "color": "f9d0c4", "description": "Tracing, metrics, logging"},
+  {"name": "resilience", "color": "c5def5", "description": "Circuit breaker, retry, rate limiter"},
+  {"name": "good first issue", "color": "7057ff", "description": "Good for newcomers"},
+  {"name": "help wanted", "color": "008672", "description": "Extra attention needed"},
+  {"name": "wontfix", "color": "ffffff", "description": "This will not be worked on"},
+  {"name": "duplicate", "color": "cfd3d7", "description": "Duplicate issue"},
+  {"name": "ci", "color": "bfd4f2", "description": "CI/CD changes"},
+  {"name": "dependencies", "color": "0366d6", "description": "Dependency updates"},
+  {"name": "internal", "color": "ededed", "description": "Internal refactoring"},
+  {"name": "skip-changelog", "color": "ededed", "description": "Exclude from release notes"}
+]

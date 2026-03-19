@@ -1,0 +1,34 @@
+core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/agentloom/core/**
+
+providers:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/agentloom/providers/**
+
+cli:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/agentloom/cli/**
+
+observability:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/agentloom/observability/**
+
+resilience:
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/agentloom/resilience/**
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
