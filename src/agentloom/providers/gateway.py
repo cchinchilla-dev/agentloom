@@ -1,49 +1,157 @@
-"""Provider Gateway — unified interface with fallback."""
+"""Provider Gateway — unified interface with fallback, circuit breaker, and rate limiting."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from agentloom.exceptions import ProviderError
+from agentloom.exceptions import CircuitOpenError, ProviderError
 from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.resilience.circuit_breaker import CircuitBreaker
+from agentloom.resilience.rate_limiter import RateLimiter
 
 logger = logging.getLogger("agentloom.gateway")
 
 
 class ProviderEntry:
-    def __init__(self, provider: BaseProvider, priority: int = 0, is_fallback: bool = False, models: list[str] | None = None) -> None:
+    """A registered provider with its associated resilience components."""
+
+    def __init__(
+        self,
+        provider: BaseProvider,
+        priority: int = 0,
+        is_fallback: bool = False,
+        circuit_breaker: CircuitBreaker | None = None,
+        rate_limiter: RateLimiter | None = None,
+        models: list[str] | None = None,
+    ) -> None:
         self.provider = provider
         self.priority = priority
         self.is_fallback = is_fallback
+        self.circuit_breaker = circuit_breaker or CircuitBreaker(name=provider.name)
+        self.rate_limiter = rate_limiter
         self.models = models or []
 
 
 class ProviderGateway:
-    """Central provider routing with fallback."""
+    """Central provider routing with fallback and resilience.
+
+    Routes model requests to the appropriate provider. If a provider fails
+    and fallbacks are configured, tries the next provider automatically.
+    """
 
     def __init__(self) -> None:
         self._providers: list[ProviderEntry] = []
+        self._model_mapping: dict[str, list[ProviderEntry]] = {}
 
-    def register(self, provider: BaseProvider, priority: int = 0, is_fallback: bool = False, models: list[str] | None = None, **kwargs: Any) -> None:
-        entry = ProviderEntry(provider=provider, priority=priority, is_fallback=is_fallback, models=models)
+    def register(
+        self,
+        provider: BaseProvider,
+        priority: int = 0,
+        is_fallback: bool = False,
+        models: list[str] | None = None,
+        max_rpm: int = 60,
+        max_tpm: int = 100_000,
+        circuit_fail_threshold: int = 5,
+        circuit_reset_timeout: float = 60.0,
+    ) -> None:
+        """Register a provider with its configuration."""
+        entry = ProviderEntry(
+            provider=provider,
+            priority=priority,
+            is_fallback=is_fallback,
+            circuit_breaker=CircuitBreaker(
+                name=provider.name,
+                fail_threshold=circuit_fail_threshold,
+                reset_timeout=circuit_reset_timeout,
+            ),
+            rate_limiter=RateLimiter(
+                max_requests_per_minute=max_rpm,
+                max_tokens_per_minute=max_tpm,
+            ),
+            models=models or [],
+        )
         self._providers.append(entry)
         self._providers.sort(key=lambda e: e.priority)
 
-    async def complete(self, messages: list[dict[str, str]], model: str, temperature: float | None = None, max_tokens: int | None = None, **kwargs: Any) -> ProviderResponse:
-        candidates = [e for e in self._providers if e.provider.supports_model(model)]
-        fallbacks = [e for e in self._providers if e.is_fallback and e not in candidates]
-        all_c = candidates + fallbacks
-        if not all_c:
-            raise ProviderError("gateway", f"No provider for model \'{model}\'")
+        for model in entry.models:
+            self._model_mapping.setdefault(model, []).append(entry)
+            self._model_mapping[model].sort(key=lambda e: e.priority)
+
+    async def complete(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        """Route a completion request to the appropriate provider with fallback."""
+        # TODO: cache this lookup, rebuilding every call is wasteful
+        candidates = self._get_candidates(model)
+
+        if not candidates:
+            raise ProviderError(
+                "gateway",
+                f"No provider registered for model '{model}'",
+            )
+
         errors: list[str] = []
-        for entry in all_c:
+
+        for entry in candidates:
             try:
-                return await entry.provider.complete(messages=messages, model=model, temperature=temperature, max_tokens=max_tokens, **kwargs)
+                if entry.rate_limiter:
+                    await entry.rate_limiter.acquire()
+
+                async def _call(e: ProviderEntry = entry) -> ProviderResponse:
+                    return await e.provider.complete(
+                        messages=messages,
+                        model=model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        **kwargs,
+                    )
+
+                response = await entry.circuit_breaker.call(_call)
+
+                logger.debug(
+                    "Provider '%s' responded for model '%s'",
+                    entry.provider.name,
+                    model,
+                )
+                return response
+
+            except CircuitOpenError:
+                msg = f"Provider '{entry.provider.name}' circuit is open"
+                errors.append(msg)
+                logger.warning(msg)
+                continue
+
             except Exception as e:
-                errors.append(f"Provider \'{entry.provider.name}\': {e}")
-        raise ProviderError("gateway", "All providers failed: " + "; ".join(errors))
+                msg = f"Provider '{entry.provider.name}' failed: {e}"
+                errors.append(msg)
+                logger.warning(msg)
+                continue
+
+        raise ProviderError(
+            "gateway",
+            f"All providers failed for model '{model}': "
+            + "; ".join(errors),
+        )
+
+    def _get_candidates(self, model: str) -> list[ProviderEntry]:
+        """Get provider candidates for a model, sorted by priority."""
+        if model in self._model_mapping:
+            return self._model_mapping[model]
+
+        candidates = [
+            e for e in self._providers if e.provider.supports_model(model)
+        ]
+
+        fallbacks = [e for e in self._providers if e.is_fallback and e not in candidates]
+        return candidates + fallbacks
 
     async def close(self) -> None:
+        """Close all provider connections."""
         for entry in self._providers:
             await entry.provider.close()

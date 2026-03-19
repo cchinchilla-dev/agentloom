@@ -16,17 +16,22 @@ class StepRegistry:
     def get(self, step_type: StepType) -> type[BaseStep]:
         if step_type not in self._registry:
             available = ", ".join(t.value for t in self._registry)
-            raise KeyError(f"No executor for step type \'{step_type.value}\'. Available: {available}")
+            raise KeyError(
+                f"No executor for step type '{step_type.value}'. Available: {available}"
+            )
         return self._registry[step_type]
 
 
 def create_default_registry() -> StepRegistry:
+    """Create a registry with all built-in step types."""
     from agentloom.steps.llm_call import LLMCallStep
     from agentloom.steps.router import RouterStep
+    from agentloom.steps.subworkflow import SubworkflowStep
     from agentloom.steps.tool_step import ToolStep
 
     registry = StepRegistry()
     registry.register(StepType.LLM_CALL, LLMCallStep)
     registry.register(StepType.ROUTER, RouterStep)
     registry.register(StepType.TOOL, ToolStep)
+    registry.register(StepType.SUBWORKFLOW, SubworkflowStep)
     return registry

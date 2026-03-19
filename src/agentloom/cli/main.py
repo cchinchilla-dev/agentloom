@@ -10,11 +10,16 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+from agentloom.cli.info import info  # noqa: E402
 from agentloom.cli.run import run  # noqa: E402
 from agentloom.cli.validate import validate  # noqa: E402
+from agentloom.cli.visualize import visualize  # noqa: E402
 
 app.command("run")(run)
 app.command("validate")(validate)
+app.command("visualize")(visualize)
+app.command("info")(info)
+
 
 if __name__ == "__main__":
     app()
