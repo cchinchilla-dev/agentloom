@@ -9,7 +9,10 @@
       "Bash(git diff*)",
       "Bash(git log*)",
       "Bash(git add*)",
-      "Bash(git commit*)"
+      "Bash(git commit*)",
+      "Bash(gh pr *)",
+      "Bash(gh issue *)",
+      "Bash(gh run *)"
     ],
     "deny": [
       "Bash(rm -rf /)",
@@ -24,10 +27,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "file=$(echo $TOOL_INPUT | jq -r '.file_path // .file_path // empty') && [ -n \"$file\" ] && [[ \"$file\" == *.py ]] && cd /Users/Admin/Workspace/agentloom && uv run ruff format \"$file\" 2>/dev/null; exit 0"
+            "command": "file=$(echo $TOOL_INPUT | jq -r '.file_path // empty') && [ -n \"$file\" ] && [[ \"$file\" == *.py ]] && cd /Users/Admin/Workspace/agentloom && uv run ruff format \"$file\" 2>/dev/null; exit 0"
           }
         ]
       }
     ]
+  },
+  "mcpServers": {
+    "github": {
+      "command": "gh",
+      "args": ["copilot", "mcp"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    }
   }
 }
