@@ -12,33 +12,53 @@ class ModelPricing(BaseModel):
     output_cost_per_1k: float
 
 
-# Default pricing table (USD per 1K tokens) — updated as of 2025
+# Default pricing table (USD per 1K tokens) — updated March 2026
 # TODO: load from a yaml config instead of hardcoding
 DEFAULT_PRICING: dict[str, ModelPricing] = {
-    # OpenAI
-    "gpt-4o": ModelPricing(input_cost_per_1k=0.0025, output_cost_per_1k=0.01),
-    "gpt-4o-mini": ModelPricing(input_cost_per_1k=0.00015, output_cost_per_1k=0.0006),
-    "gpt-4-turbo": ModelPricing(input_cost_per_1k=0.01, output_cost_per_1k=0.03),
-    "gpt-4": ModelPricing(input_cost_per_1k=0.03, output_cost_per_1k=0.06),
-    "gpt-3.5-turbo": ModelPricing(input_cost_per_1k=0.0005, output_cost_per_1k=0.0015),
-    "o1": ModelPricing(input_cost_per_1k=0.015, output_cost_per_1k=0.06),
-    "o1-mini": ModelPricing(input_cost_per_1k=0.003, output_cost_per_1k=0.012),
-    # Anthropic
-    "claude-opus-4-20250514": ModelPricing(input_cost_per_1k=0.015, output_cost_per_1k=0.075),
-    "claude-sonnet-4-20250514": ModelPricing(input_cost_per_1k=0.003, output_cost_per_1k=0.015),
-    "claude-3-5-sonnet-20241022": ModelPricing(input_cost_per_1k=0.003, output_cost_per_1k=0.015),
-    "claude-3-5-haiku-20241022": ModelPricing(input_cost_per_1k=0.0008, output_cost_per_1k=0.004),
-    "claude-3-haiku-20240307": ModelPricing(input_cost_per_1k=0.00025, output_cost_per_1k=0.00125),
-    # Google
-    "gemini-2.0-flash": ModelPricing(input_cost_per_1k=0.0001, output_cost_per_1k=0.0004),
-    "gemini-1.5-flash": ModelPricing(input_cost_per_1k=0.000075, output_cost_per_1k=0.0003),
-    "gemini-1.5-pro": ModelPricing(input_cost_per_1k=0.00125, output_cost_per_1k=0.005),
+    # OpenAI — GPT-5.4 (March 2026)
+    "gpt-5.4": ModelPricing(input_cost_per_1k=0.00250, output_cost_per_1k=0.01500),
+    "gpt-5.4-mini": ModelPricing(input_cost_per_1k=0.00075, output_cost_per_1k=0.00450),
+    "gpt-5.4-nano": ModelPricing(input_cost_per_1k=0.00020, output_cost_per_1k=0.00125),
+    # OpenAI — GPT-4.1 family (April 2025)
+    "gpt-4.1": ModelPricing(input_cost_per_1k=0.00200, output_cost_per_1k=0.00800),
+    "gpt-4.1-mini": ModelPricing(input_cost_per_1k=0.00040, output_cost_per_1k=0.00160),
+    "gpt-4.1-nano": ModelPricing(input_cost_per_1k=0.00010, output_cost_per_1k=0.00040),
+    # OpenAI — GPT-4o (legacy, still available)
+    "gpt-4o": ModelPricing(input_cost_per_1k=0.00250, output_cost_per_1k=0.01000),
+    "gpt-4o-mini": ModelPricing(input_cost_per_1k=0.00015, output_cost_per_1k=0.00060),
+    # OpenAI — reasoning models
+    "o3": ModelPricing(input_cost_per_1k=0.00200, output_cost_per_1k=0.00800),
+    "o4-mini": ModelPricing(input_cost_per_1k=0.00110, output_cost_per_1k=0.00440),
+    # Anthropic — Claude 4.6 (Feb 2026)
+    "claude-opus-4-6": ModelPricing(input_cost_per_1k=0.00500, output_cost_per_1k=0.02500),
+    "claude-sonnet-4-6": ModelPricing(input_cost_per_1k=0.00300, output_cost_per_1k=0.01500),
+    # Anthropic — Claude 4.5 (Sept-Nov 2025)
+    "claude-opus-4-5-20251101": ModelPricing(input_cost_per_1k=0.00500, output_cost_per_1k=0.02500),
+    "claude-sonnet-4-5-20250929": ModelPricing(
+        input_cost_per_1k=0.00300, output_cost_per_1k=0.01500
+    ),
+    "claude-haiku-4-5-20251001": ModelPricing(
+        input_cost_per_1k=0.00100, output_cost_per_1k=0.00500
+    ),
+    # Anthropic — Claude 4.1 / 4 (legacy)
+    "claude-opus-4-1-20250805": ModelPricing(input_cost_per_1k=0.01500, output_cost_per_1k=0.07500),
+    "claude-opus-4-20250514": ModelPricing(input_cost_per_1k=0.01500, output_cost_per_1k=0.07500),
+    "claude-sonnet-4-20250514": ModelPricing(input_cost_per_1k=0.00300, output_cost_per_1k=0.01500),
+    # Google — Gemini 3 (2026)
+    "gemini-3.1-pro": ModelPricing(input_cost_per_1k=0.00200, output_cost_per_1k=0.01200),
+    "gemini-3-flash": ModelPricing(input_cost_per_1k=0.00050, output_cost_per_1k=0.00300),
+    # Google — Gemini 2.5 (mid 2025)
+    "gemini-2.5-pro": ModelPricing(input_cost_per_1k=0.00125, output_cost_per_1k=0.01000),
+    "gemini-2.5-flash": ModelPricing(input_cost_per_1k=0.00030, output_cost_per_1k=0.00250),
+    # Google — Gemini 2.0 (deprecated, sunset June 2026)
+    "gemini-2.0-flash": ModelPricing(input_cost_per_1k=0.00010, output_cost_per_1k=0.00040),
     # Ollama (local — free)
-    "llama3": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
+    "qwen3": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
+    "llama3.3": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
     "llama3.1": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
+    "phi4": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
+    "deepseek-r1": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
     "mistral": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
-    "phi3": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
-    "qwen2": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
 }
 
 

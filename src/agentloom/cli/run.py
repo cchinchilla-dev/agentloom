@@ -116,7 +116,18 @@ def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
         gateway.register(
             OpenAIProvider(),
             priority=0 if default_provider == "openai" else 10,
-            models=["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo", "o1", "o1-mini"],
+            models=[
+                "gpt-5.4",
+                "gpt-5.4-mini",
+                "gpt-5.4-nano",
+                "gpt-4.1",
+                "gpt-4.1-mini",
+                "gpt-4.1-nano",
+                "gpt-4o",
+                "gpt-4o-mini",
+                "o3",
+                "o4-mini",
+            ],
         )
 
     if os.environ.get("ANTHROPIC_API_KEY"):
@@ -126,10 +137,11 @@ def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
             AnthropicProvider(),
             priority=0 if default_provider == "anthropic" else 10,
             models=[
-                "claude-opus-4-20250514",
-                "claude-sonnet-4-20250514",
-                "claude-3-5-sonnet-20241022",
-                "claude-3-5-haiku-20241022",
+                "claude-opus-4-6",
+                "claude-sonnet-4-6",
+                "claude-opus-4-5-20251101",
+                "claude-sonnet-4-5-20250929",
+                "claude-haiku-4-5-20251001",
             ],
         )
 
@@ -139,7 +151,13 @@ def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
         gateway.register(
             GoogleProvider(),
             priority=0 if default_provider == "google" else 10,
-            models=["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
+            models=[
+                "gemini-3.1-pro",
+                "gemini-3-flash",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+            ],
         )
 
     # Ollama is always available as fallback (local/LAN)

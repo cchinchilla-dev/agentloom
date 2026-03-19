@@ -16,9 +16,7 @@ class StepRegistry:
     def get(self, step_type: StepType) -> type[BaseStep]:
         if step_type not in self._registry:
             available = ", ".join(t.value for t in self._registry)
-            raise KeyError(
-                f"No executor for step type '{step_type.value}'. Available: {available}"
-            )
+            raise KeyError(f"No executor for step type '{step_type.value}'. Available: {available}")
         return self._registry[step_type]
 
 

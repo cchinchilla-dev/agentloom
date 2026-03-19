@@ -135,8 +135,7 @@ class ProviderGateway:
 
         raise ProviderError(
             "gateway",
-            f"All providers failed for model '{model}': "
-            + "; ".join(errors),
+            f"All providers failed for model '{model}': " + "; ".join(errors),
         )
 
     def _get_candidates(self, model: str) -> list[ProviderEntry]:
@@ -144,9 +143,7 @@ class ProviderGateway:
         if model in self._model_mapping:
             return self._model_mapping[model]
 
-        candidates = [
-            e for e in self._providers if e.provider.supports_model(model)
-        ]
+        candidates = [e for e in self._providers if e.provider.supports_model(model)]
 
         fallbacks = [e for e in self._providers if e.is_fallback and e not in candidates]
         return candidates + fallbacks

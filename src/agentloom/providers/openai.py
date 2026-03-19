@@ -85,8 +85,8 @@ class OpenAIProvider(BaseProvider):
         )
 
     def supports_model(self, model: str) -> bool:
-        # HACK: prefix matching means "o1" matches "o1-mini" too — good enough for now
-        return model.startswith(("gpt-", "o1", "o3"))
+        # HACK: prefix matching means "o3" matches "o3-mini" too — good enough for now
+        return model.startswith(("gpt-", "o3", "o4"))
 
     async def close(self) -> None:
         await self._client.aclose()

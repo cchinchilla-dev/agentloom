@@ -4,7 +4,7 @@ description: Simple question-answer workflow. Sends a question to an LLM and ret
 
 config:
   provider: ollama
-  model: phi3
+  model: phi4
   max_retries: 2
 
 state:

@@ -14,8 +14,7 @@ from agentloom.providers.base import BaseProvider, ProviderResponse
 class OllamaProvider(BaseProvider):
     """Ollama API adapter — for local or LAN-hosted models.
 
-    Ideal for the Luckfox board: point to an Ollama server on the LAN
-    to avoid needing API keys or internet access for inference.
+    Connects to an Ollama server on localhost or LAN, no API keys needed.
     """
 
     name = "ollama"

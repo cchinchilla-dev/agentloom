@@ -1,7 +1,7 @@
 version: "3.8"
 
 # Observability stack for AgentLoom development.
-# NOT for the Luckfox board — run this on your dev machine.
+# Run this on your dev machine to spin up the observability stack.
 #
 # Usage: docker compose up -d
 # Access:
