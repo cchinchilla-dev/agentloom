@@ -300,6 +300,19 @@ class WorkflowEngine:
                             result.cost_usd,
                             result.token_usage.total_tokens,
                         )
+                        if result.provider and result.model:
+                            self.observer.on_provider_call(
+                                result.provider,
+                                result.model,
+                                result.duration_ms / 1000.0,
+                            )
+                            if result.token_usage.total_tokens > 0:
+                                self.observer.on_tokens(
+                                    result.provider,
+                                    result.model,
+                                    result.token_usage.prompt_tokens,
+                                    result.token_usage.completion_tokens,
+                                )
 
                     logger.debug(
                         "Step '%s' succeeded (attempt %d): %.1fms",
