@@ -1,0 +1,119 @@
+name: customer-enrichment
+version: "1.0"
+description: >
+  Enrich customer profile with geodata and CRM history, compute churn risk,
+  and generate retention strategy.
+
+config:
+  provider: ollama
+  model: phi4
+  budget_usd: 0.05
+
+state:
+  customer_email: "sarah.chen@techcorp.io"
+  customer_address: "155 5th Street, San Francisco, CA 94105"
+  geo_data: ""
+  crm_profile: ""
+  risk_score: ""
+  enriched_profile: ""
+  retention_strategy: ""
+
+steps:
+  # Layer 0: parallel data gathering (tool + tool)
+  - id: geocode
+    type: tool
+    tool_name: geocode_address
+    tool_args:
+      address: "state.customer_address"
+      include_demographics: true
+    output: geo_data
+
+  - id: crm_lookup
+    type: tool
+    tool_name: crm_lookup
+    tool_args:
+      email: "state.customer_email"
+      include_history: true
+    output: crm_profile
+
+  # Layer 1: compute risk score (depends on CRM data)
+  - id: compute_risk
+    type: tool
+    depends_on: [crm_lookup]
+    tool_name: compute_risk_score
+    tool_args:
+      health_score: 72
+      nps_score: 7
+      ticket_volume_trend: "increasing"
+      days_to_renewal: 88
+      champion_departed: true
+    output: risk_score
+
+  # Layer 2: LLM enrichment — synthesize all data sources
+  - id: enrich
+    type: llm_call
+    depends_on: [geocode, compute_risk]
+    system_prompt: >
+      You are a customer intelligence analyst. Given geodata, CRM profile,
+      and risk score, create a unified customer brief. Include:
+      1. Customer snapshot (who they are, what they use)
+      2. Account health summary
+      3. Key risk signals ranked by severity
+      4. Expansion opportunities
+      5. Recommended engagement approach based on their market/industry
+    prompt: |
+      Create a customer intelligence brief:
+
+      Geodata: {state.geo_data}
+
+      CRM Profile: {state.crm_profile}
+
+      Risk Score: {state.risk_score}
+    output: enriched_profile
+
+  # Layer 3: route by risk level
+  - id: route_risk
+    type: router
+    depends_on: [enrich]
+    conditions:
+      - expression: "'high' in state.risk_score"
+        target: retention_playbook
+      - expression: "'medium' in state.risk_score"
+        target: proactive_outreach
+    default: monitor_only
+
+  # Layer 4: actions based on risk
+  - id: retention_playbook
+    type: llm_call
+    depends_on: [route_risk]
+    system_prompt: >
+      You are a senior Customer Success Manager. This is a high-risk
+      enterprise account approaching renewal. Draft a 30-day retention
+      playbook with:
+      1. Week 1: immediate actions (exec sponsor call, escalate tickets)
+      2. Week 2: value demonstration (ROI report, roadmap preview)
+      3. Week 3: negotiate renewal terms (discounts, added value)
+      4. Week 4: close or escalate to leadership
+      Be specific to this customer's situation.
+    prompt: |
+      Draft retention playbook:
+
+      Customer brief: {state.enriched_profile}
+      Risk: {state.risk_score}
+    output: retention_strategy
+
+  - id: proactive_outreach
+    type: llm_call
+    depends_on: [route_risk]
+    system_prompt: >
+      Draft a proactive outreach plan for a medium-risk account.
+      Focus on re-engagement and addressing concerns before renewal.
+    prompt: "Plan outreach for:\\n\\n{state.enriched_profile}"
+    output: retention_strategy
+
+  - id: monitor_only
+    type: llm_call
+    depends_on: [route_risk]
+    system_prompt: Generate a brief monitoring note for a healthy account.
+    prompt: "Log healthy account:\\n\\n{state.enriched_profile}"
+    output: retention_strategy

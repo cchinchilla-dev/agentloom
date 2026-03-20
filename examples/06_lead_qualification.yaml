@@ -1,0 +1,145 @@
+name: lead-qualification
+version: "1.0"
+description: >
+  B2B lead qualification pipeline. Enriches lead data via API, analyzes
+  buying intent, scores the lead, and routes to personalized outreach,
+  nurture sequence, or cold archive.
+
+config:
+  provider: openai
+  model: gpt-4.1-nano
+  budget_usd: 0.05
+
+state:
+  lead_name: "Sarah Chen"
+  lead_email: "sarah.chen@techcorp.io"
+  lead_company: "TechCorp"
+  lead_message: >
+    We're evaluating workflow orchestration tools for our ML platform.
+    Currently handling ~500 model deployments/month and need better
+    observability and cost tracking. Team of 12 ML engineers. Looking for
+    something that integrates with our existing Prometheus/Grafana stack.
+    Can we schedule a technical demo this week?
+  company_data: ""
+  intent_analysis: ""
+  lead_score: ""
+  outreach: ""
+
+steps:
+  # --- Layer 0: enrich + analyze in parallel ---
+
+  - id: enrich_company
+    type: tool
+    tool_name: http_request
+    tool_args:
+      url: "https://jsonplaceholder.typicode.com/users/1"
+      method: "GET"
+    output: company_data
+
+  - id: analyze_intent
+    type: llm_call
+    system_prompt: >
+      You are a B2B sales intent analyzer. Evaluate inbound messages for:
+      1. Budget signals (team size, scale, current spend)
+      2. Timeline urgency (evaluating now, specific deadlines, active project)
+      3. Technical fit (mentions specific features or integrations)
+      4. Decision-maker signals (authority to buy, mentions stakeholders)
+
+      Respond in this format:
+      BUDGET_SIGNAL: <none/low/medium/high>
+      TIMELINE: <exploring/evaluating/ready_to_buy>
+      TECHNICAL_FIT: <poor/moderate/strong>
+      DECISION_AUTHORITY: <unknown/influencer/decision_maker>
+      SUMMARY: <2-3 sentence analysis>
+    prompt: |
+      Analyze buying intent from this inbound lead:
+
+      From: {state.lead_name} at {state.lead_company}
+      Message: {state.lead_message}
+    output: intent_analysis
+
+  # --- Layer 1: score using both enrichment + intent ---
+
+  - id: score_lead
+    type: llm_call
+    depends_on: [enrich_company, analyze_intent]
+    system_prompt: >
+      You are a lead scoring engine. Based on company data and intent analysis,
+      classify the lead as exactly one of: hot, warm, or cold.
+
+      Scoring criteria:
+      - hot: strong technical fit + evaluating/ready_to_buy + medium/high budget
+      - warm: moderate fit + evaluating + some budget signals
+      - cold: poor fit or just exploring with no urgency
+
+      Respond with exactly one word: hot, warm, or cold.
+    prompt: |
+      Score this lead:
+
+      Company data: {state.company_data}
+      Intent analysis: {state.intent_analysis}
+    output: lead_score
+
+  # --- Layer 2: route by score ---
+
+  - id: route
+    type: router
+    depends_on: [score_lead]
+    conditions:
+      - expression: "'hot' in state.lead_score.strip().lower()"
+        target: draft_outreach
+      - expression: "'warm' in state.lead_score.strip().lower()"
+        target: nurture_sequence
+    default: log_and_archive
+
+  # --- Layer 3: generate appropriate response ---
+
+  - id: draft_outreach
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      You are a senior sales development representative at a developer tools
+      company. Write a personalized, technical response that addresses the
+      prospect's specific needs. Reference their exact use case, mention
+      relevant features, and propose a concrete next step. No generic sales
+      language. Keep it under 150 words.
+    prompt: |
+      Draft a personalized response for this hot lead:
+
+      Name: {state.lead_name}
+      Company: {state.lead_company}
+      Their message: {state.lead_message}
+      Intent analysis: {state.intent_analysis}
+
+      Focus on their pain points and propose a technical demo.
+    output: outreach
+
+  - id: nurture_sequence
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      You are a developer marketing specialist. Write a brief value-add email
+      that shares a relevant technical insight or case study without being
+      pushy. Goal: keep the conversation warm until they're ready to evaluate.
+      Keep it under 100 words.
+    prompt: |
+      Create a nurture email for this warm lead:
+
+      Name: {state.lead_name}
+      Company: {state.lead_company}
+      Intent: {state.intent_analysis}
+    output: outreach
+
+  - id: log_and_archive
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      Generate a brief CRM log entry summarizing why this lead was classified
+      as cold and what trigger event might re-qualify them in the future.
+    prompt: |
+      Create a CRM log entry for this cold lead:
+
+      Name: {state.lead_name} at {state.lead_company}
+      Message: {state.lead_message}
+      Analysis: {state.intent_analysis}
+    output: outreach

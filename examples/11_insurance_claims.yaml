@@ -1,0 +1,372 @@
+name: insurance-claims-processing
+version: "1.0"
+description: >
+  End-to-end insurance claims processing pipeline. Fetches claim data, extracts
+  structured fields, runs parallel validation tracks (coverage verification,
+  fraud detection, medical review) via subworkflows, aggregates results, routes
+  to auto-approve (with payment subworkflow), adjuster review, or denial.
+
+config:
+  provider: openai
+  model: gpt-4.1-nano
+  budget_usd: 0.12
+  max_concurrent_steps: 3
+
+state:
+  claim_id: "CLM-2026-00847"
+  claim_data: ""
+  claim_details: >
+    CLAIM #CLM-2026-00847 — Filed 2026-03-18
+
+    Policy: HLT-PRO-500 (Premium Health Plan)
+    Policyholder: James Rivera, DOB 1985-04-12, Member since 2022-01-15
+    Dependents on policy: Maria Rivera (spouse), Lucas Rivera (child, age 8)
+
+    Incident: Emergency room visit on 2026-03-16 at St. Mary's Medical Center.
+    Patient: James Rivera. Chief complaint: severe abdominal pain, nausea.
+    Diagnosis: Acute appendicitis (ICD-10: K35.80).
+    Procedure: Laparoscopic appendectomy (CPT: 44970) performed same day.
+    Hospital stay: 2 nights (discharged 2026-03-18).
+
+    Itemized charges:
+    - ER evaluation (99285): $1,250.00
+    - CT abdomen w/contrast (74178): $3,200.00
+    - Anesthesia (00790): $2,800.00
+    - Laparoscopic appendectomy (44970): $18,500.00
+    - Hospital room — 2 nights (99232): $4,600.00
+    - IV fluids and medications: $890.00
+    - Lab work (CBC, CMP, lipase): $450.00
+    - Pathology (88305): $380.00
+    TOTAL BILLED: $32,070.00
+
+    Provider: St. Mary's Medical Center (NPI: 1234567890, in-network)
+    Referring physician: Dr. Amanda Chen (NPI: 0987654321)
+  extracted_fields: ""
+  coverage_result: ""
+  fraud_result: ""
+  medical_review: ""
+  validation_summary: ""
+  decision: ""
+  response: ""
+
+steps:
+  # --- Layer 0: fetch additional claim context ---
+
+  - id: fetch_claim_context
+    type: tool
+    tool_name: http_request
+    tool_args:
+      url: "https://jsonplaceholder.typicode.com/posts/1"
+      method: "GET"
+    output: claim_data
+
+  # --- Layer 1: extract structured fields ---
+
+  - id: extract_fields
+    type: llm_call
+    depends_on: [fetch_claim_context]
+    system_prompt: >
+      You are a claims data extraction engine. Parse the claim into structured
+      fields. Extract exactly:
+      CLAIM_ID: ...
+      POLICY_TYPE: ...
+      MEMBER_SINCE: ...
+      PATIENT: ...
+      DATE_OF_SERVICE: ...
+      FACILITY: ... (name, NPI, network status)
+      DIAGNOSIS: ... (description + ICD-10 code)
+      PROCEDURE: ... (description + CPT code)
+      TOTAL_BILLED: ...
+      LINE_ITEMS: (list each charge with code and amount)
+      REFERRING_PHYSICIAN: ...
+    prompt: "Extract structured fields from this claim:\n\n{state.claim_details}"
+    output: extracted_fields
+
+  # --- Layer 2: three parallel validation tracks ---
+
+  - id: verify_coverage
+    type: subworkflow
+    depends_on: [extract_fields]
+    workflow_inline:
+      name: coverage-verification
+      config:
+        provider: openai
+        model: gpt-4.1-nano
+      state:
+        policy_check: ""
+        eligible_amount: ""
+        payout_calculation: ""
+      steps:
+        - id: check_policy
+          type: llm_call
+          system_prompt: >
+            You are a health insurance policy verification specialist. Given the
+            claim details and policy type, verify:
+            1. Is the procedure covered under this policy type?
+            2. Is the provider in-network?
+            3. Has the deductible been met (assume $500 individual deductible, $200 already met)?
+            4. What is the coinsurance split? (assume 80/20 in-network after deductible)
+            5. Is prior authorization required for this procedure?
+            6. Any exclusions or waiting periods that apply?
+
+            Format: COVERED: true/false, then detail each check.
+          prompt: |
+            Verify coverage for this claim:
+
+            Claim: {state.claim_details}
+            Extracted: {state.extracted_fields}
+          output: policy_check
+
+        - id: calculate_eligible
+          type: llm_call
+          depends_on: [check_policy]
+          system_prompt: >
+            You are a claims adjudication calculator. Based on the policy check,
+            calculate:
+            1. Allowed amount per line item (apply in-network negotiated rates — assume 70% of billed)
+            2. Remaining deductible to apply ($500 - $200 = $300 remaining)
+            3. Member coinsurance (20% of allowed amount after deductible)
+            4. Plan pays (80% of allowed amount after deductible)
+            5. Total member responsibility
+            6. Total plan responsibility
+
+            Show the math for each line item.
+          prompt: |
+            Calculate eligible amounts:
+
+            Policy check: {state.policy_check}
+            Claim: {state.claim_details}
+          output: eligible_amount
+
+        - id: determine_payout
+          type: llm_call
+          depends_on: [calculate_eligible]
+          system_prompt: >
+            Generate a formal Explanation of Benefits (EOB) summary:
+            PLAN_PAYS: $X,XXX.XX
+            MEMBER_PAYS: $X,XXX.XX (deductible: $XXX + coinsurance: $X,XXX)
+            PROVIDER_ADJUSTMENT: $X,XXX.XX (difference between billed and allowed)
+            STATUS: APPROVED / PARTIAL / DENIED
+            NOTES: any special considerations
+          prompt: |
+            Determine final payout:
+
+            Eligible amounts: {state.eligible_amount}
+            Policy: {state.policy_check}
+          output: payout_calculation
+    output: coverage_result
+
+  - id: detect_fraud
+    type: subworkflow
+    depends_on: [extract_fields]
+    workflow_inline:
+      name: fraud-detection
+      config:
+        provider: openai
+        model: gpt-4.1-nano
+      state:
+        pattern_check: ""
+        cross_reference: ""
+        fraud_score: ""
+      steps:
+        - id: analyze_patterns
+          type: llm_call
+          system_prompt: >
+            You are a healthcare fraud analyst. Check this claim for fraud indicators:
+            1. Upcoding (charges inflated beyond typical for diagnosis)
+            2. Unbundling (services that should be billed together split apart)
+            3. Phantom billing (services not medically consistent with diagnosis)
+            4. Duplicate claims (check for unusual patterns)
+            5. Provider red flags (unusual volume, out-of-specialty procedures)
+
+            Rate each indicator: CLEAR / SUSPICIOUS / FLAGGED with explanation.
+          prompt: |
+            Analyze for healthcare fraud patterns:
+
+            Claim: {state.claim_details}
+            Extracted: {state.extracted_fields}
+          output: pattern_check
+
+        - id: cross_reference
+          type: llm_call
+          depends_on: [analyze_patterns]
+          system_prompt: >
+            Cross-reference the claim data for consistency:
+            1. Do the diagnosis codes match the procedures?
+            2. Is the length of stay appropriate for this procedure?
+            3. Are the charges within expected ranges for the region?
+            4. Is the timeline consistent (ER visit → diagnosis → surgery → discharge)?
+            5. Does the referring physician specialty match the referral?
+
+            Rate overall consistency: HIGH / MEDIUM / LOW.
+          prompt: |
+            Cross-reference claim consistency:
+
+            Pattern analysis: {state.pattern_check}
+            Claim: {state.claim_details}
+          output: cross_reference
+
+        - id: compute_fraud_score
+          type: llm_call
+          depends_on: [cross_reference]
+          system_prompt: >
+            Generate a fraud risk score. Respond in this exact format:
+            FRAUD_RISK: <low/medium/high>
+            SCORE: <0.0-1.0>
+            FLAGS: <comma-separated list of concerns, or "none">
+            RECOMMENDATION: <process_normally/enhanced_review/refer_to_SIU>
+          prompt: |
+            Compute fraud risk score:
+
+            Pattern check: {state.pattern_check}
+            Cross-reference: {state.cross_reference}
+          output: fraud_score
+    output: fraud_result
+
+  - id: medical_review
+    type: llm_call
+    depends_on: [extract_fields]
+    system_prompt: >
+      You are a medical necessity reviewer (nurse reviewer level). Evaluate:
+      1. Is the diagnosis clinically consistent with the symptoms described?
+      2. Was the procedure medically necessary for the diagnosis?
+      3. Was the level of care appropriate (could it have been outpatient)?
+      4. Is the length of stay within clinical guidelines for this procedure?
+      5. Were all ancillary services (labs, imaging) medically justified?
+
+      Respond: MEDICAL_NECESSITY: met/not_met/partial, then detail each point.
+    prompt: |
+      Review medical necessity:
+
+      Claim: {state.claim_details}
+      Extracted: {state.extracted_fields}
+    output: medical_review
+
+  # --- Layer 3: aggregate all validations ---
+
+  - id: aggregate_validations
+    type: llm_call
+    depends_on: [verify_coverage, detect_fraud, medical_review]
+    system_prompt: >
+      You are a senior claims adjudicator. Given coverage verification, fraud
+      detection, and medical review results, make a final decision.
+      Respond with exactly one word: approve, review, or deny.
+
+      Rules:
+      - approve: coverage confirmed + low fraud risk + medical necessity met
+      - review: any medium-risk fraud flags, or partial medical necessity, or
+        coverage questions requiring human judgment
+      - deny: not covered, high fraud risk, or medical necessity not met
+    prompt: |
+      Final adjudication decision:
+
+      Coverage: {state.coverage_result}
+      Fraud: {state.fraud_result}
+      Medical: {state.medical_review}
+    output: decision
+
+  # --- Layer 4: route ---
+
+  - id: route_decision
+    type: router
+    depends_on: [aggregate_validations]
+    conditions:
+      - expression: "'approve' in state.decision.strip().lower()"
+        target: auto_approve
+      - expression: "'deny' in state.decision.strip().lower()"
+        target: deny_claim
+    default: assign_adjuster
+
+  # --- Layer 5: execute decision ---
+
+  - id: auto_approve
+    type: subworkflow
+    depends_on: [route_decision]
+    workflow_inline:
+      name: payment-processing
+      config:
+        provider: openai
+        model: gpt-4.1-nano
+      state:
+        payment_details: ""
+        authorization: ""
+      steps:
+        - id: calculate_payment
+          type: llm_call
+          system_prompt: >
+            Generate the final payment authorization details based on the
+            coverage verification. Include:
+            - Payment amount to provider
+            - Member responsibility breakdown
+            - Payment method (EFT to provider)
+            - Expected payment date (14 business days from approval)
+            - EOB mailing instructions
+          prompt: |
+            Calculate payment for approved claim:
+
+            Claim: {state.claim_id}
+            Coverage result: {state.coverage_result}
+          output: payment_details
+
+        - id: generate_authorization
+          type: llm_call
+          depends_on: [calculate_payment]
+          system_prompt: >
+            Generate a formal payment authorization document including:
+            - Authorization number (format: AUTH-YYYY-NNNNN)
+            - Claim reference
+            - Approved amount
+            - Payee (provider name and NPI)
+            - Payment schedule
+            - EOB summary for member
+            - Appeal rights notice (member has 180 days to appeal)
+          prompt: |
+            Generate payment authorization:
+
+            Payment details: {state.payment_details}
+            Claim: {state.claim_details}
+          output: authorization
+    output: response
+
+  - id: assign_adjuster
+    type: llm_call
+    depends_on: [route_decision]
+    system_prompt: >
+      Generate an adjuster assignment ticket. Include:
+      - Priority level based on claim amount and complexity
+      - Summary of issues requiring human review
+      - Recommended adjuster specialty (general, fraud, medical, coverage)
+      - Key questions the adjuster should investigate
+      - Supporting documentation needed from provider/member
+      - SLA: target resolution within 5 business days
+    prompt: |
+      Create adjuster assignment for this claim:
+
+      Claim: {state.claim_details}
+      Coverage: {state.coverage_result}
+      Fraud: {state.fraud_result}
+      Medical: {state.medical_review}
+      Decision context: {state.decision}
+    output: response
+
+  - id: deny_claim
+    type: llm_call
+    depends_on: [route_decision]
+    system_prompt: >
+      Generate a formal claim denial letter. Must include:
+      1. Denial reason (specific policy provision or clinical guideline)
+      2. Relevant policy section references
+      3. Appeal rights (internal appeal within 180 days, external review available)
+      4. Contact information for member services
+      5. Instructions for submitting additional documentation
+
+      Tone: professional, empathetic, clear. Avoid jargon.
+    prompt: |
+      Generate denial letter:
+
+      Claim: {state.claim_id}
+      Patient: from {state.claim_details}
+      Coverage: {state.coverage_result}
+      Fraud: {state.fraud_result}
+      Medical: {state.medical_review}
+    output: response

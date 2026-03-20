@@ -1,0 +1,140 @@
+name: incident-triage
+version: "1.0"
+description: >
+  Automated incident triage for SRE teams. Fetches deployment context,
+  correlates with alert data, classifies severity (P1/P2/P3), and generates
+  the appropriate response — incident page, ticket, or backlog item.
+
+config:
+  provider: openai
+  model: gpt-4.1-nano
+  budget_usd: 0.05
+
+state:
+  alert_name: "High API Error Rate"
+  alert_source: "prometheus"
+  alert_details: >
+    HTTP 500 error rate exceeded 5% threshold on api-gateway service.
+    Current rate: 12.3%. Affected endpoints: /api/v2/users, /api/v2/orders.
+    Started 8 minutes ago. Region: us-east-1. Pod restarts: 3 in last 10 min.
+  recent_deploys: ""
+  analysis: ""
+  severity: ""
+  response: ""
+
+steps:
+  # --- Layer 0: fetch deployment context ---
+
+  - id: fetch_deploys
+    type: tool
+    tool_name: http_request
+    tool_args:
+      url: "https://jsonplaceholder.typicode.com/posts?_limit=3"
+      method: "GET"
+    output: recent_deploys
+
+  # --- Layer 1: root cause analysis ---
+
+  - id: analyze
+    type: llm_call
+    depends_on: [fetch_deploys]
+    system_prompt: >
+      You are a senior SRE analyzing a production incident. Given alert details
+      and recent deployments, provide root cause analysis. Consider:
+      1. Correlation with recent deployments (timing, affected services)
+      2. Blast radius (which services/regions/customers are affected)
+      3. Root cause category: deployment, infrastructure, dependency, or traffic
+      4. Recommended immediate mitigation actions
+
+      Be specific and actionable. Reference concrete services and metrics.
+    prompt: |
+      Analyze this production alert:
+
+      Alert: {state.alert_name}
+      Source: {state.alert_source}
+      Details: {state.alert_details}
+      Recent deployments: {state.recent_deploys}
+    output: analysis
+
+  # --- Layer 2: classify severity ---
+
+  - id: classify_severity
+    type: llm_call
+    depends_on: [analyze]
+    system_prompt: >
+      You are an incident severity classifier. Based on the analysis, assign
+      a severity level. Respond with exactly one of: p1, p2, or p3.
+
+      Criteria:
+      - p1: customer-facing outage, data loss risk, revenue impact, >10% errors
+      - p2: degraded performance, partial outage, non-critical service down
+      - p3: minor issue, no customer impact, can wait until business hours
+    prompt: |
+      Classify the severity:
+
+      Alert: {state.alert_name}
+      Details: {state.alert_details}
+      Analysis: {state.analysis}
+    output: severity
+
+  # --- Layer 3: route by severity ---
+
+  - id: route
+    type: router
+    depends_on: [classify_severity]
+    conditions:
+      - expression: "'p1' in state.severity.strip().lower()"
+        target: incident_response
+      - expression: "'p2' in state.severity.strip().lower()"
+        target: create_ticket
+    default: add_to_backlog
+
+  # --- Layer 4: generate appropriate response ---
+
+  - id: incident_response
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      You are the incident commander. Draft a P1 incident response including:
+      1. Incident summary (2-3 sentences)
+      2. Customer impact assessment
+      3. Immediate mitigation actions being taken
+      4. Stakeholder communication template (for Slack #incidents channel)
+      Format as a structured incident report with clear sections.
+    prompt: |
+      Draft a P1 incident response:
+
+      Alert: {state.alert_name}
+      Details: {state.alert_details}
+      Root cause analysis: {state.analysis}
+    output: response
+
+  - id: create_ticket
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      Generate a detailed engineering ticket for a P2 incident. Include:
+      title, description, affected services, reproduction context, impact
+      assessment, and suggested investigation steps. Format as a Jira-style
+      ticket template.
+    prompt: |
+      Create a P2 incident ticket:
+
+      Alert: {state.alert_name}
+      Details: {state.alert_details}
+      Analysis: {state.analysis}
+    output: response
+
+  - id: add_to_backlog
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      Create a concise backlog item for a low-priority issue. Include a title,
+      one-paragraph description, and suggested priority for next sprint planning.
+    prompt: |
+      Create a P3 backlog item:
+
+      Alert: {state.alert_name}
+      Details: {state.alert_details}
+      Analysis: {state.analysis}
+    output: response

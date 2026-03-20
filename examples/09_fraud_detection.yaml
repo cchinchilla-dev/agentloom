@@ -1,0 +1,277 @@
+name: fraud-detection
+version: "1.0"
+description: >
+  E-commerce order fraud detection pipeline. Fetches order and customer data
+  in parallel, runs 4 concurrent fraud signal checks, aggregates into a risk
+  score, and routes to approve, enhanced review, or deep investigation via
+  a nested subworkflow.
+
+config:
+  provider: openai
+  model: gpt-4.1-nano
+  budget_usd: 0.10
+  max_concurrent_steps: 4
+
+state:
+  order_id: "ORD-2026-98432"
+  order_details: >
+    Order #ORD-2026-98432: $2,847.99 — 3x MacBook Pro charger ($89.99 ea),
+    1x iPhone 16 Pro Max ($1,199), 1x AirPods Max ($549), 1x Apple Watch
+    Ultra ($799). Shipping: overnight express to 1247 Elm St, Apt 4B, Newark NJ.
+    Payment: Visa ending 8421 (added 2 hours ago). IP: 185.220.101.34 (TOR exit node).
+    Account created 3 days ago. First order.
+  customer_history: ""
+  order_data: ""
+  velocity_check: ""
+  amount_check: ""
+  address_check: ""
+  device_check: ""
+  risk_score: ""
+  decision: ""
+  response: ""
+
+steps:
+  # --- Layer 0: parallel data fetching ---
+
+  - id: fetch_order
+    type: tool
+    tool_name: http_request
+    tool_args:
+      url: "https://jsonplaceholder.typicode.com/posts/1"
+      method: "GET"
+    output: order_data
+
+  - id: fetch_customer_history
+    type: tool
+    tool_name: http_request
+    tool_args:
+      url: "https://jsonplaceholder.typicode.com/users/1"
+      method: "GET"
+    output: customer_history
+
+  # --- Layer 1: 4 parallel fraud signal checks ---
+
+  - id: check_velocity
+    type: llm_call
+    depends_on: [fetch_order, fetch_customer_history]
+    system_prompt: >
+      You are a fraud velocity analyzer. Check order frequency patterns:
+      - New account placing high-value order: HIGH RISK
+      - Multiple orders in short timeframe: HIGH RISK
+      - First order but reasonable value: LOW RISK
+
+      Respond in this format:
+      SIGNAL: <green/yellow/red>
+      CONFIDENCE: <0.0-1.0>
+      DETAIL: <explanation>
+    prompt: |
+      Analyze order velocity patterns:
+
+      Order: {state.order_details}
+      Customer: {state.customer_history}
+    output: velocity_check
+
+  - id: check_amount
+    type: llm_call
+    depends_on: [fetch_order, fetch_customer_history]
+    system_prompt: >
+      You are a fraud amount analyzer. Evaluate transaction amount signals:
+      - Amount far above customer's average: HIGH RISK
+      - High-value electronics on new account: HIGH RISK
+      - Amount consistent with history: LOW RISK
+      - Multiple high-resale-value items: HIGH RISK
+
+      Respond in this format:
+      SIGNAL: <green/yellow/red>
+      CONFIDENCE: <0.0-1.0>
+      DETAIL: <explanation>
+    prompt: |
+      Analyze transaction amount for fraud signals:
+
+      Order: {state.order_details}
+      Customer history: {state.customer_history}
+    output: amount_check
+
+  - id: check_address
+    type: llm_call
+    depends_on: [fetch_order, fetch_customer_history]
+    system_prompt: >
+      You are a shipping address fraud analyzer. Check for:
+      - Shipping to known freight forwarder or reshipping address: HIGH RISK
+      - Address mismatch with billing: MEDIUM RISK
+      - Apartment/unit at commercial address: MEDIUM RISK
+      - Overnight shipping on high-value items to new address: HIGH RISK
+      - Consistent address with account history: LOW RISK
+
+      Respond in this format:
+      SIGNAL: <green/yellow/red>
+      CONFIDENCE: <0.0-1.0>
+      DETAIL: <explanation>
+    prompt: |
+      Analyze shipping address for fraud signals:
+
+      Order: {state.order_details}
+      Customer: {state.customer_history}
+    output: address_check
+
+  - id: check_device
+    type: llm_call
+    depends_on: [fetch_order, fetch_customer_history]
+    system_prompt: >
+      You are a device/network fraud analyzer. Evaluate digital signals:
+      - TOR/VPN/proxy IP addresses: HIGH RISK
+      - IP geolocation mismatch with shipping: HIGH RISK
+      - New device fingerprint: MEDIUM RISK
+      - Known datacenter IP: HIGH RISK
+      - Residential IP near shipping address: LOW RISK
+
+      Respond in this format:
+      SIGNAL: <green/yellow/red>
+      CONFIDENCE: <0.0-1.0>
+      DETAIL: <explanation>
+    prompt: |
+      Analyze device and network signals:
+
+      Order: {state.order_details}
+      Customer: {state.customer_history}
+    output: device_check
+
+  # --- Layer 2: aggregate all signals ---
+
+  - id: aggregate_signals
+    type: llm_call
+    depends_on: [check_velocity, check_amount, check_address, check_device]
+    system_prompt: >
+      You are a fraud risk scoring engine. Given 4 independent fraud signals,
+      compute an overall risk assessment. Respond with exactly one word:
+      high, medium, or low.
+
+      Scoring rules:
+      - high: 2+ red signals, or 1 red + 2 yellow, or any signal with >0.9 confidence red
+      - medium: 1 red signal, or 2+ yellow signals
+      - low: all green, or at most 1 yellow signal
+    prompt: |
+      Compute overall fraud risk from these signals:
+
+      Velocity: {state.velocity_check}
+      Amount: {state.amount_check}
+      Address: {state.address_check}
+      Device: {state.device_check}
+    output: risk_score
+
+  # --- Layer 3: route by risk level ---
+
+  - id: route_risk
+    type: router
+    depends_on: [aggregate_signals]
+    conditions:
+      - expression: "'high' in state.risk_score.strip().lower()"
+        target: deep_investigation
+      - expression: "'medium' in state.risk_score.strip().lower()"
+        target: enhanced_review
+    default: approve_order
+
+  # --- Layer 4: actions ---
+
+  - id: approve_order
+    type: llm_call
+    depends_on: [route_risk]
+    system_prompt: >
+      Generate a brief internal approval log entry confirming the order passed
+      fraud checks with the final risk score and key signals reviewed.
+    prompt: |
+      Log approved order:
+
+      Order: {state.order_id}
+      Risk: {state.risk_score}
+      Signals: velocity={state.velocity_check}, amount={state.amount_check}
+    output: response
+
+  - id: enhanced_review
+    type: llm_call
+    depends_on: [route_risk]
+    system_prompt: >
+      Generate a fraud analyst review queue entry. Include the order summary,
+      each signal result, the specific concerns, and recommended verification
+      steps (call customer, verify address, check with issuing bank, etc.).
+    prompt: |
+      Create enhanced review entry for medium-risk order:
+
+      Order: {state.order_details}
+      Velocity: {state.velocity_check}
+      Amount: {state.amount_check}
+      Address: {state.address_check}
+      Device: {state.device_check}
+    output: response
+
+  - id: deep_investigation
+    type: subworkflow
+    depends_on: [route_risk]
+    workflow_inline:
+      name: fraud-deep-investigation
+      config:
+        provider: openai
+        model: gpt-4.1-nano
+      state:
+        cross_reference: ""
+        pattern_analysis: ""
+        recommended_action: ""
+      steps:
+        - id: cross_reference
+          type: llm_call
+          system_prompt: >
+            You are a fraud intelligence analyst. Cross-reference this order
+            against known fraud patterns: account age vs order value, TOR usage,
+            high-resale electronics, overnight shipping to apartments, recently
+            added payment methods. List every matching fraud indicator.
+          prompt: |
+            Cross-reference with known fraud patterns:
+
+            Order: {state.order_details}
+            Velocity: {state.velocity_check}
+            Amount: {state.amount_check}
+            Address: {state.address_check}
+            Device: {state.device_check}
+          output: cross_reference
+
+        - id: pattern_analysis
+          type: llm_call
+          depends_on: [cross_reference]
+          system_prompt: >
+            You are a fraud pattern specialist. Based on the cross-reference
+            results, classify this into a specific fraud type:
+            - Account takeover (ATO)
+            - Synthetic identity
+            - Card testing / BIN attack
+            - Friendly fraud / chargeback abuse
+            - Reshipping mule scheme
+            - Opportunistic fraud
+
+            Provide the fraud type, confidence level, and supporting evidence.
+          prompt: |
+            Classify the fraud pattern:
+
+            Cross-reference results: {state.cross_reference}
+            Order: {state.order_details}
+            Customer: {state.customer_history}
+          output: pattern_analysis
+
+        - id: recommend_action
+          type: llm_call
+          depends_on: [pattern_analysis]
+          system_prompt: >
+            You are the head of fraud operations. Based on the investigation,
+            generate a formal recommendation including:
+            1. Decision: BLOCK ORDER / HOLD FOR VERIFICATION / BLOCK + BAN ACCOUNT
+            2. Evidence summary (3-5 bullet points)
+            3. Immediate actions (cancel order, freeze account, flag payment method)
+            4. Reporting: whether to file SAR or notify payment processor
+            5. Prevention: rule updates to catch similar orders automatically
+          prompt: |
+            Generate final investigation recommendation:
+
+            Pattern analysis: {state.pattern_analysis}
+            Cross-reference: {state.cross_reference}
+            Order: {state.order_details}
+          output: recommended_action
+    output: response

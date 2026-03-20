@@ -4,7 +4,7 @@ description: Classifies customer intent and routes to the appropriate specialist
 
 config:
   provider: openai
-  model: gpt-4o-mini
+  model: gpt-4.1-nano
   budget_usd: 0.05
 
 state:

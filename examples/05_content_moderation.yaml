@@ -1,0 +1,136 @@
+name: content-moderation
+version: "1.0"
+description: >
+  Parallel content moderation pipeline for UGC platforms. Runs toxicity,
+  PII detection, and policy compliance checks simultaneously, aggregates
+  results, and routes to approve, human review, or auto-reject.
+
+config:
+  provider: openai
+  model: gpt-4.1-nano
+  budget_usd: 0.02
+  max_concurrent_steps: 3
+
+state:
+  content: >
+    I bought this product last week and it completely broke after 2 days.
+    This is garbage and the company should be ashamed. My order number is
+    #78432 and my email is john.doe@example.com. I want a full refund or
+    I'm disputing the charge with my bank.
+  toxicity_result: ""
+  pii_result: ""
+  policy_result: ""
+  decision: ""
+  response: ""
+
+steps:
+  # --- Layer 0: three checks run in parallel (no dependencies) ---
+
+  - id: check_toxicity
+    type: llm_call
+    system_prompt: >
+      You are a content toxicity analyzer. Evaluate text for hate speech,
+      harassment, threats, or severe profanity. Respond in this exact format:
+      SCORE: <0.0-1.0>
+      FLAGGED: <true/false>
+      REASON: <brief explanation>
+    prompt: "Analyze this user content for toxicity:\n\n{state.content}"
+    output: toxicity_result
+
+  - id: check_pii
+    type: llm_call
+    system_prompt: >
+      You are a PII detection specialist. Identify any personally identifiable
+      information: names, emails, phone numbers, addresses, SSNs, credit cards,
+      or account numbers. Respond in this exact format:
+      FOUND: <true/false>
+      ITEMS: <comma-separated list of PII types found, or "none">
+      SEVERITY: <low/medium/high>
+    prompt: "Scan this content for PII:\n\n{state.content}"
+    output: pii_result
+
+  - id: check_policy
+    type: llm_call
+    system_prompt: >
+      You are a platform policy compliance checker. Check content against:
+      1. No spam or promotional content
+      2. No illegal activity
+      3. No manipulation or deceptive practices
+      4. Reviews must describe actual product experiences
+      Respond in this exact format:
+      COMPLIANT: <true/false>
+      VIOLATIONS: <comma-separated list, or "none">
+    prompt: "Check this content against platform policies:\n\n{state.content}"
+    output: policy_result
+
+  # --- Layer 1: aggregate parallel results ---
+
+  - id: aggregate
+    type: llm_call
+    depends_on: [check_toxicity, check_pii, check_policy]
+    system_prompt: >
+      You are a moderation decision engine. Based on the results from toxicity,
+      PII, and policy checks, make a final decision. Respond with exactly one
+      word: approve, review, or reject.
+
+      Rules:
+      - reject: high toxicity (score > 0.8) or high-severity PII exposure
+      - review: moderate toxicity (0.4-0.8), any PII found, or policy violations
+      - approve: all checks pass with low scores and no issues
+    prompt: |
+      Make a moderation decision based on these check results:
+
+      Toxicity: {state.toxicity_result}
+      PII: {state.pii_result}
+      Policy: {state.policy_result}
+    output: decision
+
+  # --- Layer 2: route based on decision ---
+
+  - id: route
+    type: router
+    depends_on: [aggregate]
+    conditions:
+      - expression: "'approve' in state.decision.strip().lower()"
+        target: publish
+      - expression: "'reject' in state.decision.strip().lower()"
+        target: auto_reject
+    default: send_to_review
+
+  # --- Layer 3: execute the chosen action ---
+
+  - id: publish
+    type: llm_call
+    depends_on: [route]
+    system_prompt: "Generate a short confirmation message for the user."
+    prompt: "Content approved. Generate a brief notification that the review is now live."
+    output: response
+
+  - id: send_to_review
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      Generate a moderation queue entry for human reviewers. Include the content,
+      each flagged issue, and a recommended action.
+    prompt: |
+      Create a review queue entry for this flagged content:
+
+      Content: {state.content}
+      Toxicity: {state.toxicity_result}
+      PII: {state.pii_result}
+      Policy: {state.policy_result}
+    output: response
+
+  - id: auto_reject
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      Generate a polite rejection notice explaining why the content was removed.
+      Do not reveal exact detection mechanisms or thresholds.
+    prompt: |
+      Content was rejected based on:
+      Toxicity: {state.toxicity_result}
+      Policy: {state.policy_result}
+
+      Generate a user-facing rejection notice.
+    output: response

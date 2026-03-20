@@ -1,0 +1,132 @@
+name: log-analysis
+version: "1.0"
+description: >
+  Server log analysis pipeline. Uses shell commands to collect error logs and
+  system metrics in parallel, correlates them with an LLM, classifies severity,
+  and routes to alerting, ticketing, or silent logging.
+
+config:
+  provider: openai
+  model: gpt-4.1-nano
+  budget_usd: 0.03
+
+state:
+  log_source: "/var/log/app/api-gateway.log"
+  error_logs: ""
+  system_metrics: ""
+  analysis: ""
+  severity: ""
+  response: ""
+
+steps:
+  # --- Layer 0: collect data via shell commands (parallel) ---
+
+  - id: collect_errors
+    type: tool
+    tool_name: shell_command
+    tool_args:
+      command: "echo '[2026-03-19 18:42:01] ERROR api-gateway: connection pool exhausted on db-primary (max=100, active=100, waiting=47)\n[2026-03-19 18:42:03] ERROR api-gateway: request timeout after 30s on POST /api/v2/orders (upstream: db-primary)\n[2026-03-19 18:42:05] ERROR api-gateway: circuit breaker OPEN for db-primary (failures=12/threshold=5)\n[2026-03-19 18:42:06] WARN api-gateway: fallback to db-replica for read queries\n[2026-03-19 18:42:08] ERROR api-gateway: connection refused on db-primary:5432\n[2026-03-19 18:42:10] ERROR payment-svc: transaction rollback — upstream db-primary unavailable'"
+      timeout: 10
+    output: error_logs
+
+  - id: collect_metrics
+    type: tool
+    tool_name: shell_command
+    tool_args:
+      command: "echo 'SYSTEM METRICS (2026-03-19 18:42)\n---\nCPU: 78% (api-gateway: 45%, db-primary: 92%)\nMemory: 14.2GB / 16GB used (db-primary: 15.1GB / 16GB)\nDisk: /data 91% used (db-primary)\nConnections: db-primary=100/100 (MAXED), db-replica=34/100\nNetwork: eth0 rx=890MB/s tx=120MB/s (near saturation)\nLoad avg: 12.4 8.7 4.2 (db-primary)'"
+      timeout: 10
+    output: system_metrics
+
+  # --- Layer 1: correlate and analyze ---
+
+  - id: analyze
+    type: llm_call
+    depends_on: [collect_errors, collect_metrics]
+    system_prompt: >
+      You are a senior SRE analyzing production logs and system metrics. Correlate
+      the error patterns with resource utilization to identify root cause. Consider:
+      1. Timeline of events (what failed first?)
+      2. Resource bottlenecks (CPU, memory, disk, connections, network)
+      3. Cascading failures (which service failure caused others?)
+      4. Root cause vs symptoms
+
+      Be specific: name services, metrics, and thresholds.
+    prompt: |
+      Correlate these logs and metrics:
+
+      Error logs:
+      {state.error_logs}
+
+      System metrics:
+      {state.system_metrics}
+    output: analysis
+
+  # --- Layer 2: classify ---
+
+  - id: classify
+    type: llm_call
+    depends_on: [analyze]
+    system_prompt: >
+      Classify this incident severity. Respond with exactly one word:
+      critical, warning, or info.
+
+      - critical: service outage, data at risk, cascading failures active
+      - warning: degraded performance, approaching limits, single service affected
+      - info: transient errors, self-recovered, no customer impact
+    prompt: "Classify severity based on:\n\n{state.analysis}"
+    output: severity
+
+  # --- Layer 3: route ---
+
+  - id: route
+    type: router
+    depends_on: [classify]
+    conditions:
+      - expression: "'critical' in state.severity.strip().lower()"
+        target: fire_alert
+      - expression: "'warning' in state.severity.strip().lower()"
+        target: create_ticket
+    default: log_silently
+
+  # --- Layer 4: respond ---
+
+  - id: fire_alert
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      Generate a PagerDuty-style critical alert. Include:
+      - Alert title (under 80 chars)
+      - Severity: CRITICAL
+      - Affected services
+      - Root cause summary (2 sentences)
+      - Immediate mitigation steps (numbered list)
+      - Escalation: page on-call SRE
+    prompt: |
+      Generate critical alert:
+
+      Analysis: {state.analysis}
+      Logs: {state.error_logs}
+      Metrics: {state.system_metrics}
+    output: response
+
+  - id: create_ticket
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      Generate a Jira ticket for the ops team. Include title, priority (P2),
+      description with root cause analysis, affected services, and suggested
+      investigation steps.
+    prompt: |
+      Create ops ticket:
+
+      Analysis: {state.analysis}
+    output: response
+
+  - id: log_silently
+    type: llm_call
+    depends_on: [route]
+    system_prompt: >
+      Generate a brief structured log entry for the observability dashboard.
+      One-line summary, category, and whether it needs follow-up in next standup.
+    prompt: "Log entry for: {state.analysis}"
+    output: response

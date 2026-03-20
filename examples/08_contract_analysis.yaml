@@ -1,0 +1,133 @@
+name: contract-analysis
+version: "1.0"
+description: >
+  Legal contract risk analysis pipeline. Extracts key clauses from a B2B SaaS
+  agreement, evaluates risk from the client's perspective, compares against
+  industry standards, and generates an executive summary with recommendations.
+
+config:
+  provider: openai
+  model: gpt-4.1-nano
+  budget_usd: 0.08
+
+state:
+  contract_text: |
+    MASTER SERVICE AGREEMENT — CLOUDPLATFORM INC.
+
+    1. TERM AND TERMINATION
+    This Agreement is effective for 36 months from the Effective Date and shall
+    automatically renew for successive 12-month periods unless either party
+    provides 90 days written notice. Early termination by Client requires
+    payment of 75% of remaining contract value. Provider may terminate
+    immediately if Client breaches any payment obligation.
+
+    2. LIABILITY
+    Provider's total aggregate liability shall not exceed the fees paid in the
+    12 months preceding the claim. IN NO EVENT SHALL PROVIDER BE LIABLE FOR
+    INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES. Client shall indemnify
+    Provider against all third-party claims arising from Client's use.
+
+    3. DATA HANDLING
+    Provider may process Client data in any region where Provider maintains
+    facilities. Provider retains a perpetual, royalty-free license to use
+    aggregated and anonymized Client data for service improvement and
+    benchmarking. Upon termination, Provider will delete Client data within
+    180 days.
+
+    4. INTELLECTUAL PROPERTY
+    All custom developments created during the engagement shall be owned by
+    Provider. Client receives a non-exclusive, non-transferable license to use
+    such developments during the term of this Agreement only.
+
+    5. SERVICE LEVELS
+    Provider targets 99.5% uptime measured monthly. Service credits for
+    downtime are capped at 10% of monthly fees. Provider may perform
+    maintenance during business hours with 24-hour notice. Force majeure
+    includes "internet disruptions."
+  clauses: ""
+  risk_assessment: ""
+  comparison: ""
+  summary: ""
+
+steps:
+  # --- Layer 0: extract and categorize clauses ---
+
+  - id: extract_clauses
+    type: llm_call
+    system_prompt: >
+      You are a contract analyst. Extract and categorize every key clause.
+      For each clause provide:
+      - Clause number and title
+      - Type: financial, liability, data, IP, operational, or termination
+      - Key obligation or right it establishes
+      - Which party it favors: provider, client, or neutral
+
+      Format as a structured list with clear sections.
+    prompt: "Extract and categorize all clauses:\n\n{state.contract_text}"
+    output: clauses
+
+  # --- Layer 1: risk assessment ---
+
+  - id: assess_risk
+    type: llm_call
+    depends_on: [extract_clauses]
+    system_prompt: >
+      You are a legal risk analyst. For each clause, assess risk from the
+      CLIENT's perspective. Flag clauses that:
+      1. Limit client rights disproportionately
+      2. Create financial exposure (penalties, uncapped obligations)
+      3. Grant provider unusual rights over client data or IP
+      4. Contain auto-renewal traps or difficult exit terms
+      5. Have weak SLAs or service commitments
+
+      Rate each as LOW RISK, MEDIUM RISK, or HIGH RISK with a specific
+      explanation of the exposure.
+    prompt: |
+      Assess risk for each clause from the client's perspective:
+
+      {state.clauses}
+    output: risk_assessment
+
+  # --- Layer 2: compare to market standards ---
+
+  - id: compare_to_standards
+    type: llm_call
+    depends_on: [assess_risk]
+    system_prompt: >
+      You are a contract negotiation specialist. Compare flagged clauses against
+      standard B2B SaaS terms. For each medium/high risk clause, suggest specific
+      redline language the client should counter-propose.
+
+      Industry benchmarks:
+      - Liability cap: 12-24 months of fees is standard
+      - Termination notice: 30-60 days, no penalty or max 25% penalty
+      - Data deletion: 30-60 days post-termination
+      - Data residency: client should choose processing regions
+      - IP ownership: client typically owns custom work product
+      - SLA: 99.9% with meaningful credits (25-100% of affected period)
+      - Auto-renewal: 30 days notice is standard
+    prompt: |
+      Compare to industry standards and draft counter-proposals:
+
+      {state.risk_assessment}
+    output: comparison
+
+  # --- Layer 3: executive summary ---
+
+  - id: executive_summary
+    type: llm_call
+    depends_on: [compare_to_standards]
+    system_prompt: >
+      You are a legal advisor briefing a CTO. Write a concise executive summary:
+      1. Overall contract risk rating (low / medium / high)
+      2. Top 3 clauses to negotiate before signing, ranked by impact
+      3. Clear recommendation: SIGN AS-IS, NEGOTIATE, or WALK AWAY
+      4. Estimated negotiation leverage (what the client can push back on)
+
+      Keep it under 200 words. Be direct, no legal hedging.
+    prompt: |
+      Generate an executive summary:
+
+      Risk assessment: {state.risk_assessment}
+      Standard comparison: {state.comparison}
+    output: summary

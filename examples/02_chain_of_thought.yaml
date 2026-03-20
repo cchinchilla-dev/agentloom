@@ -4,7 +4,7 @@ description: Multi-step reasoning — breaks down a question, researches each pa
 
 config:
   provider: openai
-  model: gpt-4o-mini
+  model: gpt-4.1-nano
   budget_usd: 0.10
 
 state:

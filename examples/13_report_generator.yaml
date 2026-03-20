@@ -1,0 +1,206 @@
+name: report-generator
+version: "1.0"
+description: >
+  Data pipeline health report generator. Reads pipeline execution results and
+  SLA definitions from files, analyzes compliance, generates an executive
+  report, and writes it to disk. Demonstrates file_read and file_write tools.
+
+config:
+  provider: openai
+  model: gpt-4.1-nano
+  budget_usd: 0.04
+
+state:
+  pipeline_results_path: "/tmp/agentloom-demo/pipeline_results.json"
+  sla_config_path: "/tmp/agentloom-demo/sla_config.json"
+  pipeline_data: ""
+  sla_data: ""
+  sla_analysis: ""
+  executive_summary: ""
+  report_output: ""
+
+steps:
+  # --- Layer 0: set up demo data files ---
+
+  - id: setup_pipeline_data
+    type: tool
+    tool_name: file_write
+    tool_args:
+      path: "state.pipeline_results_path"
+      content: |
+        {
+          "report_date": "2026-03-19",
+          "pipelines": [
+            {
+              "name": "user-events-etl",
+              "status": "success",
+              "records_processed": 2847000,
+              "duration_minutes": 42,
+              "errors": 0,
+              "last_run": "2026-03-19T06:00:00Z"
+            },
+            {
+              "name": "payment-reconciliation",
+              "status": "degraded",
+              "records_processed": 184000,
+              "duration_minutes": 128,
+              "errors": 347,
+              "error_rate_pct": 0.19,
+              "last_run": "2026-03-19T07:30:00Z",
+              "notes": "Upstream payment gateway returned 503 for 12 minutes"
+            },
+            {
+              "name": "ml-feature-store-refresh",
+              "status": "failed",
+              "records_processed": 0,
+              "duration_minutes": 5,
+              "errors": 1,
+              "last_run": "2026-03-19T08:00:00Z",
+              "notes": "Schema migration on feature_v3 table broke column mapping"
+            },
+            {
+              "name": "clickstream-aggregation",
+              "status": "success",
+              "records_processed": 15400000,
+              "duration_minutes": 67,
+              "errors": 12,
+              "error_rate_pct": 0.00008,
+              "last_run": "2026-03-19T05:00:00Z"
+            },
+            {
+              "name": "inventory-sync",
+              "status": "success",
+              "records_processed": 92000,
+              "duration_minutes": 18,
+              "errors": 0,
+              "last_run": "2026-03-19T09:00:00Z"
+            }
+          ],
+          "total_records": 18523000,
+          "total_errors": 360,
+          "overall_error_rate_pct": 0.0019
+        }
+    output: setup_result_1
+
+  - id: setup_sla_data
+    type: tool
+    tool_name: file_write
+    tool_args:
+      path: "state.sla_config_path"
+      content: |
+        {
+          "sla_definitions": {
+            "user-events-etl": {
+              "max_duration_minutes": 60,
+              "max_error_rate_pct": 0.01,
+              "required_freshness_hours": 2,
+              "priority": "P1"
+            },
+            "payment-reconciliation": {
+              "max_duration_minutes": 90,
+              "max_error_rate_pct": 0.05,
+              "required_freshness_hours": 4,
+              "priority": "P1"
+            },
+            "ml-feature-store-refresh": {
+              "max_duration_minutes": 120,
+              "max_error_rate_pct": 0.1,
+              "required_freshness_hours": 24,
+              "priority": "P2"
+            },
+            "clickstream-aggregation": {
+              "max_duration_minutes": 90,
+              "max_error_rate_pct": 0.01,
+              "required_freshness_hours": 3,
+              "priority": "P2"
+            },
+            "inventory-sync": {
+              "max_duration_minutes": 30,
+              "max_error_rate_pct": 0.01,
+              "required_freshness_hours": 1,
+              "priority": "P1"
+            }
+          },
+          "global_targets": {
+            "overall_success_rate_pct": 99.0,
+            "max_p1_failures_per_week": 0,
+            "max_p2_failures_per_week": 2
+          }
+        }
+    output: setup_result_2
+
+  # --- Layer 1: read both files in parallel ---
+
+  - id: read_pipeline_results
+    type: tool
+    depends_on: [setup_pipeline_data]
+    tool_name: file_read
+    tool_args:
+      path: "state.pipeline_results_path"
+    output: pipeline_data
+
+  - id: read_sla_config
+    type: tool
+    depends_on: [setup_sla_data]
+    tool_name: file_read
+    tool_args:
+      path: "state.sla_config_path"
+    output: sla_data
+
+  # --- Layer 2: analyze SLA compliance ---
+
+  - id: analyze_sla
+    type: llm_call
+    depends_on: [read_pipeline_results, read_sla_config]
+    system_prompt: >
+      You are a data engineering SLA analyst. Compare each pipeline's actual
+      performance against its SLA targets. For each pipeline report:
+      - Pipeline name and priority
+      - Duration: actual vs max allowed (PASS/BREACH)
+      - Error rate: actual vs max allowed (PASS/BREACH)
+      - Overall status: HEALTHY / DEGRADED / BREACHED
+
+      Then compute global metrics:
+      - Overall success rate
+      - P1 failures count
+      - P2 failures count
+      - Global SLA status
+    prompt: |
+      Analyze SLA compliance:
+
+      Pipeline results: {state.pipeline_data}
+      SLA config: {state.sla_data}
+    output: sla_analysis
+
+  # --- Layer 3: executive summary ---
+
+  - id: executive_summary
+    type: llm_call
+    depends_on: [analyze_sla]
+    system_prompt: >
+      You are a data platform lead writing a daily health report for engineering
+      leadership. Write a concise executive summary including:
+      1. Overall platform health (one-line verdict)
+      2. Key incidents (what broke, impact, status)
+      3. SLA breaches requiring attention
+      4. Action items with owners (suggest "data-eng" or "platform" team)
+      5. Trend note (is this better or worse than typical?)
+
+      Keep it under 250 words. Direct, no fluff. Use bullet points.
+    prompt: |
+      Generate executive summary:
+
+      SLA analysis: {state.sla_analysis}
+      Raw data: {state.pipeline_data}
+    output: executive_summary
+
+  # --- Layer 4: write report to file ---
+
+  - id: write_report
+    type: tool
+    depends_on: [executive_summary]
+    tool_name: file_write
+    tool_args:
+      path: "/tmp/agentloom-demo/daily_report_2026-03-19.md"
+      content: "state.executive_summary"
+    output: report_output

@@ -1,0 +1,96 @@
+name: sentiment-monitor
+version: "1.0"
+description: >
+  Customer feedback monitoring pipeline. Queries recent feedback from the
+  database, analyzes sentiment with an LLM, and routes alerts to Slack
+  or creates support tickets based on severity.
+
+config:
+  provider: ollama
+  model: phi4
+  budget_usd: 0.05
+
+state:
+  feedback_data: ""
+  sentiment_analysis: ""
+  severity: ""
+  response: ""
+
+steps:
+  - id: fetch_feedback
+    type: tool
+    tool_name: query_database
+    tool_args:
+      query: "SELECT * FROM feedback WHERE date >= CURRENT_DATE - 3 ORDER BY date DESC"
+      limit: 5
+    output: feedback_data
+
+  - id: analyze_sentiment
+    type: llm_call
+    depends_on: [fetch_feedback]
+    system_prompt: >
+      You are a customer sentiment analyst. Analyze the feedback batch and produce:
+      1. Overall sentiment score (1-10, where 1 = very negative, 10 = very positive)
+      2. Key themes (positive and negative)
+      3. Churn risk assessment (low/medium/high)
+      4. Most urgent issues requiring immediate attention
+
+      Be data-driven — reference specific feedback entries.
+    prompt: |
+      Analyze sentiment from these recent customer feedback entries:
+
+      {state.feedback_data}
+    output: sentiment_analysis
+
+  - id: classify_severity
+    type: llm_call
+    depends_on: [analyze_sentiment]
+    system_prompt: >
+      Based on the sentiment analysis, classify the overall situation severity.
+      Respond with exactly one word: critical, warning, or healthy.
+
+      - critical: churn risk high, data loss mentioned, multiple 1-star reviews
+      - warning: mixed sentiment, some concerning trends, slow support complaints
+      - healthy: mostly positive, minor issues only
+    prompt: "Classify severity:\\n\\n{state.sentiment_analysis}"
+    output: severity
+
+  - id: route
+    type: router
+    depends_on: [classify_severity]
+    conditions:
+      - expression: "'critical' in state.severity.strip().lower()"
+        target: alert_critical
+      - expression: "'warning' in state.severity.strip().lower()"
+        target: alert_warning
+    default: log_healthy
+
+  - id: alert_critical
+    type: tool
+    depends_on: [route]
+    tool_name: send_slack_message
+    tool_args:
+      channel: "#cx-escalations"
+      message: "state.sentiment_analysis"
+      priority: "urgent"
+    output: response
+
+  - id: alert_warning
+    type: tool
+    depends_on: [route]
+    tool_name: create_ticket
+    tool_args:
+      title: "Customer sentiment trending negative — review required"
+      body: "state.sentiment_analysis"
+      priority: "high"
+    output: response
+
+  - id: log_healthy
+    type: tool
+    depends_on: [route]
+    tool_name: send_slack_message
+    tool_args:
+      channel: "#cx-digest"
+      message: "state.sentiment_analysis"
+      priority: "normal"
+    output: response
