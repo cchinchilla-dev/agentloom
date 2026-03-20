@@ -1,5 +1,3 @@
-version: "3.8"
-
 # Observability stack for AgentLoom development.
 # Run this on your dev machine to spin up the observability stack.
 #
