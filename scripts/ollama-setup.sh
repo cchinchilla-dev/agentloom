@@ -28,9 +28,9 @@ fi
 # Pull recommended models
 # Small and fast — good for testing and development
 MODELS=(
-    "qwen3:8b"         # Best small general-purpose model (March 2026)
-    "llama3.3:8b"      # Strong all-rounder
-    "phi4"             # Best reasoning per GB of RAM
+    "phi4"             # Default model for examples — best reasoning per GB
+    "llama3.1:8b"      # Strong all-rounder
+    "qwen3:8b"         # Great multilingual model
     "deepseek-r1:8b"   # Chain-of-thought reasoning
 )
 

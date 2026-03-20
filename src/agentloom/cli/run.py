@@ -13,6 +13,7 @@ from agentloom.core.results import WorkflowStatus
 from agentloom.core.state import StateManager
 
 if TYPE_CHECKING:
+    from agentloom.observability.observer import WorkflowObserver
     from agentloom.providers.gateway import ProviderGateway
 
 
@@ -82,12 +83,16 @@ async def _run_async(
     tool_registry = ToolRegistry()
     register_builtins(tool_registry)
 
+    # Setup observability (unless --lite)
+    observer = _setup_observer(lite)
+
     # Run engine
     engine = WorkflowEngine(
         workflow=workflow,
         state_manager=state_manager,
         provider_gateway=gateway,
         tool_registry=tool_registry,
+        observer=observer,
     )
 
     typer.echo(f"Running workflow: {workflow.name}")
@@ -99,10 +104,42 @@ async def _run_async(
     else:
         _print_result(result)
 
+    if observer:
+        observer.shutdown()
     await gateway.close()
 
     if result.status != WorkflowStatus.SUCCESS:
         raise typer.Exit(1)
+
+
+def _setup_observer(lite: bool) -> WorkflowObserver | None:
+    """Create the observability observer unless running in lite mode."""
+    if lite:
+        return None
+
+    from agentloom.compat import is_available, try_import
+    from agentloom.observability.observer import WorkflowObserver
+
+    tracing_mod = try_import("opentelemetry.trace", extra="observability")
+    metrics_mod = try_import("opentelemetry.sdk.metrics", extra="observability")
+
+    tracing = None
+    metrics = None
+
+    if is_available(tracing_mod):
+        from agentloom.observability.tracing import TracingManager
+
+        tracing = TracingManager()
+
+    if is_available(metrics_mod):
+        from agentloom.observability.metrics import MetricsManager
+
+        metrics = MetricsManager()
+
+    if tracing or metrics:
+        return WorkflowObserver(tracing=tracing, metrics=metrics)
+
+    return None
 
 
 def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
@@ -117,15 +154,9 @@ def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
             OpenAIProvider(),
             priority=0 if default_provider == "openai" else 10,
             models=[
-                "gpt-5.4",
-                "gpt-5.4-mini",
-                "gpt-5.4-nano",
-                "gpt-4.1",
-                "gpt-4.1-mini",
                 "gpt-4.1-nano",
-                "gpt-4o",
+                "gpt-4.1-mini",
                 "gpt-4o-mini",
-                "o3",
                 "o4-mini",
             ],
         )
@@ -137,10 +168,6 @@ def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
             AnthropicProvider(),
             priority=0 if default_provider == "anthropic" else 10,
             models=[
-                "claude-opus-4-6",
-                "claude-sonnet-4-6",
-                "claude-opus-4-5-20251101",
-                "claude-sonnet-4-5-20250929",
                 "claude-haiku-4-5-20251001",
             ],
         )
@@ -152,11 +179,8 @@ def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
             GoogleProvider(),
             priority=0 if default_provider == "google" else 10,
             models=[
-                "gemini-3.1-pro",
-                "gemini-3-flash",
-                "gemini-2.5-pro",
-                "gemini-2.5-flash",
                 "gemini-2.0-flash",
+                "gemini-2.5-flash",
             ],
         )
 
