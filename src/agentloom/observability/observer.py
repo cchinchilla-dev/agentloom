@@ -1,0 +1,137 @@
+"""WorkflowObserver — wires TracingManager + MetricsManager into engine execution.
+
+This is the bridge between the core engine (which never imports observability
+directly) and the optional tracing/metrics backends.  The CLI creates an
+observer and injects it into WorkflowEngine via its ``observer`` parameter.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+logger = logging.getLogger("agentloom.observability")
+
+
+class WorkflowObserver:
+    """Observes workflow execution, emitting OTel spans and Prometheus metrics.
+
+    Both *tracing* and *metrics* are optional — pass ``None`` to disable either.
+    """
+
+    def __init__(
+        self,
+        tracing: Any | None = None,
+        metrics: Any | None = None,
+    ) -> None:
+        self._tracing = tracing
+        self._metrics = metrics
+        self._workflow_span: Any | None = None
+        self._step_spans: dict[str, Any] = {}
+
+    # ------------------------------------------------------------------
+    # Workflow lifecycle
+    # ------------------------------------------------------------------
+
+    def on_workflow_start(self, workflow_name: str) -> None:
+        if self._tracing:
+            self._workflow_span = self._tracing.start_span(
+                f"workflow:{workflow_name}",
+                attributes={"workflow.name": workflow_name},
+            )
+
+    def on_workflow_end(
+        self,
+        workflow_name: str,
+        status: str,
+        duration_ms: float,
+        total_tokens: int,
+        total_cost: float,
+    ) -> None:
+        # Metrics
+        if self._metrics:
+            self._metrics.record_workflow_run(workflow_name, status)
+
+        # Span
+        span = self._workflow_span
+        if span:
+            span.set_attribute("workflow.status", status)
+            span.set_attribute("workflow.duration_ms", duration_ms)
+            span.set_attribute("workflow.total_tokens", total_tokens)
+            span.set_attribute("workflow.total_cost_usd", total_cost)
+            span.end()
+            self._workflow_span = None
+
+    # ------------------------------------------------------------------
+    # Step lifecycle
+    # ------------------------------------------------------------------
+
+    def on_step_start(self, step_id: str, step_type: str) -> None:
+        if self._tracing:
+            span = self._tracing.start_span(
+                f"step:{step_id}",
+                attributes={
+                    "step.id": step_id,
+                    "step.type": step_type,
+                },
+            )
+            self._step_spans[step_id] = span
+
+    def on_step_end(
+        self,
+        step_id: str,
+        step_type: str,
+        status: str,
+        duration_ms: float,
+        cost_usd: float = 0.0,
+        tokens: int = 0,
+        error: str | None = None,
+    ) -> None:
+        # Metrics
+        if self._metrics:
+            self._metrics.record_step_execution(step_type, status, duration_ms / 1000.0)
+
+        # Span
+        span = self._step_spans.pop(step_id, None)
+        if span:
+            span.set_attribute("step.status", status)
+            span.set_attribute("step.duration_ms", duration_ms)
+            span.set_attribute("step.cost_usd", cost_usd)
+            span.set_attribute("step.tokens", tokens)
+            if error:
+                span.set_attribute("step.error", error)
+            span.end()
+
+    # ------------------------------------------------------------------
+    # Provider-level events (called from gateway if observer is attached)
+    # ------------------------------------------------------------------
+
+    def on_provider_call(self, provider: str, model: str, latency_s: float) -> None:
+        if self._metrics:
+            self._metrics.record_provider_call(provider, model, latency_s)
+
+    def on_provider_error(self, provider: str, error_type: str) -> None:
+        if self._metrics:
+            self._metrics.record_provider_error(provider, error_type)
+
+    def on_tokens(
+        self,
+        provider: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+    ) -> None:
+        if self._metrics:
+            self._metrics.record_tokens(provider, model, prompt_tokens, completion_tokens)
+
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+
+    def shutdown(self) -> None:
+        if self._metrics:
+            shutdown = getattr(self._metrics, "shutdown", None)
+            if shutdown:
+                shutdown()
+        if self._tracing:
+            self._tracing.shutdown()

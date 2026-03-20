@@ -50,7 +50,6 @@ class WorkflowEngine:
         self.tool_registry = tool_registry
         self.step_registry = step_registry or create_default_registry()
         self.observer = observer
-        # TODO: actually wire up observer to step execution — right now just logging
         self._budget_spent: float = 0.0
 
     async def run(self) -> WorkflowResult:
@@ -63,6 +62,9 @@ class WorkflowEngine:
         workflow_name = self.workflow.name
 
         logger.info("Starting workflow: %s", workflow_name)
+
+        if self.observer:
+            self.observer.on_workflow_start(workflow_name)
 
         # Build and validate DAG
         dag = WorkflowParser.build_dag(self.workflow)
@@ -172,6 +174,11 @@ class WorkflowEngine:
                 error=failed_steps[0].error if failed_steps else None,
             )
 
+            if self.observer:
+                self.observer.on_workflow_end(
+                    workflow_name, status.value, duration, total_tokens, total_cost
+                )
+
             logger.info(
                 "Workflow '%s' completed: status=%s, duration=%.1fms, cost=$%.4f",
                 workflow_name,
@@ -184,6 +191,10 @@ class WorkflowEngine:
 
         except BudgetExceededError as e:
             duration = (time.monotonic() - start) * 1000
+            if self.observer:
+                self.observer.on_workflow_end(
+                    workflow_name, "budget_exceeded", duration, 0, self._budget_spent
+                )
             return WorkflowResult(
                 workflow_name=workflow_name,
                 status=WorkflowStatus.BUDGET_EXCEEDED,
@@ -196,6 +207,8 @@ class WorkflowEngine:
 
         except WorkflowTimeoutError as e:
             duration = (time.monotonic() - start) * 1000
+            if self.observer:
+                self.observer.on_workflow_end(workflow_name, "timeout", duration, 0, 0.0)
             return WorkflowResult(
                 workflow_name=workflow_name,
                 status=WorkflowStatus.TIMEOUT,
@@ -207,6 +220,10 @@ class WorkflowEngine:
 
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
+            if self.observer:
+                self.observer.on_workflow_end(
+                    workflow_name, "failed", duration, 0, self._budget_spent
+                )
             logger.error("Workflow '%s' failed: %s", workflow_name, e)
             return WorkflowResult(
                 workflow_name=workflow_name,
@@ -229,6 +246,9 @@ class WorkflowEngine:
             raise WorkflowError(f"Step '{step_id}' not found in workflow")
 
         logger.debug("Executing step: %s (type=%s)", step_id, step_def.type.value)
+
+        if self.observer:
+            self.observer.on_step_start(step_id, step_def.type.value)
 
         # Get the executor
         executor_cls = self.step_registry.get(step_def.type)
@@ -269,6 +289,16 @@ class WorkflowEngine:
                     ):
                         raise BudgetExceededError(
                             self.workflow.config.budget_usd, self._budget_spent
+                        )
+
+                    if self.observer:
+                        self.observer.on_step_end(
+                            step_id,
+                            step_def.type.value,
+                            "success",
+                            result.duration_ms,
+                            result.cost_usd,
+                            result.token_usage.total_tokens,
                         )
 
                     logger.debug(
@@ -332,6 +362,18 @@ class WorkflowEngine:
         # All retries exhausted
         if last_result:
             await self.state.set_step_result(step_id, last_result)
+
+            if self.observer:
+                self.observer.on_step_end(
+                    step_id,
+                    step_def.type.value,
+                    last_result.status.value,
+                    last_result.duration_ms,
+                    last_result.cost_usd,
+                    last_result.token_usage.total_tokens,
+                    error=last_result.error,
+                )
+
             logger.error(
                 "Step '%s' failed after %d attempts: %s",
                 step_id,
