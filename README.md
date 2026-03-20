@@ -151,6 +151,22 @@ cd deploy && docker compose up -d
 #   Jaeger:     http://localhost:16686
 ```
 
+See [Dashboard Documentation](deploy/DASHBOARD.md) for panel descriptions, metrics reference, and troubleshooting.
+
+## Why not autonomous agents?
+
+The AI agent ecosystem is at peak hype. New frameworks ship weekly, each promising autonomous agents that reason, plan, and collaborate. Most of them optimize for demos: flashy multi-agent conversations, auto-generated chains of thought, agent-to-agent delegation — impressive in a notebook, fragile in production.
+
+AgentLoom takes the opposite stance. It is **not** an autonomous agent framework. There are no self-directed agents, no unbounded loops, no emergent multi-agent negotiation. Instead, it is a **deterministic workflow orchestrator** that happens to use LLMs as execution steps.
+
+The difference matters:
+
+- **You define the DAG, not the LLM.** Steps, dependencies, and routing logic are declared upfront in YAML. The model generates text within a step — it does not decide what runs next. Routers use explicit boolean conditions, not LLM judgement.
+- **Observability is not optional.** Every step emits OpenTelemetry traces and Prometheus metrics. You can see exactly what ran, how long it took, and how much it cost. Autonomous agents are notoriously hard to debug; a static DAG with full tracing is not.
+- **Cost is bounded.** Budget limits, circuit breakers, and rate limiters are first-class. A runaway autonomous agent can burn through an API budget in minutes. A workflow with `budget_usd: 0.50` cannot.
+- **Fallback is structural.** If OpenAI is down, the gateway falls back to Anthropic or Ollama automatically. This is a routing decision at the infrastructure level, not an agent "choosing" a provider.
+
+Autonomous agent frameworks solve a real problem — open-ended tasks where the execution path cannot be known in advance. But most LLM workloads in production are not open-ended. They are pipelines: classify, enrich, route, generate, validate. For those, you want predictability and control, not autonomy. That is what AgentLoom is for.
 
 ## Development
 
