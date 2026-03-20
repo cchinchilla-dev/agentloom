@@ -43,6 +43,14 @@ class ProviderGateway:
     def __init__(self) -> None:
         self._providers: list[ProviderEntry] = []
         self._model_mapping: dict[str, list[ProviderEntry]] = {}
+        self._observer: Any | None = None
+
+    def set_observer(self, observer: Any) -> None:
+        """Attach an observer to receive circuit breaker state changes."""
+        self._observer = observer
+        # Wire existing circuit breakers to the observer
+        for entry in self._providers:
+            self._wire_circuit_callback(entry)
 
     def register(
         self,
@@ -71,12 +79,25 @@ class ProviderGateway:
             ),
             models=models or [],
         )
+        if self._observer:
+            self._wire_circuit_callback(entry)
         self._providers.append(entry)
         self._providers.sort(key=lambda e: e.priority)
 
         for model in entry.models:
             self._model_mapping.setdefault(model, []).append(entry)
             self._model_mapping[model].sort(key=lambda e: e.priority)
+
+    def _wire_circuit_callback(self, entry: ProviderEntry) -> None:
+        """Connect a provider's circuit breaker to the observer."""
+        obs = self._observer
+
+        def _on_change(name: str, old: str, new: str) -> None:
+            hook = getattr(obs, "on_circuit_state_change", None)
+            if hook:
+                hook(name, old, new)
+
+        entry.circuit_breaker.on_state_change = _on_change
 
     async def complete(
         self,

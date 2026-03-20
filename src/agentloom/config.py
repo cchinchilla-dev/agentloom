@@ -32,7 +32,7 @@ class AgentLoomConfig(BaseModel):
     providers: list[ProviderConfig] = Field(default_factory=list)
 
 
-# TODO: support AGENTFORGE_ env var prefix (pydantic-settings would be nice here)
+# TODO: support AGENTLOOM_ env var prefix (pydantic-settings would be nice here)
 def load_config(config_path: str | None = None) -> AgentLoomConfig:
     """Load configuration from a YAML file or return defaults.
 

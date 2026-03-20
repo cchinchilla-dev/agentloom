@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "AgentLoom \u2014 LLM workflow orchestration metrics",
+  "description": "AgentLoom -- LLM workflow orchestration metrics",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -11,7 +11,7 @@
   "panels": [
     {
       "type": "row",
-      "title": "\ud83d\udcca  Overview",
+      "title": "Overview",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -29,9 +29,10 @@
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "id": 2,
       "gridPos": {
         "h": 4,
-        "w": 5,
+        "w": 4,
         "x": 0,
         "y": 1
       },
@@ -74,26 +75,25 @@
             ]
           }
         }
-      },
-      "id": 2
+      }
     },
     {
       "type": "gauge",
-      "id": 3,
       "title": "Success Rate",
       "datasource": {
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "id": 3,
       "gridPos": {
         "h": 4,
-        "w": 5,
-        "x": 5,
+        "w": 4,
+        "x": 4,
         "y": 1
       },
       "targets": [
         {
-          "expr": "(sum(agentloom_workflow_runs_total{workflow=~\"$workflow\", status=\"success\"}) or vector(0)) / (sum(agentloom_workflow_runs_total{workflow=~\"$workflow\"}) or vector(1)) * 100",
+          "expr": "(sum(agentloom_workflow_runs_total{workflow=~\"$workflow\",status=\"success\"}) or vector(0)) / (sum(agentloom_workflow_runs_total{workflow=~\"$workflow\"}) or vector(1)) * 100",
           "legendFormat": "Success %",
           "refId": "A"
         }
@@ -120,15 +120,15 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "#F2495C",
                 "value": null
               },
               {
-                "color": "orange",
+                "color": "#FF9830",
                 "value": 80
               },
               {
-                "color": "green",
+                "color": "#73BF69",
                 "value": 95
               }
             ]
@@ -141,15 +141,71 @@
     },
     {
       "type": "stat",
+      "title": "Failed",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "id": 4,
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 8,
+        "y": 1
+      },
+      "targets": [
+        {
+          "expr": "sum(agentloom_workflow_runs_total{workflow=~\"$workflow\",status=\"failed\"}) or vector(0)",
+          "legendFormat": "Failed",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#F2495C"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#F2495C",
+                "value": null
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
       "title": "Total Tokens",
       "datasource": {
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "id": 5,
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 10,
+        "x": 11,
         "y": 1
       },
       "targets": [
@@ -191,26 +247,26 @@
             ]
           }
         }
-      },
-      "id": 4
+      }
     },
     {
       "type": "stat",
-      "title": "Runs Failed",
+      "title": "Est. Cost",
       "datasource": {
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "id": 6,
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 14,
+        "w": 3,
+        "x": 15,
         "y": 1
       },
       "targets": [
         {
-          "expr": "sum(agentloom_workflow_runs_total{workflow=~\"$workflow\", status=\"failed\"}) or vector(0)",
-          "legendFormat": "Runs Failed",
+          "expr": "sum(agentloom_cost_usd_total) or vector(0)",
+          "legendFormat": "Est. Cost",
           "refId": "A"
         }
       ],
@@ -230,32 +286,33 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "currencyUSD",
           "noValue": "0",
           "color": {
             "mode": "fixed",
-            "fixedColor": "#F2495C"
+            "fixedColor": "#FF9830"
           },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "#F2495C",
+                "color": "#FF9830",
                 "value": null
               }
             ]
-          }
+          },
+          "decimals": 4
         }
-      },
-      "id": 5
+      }
     },
     {
       "type": "stat",
-      "title": "Active Providers",
+      "title": "Providers",
       "datasource": {
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "id": 7,
       "gridPos": {
         "h": 4,
         "w": 3,
@@ -265,7 +322,7 @@
       "targets": [
         {
           "expr": "count(sum by(provider)(agentloom_provider_calls_total{provider=~\"$provider\"})) or vector(0)",
-          "legendFormat": "Active Providers",
+          "legendFormat": "Providers",
           "refId": "A"
         }
       ],
@@ -301,8 +358,7 @@
             ]
           }
         }
-      },
-      "id": 6
+      }
     },
     {
       "type": "stat",
@@ -311,6 +367,7 @@
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "id": 8,
       "gridPos": {
         "h": 4,
         "w": 3,
@@ -344,24 +401,23 @@
           "noValue": "0",
           "color": {
             "mode": "fixed",
-            "fixedColor": "#FF9830"
+            "fixedColor": "#8AB8FF"
           },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "#FF9830",
+                "color": "#8AB8FF",
                 "value": null
               }
             ]
           }
         }
-      },
-      "id": 7
+      }
     },
     {
       "type": "row",
-      "title": "\u26a1  Throughput",
+      "title": "Workflow Performance",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -370,15 +426,16 @@
         "y": 5
       },
       "panels": [],
-      "id": 8
+      "id": 9
     },
     {
       "type": "timeseries",
-      "title": "Workflow Runs / min",
+      "title": "Workflow Runs",
       "datasource": {
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "id": 10,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -387,13 +444,13 @@
       },
       "targets": [
         {
-          "expr": "rate(agentloom_workflow_runs_total{status=\"success\",workflow=~\"$workflow\"}[5m])*60",
-          "legendFormat": "\u2705 {{workflow}}",
+          "expr": "sum(agentloom_workflow_runs_total{status=\"success\",workflow=~\"$workflow\"})",
+          "legendFormat": "success: {{workflow}}",
           "refId": "A"
         },
         {
-          "expr": "rate(agentloom_workflow_runs_total{status=\"failed\",workflow=~\"$workflow\"}[5m])*60",
-          "legendFormat": "\u274c {{workflow}}",
+          "expr": "sum(agentloom_workflow_runs_total{status=\"failed\",workflow=~\"$workflow\"})",
+          "legendFormat": "failed: {{workflow}}",
           "refId": "B"
         }
       ],
@@ -456,16 +513,16 @@
             ]
           }
         ]
-      },
-      "id": 9
+      }
     },
     {
       "type": "timeseries",
-      "title": "Step Executions / min",
+      "title": "Workflow Duration (p50 / p95 / p99)",
       "datasource": {
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "id": 11,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -474,13 +531,88 @@
       },
       "targets": [
         {
-          "expr": "rate(agentloom_step_executions_total{status=\"success\"}[5m])*60",
-          "legendFormat": "\u2705 {{step_type}}",
+          "expr": "histogram_quantile(0.50, sum by(le,workflow)(agentloom_workflow_duration_seconds_bucket{workflow=~\"$workflow\"}))",
+          "legendFormat": "p50 {{workflow}}",
           "refId": "A"
         },
         {
-          "expr": "rate(agentloom_step_executions_total{status=\"failed\"}[5m])*60",
-          "legendFormat": "\u274c {{step_type}}",
+          "expr": "histogram_quantile(0.95, sum by(le,workflow)(agentloom_workflow_duration_seconds_bucket{workflow=~\"$workflow\"}))",
+          "legendFormat": "p95 {{workflow}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by(le,workflow)(agentloom_workflow_duration_seconds_bucket{workflow=~\"$workflow\"}))",
+          "legendFormat": "p99 {{workflow}}",
+          "refId": "C"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "gradientMode": "opacity",
+            "drawStyle": "line",
+            "spanNulls": false,
+            "showPoints": "auto",
+            "pointSize": 5
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Step Analysis",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "panels": [],
+      "id": 12
+    },
+    {
+      "type": "timeseries",
+      "title": "Step Executions",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "id": 13,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "targets": [
+        {
+          "expr": "sum(agentloom_step_executions_total{status=\"success\"})",
+          "legendFormat": "success: {{step_type}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(agentloom_step_executions_total{status=\"failed\"})",
+          "legendFormat": "failed: {{step_type}}",
           "refId": "B"
         }
       ],
@@ -544,44 +676,106 @@
             ]
           }
         ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Step Duration (p50 / p95 / p99)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
       },
-      "id": 10
+      "id": 14,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by(le,step_type)(agentloom_step_duration_seconds_bucket))",
+          "legendFormat": "p50 {{step_type}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by(le,step_type)(agentloom_step_duration_seconds_bucket))",
+          "legendFormat": "p95 {{step_type}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by(le,step_type)(agentloom_step_duration_seconds_bucket))",
+          "legendFormat": "p99 {{step_type}}",
+          "refId": "C"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "gradientMode": "opacity",
+            "drawStyle": "line",
+            "spanNulls": false,
+            "showPoints": "auto",
+            "pointSize": 5
+          }
+        },
+        "overrides": []
+      }
     },
     {
       "type": "row",
-      "title": "\ud83e\ude99  Tokens & Cost",
+      "title": "Token Economics",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 23
       },
       "panels": [],
-      "id": 11
+      "id": 15
     },
     {
       "type": "timeseries",
-      "title": "Token Rate \u2014 input vs output",
+      "title": "Tokens",
       "datasource": {
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "id": 16,
       "gridPos": {
         "h": 8,
-        "w": 14,
+        "w": 12,
         "x": 0,
-        "y": 15
+        "y": 24
       },
       "targets": [
         {
-          "expr": "rate(agentloom_tokens_total{direction=\"input\",provider=~\"$provider\"}[5m])",
-          "legendFormat": "\u2b06 input \u00b7 {{provider}}/{{model}}",
+          "expr": "sum by(provider,model,direction)(agentloom_tokens_total{direction=\"input\",provider=~\"$provider\"})",
+          "legendFormat": "input: {{provider}}/{{model}}",
           "refId": "A"
         },
         {
-          "expr": "rate(agentloom_tokens_total{direction=\"output\",provider=~\"$provider\"}[5m])",
-          "legendFormat": "\u2b07 output \u00b7 {{provider}}/{{model}}",
+          "expr": "sum by(provider,model,direction)(agentloom_tokens_total{direction=\"output\",provider=~\"$provider\"})",
+          "legendFormat": "output: {{provider}}/{{model}}",
           "refId": "B"
         }
       ],
@@ -644,26 +838,25 @@
             ]
           }
         ]
-      },
-      "id": 12
+      }
     },
     {
       "type": "bargauge",
-      "id": 13,
-      "title": "Total Tokens by Provider",
+      "id": 17,
+      "title": "Tokens by Provider",
       "datasource": {
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
       "gridPos": {
         "h": 8,
-        "w": 10,
-        "x": 14,
-        "y": 15
+        "w": 6,
+        "x": 12,
+        "y": 24
       },
       "targets": [
         {
-          "expr": "sum by(provider, model)(agentloom_tokens_total{provider=~\"$provider\"})",
+          "expr": "sum by(provider,model)(agentloom_tokens_total{provider=~\"$provider\"})",
           "legendFormat": "{{provider}} / {{model}}",
           "refId": "A",
           "instant": true
@@ -677,7 +870,6 @@
         },
         "orientation": "horizontal",
         "displayMode": "gradient",
-        "valueMode": "color",
         "minVizWidth": 0,
         "minVizHeight": 10
       },
@@ -693,7 +885,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "blue",
+                "color": "#5794F2",
                 "value": null
               }
             ]
@@ -702,106 +894,126 @@
       }
     },
     {
+      "type": "piechart",
+      "id": 18,
+      "title": "Token Split (input / output)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 24
+      },
+      "targets": [
+        {
+          "expr": "sum(agentloom_tokens_total{direction=\"input\",provider=~\"$provider\"})",
+          "legendFormat": "Input",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(agentloom_tokens_total{direction=\"output\",provider=~\"$provider\"})",
+          "legendFormat": "Output",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "list",
+          "placement": "right"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#B877D9"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "type": "row",
-      "title": "\u23f1  Latency",
+      "title": "Provider Performance",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 23
+        "y": 32
       },
       "panels": [],
-      "id": 14
+      "id": 19
     },
     {
       "type": "timeseries",
-      "title": "Step Duration \u2014 p50 / p95 / p99",
+      "title": "Provider Latency (p50 / p95 / p99)",
       "datasource": {
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "id": 20,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 24
+        "y": 33
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by(le,step_type)(rate(agentloom_step_duration_seconds_bucket[5m])))",
-          "legendFormat": "p50 {{step_type}}",
-          "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum by(le,step_type)(rate(agentloom_step_duration_seconds_bucket[5m])))",
-          "legendFormat": "p95 {{step_type}}",
-          "refId": "B"
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum by(le,step_type)(rate(agentloom_step_duration_seconds_bucket[5m])))",
-          "legendFormat": "p99 {{step_type}}",
-          "refId": "C"
-        }
-      ],
-      "options": {
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        },
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ]
-        }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 5,
-            "gradientMode": "opacity",
-            "drawStyle": "line",
-            "spanNulls": false,
-            "showPoints": "auto",
-            "pointSize": 5
-          }
-        },
-        "overrides": []
-      },
-      "id": 15
-    },
-    {
-      "type": "timeseries",
-      "title": "Provider Latency \u2014 p50 / p95 / p99",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 24
-      },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.50, sum by(le,provider)(rate(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by(le,provider)(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\"}))",
           "legendFormat": "p50 {{provider}}",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by(le,provider)(rate(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by(le,provider)(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\"}))",
           "legendFormat": "p95 {{provider}}",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by(le,provider)(rate(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by(le,provider)(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\"}))",
           "legendFormat": "p99 {{provider}}",
           "refId": "C"
         }
@@ -835,38 +1047,25 @@
           }
         },
         "overrides": []
-      },
-      "id": 16
-    },
-    {
-      "type": "row",
-      "title": "\ud83d\udd0c  Provider Health",
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 32
-      },
-      "panels": [],
-      "id": 17
+      }
     },
     {
       "type": "timeseries",
-      "title": "Provider Calls / min",
+      "title": "Provider Calls",
       "datasource": {
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "id": 21,
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 0,
+        "w": 12,
+        "x": 12,
         "y": 33
       },
       "targets": [
         {
-          "expr": "rate(agentloom_provider_calls_total{provider=~\"$provider\"}[5m])*60",
+          "expr": "sum by(provider)(agentloom_provider_calls_total{provider=~\"$provider\"})",
           "legendFormat": "{{provider}} / {{model}}",
           "refId": "A"
         }
@@ -900,26 +1099,39 @@
           }
         },
         "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Provider Reliability",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 41
       },
-      "id": 18
+      "panels": [],
+      "id": 22
     },
     {
       "type": "timeseries",
-      "title": "Provider Errors / min",
+      "title": "Provider Errors",
       "datasource": {
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "id": 23,
       "gridPos": {
         "h": 8,
         "w": 8,
-        "x": 8,
-        "y": 33
+        "x": 0,
+        "y": 42
       },
       "targets": [
         {
-          "expr": "rate(agentloom_provider_errors_total{provider=~\"$provider\"}[5m])*60",
-          "legendFormat": "{{provider}} \u2014 {{error_type}}",
+          "expr": "sum by(provider)(agentloom_provider_errors_total{provider=~\"$provider\"})",
+          "legendFormat": "{{provider}} / {{error_type}}",
           "refId": "A"
         }
       ],
@@ -968,13 +1180,73 @@
             ]
           }
         ]
+      }
+    },
+    {
+      "type": "gauge",
+      "title": "Provider Availability",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
       },
-      "id": 19
+      "id": 24,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 42
+      },
+      "targets": [
+        {
+          "expr": "(1 - (sum by(provider)(agentloom_provider_errors_total{provider=~\"$provider\"}) / sum by(provider)(agentloom_provider_calls_total{provider=~\"$provider\"}))) * 100 or vector(100)",
+          "legendFormat": "{{provider}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 2,
+          "noValue": "100",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#F2495C",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 95
+              },
+              {
+                "color": "#73BF69",
+                "value": 99
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      }
     },
     {
       "type": "stat",
-      "id": 20,
-      "title": "Circuit Breaker State",
+      "id": 25,
+      "title": "Circuit Breaker",
       "datasource": {
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
@@ -983,7 +1255,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 33
+        "y": 42
       },
       "targets": [
         {
@@ -1006,24 +1278,24 @@
       },
       "fieldConfig": {
         "defaults": {
-          "noValue": "\u2014",
+          "noValue": "N/A",
           "mappings": [
             {
               "type": "value",
               "options": {
                 "0": {
                   "text": "CLOSED",
-                  "color": "green",
+                  "color": "#73BF69",
                   "index": 0
                 },
                 "1": {
                   "text": "OPEN",
-                  "color": "red",
+                  "color": "#F2495C",
                   "index": 1
                 },
                 "2": {
                   "text": "HALF-OPEN",
-                  "color": "yellow",
+                  "color": "#FADE2A",
                   "index": 2
                 }
               }
@@ -1036,19 +1308,591 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "#73BF69",
                 "value": null
               },
               {
-                "color": "red",
+                "color": "#F2495C",
                 "value": 1
               },
               {
-                "color": "yellow",
+                "color": "#FADE2A",
                 "value": 2
               }
             ]
           }
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Detailed Breakdown",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 50
+      },
+      "panels": [],
+      "id": 26
+    },
+    {
+      "type": "table",
+      "id": 27,
+      "title": "Workflow Runs Summary",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 51
+      },
+      "targets": [
+        {
+          "expr": "sum by(workflow,status)(agentloom_workflow_runs_total{workflow=~\"$workflow\"})",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": false
+            },
+            "renameByName": {
+              "workflow": "Workflow",
+              "status": "Status",
+              "Value": "Runs"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Runs"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background-solid"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "transparent",
+                      "value": null
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "success": {
+                        "color": "#73BF69",
+                        "text": "SUCCESS"
+                      },
+                      "failed": {
+                        "color": "#F2495C",
+                        "text": "FAILED"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Runs",
+            "desc": true
+          }
+        ]
+      }
+    },
+    {
+      "type": "table",
+      "id": 28,
+      "title": "Provider Call Details",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 51
+      },
+      "targets": [
+        {
+          "expr": "sum by(provider,model)(agentloom_provider_calls_total{provider=~\"$provider\"})",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "provider": "Provider",
+              "model": "Model",
+              "Value": "Calls"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Calls",
+            "desc": true
+          }
+        ]
+      }
+    },
+    {
+      "type": "row",
+      "title": "Cost Analysis",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 59
+      },
+      "panels": [],
+      "id": 29
+    },
+    {
+      "type": "timeseries",
+      "title": "Cumulative Cost",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "id": 30,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 60
+      },
+      "targets": [
+        {
+          "expr": "sum(agentloom_cost_usd_total)",
+          "legendFormat": "Total Cost",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "drawStyle": "line",
+            "spanNulls": false,
+            "showPoints": "auto",
+            "pointSize": 5
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Token Cost",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "id": 31,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 60
+      },
+      "targets": [
+        {
+          "expr": "sum by(provider,model)(agentloom_tokens_total{direction=\"input\",provider=~\"$provider\"}) * 0.000001",
+          "legendFormat": "input: {{provider}}/{{model}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by(provider,model)(agentloom_tokens_total{direction=\"output\",provider=~\"$provider\"}) * 0.000003",
+          "legendFormat": "output: {{provider}}/{{model}}",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "gradientMode": "opacity",
+            "drawStyle": "line",
+            "spanNulls": false,
+            "showPoints": "auto",
+            "pointSize": 5
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#B877D9"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Avg Cost / Run",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "id": 32,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 60
+      },
+      "targets": [
+        {
+          "expr": "(sum(agentloom_cost_usd_total) or vector(0)) / (sum(agentloom_workflow_runs_total) or vector(1))",
+          "legendFormat": "Avg Cost / Run",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "noValue": "0",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#FF9830"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#FF9830",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 6
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Avg Tokens / Run",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "id": 33,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 60
+      },
+      "targets": [
+        {
+          "expr": "(sum(agentloom_tokens_total) or vector(0)) / (sum(agentloom_workflow_runs_total) or vector(1))",
+          "legendFormat": "Avg Tokens / Run",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#B877D9"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#B877D9",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Avg Duration / Run",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "id": 34,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 64
+      },
+      "targets": [
+        {
+          "expr": "(sum(agentloom_workflow_duration_seconds_sum) or vector(0)) / (sum(agentloom_workflow_duration_seconds_count) or vector(1))",
+          "legendFormat": "Avg Duration / Run",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "0",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#8AB8FF"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#8AB8FF",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 2
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Token Input/Output Ratio",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "id": 35,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 64
+      },
+      "targets": [
+        {
+          "expr": "(sum(agentloom_tokens_total{direction=\"output\"}) or vector(0)) / (sum(agentloom_tokens_total{direction=\"input\"}) or vector(1))",
+          "legendFormat": "Token Input/Output Ratio",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#5794F2"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#5794F2",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 2
         }
       }
     }
@@ -1118,5 +1962,6 @@
   "timezone": "browser",
   "title": "AgentLoom",
   "uid": "agentloom-main",
-  "version": 1
+  "version": 2,
+  "refresh": ""
 }

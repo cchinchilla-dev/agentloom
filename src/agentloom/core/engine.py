@@ -52,6 +52,12 @@ class WorkflowEngine:
         self.observer = observer
         self._budget_spent: float = 0.0
 
+        # Wire observer into gateway for circuit breaker events
+        if observer and provider_gateway:
+            set_obs = getattr(provider_gateway, "set_observer", None)
+            if set_obs:
+                set_obs(observer)
+
     async def run(self) -> WorkflowResult:
         """Execute the workflow end-to-end.
 

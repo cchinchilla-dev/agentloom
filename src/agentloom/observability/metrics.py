@@ -56,6 +56,9 @@ class MetricsManager:
         self._provider_error_counter: Any = None
         self._provider_histogram: Any = None
         self._token_counter: Any = None
+        self._workflow_histogram: Any = None
+        self._cost_counter: Any = None
+        self._circuit_states: dict[str, int] = {}  # provider -> state int
 
         # prometheus_client instruments (fallback)
         self._prom_counters: dict[str, Any] = {}
@@ -113,6 +116,30 @@ class MetricsManager:
             "agentloom_tokens_total",
             description="Total tokens consumed",
         )
+        self._workflow_histogram = meter.create_histogram(
+            "agentloom_workflow_duration_seconds",
+            description="Workflow execution duration",
+            unit="s",
+        )
+        self._cost_counter = meter.create_counter(
+            "agentloom_cost_usd_total",
+            description="Cumulative cost in USD",
+        )
+
+        # Circuit breaker gauge (callback-based, reads from _circuit_states)
+        states = self._circuit_states
+
+        def _cb_circuit(options: Any) -> Any:  # noqa: ANN401
+            Observation = otel_api_metrics.Observation
+            for prov, val in states.items():
+                yield Observation(val, {"provider": prov})
+
+        meter.create_observable_gauge(
+            "agentloom_circuit_breaker_state",
+            callbacks=[_cb_circuit],
+            description="Circuit breaker state (0=closed, 1=open, 2=half_open)",
+        )
+
         self._backend = "otel"
         logger.debug("Metrics: OTLP push → %s", endpoint)
 
@@ -171,11 +198,18 @@ class MetricsManager:
     # Recording
     # ------------------------------------------------------------------
 
-    def record_workflow_run(self, workflow: str, status: str) -> None:
+    def record_workflow_run(
+        self, workflow: str, status: str, duration_s: float = 0.0, cost_usd: float = 0.0
+    ) -> None:
         if not self._enabled:
             return
         if self._backend == "otel":
             self._workflow_counter.add(1, {"workflow": workflow, "status": status})
+            if duration_s > 0:
+                attrs = {"workflow": workflow, "status": status}
+                self._workflow_histogram.record(duration_s, attrs)
+            if cost_usd > 0:
+                self._cost_counter.add(cost_usd, {"workflow": workflow, "provider": "total"})
         else:
             self._prom_counters["workflow_runs"].labels(workflow=workflow, status=status).inc()
 
@@ -240,7 +274,12 @@ class MetricsManager:
             self._prom_gauges["budget_remaining"].labels(workflow=workflow).set(remaining)
 
     def set_circuit_state(self, provider: str, state: int) -> None:
-        if self._enabled and self._backend == "prom":
+        if not self._enabled:
+            return
+        # OTel: update dict read by the observable gauge callback
+        self._circuit_states[provider] = state
+        # Prometheus fallback
+        if self._backend == "prom":
             self._prom_gauges["circuit_state"].labels(provider=provider).set(state)
 
     # ------------------------------------------------------------------

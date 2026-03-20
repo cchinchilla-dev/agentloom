@@ -50,7 +50,9 @@ class WorkflowObserver:
     ) -> None:
         # Metrics
         if self._metrics:
-            self._metrics.record_workflow_run(workflow_name, status)
+            self._metrics.record_workflow_run(
+                workflow_name, status, duration_ms / 1000.0, total_cost
+            )
 
         # Span
         span = self._workflow_span
@@ -123,6 +125,24 @@ class WorkflowObserver:
     ) -> None:
         if self._metrics:
             self._metrics.record_tokens(provider, model, prompt_tokens, completion_tokens)
+
+    # ------------------------------------------------------------------
+    # Circuit breaker events (called from gateway via callback)
+    # ------------------------------------------------------------------
+
+    def on_circuit_state_change(
+        self, provider: str, old_state: str, new_state: str
+    ) -> None:
+        state_map = {"closed": 0, "open": 1, "half_open": 2}
+        state_int = state_map.get(str(new_state), 0)
+        logger.info(
+            "Circuit breaker '%s': %s -> %s",
+            provider,
+            old_state,
+            new_state,
+        )
+        if self._metrics:
+            self._metrics.set_circuit_state(provider, state_int)
 
     # ------------------------------------------------------------------
     # Shutdown

@@ -30,17 +30,22 @@ class CircuitBreaker:
         HALF_OPEN -> OPEN: on failure
     """
 
+    # Callback type: (name, old_state, new_state) -> None
+    OnStateChange = Callable[[str, "CircuitState", "CircuitState"], None]
+
     def __init__(
         self,
         name: str = "",
         fail_threshold: int = 5,
         reset_timeout: float = 60.0,
         half_open_max_calls: int = 1,
+        on_state_change: OnStateChange | None = None,
     ) -> None:
         self.name = name
         self.fail_threshold = fail_threshold
         self.reset_timeout = reset_timeout
         self.half_open_max_calls = half_open_max_calls
+        self.on_state_change = on_state_change
         # NOTE: hardcoded to 1 test call in half-open, might be too conservative
 
         self._state = CircuitState.CLOSED
@@ -54,9 +59,18 @@ class CircuitBreaker:
         """Current circuit state, with automatic OPEN -> HALF_OPEN transition."""
         if self._state == CircuitState.OPEN:
             if time.monotonic() - self._last_failure_time >= self.reset_timeout:
-                self._state = CircuitState.HALF_OPEN
+                self._set_state(CircuitState.HALF_OPEN)
                 self._half_open_calls = 0
         return self._state
+
+    def _set_state(self, new_state: CircuitState) -> None:
+        """Transition to a new state and fire the callback if registered."""
+        old_state = self._state
+        if old_state == new_state:
+            return
+        self._state = new_state
+        if self.on_state_change:
+            self.on_state_change(self.name, old_state, new_state)
 
     @property
     def failure_count(self) -> int:
@@ -95,7 +109,7 @@ class CircuitBreaker:
     def _on_success(self) -> None:
         """Record a successful call."""
         if self._state == CircuitState.HALF_OPEN:
-            self._state = CircuitState.CLOSED
+            self._set_state(CircuitState.CLOSED)
             self._failure_count = 0
             self._success_count = 0
         self._failure_count = 0
@@ -107,11 +121,11 @@ class CircuitBreaker:
         self._last_failure_time = time.monotonic()
 
         if self._state == CircuitState.HALF_OPEN or self._failure_count >= self.fail_threshold:
-            self._state = CircuitState.OPEN
+            self._set_state(CircuitState.OPEN)
 
     def reset(self) -> None:
         """Manually reset the circuit breaker to closed state."""
-        self._state = CircuitState.CLOSED
+        self._set_state(CircuitState.CLOSED)
         self._failure_count = 0
         self._success_count = 0
         self._half_open_calls = 0
