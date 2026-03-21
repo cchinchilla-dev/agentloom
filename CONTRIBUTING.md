@@ -49,18 +49,20 @@ uv run pytest
 
 ## Commit messages
 
-Short, lowercase, imperative mood. No body needed for small changes.
+Short, lowercase, imperative mood. Prefix with category when relevant:
 
 ```
 add retry jitter configuration
 fix router expression parsing for nested attributes
+refactor gateway fallback logic
 ```
 
 ## Pull requests
 
 - Keep PRs focused — one feature or fix per PR
-- Reference the issue number if applicable (`Closes #123`)
-- All CI checks must pass before merge
+- Link issues: `Closes #123` in the PR description
+- All CI checks (tests, ruff, mypy) must pass before merge
+- PRs are squash-merged to keep history clean
 
 ## Adding a provider
 

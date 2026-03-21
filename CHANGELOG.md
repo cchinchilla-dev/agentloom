@@ -7,11 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Wire up observer hooks to step execution
-- Streaming support for providers
-- Config file for provider setup (instead of env vars)
-- Dynamic pricing from YAML
-- Proper sandboxing for shell tool
+### Planned
+
+- Streaming responses from providers (currently falls back to full completion)
+- YAML-based provider config (replace env var discovery)
+- Load pricing table from YAML instead of hardcoded Python dict
+- Sandbox shell_command tool execution (currently no isolation)
+- Array index support in state paths (e.g., `state.items[0]`)
 
 ## [0.1.0] - 2026-03-19
 

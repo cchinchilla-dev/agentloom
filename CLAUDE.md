@@ -31,7 +31,7 @@
 - `steps/router.py` — conditional branching via AST-validated safe expressions
 
 ## Gotchas
-- `steps/registry.py` uses lazy imports inside `create_default_registry()` — don't move them to module level
-- `steps/llm_call.py` uses sync `state.state` in async context (marked FIXME, don't make it worse)
-- Gateway `register()` accepts `**kwargs` to stay compatible with the simple version — don't remove
-- Pricing table in `providers/pricing.py` is hardcoded — there's a TODO to load from YAML
+- `steps/registry.py` uses lazy imports inside `create_default_registry()` — avoids circular imports between steps and providers at module load time
+- `steps/llm_call.py` uses sync `state.state` in async context (marked FIXME) — fixing requires making BaseStep.execute return coroutines, which breaks the step interface
+- Gateway `register()` accepts `**kwargs` — needed so CLI and tests can register providers without knowing the full constructor signature
+- Pricing table in `providers/pricing.py` is hardcoded — planned migration to YAML config (see CHANGELOG)
