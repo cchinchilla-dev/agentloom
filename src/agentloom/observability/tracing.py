@@ -9,6 +9,7 @@ from agentloom.observability.noop import NoopSpan, NoopTracer
 
 # Conditional imports
 otel_api = try_import("opentelemetry.trace", extra="observability")
+otel_context = try_import("opentelemetry.context", extra="observability")
 otel_sdk_trace = try_import("opentelemetry.sdk.trace", extra="observability")
 otel_sdk_resources = try_import("opentelemetry.sdk.resources", extra="observability")
 otel_exporter = try_import(
@@ -30,6 +31,7 @@ class TracingManager:
     ) -> None:
         self._enabled = enabled and _HAS_OTEL
         self._tracer: Any = None
+        self._context_tokens: dict[int, Any] = {}
 
         if self._enabled:
             self._setup(service_name, endpoint)
@@ -54,15 +56,32 @@ class TracingManager:
         return NoopTracer()
 
     def start_span(self, name: str, attributes: dict[str, Any] | None = None) -> Any:
-        """Start a new span."""
+        """Start a new span as child of the current active span.
+
+        Sets the span as current so subsequent start_span calls create
+        nested children (workflow > step hierarchy).
+        """
         tracer = self.get_tracer()
         if self._enabled:
             span = tracer.start_span(name)
             if attributes:
                 for k, v in attributes.items():
                     span.set_attribute(k, v)
+            # Set as active context so child spans nest correctly
+            ctx = otel_api.set_span_in_context(span)
+            token = otel_context.attach(ctx)
+            # Store detach token so end_span can restore parent context
+            self._context_tokens[id(span)] = token
             return span
         return NoopSpan()
+
+    def end_span(self, span: Any) -> None:
+        """End a span and restore the parent context."""
+        if self._enabled and span:
+            token = self._context_tokens.pop(id(span), None)
+            span.end()
+            if token is not None:
+                otel_context.detach(token)
 
     def shutdown(self) -> None:
         """Flush and shut down the tracer provider."""

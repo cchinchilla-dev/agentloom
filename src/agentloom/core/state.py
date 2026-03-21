@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,7 @@ class StateManager:
     async def get_state_snapshot(self) -> dict[str, Any]:
         """Return a copy of the current state."""
         async with self._lock:
-            return dict(self._state)
+            return copy.deepcopy(self._state)
 
     async def set_step_result(self, step_id: str, result: StepResult) -> None:
         """Record a step's execution result."""
@@ -90,6 +91,8 @@ class StateManager:
             }
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        # NOTE: blocking I/O — acceptable for checkpoint frequency (once per workflow).
+        # For high-frequency saves, replace with anyio.Path or anyio.to_thread.run_sync.
         path.write_text(json.dumps(data, indent=2, default=str))
 
     @classmethod

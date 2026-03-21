@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 from agentloom.core.results import StepResult, StepStatus
 from agentloom.exceptions import StepError
 from agentloom.steps.base import BaseStep, StepContext
+
+logger = logging.getLogger("agentloom.steps")
 
 
 class LLMCallStep(BaseStep):
@@ -101,7 +104,10 @@ class DotAccessDict:
     def __getattr__(self, name: str) -> object:
         if name.startswith("_"):
             return object.__getattribute__(self, name)
-        value = self._data.get(name, "")
+        if name not in self._data:
+            logger.warning("Template variable 'state.%s' not found, rendering as empty", name)
+            return ""
+        value = self._data[name]
         if isinstance(value, dict):
             return DotAccessDict(value)
         return value

@@ -83,7 +83,7 @@ def calculate_cost(
     pricing = table.get(model)
     if pricing is None:
         for key, p in table.items():
-            if model.startswith(key) or key.startswith(model):
+            if model.startswith(key):
                 pricing = p
                 break
 

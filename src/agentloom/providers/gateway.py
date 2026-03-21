@@ -122,7 +122,9 @@ class ProviderGateway:
         for entry in candidates:
             try:
                 if entry.rate_limiter:
-                    await entry.rate_limiter.acquire()
+                    # Estimate prompt tokens from message length (~4 chars per token)
+                    estimated_tokens = sum(len(m.get("content", "")) for m in messages) // 4
+                    await entry.rate_limiter.acquire(token_count=estimated_tokens)
 
                 async def _call(e: ProviderEntry = entry) -> ProviderResponse:
                     return await e.provider.complete(
@@ -152,6 +154,10 @@ class ProviderGateway:
                 msg = f"Provider '{entry.provider.name}' failed: {e}"
                 errors.append(msg)
                 logger.warning(msg)
+                if self._observer:
+                    error_hook = getattr(self._observer, "on_provider_error", None)
+                    if error_hook:
+                        error_hook(entry.provider.name, type(e).__name__)
                 continue
 
         raise ProviderError(

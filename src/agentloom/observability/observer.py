@@ -61,7 +61,10 @@ class WorkflowObserver:
             span.set_attribute("workflow.duration_ms", duration_ms)
             span.set_attribute("workflow.total_tokens", total_tokens)
             span.set_attribute("workflow.total_cost_usd", total_cost)
-            span.end()
+            if self._tracing:
+                self._tracing.end_span(span)
+            else:
+                span.end()
             self._workflow_span = None
 
     # ------------------------------------------------------------------
@@ -102,7 +105,10 @@ class WorkflowObserver:
             span.set_attribute("step.tokens", tokens)
             if error:
                 span.set_attribute("step.error", error)
-            span.end()
+            if self._tracing:
+                self._tracing.end_span(span)
+            else:
+                span.end()
 
     # ------------------------------------------------------------------
     # Provider-level events (called from gateway if observer is attached)

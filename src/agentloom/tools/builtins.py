@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
 
 from agentloom.tools.base import BaseTool
@@ -69,23 +69,20 @@ class ShellCommandTool(BaseTool):
     }
 
     async def execute(self, **kwargs: Any) -> Any:
-        # FIXME: no sandboxing at all — fine for trusted workflows, scary otherwise
+        # FIXME: no sandboxing — fine for trusted workflows, not for untrusted input
         command = kwargs["command"]
-        timeout = kwargs.get("timeout", 30)
         cwd = kwargs.get("cwd", ".")
 
         try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            result = await anyio.run_process(
+                ["sh", "-c", command],
                 cwd=cwd,
+                check=False,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             return {
-                "returncode": proc.returncode,
-                "stdout": stdout.decode(errors="replace"),
-                "stderr": stderr.decode(errors="replace"),
+                "returncode": result.returncode,
+                "stdout": result.stdout.decode(errors="replace"),
+                "stderr": result.stderr.decode(errors="replace"),
             }
         except TimeoutError:
             return {"returncode": -1, "stdout": "", "stderr": "Command timed out"}

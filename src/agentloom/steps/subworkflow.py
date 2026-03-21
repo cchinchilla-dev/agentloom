@@ -73,15 +73,18 @@ class SubworkflowStep(BaseStep):
             StepStatus.SUCCESS if result.status == WorkflowStatus.SUCCESS else StepStatus.FAILED
         )
 
-        # Gather token usage from last successful step
+        # Aggregate token usage from all child steps
         from agentloom.core.results import TokenUsage
 
-        token_usage = TokenUsage()
-        if result.step_results:
-            last_key = list(result.step_results.keys())[-1]
-            last_step = result.step_results.get(last_key)
-            if last_step is not None:
-                token_usage = last_step.token_usage
+        total_prompt = sum(r.token_usage.prompt_tokens for r in result.step_results.values())
+        total_completion = sum(
+            r.token_usage.completion_tokens for r in result.step_results.values()
+        )
+        token_usage = TokenUsage(
+            prompt_tokens=total_prompt,
+            completion_tokens=total_completion,
+            total_tokens=total_prompt + total_completion,
+        )
 
         return StepResult(
             step_id=step.id,
