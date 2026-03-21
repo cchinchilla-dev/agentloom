@@ -64,7 +64,7 @@ if [[ "${1:-}" == "down" ]]; then
     exit 0
 fi
 
-echo "=== AgentForge Observability Setup ==="
+echo "=== AgentLoom Observability Setup ==="
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -140,7 +140,7 @@ echo "  Jaeger:        http://localhost:16686"
 echo "  OTel gRPC:     localhost:4317"
 echo ""
 echo "Run a workflow with tracing:"
-echo "  uv run agentforge run examples/01_simple_qa.yaml --provider ollama --model phi4"
+echo "  uv run agentloom run examples/01_simple_qa.yaml --provider ollama --model phi4"
 echo ""
 echo "Stop with:"
 echo "  ./scripts/observability-setup.sh down"

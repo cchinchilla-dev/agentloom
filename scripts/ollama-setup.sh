@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Install Ollama and pull recommended models for AgentForge development.
+# Install Ollama and pull recommended models for AgentLoom development.
 # Works on macOS and Linux.
 
 set -e
 
-echo "=== Ollama Setup for AgentForge ==="
+echo "=== Ollama Setup for AgentLoom ==="
 
 # Install Ollama if not present
 if ! command -v ollama &> /dev/null; then
@@ -48,5 +48,5 @@ echo ""
 echo "Models available:"
 ollama list
 echo ""
-echo "Test with AgentForge:"
-echo "  agentforge run examples/01_simple_qa.yaml --provider ollama --model qwen3:8b"
+echo "Test with AgentLoom:"
+echo "  agentloom run examples/01_simple_qa.yaml --provider ollama --model qwen3:8b"

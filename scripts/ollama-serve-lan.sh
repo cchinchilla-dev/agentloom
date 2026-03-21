@@ -7,7 +7,7 @@
 #
 # Then on another machine:
 #   export OLLAMA_BASE_URL=http://<this-machine-ip>:11434
-#   agentforge run workflow.yaml --provider ollama --model qwen3:8b
+#   agentloom run workflow.yaml --provider ollama --model qwen3:8b
 
 set -e
 
