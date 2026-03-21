@@ -8,7 +8,7 @@ description: >
 
 config:
   provider: openai
-  model: gpt-4.1-nano
+  model: gpt-4o-mini
   budget_usd: 0.12
   max_concurrent_steps: 3
 
@@ -91,7 +91,7 @@ steps:
       name: coverage-verification
       config:
         provider: openai
-        model: gpt-4.1-nano
+        model: gpt-4o-mini
       state:
         policy_check: ""
         eligible_amount: ""
@@ -163,7 +163,7 @@ steps:
       name: fraud-detection
       config:
         provider: openai
-        model: gpt-4.1-nano
+        model: gpt-4o-mini
       state:
         pattern_check: ""
         cross_reference: ""
@@ -286,7 +286,7 @@ steps:
       name: payment-processing
       config:
         provider: openai
-        model: gpt-4.1-nano
+        model: gpt-4o-mini
       state:
         payment_details: ""
         authorization: ""

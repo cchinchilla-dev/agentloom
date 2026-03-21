@@ -154,9 +154,9 @@ def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
             OpenAIProvider(),
             priority=0 if default_provider == "openai" else 10,
             models=[
-                "gpt-4.1-nano",
-                "gpt-4.1-mini",
                 "gpt-4o-mini",
+                "gpt-4o",
+                "gpt-4.1",
                 "o4-mini",
             ],
         )

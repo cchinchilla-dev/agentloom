@@ -9,7 +9,7 @@ Demonstrates:
 
 Usage:
   uv run python examples/15_custom_tools_subclass.py
-  uv run python examples/15_custom_tools_subclass.py --provider openai --model gpt-4.1-nano
+  uv run python examples/15_custom_tools_subclass.py --provider openai --model gpt-4o-mini
 """
 
 from __future__ import annotations
@@ -258,7 +258,7 @@ def _setup_gateway(provider: str) -> ProviderGateway:
         gateway.register(
             OpenAIProvider(),
             priority=0 if provider == "openai" else 10,
-            models=["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4o-mini"],
+            models=["gpt-4o-mini", "gpt-4o", "gpt-4.1"],
         )
 
     if os.environ.get("ANTHROPIC_API_KEY"):

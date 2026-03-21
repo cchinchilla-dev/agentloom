@@ -19,11 +19,9 @@ DEFAULT_PRICING: dict[str, ModelPricing] = {
     "gpt-5.4": ModelPricing(input_cost_per_1k=0.00250, output_cost_per_1k=0.01500),
     "gpt-5.4-mini": ModelPricing(input_cost_per_1k=0.00075, output_cost_per_1k=0.00450),
     "gpt-5.4-nano": ModelPricing(input_cost_per_1k=0.00020, output_cost_per_1k=0.00125),
-    # OpenAI — GPT-4.1 family (April 2025)
+    # OpenAI — GPT-4.1 (April 2025)
     "gpt-4.1": ModelPricing(input_cost_per_1k=0.00200, output_cost_per_1k=0.00800),
-    "gpt-4.1-mini": ModelPricing(input_cost_per_1k=0.00040, output_cost_per_1k=0.00160),
-    "gpt-4.1-nano": ModelPricing(input_cost_per_1k=0.00010, output_cost_per_1k=0.00040),
-    # OpenAI — GPT-4o (legacy, still available)
+    # OpenAI — GPT-4o family
     "gpt-4o": ModelPricing(input_cost_per_1k=0.00250, output_cost_per_1k=0.01000),
     "gpt-4o-mini": ModelPricing(input_cost_per_1k=0.00015, output_cost_per_1k=0.00060),
     # OpenAI — reasoning models

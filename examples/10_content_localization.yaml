@@ -8,7 +8,7 @@ description: >
 
 config:
   provider: openai
-  model: gpt-4.1-nano
+  model: gpt-4o-mini
   budget_usd: 0.15
   max_concurrent_steps: 3
 
@@ -58,7 +58,7 @@ steps:
       name: localize-spanish
       config:
         provider: openai
-        model: gpt-4.1-nano
+        model: gpt-4o-mini
       state:
         translation: ""
         adaptation: ""
@@ -141,7 +141,7 @@ steps:
       name: localize-german
       config:
         provider: openai
-        model: gpt-4.1-nano
+        model: gpt-4o-mini
       state:
         translation: ""
         adaptation: ""
@@ -225,7 +225,7 @@ steps:
       name: localize-japanese
       config:
         provider: openai
-        model: gpt-4.1-nano
+        model: gpt-4o-mini
       state:
         translation: ""
         adaptation: ""

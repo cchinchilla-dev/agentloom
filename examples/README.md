@@ -106,7 +106,7 @@ Demonstrates: `@tool` decorator, custom tool registration, separate YAML workflo
 
 ```bash
 uv run python examples/14_custom_tools_decorator.py
-uv run python examples/14_custom_tools_decorator.py --provider openai --model gpt-4.1-nano
+uv run python examples/14_custom_tools_decorator.py --provider openai --model gpt-4o-mini
 ```
 
 ### 15 — Custom Tools: BaseTool Subclass (`*.yaml` + `*.py`)
@@ -120,7 +120,7 @@ Demonstrates: `BaseTool` subclass, separate YAML workflow + Python runner.
 
 ```bash
 uv run python examples/15_custom_tools_subclass.py
-uv run python examples/15_custom_tools_subclass.py --provider openai --model gpt-4.1-nano
+uv run python examples/15_custom_tools_subclass.py --provider openai --model gpt-4o-mini
 ```
 
 ---
