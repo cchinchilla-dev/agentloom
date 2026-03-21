@@ -85,6 +85,9 @@ class DAG:
             for succ in self._edges.get(node, set()):
                 in_degree[succ] = in_degree.get(succ, 0) + 1
 
+        # NOTE: using sorted list as a priority queue — O(n log n) per iteration.
+        # Fine for typical workflow sizes (<100 nodes). For large DAGs, replace
+        # with heapq or collections.deque.
         queue = [n for n in self._nodes if in_degree[n] == 0]
         queue.sort()  # Deterministic order for same-priority nodes
         result: list[str] = []

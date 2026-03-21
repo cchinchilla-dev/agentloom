@@ -287,7 +287,9 @@ class WorkflowEngine:
                 if result.status == StepStatus.SUCCESS:
                     await self.state.set_step_result(step_id, result)
 
-                    # Budget tracking
+                    # Budget tracking — post-hoc check, no async lock on _budget_spent.
+                    # Cooperative concurrency makes this safe in practice (no preemption
+                    # between read and write), but a proper BudgetEnforcer refactor is planned.
                     self._budget_spent += result.cost_usd
                     if (
                         self.workflow.config.budget_usd is not None

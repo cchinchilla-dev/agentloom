@@ -30,7 +30,7 @@ First public release.
 - OpenTelemetry traces + Prometheus metrics (optional, `pip install agentloom[all]`)
 - CLI commands: `run`, `validate`, `visualize` (ASCII + Mermaid), `info`
 - Checkpointing: save and resume workflow state to disk
-- 187 tests, mypy strict, ruff clean
+- 392 tests, mypy strict, ruff clean
 
 ### Known Limitations
 
@@ -38,10 +38,15 @@ First public release.
 - Router expressions use first-match-wins, no priority ordering
 - Rate limiter doesn't account for response tokens (only prompt tokens)
 - Provider discovery from env vars only, should be a config file
-- `observer` parameter on WorkflowEngine accepted but not wired up
-- Shell command tool has no sandboxing
+- Shell command tool has no sandboxing (FIXME in code)
+- File tools accept arbitrary paths (no path sanitization)
+- Router expressions use `eval()` — must be trusted input (not user-facing)
 - Pricing table hardcoded in Python, should be YAML config
 - No array index support in state paths (e.g., `state.items[0]`)
+- Sync state access in step executors bypasses async lock (FIXME in `llm_call.py`)
+- Budget enforcement is post-hoc — a single expensive step can overshoot before being stopped
+- `budget_remaining` metric only emitted to Prometheus, not OTel
+- Checkpoint `save_checkpoint` uses blocking I/O inside async method
 
 ### Design Decisions
 

@@ -6,7 +6,12 @@ from agentloom.exceptions import BudgetExceededError
 
 
 class BudgetEnforcer:
-    """Tracks and enforces spending limits for workflow execution."""
+    """Tracks and enforces spending limits for workflow execution.
+
+    NOTE: not yet wired into WorkflowEngine — the engine tracks budget
+    inline via a bare float.  This class is the target for the engine
+    refactor that will replace that logic with proper pre-flight checks.
+    """
 
     def __init__(self, limit_usd: float | None = None) -> None:
         self.limit_usd = limit_usd

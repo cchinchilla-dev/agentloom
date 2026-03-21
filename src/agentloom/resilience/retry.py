@@ -1,4 +1,10 @@
-"""Retry with exponential backoff and jitter."""
+"""Retry with exponential backoff and jitter.
+
+NOTE: retry_with_policy is not yet called by WorkflowEngine, which
+reimplements retry inline.  Planned refactor will wire the engine
+to use this function for consistent jitter and retryable-status-code
+handling.
+"""
 
 from __future__ import annotations
 

@@ -270,6 +270,7 @@ class MetricsManager:
             ).inc(completion_tokens)
 
     def set_budget_remaining(self, workflow: str, remaining: float) -> None:
+        # NOTE: only Prometheus backend — OTel gauge for budget not yet implemented
         if self._enabled and self._backend == "prom":
             self._prom_gauges["budget_remaining"].labels(workflow=workflow).set(remaining)
 

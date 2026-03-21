@@ -87,7 +87,9 @@ class OllamaProvider(BaseProvider):
         )
 
     def supports_model(self, model: str) -> bool:
-        # Ollama can potentially serve any model
+        # Ollama accepts any model name — it downloads on demand if not present.
+        # Side effect: Ollama matches all models in gateway candidate lookup,
+        # so priority must be set higher (numerically) than cloud providers.
         return True
 
     async def close(self) -> None:
