@@ -130,9 +130,7 @@ class WorkflowObserver:
     # Circuit breaker events (called from gateway via callback)
     # ------------------------------------------------------------------
 
-    def on_circuit_state_change(
-        self, provider: str, old_state: str, new_state: str
-    ) -> None:
+    def on_circuit_state_change(self, provider: str, old_state: str, new_state: str) -> None:
         state_map = {"closed": 0, "open": 1, "half_open": 2}
         state_int = state_map.get(str(new_state), 0)
         logger.info(
