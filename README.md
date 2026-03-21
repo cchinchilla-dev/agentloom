@@ -92,7 +92,7 @@ agentloom visualize examples/03_router_workflow.yaml
 name: classify-and-respond
 config:
   provider: openai
-  model: gpt-4.1-nano
+  model: gpt-4o-mini
   budget_usd: 0.50
 
 state:
@@ -155,9 +155,9 @@ See [Dashboard Documentation](deploy/DASHBOARD.md) for panel descriptions, metri
 
 ## Why not autonomous agents?
 
-The AI agent ecosystem is at peak hype. New frameworks ship weekly, each promising autonomous agents that reason, plan, and collaborate. Most of them optimize for demos: flashy multi-agent conversations, auto-generated chains of thought, agent-to-agent delegation — impressive in a notebook, fragile in production.
+Most LLM frameworks focus on autonomous agents: self-directed reasoning, multi-agent delegation, unbounded tool loops. This works for demos and open-ended research, but breaks down in production where you need predictable costs, debuggable failures, and SLA compliance.
 
-AgentLoom takes the opposite stance. It is **not** an autonomous agent framework. There are no self-directed agents, no unbounded loops, no emergent multi-agent negotiation. Instead, it is a **deterministic workflow orchestrator** that happens to use LLMs as execution steps.
+AgentLoom is **not** an autonomous agent framework. There are no self-directed agents, no unbounded loops, no emergent behavior. It is a **deterministic workflow orchestrator** that uses LLMs as execution steps within a declared DAG.
 
 The difference matters:
 
@@ -171,19 +171,14 @@ Autonomous agent frameworks solve a real problem — open-ended tasks where the 
 ## Development
 
 ```bash
-# Install dev dependencies
-uv sync --group dev --all-extras
-
-# Run tests
-uv run pytest
-
-# Lint + type check
-uv run ruff check src/
-uv run mypy src/
-
-# Format
-uv run ruff format src/
+uv sync --group dev --all-extras   # install with all extras
+uv run pytest                       # 187 tests, ~5s
+uv run ruff check src/ tests/      # lint (ruff replaces flake8+isort)
+uv run ruff format src/ tests/     # autoformat
+uv run mypy src/                   # strict type checking
 ```
+
+Pre-commit hooks run ruff automatically on staged files — see [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
 ## Contributing
 
