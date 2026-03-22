@@ -1,9 +1,18 @@
-# AgentLoom
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/header_dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/header_white.png">
+    <img src="docs/images/header_white.png" alt="AgentLoom" width="360">
+  </picture>
+</p>
+<p align="center">
+  <strong>Deterministic LLM workflow orchestration with native observability, resilience, and cost control.</strong>
+</p>
 
-**Production-ready agentic workflow orchestrator** with native observability, resilience, and cost control.
-
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+<p align="center">
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+</p>
 
 ---
 
@@ -60,29 +69,29 @@ agentloom visualize examples/03_router_workflow.yaml
 
 ```
 +-----------------------------------------------------+
-|                   CLI / Python API                   |
+|                   CLI / Python API                  |
 +-----------------------------------------------------+
-|                   Workflow Engine                    |
+|                   Workflow Engine                   |
 |  +-----------+  +-----------+  +---------------+    |
 |  |DAG Parser |  | Scheduler |  | State Manager |    |
 |  |& Validator|  |  (anyio)  |  |  (Pydantic)   |    |
 |  +-----------+  +-----------+  +---------------+    |
 +-----------------------------------------------------+
-|                   Step Executors                     |
-|  +--------+ +---------+ +------+ +------------+    |
-|  |LLM Call| |Tool Exec| |Router| | Subworkflow|    |
-|  +--------+ +---------+ +------+ +------------+    |
+|                   Step Executors                    |
+|  +--------+ +---------+ +------+ +------------+     |
+|  |LLM Call| |Tool Exec| |Router| | Subworkflow|     |
+|  +--------+ +---------+ +------+ +------------+     |
 +-----------------------------------------------------+
 |                  Provider Gateway                   |
-|  +-----------------------------------------------+ |
+|  +-----------------------------------------------+  |
 |  | OpenAI | Anthropic | Google | Ollama           | |
 |  | + Fallback | Circuit Breaker | Rate Limiter    | |
-|  +-----------------------------------------------+ |
+|  +-----------------------------------------------+  |
 +-----------------------------------------------------+
 |              Observability (optional)               |
-|  +------------+  +----------+  +----------+        |
-|  | OTel Traces|  |Prometheus|  | JSON Logs|        |
-|  +------------+  +----------+  +----------+        |
+|  +------------+  +----------+  +----------+         |
+|  | OTel Traces|  |Prometheus|  | JSON Logs|         |
+|  +------------+  +----------+  +----------+         |
 +-----------------------------------------------------+
 ```
 
@@ -172,7 +181,7 @@ Autonomous agent frameworks solve a real problem — open-ended tasks where the 
 
 ```bash
 uv sync --group dev --all-extras   # install with all extras
-uv run pytest                       # 187 tests, ~5s
+uv run pytest                       # 392 tests, ~5s
 uv run ruff check src/ tests/      # lint (ruff replaces flake8+isort)
 uv run ruff format src/ tests/     # autoformat
 uv run mypy src/                   # strict type checking
