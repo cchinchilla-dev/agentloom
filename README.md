@@ -3,7 +3,7 @@
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_dark.png">
       <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_white.png">
-      <img src="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_white.png" alt="AgentLoom" width="360">
+      <img src="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_white.png" alt="AgentLoom">
     </picture>
   </a>
 </p>
