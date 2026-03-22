@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sandbox shell_command tool execution (currently no isolation)
 - Array index support in state paths (e.g., `state.items[0]`)
 
+## [0.1.1] - 2026-03-22
+
+### Fixed
+
+- Rate limiter now accounts for response tokens, not just prompt tokens (#11)
+- README header image uses absolute URLs for PyPI compatibility (#2)
+
 ## [0.1.0] - 2026-03-19
 
 First public release.
