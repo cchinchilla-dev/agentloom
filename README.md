@@ -1,9 +1,11 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/header_dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/images/header_white.png">
-    <img src="docs/images/header_white.png" alt="AgentLoom" width="360">
-  </picture>
+  <a href="https://github.com/cchinchilla-dev/agentloom">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_dark.png">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_white.png">
+      <img src="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_white.png" alt="AgentLoom" width="360">
+    </picture>
+  </a>
 </p>
 <p align="center">
   <strong>Deterministic LLM workflow orchestration with native observability, resilience, and cost control.</strong>
