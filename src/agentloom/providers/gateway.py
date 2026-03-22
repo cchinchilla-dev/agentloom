@@ -139,7 +139,8 @@ class ProviderGateway:
 
                 # Consume response tokens from rate limiter budget
                 if entry.rate_limiter and response.usage.completion_tokens:
-                    await entry.rate_limiter.consume_response_tokens(response.usage.completion_tokens)
+                    resp_tokens = response.usage.completion_tokens
+                    await entry.rate_limiter.consume_response_tokens(resp_tokens)
 
                 logger.debug(
                     "Provider '%s' responded for model '%s'",
