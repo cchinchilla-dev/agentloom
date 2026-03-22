@@ -57,6 +57,33 @@ class TestAcquireTPM:
         assert rl._token_tokens >= initial - 1.0
 
 
+class TestConsumeResponseTokens:
+    async def test_consumes_from_bucket(self) -> None:
+        rl = RateLimiter(max_tokens_per_minute=10_000)
+        initial = rl._token_tokens
+        await rl.consume_response_tokens(500)
+        assert rl._token_tokens < initial
+        assert rl._token_tokens <= initial - 499  # allow small refill drift
+
+    async def test_zero_tokens_is_noop(self) -> None:
+        rl = RateLimiter(max_tokens_per_minute=10_000)
+        initial = rl._token_tokens
+        await rl.consume_response_tokens(0)
+        # Only refill drift, no consumption
+        assert rl._token_tokens >= initial - 1.0
+
+    async def test_negative_tokens_is_noop(self) -> None:
+        rl = RateLimiter(max_tokens_per_minute=10_000)
+        initial = rl._token_tokens
+        await rl.consume_response_tokens(-100)
+        assert rl._token_tokens >= initial - 1.0
+
+    async def test_does_not_go_below_zero(self) -> None:
+        rl = RateLimiter(max_tokens_per_minute=100)
+        await rl.consume_response_tokens(200)
+        assert rl._token_tokens >= 0.0
+
+
 class TestRefill:
     def test_refill_adds_tokens(self) -> None:
         rl = RateLimiter(max_requests_per_minute=60)
