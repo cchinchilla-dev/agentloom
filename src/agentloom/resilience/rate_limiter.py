@@ -31,6 +31,18 @@ class RateLimiter:
 
         self._lock = anyio.Lock()
 
+    async def consume_response_tokens(self, token_count: int) -> None:
+        """Consume tokens from the bucket after receiving a response.
+
+        Call this after a completion to account for response tokens
+        against the TPM budget.
+        """
+        if token_count <= 0:
+            return
+        async with self._lock:
+            self._refill()
+            self._token_tokens = max(0.0, self._token_tokens - token_count)
+
     async def acquire(self, token_count: int = 0) -> None:
         """Acquire permission to make a request.
 
@@ -39,7 +51,6 @@ class RateLimiter:
         Args:
             token_count: Estimated token count for this request (0 = request-only limiting).
         """
-        # TODO: token bucket doesn't account for response tokens, only request tokens
         while True:
             async with self._lock:
                 self._refill()
