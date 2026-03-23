@@ -30,7 +30,8 @@ class ToolStep(BaseStep):
             raise StepError(step.id, str(e)) from e
 
         # Resolve tool arguments from state
-        resolved_args = self._resolve_args(step.tool_args, context.state_manager.state)
+        state_snapshot = await context.state_manager.get_state_snapshot()
+        resolved_args = self._resolve_args(step.tool_args, state_snapshot)
 
         # Execute the tool
         try:

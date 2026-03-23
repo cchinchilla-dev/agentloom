@@ -123,7 +123,7 @@ class RouterStep(BaseStep):
         if not step.conditions and not step.default:
             raise StepError(step.id, "Router step requires 'conditions' or 'default'")
 
-        state_snapshot = context.state_manager.state
+        state_snapshot = await context.state_manager.get_state_snapshot()
 
         # Build namespace with state access
         namespace: dict[str, Any] = {}

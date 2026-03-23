@@ -27,8 +27,7 @@ class LLMCallStep(BaseStep):
 
         # Resolve model: step-level override > workflow config
         model = step.model or context.workflow_model
-        # FIXME: using sync .state property in async context — should be await get_state_snapshot()
-        state_snapshot = context.state_manager.state
+        state_snapshot = await context.state_manager.get_state_snapshot()
 
         # Build a flat namespace for template rendering
         template_vars = self._build_template_vars(state_snapshot)
