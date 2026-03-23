@@ -48,6 +48,7 @@ async def _run_async(
     from agentloom.providers.gateway import ProviderGateway
     from agentloom.tools.builtins import register_builtins
     from agentloom.tools.registry import ToolRegistry
+    from agentloom.tools.sandbox import ToolSandbox
 
     # Parse workflow
     try:
@@ -79,9 +80,20 @@ async def _run_async(
     gateway = ProviderGateway()
     _setup_providers(gateway, workflow.config.provider)
 
-    # Setup tools
+    # Setup tools with sandbox from workflow config
+    sandbox_cfg = workflow.config.sandbox
+    sandbox = ToolSandbox(
+        enabled=sandbox_cfg.enabled,
+        allowed_commands=sandbox_cfg.allowed_commands,
+        allowed_paths=sandbox_cfg.allowed_paths,
+        allow_network=sandbox_cfg.allow_network,
+        readable_paths=sandbox_cfg.readable_paths,
+        writable_paths=sandbox_cfg.writable_paths,
+        allowed_domains=sandbox_cfg.allowed_domains,
+        max_write_bytes=sandbox_cfg.max_write_bytes,
+    )
     tool_registry = ToolRegistry()
-    register_builtins(tool_registry)
+    register_builtins(tool_registry, sandbox=sandbox)
 
     # Setup observability (unless --lite)
     observer = _setup_observer(lite)

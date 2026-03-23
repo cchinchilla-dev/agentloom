@@ -49,6 +49,14 @@ class BudgetExceededError(AgentLoomError):
         super().__init__(f"Budget exceeded: spent ${spent:.4f} of ${budget:.4f} limit")
 
 
+class SandboxViolationError(AgentLoomError):
+    """Tool execution blocked by sandbox policy."""
+
+    def __init__(self, tool: str, message: str) -> None:
+        self.tool = tool
+        super().__init__(f"Sandbox violation ({tool}): {message}")
+
+
 class ValidationError(AgentLoomError):
     """Workflow or step definition validation error."""
 

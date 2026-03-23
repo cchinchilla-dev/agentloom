@@ -66,6 +66,23 @@ class StepDefinition(BaseModel):
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
 
+class SandboxConfig(BaseModel):
+    """Sandbox configuration for built-in tools.
+
+    When enabled, shell commands are validated against an allowlist
+    and file operations are restricted to allowed paths.
+    """
+
+    enabled: bool = False
+    allowed_commands: list[str] = Field(default_factory=list)
+    allowed_paths: list[str] = Field(default_factory=list)
+    readable_paths: list[str] = Field(default_factory=list)
+    writable_paths: list[str] = Field(default_factory=list)
+    allow_network: bool = True
+    allowed_domains: list[str] = Field(default_factory=list)
+    max_write_bytes: int | None = None
+
+
 class WorkflowConfig(BaseModel):
     """Workflow-level configuration."""
 
@@ -75,6 +92,7 @@ class WorkflowConfig(BaseModel):
     budget_usd: float | None = None
     timeout: float | None = None
     max_concurrent_steps: int = 10
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
 
 class WorkflowDefinition(BaseModel):
