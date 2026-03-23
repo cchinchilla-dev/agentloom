@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Step executors (`llm_call`, `router`, `tool_step`) now use `await get_state_snapshot()` instead of sync `.state` access (#8)
+
 ### Planned
 
 - Streaming responses from providers (currently falls back to full completion)
@@ -50,7 +54,7 @@ First public release.
 - Router expressions use `eval()` — must be trusted input (not user-facing)
 - Pricing table hardcoded in Python, should be YAML config
 - No array index support in state paths (e.g., `state.items[0]`)
-- Sync state access in step executors bypasses async lock (FIXME in `llm_call.py`)
+- ~~Sync state access in step executors bypasses async lock~~ (fixed)
 - Budget enforcement is post-hoc — a single expensive step can overshoot before being stopped
 - `budget_remaining` metric only emitted to Prometheus, not OTel
 - Checkpoint `save_checkpoint` uses blocking I/O inside async method
