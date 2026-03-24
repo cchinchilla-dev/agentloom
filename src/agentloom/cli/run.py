@@ -191,7 +191,6 @@ def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
             GoogleProvider(),
             priority=0 if default_provider == "google" else 10,
             models=[
-                "gemini-2.0-flash",
                 "gemini-2.5-flash",
             ],
         )
