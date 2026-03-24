@@ -81,16 +81,12 @@ class TestShellCommandSandbox:
 
     def test_path_arg_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            sandbox = ToolSandbox(
-                enabled=True, allowed_commands=["cat"], allowed_paths=[tmpdir]
-            )
+            sandbox = ToolSandbox(enabled=True, allowed_commands=["cat"], allowed_paths=[tmpdir])
             sandbox.validate_command(f"cat {tmpdir}/data.txt")
 
     def test_path_arg_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            sandbox = ToolSandbox(
-                enabled=True, allowed_commands=["cat"], allowed_paths=[tmpdir]
-            )
+            sandbox = ToolSandbox(enabled=True, allowed_commands=["cat"], allowed_paths=[tmpdir])
             with pytest.raises(SandboxViolationError, match="Path argument"):
                 sandbox.validate_command("cat /etc/passwd")
 
@@ -109,9 +105,7 @@ class TestShellCommandSandbox:
                 sandbox.validate_command("cat /etc/shadow")
 
     def test_non_path_args_ignored(self) -> None:
-        sandbox = ToolSandbox(
-            enabled=True, allowed_commands=["echo"], allowed_paths=["/tmp"]
-        )
+        sandbox = ToolSandbox(enabled=True, allowed_commands=["echo"], allowed_paths=["/tmp"])
         # Relative args and flags are not validated as paths
         sandbox.validate_command("echo -n hello world")
 
@@ -243,9 +237,7 @@ class TestNetworkSandbox:
         sandbox.validate_network("https://anything.com")
 
     def test_domain_check_case_insensitive(self) -> None:
-        sandbox = ToolSandbox(
-            enabled=True, allow_network=True, allowed_domains=["API.OpenAI.com"]
-        )
+        sandbox = ToolSandbox(enabled=True, allow_network=True, allowed_domains=["API.OpenAI.com"])
         sandbox.validate_network("https://api.openai.com/v1")
 
     def test_network_blocked_overrides_domains(self) -> None:
@@ -285,9 +277,7 @@ class TestWriteSizeLimit:
 class TestShellCommandToolIntegration:
     async def test_sandbox_blocks_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            sandbox = ToolSandbox(
-                enabled=True, allowed_commands=["echo"], allowed_paths=[tmpdir]
-            )
+            sandbox = ToolSandbox(enabled=True, allowed_commands=["echo"], allowed_paths=[tmpdir])
             tool = ShellCommandTool(sandbox=sandbox)
 
             result = await tool.execute(command="echo allowed", cwd=tmpdir)
@@ -304,9 +294,7 @@ class TestShellCommandToolIntegration:
 
     async def test_cwd_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as allowed:
-            sandbox = ToolSandbox(
-                enabled=True, allowed_commands=["echo"], allowed_paths=[allowed]
-            )
+            sandbox = ToolSandbox(enabled=True, allowed_commands=["echo"], allowed_paths=[allowed])
             tool = ShellCommandTool(sandbox=sandbox)
 
             with pytest.raises(SandboxViolationError):
@@ -334,9 +322,7 @@ class TestFileToolIntegration:
             sandbox = ToolSandbox(enabled=True, allowed_paths=[tmpdir])
             tool = FileWriteTool(sandbox=sandbox)
 
-            result = await tool.execute(
-                path=f"{tmpdir}/out.txt", content="safe"
-            )
+            result = await tool.execute(path=f"{tmpdir}/out.txt", content="safe")
             assert result["written"] == 4
 
             with pytest.raises(SandboxViolationError):
@@ -357,18 +343,14 @@ class TestFileToolIntegration:
 
     async def test_write_size_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            sandbox = ToolSandbox(
-                enabled=True, allowed_paths=[tmpdir], max_write_bytes=10
-            )
+            sandbox = ToolSandbox(enabled=True, allowed_paths=[tmpdir], max_write_bytes=10)
             tool = FileWriteTool(sandbox=sandbox)
 
             result = await tool.execute(path=f"{tmpdir}/small.txt", content="hi")
             assert result["written"] == 2
 
             with pytest.raises(SandboxViolationError, match="exceeds limit"):
-                await tool.execute(
-                    path=f"{tmpdir}/big.txt", content="x" * 100
-                )
+                await tool.execute(path=f"{tmpdir}/big.txt", content="x" * 100)
 
 
 class TestHttpToolIntegration:

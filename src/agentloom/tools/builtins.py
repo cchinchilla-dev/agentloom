@@ -149,9 +149,7 @@ class FileWriteTool(BaseTool):
         encoding = kwargs.get("encoding", "utf-8")
 
         self._sandbox.validate_path(path_str, writable=True, tool_name="file_write")
-        self._sandbox.validate_write_size(
-            len(content.encode(encoding)), tool_name="file_write"
-        )
+        self._sandbox.validate_write_size(len(content.encode(encoding)), tool_name="file_write")
 
         path = Path(path_str)
         path.parent.mkdir(parents=True, exist_ok=True)

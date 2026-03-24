@@ -115,9 +115,7 @@ class ToolSandbox:
         try:
             tokens = shlex.split(command)
         except ValueError:
-            raise SandboxViolationError(
-                "shell_command", f"Cannot parse command: {command!r}"
-            )
+            raise SandboxViolationError("shell_command", f"Cannot parse command: {command!r}")
 
         if not tokens:
             return
@@ -143,13 +141,10 @@ class ToolSandbox:
                     if not self._is_within(resolved, all_paths):
                         raise SandboxViolationError(
                             "shell_command",
-                            f"Path argument {str(resolved)!r} not within "
-                            f"allowed directories",
+                            f"Path argument {str(resolved)!r} not within allowed directories",
                         )
 
-    def validate_path(
-        self, path: str, *, writable: bool = False, tool_name: str = "file"
-    ) -> None:
+    def validate_path(self, path: str, *, writable: bool = False, tool_name: str = "file") -> None:
         """Validate a file path is within allowed directories.
 
         Resolves symlinks and relative paths before checking.  When
@@ -200,9 +195,7 @@ class ToolSandbox:
                     f"Allowed: {sorted(self._allowed_domains)}",
                 )
 
-    def validate_write_size(
-        self, size: int, tool_name: str = "file_write"
-    ) -> None:
+    def validate_write_size(self, size: int, tool_name: str = "file_write") -> None:
         """Validate that a write payload does not exceed the size limit.
 
         Raises:
@@ -214,6 +207,5 @@ class ToolSandbox:
         if self._max_write_bytes is not None and size > self._max_write_bytes:
             raise SandboxViolationError(
                 tool_name,
-                f"Write size {size} bytes exceeds limit of "
-                f"{self._max_write_bytes} bytes",
+                f"Write size {size} bytes exceeds limit of {self._max_write_bytes} bytes",
             )
