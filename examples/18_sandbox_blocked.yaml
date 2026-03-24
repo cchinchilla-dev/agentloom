@@ -1,0 +1,56 @@
+name: sandbox-blocked
+version: "1.0"
+description: >
+  Demonstrates sandbox enforcement — this workflow WILL FAIL because it
+  attempts operations outside the sandbox policy. Use it to verify that
+  the sandbox correctly blocks dangerous commands.
+
+config:
+  provider: openai
+  model: gpt-4o-mini
+  sandbox:
+    enabled: true
+    allowed_commands: [echo]
+    allowed_paths: [/tmp/agentloom]
+    allow_network: false
+
+steps:
+  # This step succeeds — echo is in the allowlist.
+  - id: allowed_echo
+    type: tool
+    tool_name: shell_command
+    tool_args:
+      command: "echo this is fine"
+    output: echo_result
+
+  # BLOCKED: 'curl' is not in allowed_commands.
+  - id: blocked_command
+    type: tool
+    tool_name: shell_command
+    tool_args:
+      command: "curl https://example.com"
+    output: curl_result
+
+  # BLOCKED: /etc/hostname is outside allowed_paths.
+  - id: blocked_read
+    type: tool
+    tool_name: file_read
+    tool_args:
+      path: "/etc/hostname"
+    output: hostname
+
+  # BLOCKED: network access is disabled.
+  - id: blocked_network
+    type: tool
+    tool_name: http_request
+    tool_args:
+      url: "https://httpbin.org/get"
+    output: response
+
+  # BLOCKED: pipe operator detected — prevents command injection.
+  - id: blocked_pipe
+    type: tool
+    tool_name: shell_command
+    tool_args:
+      command: "echo hello | cat /etc/passwd"
+    output: pipe_result

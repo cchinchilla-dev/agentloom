@@ -129,3 +129,15 @@ uv run python examples/15_custom_tools_subclass.py --provider openai --model gpt
 Demonstrates the resilience layer. Intentionally sends requests to a non-existent
 model to trip the circuit breaker, then shows automatic fallback to a working provider.
 Demonstrates: circuit breaker state transitions (CLOSED → OPEN), provider fallback, resilience metrics.
+
+### 17 — Sandbox: Allowed Operations
+Runs commands and file I/O within sandbox limits. `echo` is allowed, files stay
+inside `/tmp/agentloom`, network is enabled. All steps complete successfully.
+Demonstrates: `config.sandbox`, command allowlist, path restriction, sandboxed workflow.
+
+### 18 — Sandbox: Blocked Operations
+Attempts operations that violate the sandbox policy: disallowed command (`curl`),
+path outside allowed directory (`/etc/hostname`), network disabled, and pipe injection
+(`echo | cat`). Only the first step (`echo`) succeeds — the rest are blocked with
+`SandboxViolationError`.
+Demonstrates: sandbox enforcement, command injection prevention, path and network blocking.
