@@ -1,7 +1,9 @@
-# Observability stack for AgentLoom development.
-# Run this on your dev machine to spin up the observability stack.
+# Observability stack + AgentLoom runner.
 #
-# Usage: docker compose up -d
+# Usage:
+#   docker compose up -d — start observability stack only
+#   docker compose run --rm agentloom run /workflows/01_simple_qa.yaml
+#
 # Access:
 #   - Grafana:    http://localhost:3000 (admin/admin)
 #   - Prometheus: http://localhost:9090
@@ -9,6 +11,29 @@
 #   - OTel Collector: localhost:4317 (gRPC)
 
 services:
+  # ---- AgentLoom runner (on-demand) ----
+  agentloom:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        BUILD_OBSERVABILITY: "true"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    env_file:
+      - path: ../.env
+        required: false
+    volumes:
+      - ../examples:/workflows:ro
+    profiles: ["run"]
+    depends_on:
+      otel-collector:
+        condition: service_started
+    networks:
+      - agentloom
+
+  # ---- Observability stack ----
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.96.0
     command: ["--config=/etc/otel/config.yaml"]
@@ -19,7 +44,11 @@ services:
       - "4318:4318"   # OTLP HTTP
       - "8889:8889"   # Prometheus exporter
     depends_on:
-      - jaeger
+      jaeger:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - agentloom
 
   jaeger:
     image: jaegertracing/all-in-one:1.54
@@ -28,6 +57,14 @@ services:
     ports:
       - "16686:16686"  # Jaeger UI
       - "14268:14268"  # Jaeger collector
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:14269/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - agentloom
 
   prometheus:
     image: prom/prometheus:v2.50.1
@@ -38,13 +75,21 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - agentloom
 
   grafana:
     image: grafana/grafana:10.3.3
     environment:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Editor
       GF_RENDERING_SERVER_URL: http://renderer:8081/render
       GF_RENDERING_CALLBACK_URL: http://grafana:3000/
     volumes:
@@ -53,10 +98,26 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - prometheus
-      - renderer
+      prometheus:
+        condition: service_healthy
+      renderer:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - agentloom
 
   renderer:
     image: grafana/grafana-image-renderer:latest
     ports:
       - "8081:8081"
+    restart: unless-stopped
+    networks:
+      - agentloom
+
+networks:
+  agentloom:
