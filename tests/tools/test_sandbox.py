@@ -72,6 +72,11 @@ class TestShellCommandSandbox:
             "echo hello & rm -rf /",
             "echo `whoami`",
             "echo $(cat /etc/passwd)",
+            "echo ok\nrm -rf /",
+            "echo ok\rrm -rf /",
+            "echo secret > /tmp/stolen",
+            "echo secret >> /tmp/stolen",
+            "cat < /etc/passwd",
         ],
     )
     def test_shell_operators_blocked(self, cmd: str) -> None:

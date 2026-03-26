@@ -21,6 +21,7 @@ steps:
     tool_name: shell_command
     tool_args:
       command: "echo this is fine"
+      cwd: "/tmp/agentloom"
     output: echo_result
 
   # BLOCKED: 'curl' is not in allowed_commands.

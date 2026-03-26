@@ -14,10 +14,11 @@ from urllib.parse import urlparse
 
 from agentloom.exceptions import SandboxViolationError
 
-# Shell metacharacters that can chain or inject commands.
+# Shell metacharacters that can chain, redirect, or inject commands.
 # Checked BEFORE shlex parsing (raw string) to catch operators
-# that shlex treats as literal tokens.
-_SHELL_OPERATOR_RE = re.compile(r"[|;&`]|\$\(")
+# that shlex treats as literal tokens.  Includes \n/\r which act
+# as command separators in sh -c.
+_SHELL_OPERATOR_RE = re.compile(r"[|;&`<>\n\r]|\$\(|>>")
 
 
 class ToolSandbox:

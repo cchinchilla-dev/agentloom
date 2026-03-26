@@ -23,6 +23,7 @@ steps:
     tool_name: shell_command
     tool_args:
       command: "echo {state.greeting}"
+      cwd: "/tmp/agentloom"
     output: echo_result
 
   - id: write_output
