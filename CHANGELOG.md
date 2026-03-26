@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Sandbox enforcement for built-in tools — command allowlist, path restrictions, network control (#4)
+- `SandboxConfig` model in workflow YAML (`config.sandbox.*`)
+- `SandboxViolationError` exception
+
 ### Fixed
 
 - Step executors (`llm_call`, `router`, `tool_step`) now use `await get_state_snapshot()` instead of sync `.state` access (#8)
@@ -16,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Streaming responses from providers (currently falls back to full completion)
 - YAML-based provider config (replace env var discovery)
 - Load pricing table from YAML instead of hardcoded Python dict
-- Sandbox shell_command tool execution (currently no isolation)
+- ~~Sandbox shell_command tool execution (currently no isolation)~~
 - Array index support in state paths (e.g., `state.items[0]`)
 
 ## [0.1.1] - 2026-03-22

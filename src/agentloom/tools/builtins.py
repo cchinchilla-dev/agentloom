@@ -9,6 +9,7 @@ import anyio
 import httpx
 
 from agentloom.tools.base import BaseTool
+from agentloom.tools.sandbox import ToolSandbox
 
 
 class HttpRequestTool(BaseTool):
@@ -32,12 +33,17 @@ class HttpRequestTool(BaseTool):
         "required": ["url"],
     }
 
+    def __init__(self, sandbox: ToolSandbox | None = None) -> None:
+        self._sandbox = sandbox or ToolSandbox()
+
     async def execute(self, **kwargs: Any) -> Any:
         url = kwargs["url"]
         method = kwargs.get("method", "GET")
         headers = kwargs.get("headers", {})
         body = kwargs.get("body", "")
         timeout = kwargs.get("timeout", 30)
+
+        self._sandbox.validate_network(url)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.request(
@@ -68,10 +74,15 @@ class ShellCommandTool(BaseTool):
         "required": ["command"],
     }
 
+    def __init__(self, sandbox: ToolSandbox | None = None) -> None:
+        self._sandbox = sandbox or ToolSandbox()
+
     async def execute(self, **kwargs: Any) -> Any:
-        # FIXME: no sandboxing — fine for trusted workflows, not for untrusted input
         command = kwargs["command"]
         cwd = kwargs.get("cwd", ".")
+
+        self._sandbox.validate_path(cwd, tool_name="shell_command")
+        self._sandbox.validate_command(command)
 
         try:
             result = await anyio.run_process(
@@ -102,10 +113,16 @@ class FileReadTool(BaseTool):
         "required": ["path"],
     }
 
+    def __init__(self, sandbox: ToolSandbox | None = None) -> None:
+        self._sandbox = sandbox or ToolSandbox()
+
     async def execute(self, **kwargs: Any) -> Any:
-        path = Path(kwargs["path"])
+        path = kwargs["path"]
         encoding = kwargs.get("encoding", "utf-8")
-        return path.read_text(encoding=encoding)
+
+        self._sandbox.validate_path(path, writable=False, tool_name="file_read")
+
+        return Path(path).read_text(encoding=encoding)
 
 
 class FileWriteTool(BaseTool):
@@ -123,18 +140,32 @@ class FileWriteTool(BaseTool):
         "required": ["path", "content"],
     }
 
+    def __init__(self, sandbox: ToolSandbox | None = None) -> None:
+        self._sandbox = sandbox or ToolSandbox()
+
     async def execute(self, **kwargs: Any) -> Any:
-        path = Path(kwargs["path"])
+        path_str = kwargs["path"]
         content = kwargs["content"]
         encoding = kwargs.get("encoding", "utf-8")
+
+        self._sandbox.validate_path(path_str, writable=True, tool_name="file_write")
+        self._sandbox.validate_write_size(len(content.encode(encoding)), tool_name="file_write")
+
+        path = Path(path_str)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding=encoding)
         return {"written": len(content), "path": str(path)}
 
 
-def register_builtins(registry: Any) -> None:
-    """Register all built-in tools with a ToolRegistry."""
-    registry.register(HttpRequestTool())
-    registry.register(ShellCommandTool())
-    registry.register(FileReadTool())
-    registry.register(FileWriteTool())
+def register_builtins(registry: Any, sandbox: ToolSandbox | None = None) -> None:
+    """Register all built-in tools with a ToolRegistry.
+
+    Args:
+        registry: ToolRegistry instance.
+        sandbox: Optional sandbox policy. When provided, built-in tools
+            validate operations before executing.
+    """
+    registry.register(HttpRequestTool(sandbox=sandbox))
+    registry.register(ShellCommandTool(sandbox=sandbox))
+    registry.register(FileReadTool(sandbox=sandbox))
+    registry.register(FileWriteTool(sandbox=sandbox))

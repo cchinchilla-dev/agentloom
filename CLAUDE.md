@@ -29,6 +29,7 @@
 - `core/state.py` — async-safe shared state with dotted key access
 - `providers/gateway.py` — routes to providers with circuit breaker + rate limiter + fallback
 - `steps/router.py` — conditional branching via AST-validated safe expressions
+- `tools/sandbox.py` — allowlist-based sandbox for commands, paths, and network access
 
 ## Gotchas
 - `steps/registry.py` uses lazy imports inside `create_default_registry()` — avoids circular imports between steps and providers at module load time

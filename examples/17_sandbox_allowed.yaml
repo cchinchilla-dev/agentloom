@@ -1,0 +1,53 @@
+name: sandbox-allowed
+version: "1.0"
+description: >
+  Demonstrates sandbox enforcement — only 'echo' and 'cat' are allowed,
+  file access is restricted to /tmp/agentloom, and network is enabled.
+  This workflow runs successfully within the sandbox limits.
+
+config:
+  provider: openai
+  model: gpt-4o-mini
+  sandbox:
+    enabled: true
+    allowed_commands: [echo, cat]
+    allowed_paths: [/tmp/agentloom]
+    allow_network: true
+
+state:
+  greeting: "Hello from the sandbox"
+
+steps:
+  - id: safe_echo
+    type: tool
+    tool_name: shell_command
+    tool_args:
+      command: "echo {state.greeting}"
+      cwd: "/tmp/agentloom"
+    output: echo_result
+
+  - id: write_output
+    type: tool
+    tool_name: file_write
+    tool_args:
+      path: "/tmp/agentloom/output.txt"
+      content: "{state.echo_result}"
+    output: write_result
+
+  - id: read_back
+    type: tool
+    depends_on: [write_output]
+    tool_name: file_read
+    tool_args:
+      path: "/tmp/agentloom/output.txt"
+    output: file_content
+
+  - id: summarize
+    type: llm_call
+    depends_on: [safe_echo, read_back]
+    prompt: |
+      The sandbox allowed these operations:
+      - echo returned: {state.echo_result}
+      - file content: {state.file_content}
+      Summarize what happened in one sentence.
+    output: summary
