@@ -7,7 +7,24 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
-  "links": [],
+  "links": [
+    {
+      "title": "\ud83d\udd0d Explore Traces",
+      "url": "/explore?schemaVersion=1&panes=%7B%22loom%22%3A%7B%22datasource%22%3A%22jaeger%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22queryType%22%3A%22search%22%2C%22service%22%3A%22agentloom%22%2C%22limit%22%3A20%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D%7D&orgId=1",
+      "type": "link",
+      "icon": "bolt",
+      "tooltip": "Open Grafana Explore with Jaeger traces",
+      "targetBlank": false
+    },
+    {
+      "title": "\ud83d\udcca Jaeger UI",
+      "url": "http://localhost:16686/search?service=agentloom",
+      "type": "link",
+      "icon": "external-link",
+      "tooltip": "Open Jaeger UI directly",
+      "targetBlank": true
+    }
+  ],
   "panels": [
     {
       "type": "row",
@@ -27,7 +44,7 @@
       "title": "Total Runs",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 2,
       "gridPos": {
@@ -82,7 +99,7 @@
       "title": "Success Rate",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 3,
       "gridPos": {
@@ -144,7 +161,7 @@
       "title": "Failed",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 4,
       "gridPos": {
@@ -199,7 +216,7 @@
       "title": "Total Tokens",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 5,
       "gridPos": {
@@ -254,7 +271,7 @@
       "title": "Est. Cost",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 6,
       "gridPos": {
@@ -310,7 +327,7 @@
       "title": "Providers",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 7,
       "gridPos": {
@@ -365,7 +382,7 @@
       "title": "Step Types",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 8,
       "gridPos": {
@@ -433,7 +450,7 @@
       "title": "Workflow Runs",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 10,
       "gridPos": {
@@ -520,7 +537,7 @@
       "title": "Workflow Duration (p50 / p95 / p99)",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 11,
       "gridPos": {
@@ -595,7 +612,7 @@
       "title": "Step Executions",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 13,
       "gridPos": {
@@ -683,7 +700,7 @@
       "title": "Step Duration (p50 / p95 / p99)",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 14,
       "gridPos": {
@@ -758,7 +775,7 @@
       "title": "Tokens",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 16,
       "gridPos": {
@@ -846,7 +863,7 @@
       "title": "Tokens by Provider",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
@@ -899,7 +916,7 @@
       "title": "Token Split (input / output)",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
@@ -992,7 +1009,7 @@
       "title": "Provider Latency (p50 / p95 / p99)",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 20,
       "gridPos": {
@@ -1054,7 +1071,7 @@
       "title": "Provider Calls",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 21,
       "gridPos": {
@@ -1119,7 +1136,7 @@
       "title": "Provider Errors",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 23,
       "gridPos": {
@@ -1187,7 +1204,7 @@
       "title": "Provider Availability",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 24,
       "gridPos": {
@@ -1249,7 +1266,7 @@
       "title": "Circuit Breaker",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
@@ -1343,7 +1360,7 @@
       "title": "Workflow Runs Summary",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
@@ -1456,7 +1473,7 @@
       "title": "Provider Call Details",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
@@ -1525,7 +1542,7 @@
       "title": "Cumulative Cost",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 30,
       "gridPos": {
@@ -1591,7 +1608,7 @@
       "title": "Token Cost",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 31,
       "gridPos": {
@@ -1677,7 +1694,7 @@
       "title": "Avg Cost / Run",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 32,
       "gridPos": {
@@ -1733,7 +1750,7 @@
       "title": "Avg Tokens / Run",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 33,
       "gridPos": {
@@ -1789,7 +1806,7 @@
       "title": "Avg Duration / Run",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 34,
       "gridPos": {
@@ -1845,7 +1862,7 @@
       "title": "Token Input/Output Ratio",
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "prometheus"
       },
       "id": 35,
       "gridPos": {
@@ -1895,6 +1912,81 @@
           "decimals": 2
         }
       }
+    },
+    {
+      "type": "row",
+      "title": "Traces",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
+      "panels": [],
+      "id": 36
+    },
+    {
+      "type": "table",
+      "title": "Recent Traces",
+      "description": "Latest workflow traces from Jaeger. Click a Trace ID to view the full span tree.",
+      "datasource": {
+        "type": "jaeger",
+        "uid": "jaeger"
+      },
+      "id": 37,
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 69
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "search",
+          "service": "agentloom",
+          "limit": 20
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Trace ID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View trace",
+                    "url": "/explore?orgId=1&left=%7B%22datasource%22:%22jaeger%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22queryType%22:%22traceql%22,%22query%22:%22${__value.raw}%22%7D%5D%7D",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
     }
   ],
   "schemaVersion": 39,
@@ -1909,7 +2001,7 @@
         "label": "Workflow",
         "datasource": {
           "type": "prometheus",
-          "uid": "PBFA97CFB590B2093"
+          "uid": "prometheus"
         },
         "query": {
           "query": "label_values(agentloom_workflow_runs_total, workflow)",
@@ -1930,7 +2022,7 @@
         "label": "Provider",
         "datasource": {
           "type": "prometheus",
-          "uid": "PBFA97CFB590B2093"
+          "uid": "prometheus"
         },
         "query": {
           "query": "label_values(agentloom_tokens_total, provider)",
