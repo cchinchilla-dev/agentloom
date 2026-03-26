@@ -32,6 +32,6 @@
 
 ## Gotchas
 - `steps/registry.py` uses lazy imports inside `create_default_registry()` — avoids circular imports between steps and providers at module load time
-- `steps/llm_call.py` uses sync `state.state` in async context (marked FIXME) — fixing requires making BaseStep.execute return coroutines, which breaks the step interface
+- `steps/llm_call.py`, `router.py`, `tool_step.py` now use `await get_state_snapshot()` — fixed in #8
 - Gateway `register()` accepts `**kwargs` — needed so CLI and tests can register providers without knowing the full constructor signature
 - Pricing table in `providers/pricing.py` is hardcoded — planned migration to YAML config (see CHANGELOG)
