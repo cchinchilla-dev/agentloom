@@ -129,8 +129,12 @@ def _setup_observer(lite: bool) -> WorkflowObserver | None:
     if lite:
         return None
 
+    import os
+
     from agentloom.compat import is_available, try_import
     from agentloom.observability.observer import WorkflowObserver
+
+    otel_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
 
     tracing_mod = try_import("opentelemetry.trace", extra="observability")
     metrics_mod = try_import("opentelemetry.sdk.metrics", extra="observability")
@@ -141,12 +145,12 @@ def _setup_observer(lite: bool) -> WorkflowObserver | None:
     if is_available(tracing_mod):
         from agentloom.observability.tracing import TracingManager
 
-        tracing = TracingManager()
+        tracing = TracingManager(endpoint=otel_endpoint)
 
     if is_available(metrics_mod):
         from agentloom.observability.metrics import MetricsManager
 
-        metrics = MetricsManager()
+        metrics = MetricsManager(endpoint=otel_endpoint)
 
     if tracing or metrics:
         return WorkflowObserver(tracing=tracing, metrics=metrics)
