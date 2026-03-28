@@ -74,7 +74,8 @@ USER agentloom
 
 # Default OTel endpoint for containerized environments
 ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-ENV OLLAMA_BASE_URL=http://host.docker.internal:11434
+# OLLAMA_BASE_URL intentionally unset — set at runtime or via compose.
+# Code defaults to http://localhost:11434 when unset.
 
 ENTRYPOINT ["agentloom"]
 CMD ["--help"]
