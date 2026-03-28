@@ -112,14 +112,16 @@ class TestSetupObserver:
         from agentloom.cli.run import _setup_observer
 
         custom = "http://collector.internal:4317"
-        with patch.dict("os.environ", {"OTEL_EXPORTER_OTLP_ENDPOINT": custom}), \
-             patch("agentloom.observability.tracing.TracingManager") as mock_tm, \
-             patch("agentloom.observability.metrics.MetricsManager") as mock_mm:
-                mock_tm.return_value = mock_tm
-                mock_mm.return_value = mock_mm
-                _setup_observer(lite=False)
-                mock_tm.assert_called_once_with(endpoint=custom)
-                mock_mm.assert_called_once_with(endpoint=custom)
+        with (
+            patch.dict("os.environ", {"OTEL_EXPORTER_OTLP_ENDPOINT": custom}),
+            patch("agentloom.observability.tracing.TracingManager") as mock_tm,
+            patch("agentloom.observability.metrics.MetricsManager") as mock_mm,
+        ):
+            mock_tm.return_value = mock_tm
+            mock_mm.return_value = mock_mm
+            _setup_observer(lite=False)
+            mock_tm.assert_called_once_with(endpoint=custom)
+            mock_mm.assert_called_once_with(endpoint=custom)
 
 
 class TestPrintResult:
