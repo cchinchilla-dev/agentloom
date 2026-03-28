@@ -14,3 +14,5 @@ resources:
   - secret.yaml
   - job.yaml
   - cronjob.yaml
+  - networkpolicy.yaml
+  - resourcequota.yaml

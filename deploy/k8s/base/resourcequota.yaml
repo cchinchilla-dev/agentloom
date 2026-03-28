@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: agentloom-quota
+  namespace: agentloom
+  labels:
+    app.kubernetes.io/name: agentloom
+    app.kubernetes.io/component: governance
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 1Gi
+    limits.memory: 2Gi
+    pods: "10"
+    count/jobs.batch: "20"
+    count/cronjobs.batch: "5"
