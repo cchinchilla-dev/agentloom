@@ -1,0 +1,7 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agentloom-workflow
+spec:
+  activeDeadlineSeconds: 600
+  backoffLimit: 1
