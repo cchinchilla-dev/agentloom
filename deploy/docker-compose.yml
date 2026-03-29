@@ -114,7 +114,7 @@ services:
       - agentloom
 
   renderer:
-    image: grafana/grafana-image-renderer:latest
+    image: grafana/grafana-image-renderer:3.11.6
     ports:
       - "8081:8081"
     restart: unless-stopped
