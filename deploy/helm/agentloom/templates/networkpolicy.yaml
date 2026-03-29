@@ -1,0 +1,47 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentloom.fullname" . }}-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentloom.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentloom.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+    - Ingress
+  # Deny all inbound traffic — batch jobs receive no connections
+  ingress: []
+  egress:
+    # DNS resolution (restricted to kube-system)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS to LLM API endpoints (external)
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443
+    # OTel collector (gRPC) within cluster
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 4317
+    {{- if .Values.networkPolicy.allowOllama }}
+    # Ollama (local dev)
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 11434
+    {{- end }}
+{{- end }}
