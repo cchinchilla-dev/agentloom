@@ -1,5 +1,6 @@
-.PHONY: install install-all test lint format typecheck check run validate info build clean \
-       docker-build docker-build-obs docker-run docker-stack docker-stack-down
+.PHONY: install install-all test test-cov lint format typecheck check run validate info build clean \
+       docker-build docker-build-obs docker-run docker-stack docker-stack-down \
+       k8s-validate helm-lint helm-template
 
 # Development
 install:
@@ -28,9 +29,11 @@ check: lint typecheck test
 
 # CLI shortcuts
 run:
+	@test -n "$(WORKFLOW)" || (echo "Usage: make run WORKFLOW=examples/01_simple_qa.yaml" && exit 1)
 	uv run agentloom run $(WORKFLOW)
 
 validate:
+	@test -n "$(WORKFLOW)" || (echo "Usage: make validate WORKFLOW=examples/01_simple_qa.yaml" && exit 1)
 	uv run agentloom validate $(WORKFLOW)
 
 info:
@@ -48,13 +51,26 @@ docker-build-obs:
 	docker build --build-arg BUILD_OBSERVABILITY=true -t agentloom:local-obs .
 
 docker-run:
-	docker run --rm -v $(PWD)/examples:/workflows:ro agentloom:local run /workflows/$(WORKFLOW)
+	@test -n "$(WORKFLOW)" || (echo "Usage: make docker-run WORKFLOW=01_simple_qa.yaml" && exit 1)
+	docker run --rm -v $(CURDIR)/examples:/workflows:ro agentloom:local run /workflows/$(WORKFLOW)
 
 docker-stack:
 	cd deploy && docker compose up -d
 
 docker-stack-down:
 	cd deploy && docker compose down
+
+# Kubernetes
+k8s-validate:
+	kustomize build deploy/k8s/overlays/dev | kubeconform -strict -summary
+	kustomize build deploy/k8s/overlays/staging | kubeconform -strict -summary
+	kustomize build deploy/k8s/overlays/production | kubeconform -strict -summary
+
+helm-lint:
+	helm lint deploy/helm/agentloom -f deploy/helm/agentloom/ci/test-values.yaml
+
+helm-template:
+	helm template test deploy/helm/agentloom -f deploy/helm/agentloom/ci/test-values.yaml -n agentloom
 
 # Cleanup
 clean:
