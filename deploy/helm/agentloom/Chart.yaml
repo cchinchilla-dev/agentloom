@@ -1,0 +1,18 @@
+apiVersion: v2
+name: agentloom
+description: Deterministic LLM workflow orchestrator
+type: application
+version: 0.1.0
+appVersion: "0.1.2"
+home: https://github.com/cchinchilla-dev/agentloom
+maintainers:
+  - name: AgentLoom Contributors
+    url: https://github.com/cchinchilla-dev/agentloom
+sources:
+  - https://github.com/cchinchilla-dev/agentloom
+keywords:
+  - llm
+  - agents
+  - workflows
+  - orchestration
+  - observability
