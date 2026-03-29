@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and fill in values.
+
+cluster_name        = "agentloom-dev"
+agentloom_image_tag = "latest"
+enable_observability = true
+
+# Sensitive — set via TF_VAR_provider_api_keys or terraform.tfvars
+# provider_api_keys = {
+#   OPENAI_API_KEY    = "sk-..."
+#   ANTHROPIC_API_KEY = "sk-ant-..."
+#   GOOGLE_API_KEY    = "AI..."
+# }
