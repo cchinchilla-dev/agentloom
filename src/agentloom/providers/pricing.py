@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+import yaml
 from pydantic import BaseModel
 
 
@@ -12,52 +16,37 @@ class ModelPricing(BaseModel):
     output_cost_per_1k: float
 
 
-# Default pricing table (USD per 1K tokens) — updated March 2026
-# TODO: load from a yaml config instead of hardcoding
-DEFAULT_PRICING: dict[str, ModelPricing] = {
-    # OpenAI — GPT-5.4 (March 2026)
-    "gpt-5.4": ModelPricing(input_cost_per_1k=0.00250, output_cost_per_1k=0.01500),
-    "gpt-5.4-mini": ModelPricing(input_cost_per_1k=0.00075, output_cost_per_1k=0.00450),
-    "gpt-5.4-nano": ModelPricing(input_cost_per_1k=0.00020, output_cost_per_1k=0.00125),
-    # OpenAI — GPT-4.1 (April 2025)
-    "gpt-4.1": ModelPricing(input_cost_per_1k=0.00200, output_cost_per_1k=0.00800),
-    # OpenAI — GPT-4o family
-    "gpt-4o": ModelPricing(input_cost_per_1k=0.00250, output_cost_per_1k=0.01000),
-    "gpt-4o-mini": ModelPricing(input_cost_per_1k=0.00015, output_cost_per_1k=0.00060),
-    # OpenAI — reasoning models
-    "o3": ModelPricing(input_cost_per_1k=0.00200, output_cost_per_1k=0.00800),
-    "o4-mini": ModelPricing(input_cost_per_1k=0.00110, output_cost_per_1k=0.00440),
-    # Anthropic — Claude 4.6 (Feb 2026)
-    "claude-opus-4-6": ModelPricing(input_cost_per_1k=0.00500, output_cost_per_1k=0.02500),
-    "claude-sonnet-4-6": ModelPricing(input_cost_per_1k=0.00300, output_cost_per_1k=0.01500),
-    # Anthropic — Claude 4.5 (Sept-Nov 2025)
-    "claude-opus-4-5-20251101": ModelPricing(input_cost_per_1k=0.00500, output_cost_per_1k=0.02500),
-    "claude-sonnet-4-5-20250929": ModelPricing(
-        input_cost_per_1k=0.00300, output_cost_per_1k=0.01500
-    ),
-    "claude-haiku-4-5-20251001": ModelPricing(
-        input_cost_per_1k=0.00100, output_cost_per_1k=0.00500
-    ),
-    # Anthropic — Claude 4.1 / 4 (legacy)
-    "claude-opus-4-1-20250805": ModelPricing(input_cost_per_1k=0.01500, output_cost_per_1k=0.07500),
-    "claude-opus-4-20250514": ModelPricing(input_cost_per_1k=0.01500, output_cost_per_1k=0.07500),
-    "claude-sonnet-4-20250514": ModelPricing(input_cost_per_1k=0.00300, output_cost_per_1k=0.01500),
-    # Google — Gemini 3 (2026)
-    "gemini-3.1-pro": ModelPricing(input_cost_per_1k=0.00200, output_cost_per_1k=0.01200),
-    "gemini-3-flash": ModelPricing(input_cost_per_1k=0.00050, output_cost_per_1k=0.00300),
-    # Google — Gemini 2.5 (mid 2025)
-    "gemini-2.5-pro": ModelPricing(input_cost_per_1k=0.00125, output_cost_per_1k=0.01000),
-    "gemini-2.5-flash": ModelPricing(input_cost_per_1k=0.00030, output_cost_per_1k=0.00250),
-    # Google — Gemini 2.0 (deprecated, sunset June 2026)
-    "gemini-2.0-flash": ModelPricing(input_cost_per_1k=0.00010, output_cost_per_1k=0.00040),
-    # Ollama (local — free)
-    "qwen3": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
-    "llama3.3": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
-    "llama3.1": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
-    "phi4": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
-    "deepseek-r1": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
-    "mistral": ModelPricing(input_cost_per_1k=0.0, output_cost_per_1k=0.0),
-}
+_BUNDLED_PRICING_PATH = Path(__file__).parent / "pricing.yaml"
+
+
+def _load_pricing_yaml(path: Path) -> dict[str, ModelPricing]:
+    """Load pricing from a YAML file."""
+    raw: dict[str, dict[str, float]] = yaml.safe_load(path.read_text())
+    return {
+        model: ModelPricing(input_cost_per_1k=vals["input"], output_cost_per_1k=vals["output"])
+        for model, vals in raw.items()
+    }
+
+
+def load_pricing(custom_path: str | None = None) -> dict[str, ModelPricing]:
+    """Load pricing table from YAML.
+
+    Resolution order:
+      1. ``custom_path`` argument (explicit caller override)
+      2. ``AGENTLOOM_PRICING_FILE`` env var
+      3. Bundled ``pricing.yaml`` shipped with the package
+
+    Returns:
+        Mapping of model name to :class:`ModelPricing`.
+    """
+    path_str = custom_path or os.environ.get("AGENTLOOM_PRICING_FILE")
+    if path_str:
+        return _load_pricing_yaml(Path(path_str))
+    return _load_pricing_yaml(_BUNDLED_PRICING_PATH)
+
+
+# Module-level table — populated on first import.
+DEFAULT_PRICING: dict[str, ModelPricing] = load_pricing()
 
 
 def calculate_cost(
