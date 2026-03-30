@@ -1,0 +1,123 @@
+# Model pricing table (USD per 1K tokens) — updated March 2026
+# Override by setting AGENTLOOM_PRICING_FILE to your own YAML path.
+
+# OpenAI — GPT-5.4 (March 2026)
+gpt-5.4:
+  input: 0.00250
+  output: 0.01500
+gpt-5.4-mini:
+  input: 0.00075
+  output: 0.00450
+gpt-5.4-nano:
+  input: 0.00020
+  output: 0.00125
+gpt-5.4-pro:
+  input: 0.03000
+  output: 0.18000
+
+# OpenAI — GPT-4.1 (April 2025)
+gpt-4.1:
+  input: 0.00200
+  output: 0.00800
+
+# OpenAI — GPT-4o family
+gpt-4o:
+  input: 0.00250
+  output: 0.01000
+gpt-4o-mini:
+  input: 0.00015
+  output: 0.00060
+
+# OpenAI — reasoning models
+o3:
+  input: 0.00200
+  output: 0.00800
+o4-mini:
+  input: 0.00110
+  output: 0.00440
+
+# Anthropic — Claude 4.6 (Feb 2026)
+claude-opus-4-6:
+  input: 0.00500
+  output: 0.02500
+claude-sonnet-4-6:
+  input: 0.00300
+  output: 0.01500
+
+# Anthropic — Claude 4.5 (Sept-Nov 2025)
+claude-opus-4-5-20251101:
+  input: 0.00500
+  output: 0.02500
+claude-sonnet-4-5-20250929:
+  input: 0.00300
+  output: 0.01500
+claude-haiku-4-5-20251001:
+  input: 0.00100
+  output: 0.00500
+
+# Anthropic — Claude 3.5 (legacy)
+claude-haiku-3-5-20241022:
+  input: 0.00080
+  output: 0.00400
+
+# Anthropic — Claude 4.1 / 4 (legacy)
+claude-opus-4-1-20250805:
+  input: 0.01500
+  output: 0.07500
+claude-opus-4-20250514:
+  input: 0.01500
+  output: 0.07500
+claude-sonnet-4-20250514:
+  input: 0.00300
+  output: 0.01500
+
+# Google — Gemini 3 (2026)
+gemini-3.1-pro:
+  input: 0.00200
+  output: 0.01200
+gemini-3-flash:
+  input: 0.00050
+  output: 0.00300
+
+# Google — Gemini 3.1 Flash Lite (2026)
+gemini-3.1-flash-lite:
+  input: 0.00025
+  output: 0.00150
+
+# Google — Gemini 2.5 (mid 2025)
+gemini-2.5-pro:
+  input: 0.00125
+  output: 0.01000
+gemini-2.5-flash:
+  input: 0.00030
+  output: 0.00250
+
+# Google — Gemini 2.5 Flash Lite (2025)
+gemini-2.5-flash-lite:
+  input: 0.00010
+  output: 0.00040
+
+# Google — Gemini 2.0 (deprecated, sunset June 2026)
+gemini-2.0-flash:
+  input: 0.00010
+  output: 0.00040
+
+# Ollama (local — free)
+qwen3:
+  input: 0.0
+  output: 0.0
+llama3.3:
+  input: 0.0
+  output: 0.0
+llama3.1:
+  input: 0.0
+  output: 0.0
+phi4:
+  input: 0.0
+  output: 0.0
+deepseek-r1:
+  input: 0.0
+  output: 0.0
+mistral:
+  input: 0.0
+  output: 0.0

@@ -159,55 +159,40 @@ def _setup_observer(lite: bool) -> WorkflowObserver | None:
 
 
 def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
-    """Setup providers based on available API keys."""
-    # HACK: provider discovery from env vars — should really be in a config file
-    import os
+    """Setup providers from config-driven discovery."""
+    import importlib
 
-    if os.environ.get("OPENAI_API_KEY"):
-        from agentloom.providers.openai import OpenAIProvider
+    from agentloom.config import load_config
 
-        gateway.register(
-            OpenAIProvider(),
-            priority=0 if default_provider == "openai" else 10,
-            models=[
-                "gpt-4o-mini",
-                "gpt-4o",
-                "gpt-4.1",
-                "o4-mini",
-            ],
-        )
+    config = load_config(default_provider_override=default_provider)
 
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        from agentloom.providers.anthropic import AnthropicProvider
+    _PROVIDER_CLASSES: dict[str, tuple[str, str]] = {
+        "openai": ("agentloom.providers.openai", "OpenAIProvider"),
+        "anthropic": ("agentloom.providers.anthropic", "AnthropicProvider"),
+        "google": ("agentloom.providers.google", "GoogleProvider"),
+        "ollama": ("agentloom.providers.ollama", "OllamaProvider"),
+    }
 
-        gateway.register(
-            AnthropicProvider(),
-            priority=0 if default_provider == "anthropic" else 10,
-            models=[
-                "claude-haiku-4-5-20251001",
-            ],
-        )
+    for pc in config.providers:
+        entry = _PROVIDER_CLASSES.get(pc.name)
+        if entry is None:
+            continue
+        mod_path, cls_name = entry
+        mod = importlib.import_module(mod_path)
+        provider_cls = getattr(mod, cls_name)
 
-    if os.environ.get("GOOGLE_API_KEY"):
-        from agentloom.providers.google import GoogleProvider
+        kwargs: dict[str, object] = {}
+        if pc.api_key:
+            kwargs["api_key"] = pc.api_key
+        if pc.base_url:
+            kwargs["base_url"] = pc.base_url
 
         gateway.register(
-            GoogleProvider(),
-            priority=0 if default_provider == "google" else 10,
-            models=[
-                "gemini-2.5-flash",
-            ],
+            provider_cls(**kwargs),
+            priority=pc.priority,
+            is_fallback=pc.is_fallback,
+            models=pc.models if pc.models else None,
         )
-
-    # Ollama is always available as fallback (local/LAN)
-    from agentloom.providers.ollama import OllamaProvider
-
-    ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-    gateway.register(
-        OllamaProvider(base_url=ollama_url),
-        priority=0 if default_provider == "ollama" else 100,
-        is_fallback=True,
-    )
 
 
 def _print_result(result: object) -> None:
