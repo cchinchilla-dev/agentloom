@@ -160,16 +160,11 @@ def _setup_observer(lite: bool) -> WorkflowObserver | None:
 
 def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
     """Setup providers from config-driven discovery."""
+    import importlib
+
     from agentloom.config import load_config
 
-    config = load_config()
-    # CLI flag overrides the config default_provider before discovery.
-    if default_provider != config.default_provider:
-        config = load_config()
-        config.providers = []  # force re-discovery with override
-        from agentloom.config import _discover_providers
-
-        config.providers = _discover_providers(default_provider)
+    config = load_config(default_provider_override=default_provider)
 
     _PROVIDER_CLASSES: dict[str, tuple[str, str]] = {
         "openai": ("agentloom.providers.openai", "OpenAIProvider"),
@@ -183,13 +178,12 @@ def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
         if entry is None:
             continue
         mod_path, cls_name = entry
-
-        import importlib
-
         mod = importlib.import_module(mod_path)
         provider_cls = getattr(mod, cls_name)
 
         kwargs: dict[str, object] = {}
+        if pc.api_key:
+            kwargs["api_key"] = pc.api_key
         if pc.base_url:
             kwargs["base_url"] = pc.base_url
 

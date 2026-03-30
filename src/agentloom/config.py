@@ -74,7 +74,13 @@ _ENV_PREFIX = "AGENTLOOM_"
 def _coerce(value: str, target_type: type) -> object:
     """Convert an env var string to the target type."""
     if target_type is bool:
-        return value.lower() in ("1", "true", "yes")
+        normalized = value.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            return True
+        if normalized in ("0", "false", "no", "off"):
+            return False
+        msg = f"Invalid boolean value for configuration: {value!r}"
+        raise ValueError(msg)
     return target_type(value)
 
 
@@ -87,7 +93,7 @@ def _apply_env_overrides(data: dict[str, object]) -> dict[str, object]:
     return data
 
 
-def _discover_providers(default_provider: str) -> list[ProviderConfig]:
+def discover_providers(default_provider: str) -> list[ProviderConfig]:
     """Auto-discover providers from API-key env vars."""
     providers: list[ProviderConfig] = []
 
@@ -119,19 +125,24 @@ def _discover_providers(default_provider: str) -> list[ProviderConfig]:
     return providers
 
 
-def load_config(config_path: str | None = None) -> AgentLoomConfig:
+def load_config(
+    config_path: str | None = None,
+    default_provider_override: str | None = None,
+) -> AgentLoomConfig:
     """Load configuration with env var overrides and provider auto-discovery.
 
     Resolution order (later wins):
       1. Built-in defaults
       2. YAML config file (if provided)
       3. ``AGENTLOOM_*`` environment variables
+      4. ``default_provider_override`` (if given)
 
     Providers are auto-discovered from API-key env vars when no
     providers are defined in the config file.
 
     Args:
         config_path: Path to agentloom.yaml config file.
+        default_provider_override: Override the default provider (e.g. from CLI flag).
 
     Returns:
         Validated AgentLoomConfig instance.
@@ -150,8 +161,11 @@ def load_config(config_path: str | None = None) -> AgentLoomConfig:
     data = _apply_env_overrides(data)
     config = AgentLoomConfig.model_validate(data)
 
+    if default_provider_override is not None:
+        config.default_provider = default_provider_override
+
     # Auto-discover providers only when none are explicitly configured.
     if not config.providers:
-        config.providers = _discover_providers(config.default_provider)
+        config.providers = discover_providers(config.default_provider)
 
     return config

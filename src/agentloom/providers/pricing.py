@@ -21,7 +21,10 @@ _BUNDLED_PRICING_PATH = Path(__file__).parent / "pricing.yaml"
 
 def _load_pricing_yaml(path: Path) -> dict[str, ModelPricing]:
     """Load pricing from a YAML file."""
-    raw: dict[str, dict[str, float]] = yaml.safe_load(path.read_text())
+    raw = yaml.safe_load(path.read_text())
+    if not isinstance(raw, dict):
+        msg = f"Pricing YAML '{path}' must be a mapping of model entries, got {type(raw).__name__}"
+        raise ValueError(msg)
     return {
         model: ModelPricing(input_cost_per_1k=vals["input"], output_cost_per_1k=vals["output"])
         for model, vals in raw.items()
