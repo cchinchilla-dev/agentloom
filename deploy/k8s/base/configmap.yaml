@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentloom-workflows
+  namespace: agentloom
+  labels:
+    app.kubernetes.io/name: agentloom
+    app.kubernetes.io/component: config
+data:
+  # Replace with your workflow definition.
+  # The testing library injects this programmatically via kubectl/client-go.
+  workflow.yaml: |
+    name: placeholder
+    version: "1.0"
+    config:
+      provider: ollama
+      model: phi4
+    state:
+      question: "What is Python in one sentence?"
+    steps:
+      - id: answer
+        type: llm_call
+        prompt: "Answer concisely: {state.question}"
+        output: answer

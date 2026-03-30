@@ -9,13 +9,16 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint & type check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
         with:
           enable-cache: true
       - run: uv sync --group dev
@@ -31,15 +34,36 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group dev --all-extras
       - run: uv run pytest --cov=agentloom --cov-report=xml --cov-report=term-missing
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         if: matrix.python-version == '3.12'
         with:
           name: coverage
           path: coverage.xml
+
+  manifests:
+    name: Validate K8s manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Install tools
+        run: |
+          curl -sL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.6.0/kustomize_v5.6.0_linux_amd64.tar.gz" | tar xz -C /usr/local/bin
+          curl -sL "https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz" | tar xz -C /usr/local/bin
+          curl -sL "https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz" | tar xz --strip-components=1 -C /usr/local/bin linux-amd64/helm
+      - name: Validate Kustomize overlays
+        run: |
+          for overlay in dev staging production; do
+            echo "--- ${overlay} ---"
+            kustomize build "deploy/k8s/overlays/${overlay}" | kubeconform -strict -summary
+          done
+      - name: Lint and validate Helm chart
+        run: |
+          helm lint deploy/helm/agentloom -f deploy/helm/agentloom/ci/test-values.yaml
+          helm template test deploy/helm/agentloom -f deploy/helm/agentloom/ci/test-values.yaml -n agentloom | kubeconform -strict -summary

@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agentloom
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: agentloom
+    app.kubernetes.io/part-of: agentloom
+    app.kubernetes.io/managed-by: argocd
+spec:
+  # NOTE: For production, create a dedicated ArgoCD project with scoped
+  # source repos, destination namespaces, and allowed resource kinds.
+  project: default
+  source:
+    repoURL: https://github.com/cchinchilla-dev/agentloom
+    targetRevision: HEAD
+    path: deploy/helm/agentloom
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agentloom
+  # Jobs are immutable after creation — ignoreDifferences prevents
+  # ArgoCD from entering a perpetual out-of-sync state on changes.
+  ignoreDifferences:
+    - group: batch
+      kind: Job
+      jsonPointers:
+        - /spec/selector
+        - /spec/template/metadata/labels
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - Replace=true  # Force replace for immutable resources (Jobs)
+      - PruneLast=true  # Delete old resources after new ones are healthy
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

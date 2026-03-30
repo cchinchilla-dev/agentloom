@@ -1,0 +1,17 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: agentloom-scheduled
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: agentloom
+              resources:
+                requests:
+                  memory: 128Mi
+                  cpu: 100m
+                limits:
+                  memory: 256Mi

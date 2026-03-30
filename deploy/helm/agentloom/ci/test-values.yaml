@@ -1,0 +1,24 @@
+# Values used by helm lint/template in CI.
+# Provides a workflow definition so configmap renders.
+workflow:
+  definition: |
+    name: ci-test
+    version: "1.0"
+    config:
+      provider: ollama
+      model: phi4
+    state:
+      question: "What is Python in one sentence?"
+    steps:
+      - id: hello
+        type: llm_call
+        prompt: "Answer concisely: {state.question}"
+        output: answer
+
+provider:
+  # CI only — use existingSecret in real environments
+  existingSecret: "ci-placeholder-secret"
+
+observability:
+  enabled: true
+  otelEndpoint: "http://otel-collector:4317"

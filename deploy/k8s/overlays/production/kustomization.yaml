@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agentloom
+
+resources:
+  - ../../base
+
+images:
+  - name: ghcr.io/cchinchilla-dev/agentloom
+    newTag: 0.1.2  # Pin to release version; use digest in real production
+
+patches:
+  - path: patch-resources.yaml
+    target:
+      kind: Job
+      name: agentloom-workflow
+  - path: patch-resources-cronjob.yaml
+    target:
+      kind: CronJob
+      name: agentloom-scheduled
+  - path: patch-job-deadline.yaml
+    target:
+      kind: Job
+      name: agentloom-workflow
+  - path: patch-cronjob-deadline.yaml
+    target:
+      kind: CronJob
+      name: agentloom-scheduled
+  - path: patch-networkpolicy.yaml
+    target:
+      kind: NetworkPolicy
+      name: agentloom-egress

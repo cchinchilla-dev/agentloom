@@ -23,10 +23,22 @@ resilience:
       - any-glob-to-any-file:
           - src/agentloom/resilience/**
 
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - tests/**
+
 documentation:
   - changed-files:
       - any-glob-to-any-file:
           - "**/*.md"
+
+infrastructure:
+  - changed-files:
+      - any-glob-to-any-file:
+          - deploy/**
+          - Dockerfile
+          - .dockerignore
 
 ci:
   - changed-files:

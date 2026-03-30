@@ -1,0 +1,94 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/cchinchilla-dev/agentloom
+  tag: ""  # defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+workflow:
+  definition: ""           # inline workflow YAML
+  existingConfigMap: ""    # reference to existing ConfigMap
+  args: []                 # extra CLI args: ["--budget", "0.50"]
+
+schedule:
+  enabled: false           # false -> Job, true -> CronJob
+  cron: "0 */6 * * *"
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
+job:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: null
+  restartPolicy: Never
+
+provider:
+  # RECOMMENDED: Use existingSecret to reference a pre-created K8s Secret.
+  # Setting API keys below is NOT recommended for production — they will
+  # appear in Helm release metadata and potentially in source control.
+  # Prefer: kubectl create secret generic <name> --from-literal=OPENAI_API_KEY=...
+  existingSecret: ""       # use pre-created secret
+  openaiApiKey: ""
+  anthropicApiKey: ""
+  googleApiKey: ""
+
+observability:
+  enabled: true
+  otelEndpoint: "http://otel-collector:4317"
+
+resources:
+  requests:
+    memory: 128Mi
+    cpu: 100m
+  limits:
+    memory: 256Mi
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+namespace:
+  create: false
+
+networkPolicy:
+  enabled: true
+  # Allow Ollama egress (port 11434) — disable in production
+  allowOllama: true
+
+resourceQuota:
+  enabled: false
+  hard:
+    requests.cpu: "2"
+    requests.memory: 1Gi
+    limits.cpu: "4"
+    limits.memory: 2Gi
+    pods: "10"
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}

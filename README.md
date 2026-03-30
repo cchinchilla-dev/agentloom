@@ -25,7 +25,8 @@
 - [Architecture](#architecture)
 - [Workflow Definition (YAML)](#workflow-definition-yaml)
 - [Python DSL](#python-dsl)
-- [Observability Stack](#observability-stack)
+- [Observability](#observability)
+- [Deploy](#deploy)
 - [Why not autonomous agents?](#why-not-autonomous-agents)
 - [Development](#development)
 - [Contributing](#contributing)
@@ -150,7 +151,9 @@ wf = (
 )
 ```
 
-## Observability Stack
+## Observability
+
+Every workflow step emits OpenTelemetry traces and Prometheus metrics out of the box. No external SaaS required — the full stack runs alongside your workloads.
 
 ```bash
 # Start Prometheus + Grafana + Jaeger
@@ -163,6 +166,71 @@ cd deploy && docker compose up -d
 ```
 
 See [Dashboard Documentation](deploy/DASHBOARD.md) for panel descriptions, metrics reference, and troubleshooting.
+
+## Deploy
+
+AgentLoom is designed to run anywhere — from a single Docker container on your laptop to a fully orchestrated Kubernetes cluster with GitOps and observability. Every deployment method is production-hardened with non-root containers, read-only filesystems, Pod Security Standards enforcement, and network policies.
+
+The CLI processes a workflow and exits. There is no long-running server, no HTTP API, and no persistent connections. This makes Kubernetes **Jobs** (not Deployments) the correct primitive: finite execution, automatic retries, scheduled runs via CronJobs, and clean resource isolation per workflow.
+
+### Docker
+
+The fastest way to run a workflow. The multi-stage Dockerfile produces a minimal image (~120MB) with a non-root user and read-only filesystem.
+
+```bash
+docker build -t agentloom .
+docker run --rm -e OPENAI_API_KEY=sk-... \
+  -v ./examples:/workflows:ro \
+  agentloom run /workflows/01_simple_qa.yaml
+```
+
+### Kubernetes (Kustomize)
+
+Plain YAML manifests organized with Kustomize overlays. Three environments are provided, each with progressively stricter security and resource controls:
+
+- **dev**: minimal resources, no NetworkPolicy, `latest` tag for fast iteration.
+- **staging**: moderate resources, NetworkPolicy enabled, CI image tag.
+- **production**: strict NetworkPolicy (no Ollama egress), `activeDeadlineSeconds` hard timeout, pinned image version.
+
+```bash
+kubectl apply -k deploy/k8s/overlays/dev
+kubectl logs job/agentloom-workflow -n agentloom
+```
+
+### Helm
+
+The recommended method for teams that need parameterized deployments. The chart packages all Kubernetes resources with built-in input validation — deploying without a workflow definition fails at render time, not at runtime.
+
+```bash
+helm install agentloom deploy/helm/agentloom \
+  -n agentloom --create-namespace \
+  --set workflow.definition="$(cat examples/01_simple_qa.yaml)" \
+  --set provider.existingSecret=my-secret
+```
+
+Supports Job and CronJob modes, configurable NetworkPolicies, ResourceQuotas, and optional namespace creation with PSS labels.
+
+### Terraform
+
+Provisions a complete local development environment in one command: a kind cluster with agentloom, plus the full observability stack (OTel Collector, Prometheus, Grafana, Jaeger). Set `enable_observability = false` for a lightweight setup without metrics and traces.
+
+```bash
+cd deploy/terraform
+cp terraform.tfvars.example terraform.tfvars
+terraform init && terraform apply
+```
+
+After `apply`, Grafana is available at `localhost:3000`, Prometheus at `localhost:9090`, and Jaeger at `localhost:16686` — all pre-configured with agentloom dashboards and datasources.
+
+### ArgoCD
+
+GitOps deployment with automated sync, self-heal, and retry policies. ArgoCD watches the Helm chart in the repository and syncs changes automatically. The Application CRD handles Kubernetes Job immutability via `Replace=true` and `ignoreDifferences` on selectors.
+
+```bash
+kubectl apply -f deploy/argocd/application.yaml
+```
+
+See [deploy/INFRASTRUCTURE.md](deploy/INFRASTRUCTURE.md) for the full deployment guide, security hardening details, Helm chart reference, and CI/CD pipeline documentation.
 
 ## Why not autonomous agents?
 
@@ -183,7 +251,7 @@ Autonomous agent frameworks solve a real problem — open-ended tasks where the 
 
 ```bash
 uv sync --group dev --all-extras   # install with all extras
-uv run pytest                       # 392 tests, ~5s
+uv run pytest                       # 458 tests, ~5s
 uv run ruff check src/ tests/      # lint (ruff replaces flake8+isort)
 uv run ruff format src/ tests/     # autoformat
 uv run mypy src/                   # strict type checking

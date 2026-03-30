@@ -1,0 +1,9 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: agentloom-scheduled
+spec:
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 600
+      backoffLimit: 1

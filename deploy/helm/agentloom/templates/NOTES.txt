@@ -1,0 +1,22 @@
+AgentLoom has been installed.
+
+{{- if .Values.schedule.enabled }}
+CronJob schedule: {{ .Values.schedule.cron }} ({{ .Values.schedule.timeZone }})
+
+Check scheduled jobs:
+  kubectl get cronjobs -n {{ .Release.Namespace }}
+  kubectl get jobs -n {{ .Release.Namespace }}
+{{- else }}
+Job created. Check status:
+  kubectl get jobs -n {{ .Release.Namespace }}
+{{- end }}
+
+View logs (pods are cleaned up after {{ .Values.job.ttlSecondsAfterFinished }}s):
+  kubectl logs job/{{ include "agentloom.fullname" . }} -n {{ .Release.Namespace }}
+
+{{- if .Values.observability.enabled }}
+
+Observability:
+  OTel endpoint: {{ .Values.observability.otelEndpoint }}
+  Note: Ensure an OTel Collector is deployed in the cluster at the above endpoint.
+{{- end }}

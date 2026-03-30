@@ -1,0 +1,13 @@
+{{/*
+Validate required values at render time.
+This template produces no output but will fail with a clear message
+if the chart is misconfigured.
+*/}}
+
+{{- if and (not (trimAll " \n\t" .Values.workflow.definition)) (not .Values.workflow.existingConfigMap) }}
+  {{- fail "Either workflow.definition or workflow.existingConfigMap must be set. Without a workflow, the pod will crash trying to read /workflows/workflow.yaml." }}
+{{- end }}
+
+{{- if and (trimAll " \n\t" .Values.workflow.definition) .Values.workflow.existingConfigMap }}
+  {{- fail "Cannot set both workflow.definition and workflow.existingConfigMap. Use one or the other." }}
+{{- end }}
