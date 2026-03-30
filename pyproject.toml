@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentloom"
-version = "0.1.2"
+version = "0.2.0"
 description = "Production-ready agentic workflow orchestrator with native observability, resilience, and cost control."
 readme = "README.md"
 license = "MIT"
