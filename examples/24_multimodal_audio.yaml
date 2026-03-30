@@ -1,0 +1,33 @@
+name: multimodal-audio
+version: "1.0"
+description: >
+  Transcribe and analyze an audio clip using multi-modal input.
+  Supported providers: Google (Gemini), OpenAI (gpt-4o-audio-preview only).
+  Anthropic and Ollama do not support audio attachments and will raise an error.
+  OpenAI requires gpt-4o-audio-preview model and only accepts WAV/MP3 formats.
+
+config:
+  provider: google
+  model: gemini-2.5-flash
+
+state:
+  audio_path: "/tmp/agentloom/recording.wav"
+
+steps:
+  - id: transcribe
+    type: llm_call
+    prompt: "Transcribe this audio clip verbatim."
+    attachments:
+      - type: audio
+        source: "{state.audio_path}"
+    output: transcript
+
+  - id: analyze
+    type: llm_call
+    depends_on: [transcribe]
+    prompt: >
+      Given this transcript: {state.transcript}
+
+      Identify the main topic, sentiment (positive/negative/neutral),
+      and any action items mentioned.
+    output: analysis

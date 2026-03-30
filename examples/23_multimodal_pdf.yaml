@@ -1,0 +1,33 @@
+name: multimodal-pdf
+version: "1.0"
+description: >
+  Analyze a PDF document using multi-modal input.
+  Supported providers: Anthropic (Claude), Google (Gemini).
+  OpenAI and Ollama do not support PDF attachments and will raise an error.
+
+config:
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+
+state:
+  pdf_path: "/tmp/agentloom/sample.pdf"
+
+steps:
+  - id: extract
+    type: llm_call
+    prompt: "Extract the key points from this document. List them as bullet points."
+    attachments:
+      - type: pdf
+        source: "{state.pdf_path}"
+    output: key_points
+
+  - id: summarize
+    type: llm_call
+    depends_on: [extract]
+    prompt: >
+      Given these key points extracted from a PDF:
+
+      {state.key_points}
+
+      Write a one-paragraph executive summary.
+    output: summary
