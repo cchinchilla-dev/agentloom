@@ -16,5 +16,7 @@
   {"name": "ci", "color": "bfd4f2", "description": "CI/CD changes"},
   {"name": "dependencies", "color": "0366d6", "description": "Dependency updates"},
   {"name": "internal", "color": "ededed", "description": "Internal refactoring"},
-  {"name": "skip-changelog", "color": "ededed", "description": "Exclude from release notes"}
+  {"name": "skip-changelog", "color": "ededed", "description": "Exclude from release notes"},
+  {"name": "release", "color": "6f42c1", "description": "Version bump and release prep"},
+  {"name": "infrastructure", "color": "0E8A16", "description": "Deployment, Docker, K8s, Helm, Terraform"}
 ]
