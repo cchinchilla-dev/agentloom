@@ -7,6 +7,7 @@ from typing import Any
 
 from agentloom.exceptions import CircuitOpenError, ProviderError
 from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.multimodal import estimate_content_tokens
 from agentloom.resilience.circuit_breaker import CircuitBreaker
 from agentloom.resilience.rate_limiter import RateLimiter
 
@@ -101,7 +102,7 @@ class ProviderGateway:
 
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -122,8 +123,10 @@ class ProviderGateway:
         for entry in candidates:
             try:
                 if entry.rate_limiter:
-                    # Estimate prompt tokens from message length (~4 chars per token)
-                    estimated_tokens = sum(len(m.get("content", "")) for m in messages) // 4
+                    # Estimate prompt tokens from message content
+                    estimated_tokens = sum(
+                        estimate_content_tokens(m.get("content", "")) for m in messages
+                    )
                     await entry.rate_limiter.acquire(token_count=estimated_tokens)
 
                 async def _call(e: ProviderEntry = entry) -> ProviderResponse:
