@@ -10,6 +10,13 @@ import httpx
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
 from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.multimodal import (
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    ImageURLBlock,
+    TextBlock,
+)
 from agentloom.providers.pricing import calculate_cost
 
 
@@ -24,6 +31,9 @@ class OpenAIProvider(BaseProvider):
         base_url: str = "https://api.openai.com/v1",
         **kwargs: Any,
     ) -> None:
+        # Normalize base_url: SDK-style URLs (without /v1) need the suffix.
+        if base_url and not base_url.rstrip("/").endswith("/v1"):
+            base_url = base_url.rstrip("/") + "/v1"
         super().__init__(api_key=api_key, base_url=base_url, **kwargs)
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self._client = httpx.AsyncClient(
@@ -35,9 +45,50 @@ class OpenAIProvider(BaseProvider):
             timeout=60.0,
         )
 
+    @staticmethod
+    def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert internal content blocks to OpenAI's vision/audio format."""
+        formatted: list[dict[str, Any]] = []
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                formatted.append({"role": msg["role"], "content": content})
+            else:
+                parts: list[dict[str, Any]] = []
+                for block in content:
+                    if isinstance(block, TextBlock):
+                        parts.append({"type": "text", "text": block.text})
+                    elif isinstance(block, ImageBlock):
+                        data_url = f"data:{block.media_type};base64,{block.data}"
+                        parts.append({"type": "image_url", "image_url": {"url": data_url}})
+                    elif isinstance(block, ImageURLBlock):
+                        parts.append({"type": "image_url", "image_url": {"url": block.url}})
+                    elif isinstance(block, AudioBlock):
+                        if "wav" in block.media_type:
+                            fmt = "wav"
+                        elif "mp3" in block.media_type or "mpeg" in block.media_type:
+                            fmt = "mp3"
+                        else:
+                            raise ProviderError(
+                                "openai",
+                                f"OpenAI only supports WAV and MP3 audio, "
+                                f"got '{block.media_type}'.",
+                            )
+                        parts.append({
+                            "type": "input_audio",
+                            "input_audio": {"data": block.data, "format": fmt},
+                        })
+                    elif isinstance(block, DocumentBlock):
+                        raise ProviderError(
+                            "openai",
+                            "OpenAI does not support PDF attachments in chat completions.",
+                        )
+                formatted.append({"role": msg["role"], "content": parts})
+        return formatted
+
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -45,7 +96,7 @@ class OpenAIProvider(BaseProvider):
     ) -> ProviderResponse:
         payload: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": self._format_messages(messages),
         }
         if temperature is not None:
             payload["temperature"] = temperature

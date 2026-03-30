@@ -10,6 +10,13 @@ import httpx
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
 from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.multimodal import (
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    ImageURLBlock,
+    TextBlock,
+)
 from agentloom.providers.pricing import calculate_cost
 
 
@@ -24,6 +31,10 @@ class AnthropicProvider(BaseProvider):
         base_url: str = "https://api.anthropic.com/v1",
         **kwargs: Any,
     ) -> None:
+        # Normalize base_url: SDK-style URLs (without /v1) need the suffix
+        # for our direct httpx calls (e.g. ANTHROPIC_BASE_URL from Claude Desktop).
+        if base_url and not base_url.rstrip("/").endswith("/v1"):
+            base_url = base_url.rstrip("/") + "/v1"
         super().__init__(api_key=api_key, base_url=base_url, **kwargs)
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         self._client = httpx.AsyncClient(
@@ -36,22 +47,69 @@ class AnthropicProvider(BaseProvider):
             timeout=60.0,
         )
 
+    @staticmethod
+    def _format_messages(
+        messages: list[dict[str, Any]],
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """Extract system prompt and convert content blocks to Anthropic format."""
+        system_prompt: str | None = None
+        formatted: list[dict[str, Any]] = []
+        for msg in messages:
+            if msg["role"] == "system":
+                content = msg.get("content", "")
+                system_prompt = content if isinstance(content, str) else str(content)
+                continue
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                formatted.append({"role": msg["role"], "content": content})
+            else:
+                parts: list[dict[str, Any]] = []
+                for block in content:
+                    if isinstance(block, TextBlock):
+                        parts.append({"type": "text", "text": block.text})
+                    elif isinstance(block, ImageBlock):
+                        parts.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": block.media_type,
+                                "data": block.data,
+                            },
+                        })
+                    elif isinstance(block, ImageURLBlock):
+                        parts.append({
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": block.url,
+                            },
+                        })
+                    elif isinstance(block, DocumentBlock):
+                        parts.append({
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": block.media_type,
+                                "data": block.data,
+                            },
+                        })
+                    elif isinstance(block, AudioBlock):
+                        raise ProviderError(
+                            "anthropic",
+                            "Anthropic does not support audio attachments.",
+                        )
+                formatted.append({"role": msg["role"], "content": parts})
+        return system_prompt, formatted
+
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
-        # Anthropic uses a separate system param, not a system message
-        system_prompt = None
-        filtered_messages = []
-        for msg in messages:
-            if msg["role"] == "system":
-                system_prompt = msg["content"]
-            else:
-                filtered_messages.append(msg)
+        system_prompt, filtered_messages = self._format_messages(messages)
 
         payload: dict[str, Any] = {
             "model": model,
