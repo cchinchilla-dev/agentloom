@@ -58,6 +58,7 @@ class MetricsManager:
         self._token_counter: Any = None
         self._workflow_histogram: Any = None
         self._cost_counter: Any = None
+        self._attachment_counter: Any = None
         self._circuit_states: dict[str, int] = {}  # provider -> state int
 
         # prometheus_client instruments (fallback)
@@ -125,6 +126,10 @@ class MetricsManager:
             "agentloom_cost_usd_total",
             description="Cumulative cost in USD",
         )
+        self._attachment_counter = meter.create_counter(
+            "agentloom_attachments_total",
+            description="Total multi-modal attachments processed",
+        )
 
         # Circuit breaker gauge (callback-based, reads from _circuit_states)
         states = self._circuit_states
@@ -180,6 +185,11 @@ class MetricsManager:
             "Provider API call latency",
             ["provider"],
             buckets=[0.1, 0.5, 1, 2, 5, 10, 30],
+        )
+        self._prom_counters["attachments"] = prom.Counter(
+            "agentloom_attachments_total",
+            "Total multi-modal attachments processed",
+            ["step_type"],
         )
         self._prom_gauges["budget_remaining"] = prom.Gauge(
             "agentloom_budget_remaining_usd",
@@ -268,6 +278,14 @@ class MetricsManager:
             self._prom_counters["tokens_total"].labels(
                 provider=provider, model=model, direction="output"
             ).inc(completion_tokens)
+
+    def record_attachments(self, step_type: str, count: int) -> None:
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._attachment_counter.add(count, {"step_type": step_type})
+        else:
+            self._prom_counters["attachments"].labels(step_type=step_type).inc(count)
 
     def set_budget_remaining(self, workflow: str, remaining: float) -> None:
         # NOTE: only Prometheus backend — OTel gauge for budget not yet implemented

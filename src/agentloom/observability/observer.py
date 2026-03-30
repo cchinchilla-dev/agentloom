@@ -91,10 +91,13 @@ class WorkflowObserver:
         cost_usd: float = 0.0,
         tokens: int = 0,
         error: str | None = None,
+        attachment_count: int = 0,
     ) -> None:
         # Metrics
         if self._metrics:
             self._metrics.record_step_execution(step_type, status, duration_ms / 1000.0)
+            if attachment_count > 0:
+                self._metrics.record_attachments(step_type, attachment_count)
 
         # Span
         span = self._step_spans.pop(step_id, None)
@@ -103,6 +106,8 @@ class WorkflowObserver:
             span.set_attribute("step.duration_ms", duration_ms)
             span.set_attribute("step.cost_usd", cost_usd)
             span.set_attribute("step.tokens", tokens)
+            if attachment_count > 0:
+                span.set_attribute("step.attachments", attachment_count)
             if error:
                 span.set_attribute("step.error", error)
             if self._tracing:

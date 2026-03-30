@@ -228,6 +228,8 @@ def _print_result(result: object) -> None:
         line = f"  {icon} {step_id} ({sr.duration_ms:.0f}ms)"
         if sr.cost_usd > 0:
             line += f" ${sr.cost_usd:.4f}"
+        if sr.attachment_count > 0:
+            line += f" [{sr.attachment_count} attachment{'s' if sr.attachment_count > 1 else ''}]"
         typer.echo(line)
 
     # Show final output
