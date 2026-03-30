@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from agentloom.core.models import StepDefinition
+from agentloom.core.models import SandboxConfig, StepDefinition
 from agentloom.core.results import StepResult
 
 
@@ -22,6 +22,7 @@ class StepContext(BaseModel):
     tool_registry: Any | None = None  # ToolRegistry
     workflow_model: str = "gpt-4o-mini"
     workflow_provider: str = "openai"
+    sandbox_config: SandboxConfig = SandboxConfig()
 
 
 class BaseStep(ABC):
