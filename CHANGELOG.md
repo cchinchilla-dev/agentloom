@@ -14,6 +14,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Load pricing table from YAML instead of hardcoded Python dict
 - Array index support in state paths (e.g., `state.items[0]`)
 
+## [0.2.0] - 2026-03-30
+
+### Added
+
+- Kubernetes manifests with Kustomize overlays for dev, staging, and production (#24)
+- Helm chart with Job/CronJob modes and render-time input validation (#25)
+- Terraform configuration for local kind cluster with full observability stack (#26)
+- ArgoCD Application CRD with automated sync and Job immutability handling (#27)
+- Docker CI/CD workflow for multi-arch GHCR publishing (#23)
+- Infrastructure audit scripts for static and integration validation
+- Infrastructure documentation (#28)
+
+### Fixed
+
+- Production NetworkPolicy OTel egress restricted to observability namespace
+- Read-only filesystem audit check no longer false-passes when root FS is writable
+- Terraform audit phase passes KUBECONFIG to all kubectl poll commands
+- Removed duplicate kubeconform invocation that hung without stdin
+- Terraform secret uses `string_data` instead of `data` for plaintext values
+- GitHub Actions and image versions pinned to commit SHAs
+
 ## [0.1.2] - 2026-03-26
 
 ### Added
@@ -81,7 +102,8 @@ First public release.
 - **Pydantic v2** — validation and serialization worth the Rust compilation
   trade-off. Could revisit for truly minimal environments.
 
-[Unreleased]: https://github.com/cchinchilla-dev/agentloom/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/cchinchilla-dev/agentloom/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/cchinchilla-dev/agentloom/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/cchinchilla-dev/agentloom/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/cchinchilla-dev/agentloom/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/cchinchilla-dev/agentloom/releases/tag/v0.1.0
