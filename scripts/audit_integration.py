@@ -115,13 +115,14 @@ def _wait_for(
     timeout: int = 180,
     interval: int = 5,
     cwd: Path | None = None,
+    env: dict | None = None,
 ) -> bool:
     """Poll a command until success_check(stdout, stderr) returns True."""
     _step(f"Waiting for {description} (timeout {timeout}s)")
     elapsed = 0
     while elapsed < timeout:
         try:
-            rc, out, err = _run(check_cmd, cwd=cwd, timeout=30)
+            rc, out, err = _run(check_cmd, cwd=cwd, timeout=30, env=env)
             if success_check(out, err):
                 return True
         except Exception:
@@ -213,7 +214,7 @@ def phase_docker() -> None:
     if "READONLY_OK" in out or "Read-only" in out or "read-only" in err:
         _pass("Read-only root filesystem works")
     else:
-        _pass("Container compatible with read-only fs")
+        _fail("Root filesystem is writable under --read-only", out or err)
 
     # Image size
     _step("Checking image size")
@@ -696,7 +697,7 @@ def phase_terraform() -> None:
              "-o", "jsonpath={.items[*].status.phase}"],
             lambda out, err: "Running" in out,
             "Jaeger pod",
-            timeout=180, interval=10,
+            timeout=180, interval=10, env=kenv,
         )
         if jaeger_ready:
             _pass("Jaeger pod is Running")
@@ -712,7 +713,7 @@ def phase_terraform() -> None:
              "-o", "jsonpath={.items[*].status.phase}"],
             lambda out, err: "Running" in out,
             "OTel Collector pod",
-            timeout=120, interval=10,
+            timeout=120, interval=10, env=kenv,
         )
         if otel_ready:
             _pass("OTel Collector pod is Running")
@@ -726,7 +727,7 @@ def phase_terraform() -> None:
              "-o", "jsonpath={.items[*].status.phase}"],
             lambda out, err: "Running" in out,
             "Prometheus pod",
-            timeout=180, interval=10,
+            timeout=180, interval=10, env=kenv,
         )
         if not prom_ready:
             # Try alternative label
@@ -736,7 +737,7 @@ def phase_terraform() -> None:
                  "-o", "jsonpath={.items[*].status.phase}"],
                 lambda out, err: "Running" in out,
                 "Prometheus pod (alt label)",
-                timeout=60, interval=10,
+                timeout=60, interval=10, env=kenv,
             )
         if prom_ready:
             _pass("Prometheus pod is Running")
@@ -752,7 +753,7 @@ def phase_terraform() -> None:
              "-o", "jsonpath={.items[*].status.phase}"],
             lambda out, err: "Running" in out,
             "Grafana pod",
-            timeout=180, interval=10,
+            timeout=180, interval=10, env=kenv,
         )
         if grafana_ready:
             _pass("Grafana pod is Running")

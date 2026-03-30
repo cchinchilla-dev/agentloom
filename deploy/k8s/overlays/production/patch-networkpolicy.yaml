@@ -26,9 +26,11 @@ spec:
       ports:
         - protocol: TCP
           port: 443
-    # OTel collector (gRPC) within cluster
+    # OTel collector (gRPC) — restricted to observability namespace
     - to:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
       ports:
         - protocol: TCP
           port: 4317

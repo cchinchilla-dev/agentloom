@@ -994,11 +994,7 @@ def audit_kustomize_build() -> None:
             _pass(f"kustomize build {overlay} — OK")
             # Optionally validate with kubeconform
             if _has_tool("kubeconform"):
-                rc2, out2, err2 = _run(
-                    ["kubeconform", "-strict", "-summary"],
-                    cwd=path,
-                )
-                # kubeconform reads from stdin, so pipe
+                # kubeconform reads from stdin — pipe kustomize output
                 r = subprocess.run(
                     ["kubeconform", "-strict", "-summary"],
                     input=out, capture_output=True, text=True, timeout=30,

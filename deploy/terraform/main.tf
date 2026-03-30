@@ -83,7 +83,7 @@ resource "kubernetes_secret" "provider_keys" {
     namespace = kubernetes_namespace.agentloom.metadata[0].name
   }
 
-  data = var.provider_api_keys
+  string_data = var.provider_api_keys
 }
 
 # -----------------------------------------------------------
