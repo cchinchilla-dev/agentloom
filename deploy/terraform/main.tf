@@ -338,6 +338,16 @@ resource "helm_release" "agentloom" {
   }
 
   set {
+    name  = "ollama.enabled"
+    value = tostring(var.enable_ollama)
+  }
+
+  set {
+    name  = "ollama.model"
+    value = var.ollama_model
+  }
+
+  set {
     name  = "workflow.definition"
     value = var.workflow_definition
   }

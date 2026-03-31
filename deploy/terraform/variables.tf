@@ -26,6 +26,18 @@ variable "enable_observability" {
   default     = true
 }
 
+variable "enable_ollama" {
+  description = "Deploy Ollama as an in-cluster service. Pulls the configured model on startup. Requires the container runtime to have enough RAM (e.g. `colima start --memory 8` for llava:7b)."
+  type        = bool
+  default     = true
+}
+
+variable "ollama_model" {
+  description = "Ollama model to pull on startup"
+  type        = string
+  default     = "phi4"
+}
+
 variable "provider_api_keys" {
   description = "Map of provider API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY)"
   type        = map(string)
