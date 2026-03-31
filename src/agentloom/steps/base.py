@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agentloom.core.models import SandboxConfig, StepDefinition
 from agentloom.core.results import StepResult
@@ -22,7 +22,7 @@ class StepContext(BaseModel):
     tool_registry: Any | None = None  # ToolRegistry
     workflow_model: str = "gpt-4o-mini"
     workflow_provider: str = "openai"
-    sandbox_config: SandboxConfig = SandboxConfig()
+    sandbox_config: SandboxConfig = Field(default_factory=SandboxConfig)
 
 
 class BaseStep(ABC):

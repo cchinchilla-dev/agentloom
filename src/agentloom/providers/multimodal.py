@@ -224,18 +224,17 @@ def _validate_provider_url(url: str, sandbox: SandboxConfig) -> None:
 
     hostname = parsed.hostname or ""
 
-    # Block obviously-internal hostnames (IP literals, localhost)
+    # Block private/internal hostnames via DNS resolution (fail-closed)
     try:
-        ip = ipaddress.ip_address(hostname)
-        if _is_private_ip(ip):
-            msg = f"Cannot send private IP URL to provider: {url}"
-            raise PermissionError(msg)
-    except ValueError:
-        pass  # Not an IP literal — hostname is fine
-
-    if hostname in ("localhost", "localhost.localdomain"):
-        msg = f"Cannot send localhost URL to provider: {url}"
+        addrinfos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except (socket.gaierror, ValueError, OSError):
+        msg = f"Cannot resolve hostname for provider passthrough: {hostname!r}"
         raise PermissionError(msg)
+    for _family, _, _, _, sockaddr in addrinfos:
+        resolved_ip = ipaddress.ip_address(sockaddr[0])
+        if _is_private_ip(resolved_ip):
+            msg = f"Cannot send URL to provider — resolves to private IP: {url}"
+            raise PermissionError(msg)
 
     if sandbox.allowed_domains and hostname not in sandbox.allowed_domains:
         msg = (
@@ -256,10 +255,13 @@ def _validate_file_sandbox(file_path: str, sandbox: SandboxConfig) -> None:
     allowed = sandbox.readable_paths or sandbox.allowed_paths
     if not allowed:
         return
-    resolved = str(Path(file_path).resolve())
+    resolved = Path(file_path).resolve()
     for allowed_dir in allowed:
-        if resolved.startswith(str(Path(allowed_dir).resolve())):
+        try:
+            resolved.relative_to(Path(allowed_dir).resolve())
             return
+        except ValueError:
+            continue
     msg = f"File path '{file_path}' not in sandbox readable_paths: {allowed}"
     raise PermissionError(msg)
 
@@ -281,24 +283,16 @@ def _check_size(data: bytes, source: str) -> None:
 async def _validate_redirect_target(response: httpx.Response) -> None:
     """Event hook: validate each redirect target against SSRF rules.
 
-    Called by httpx before following a redirect.  Raises if the redirect
-    target points to a private/reserved IP address.
+    Called by httpx before following a redirect.  Resolves the redirect
+    hostname via DNS and blocks if any IP is private/reserved (fail-closed).
     """
     if response.is_redirect and response.has_redirect_location:
         location = response.headers.get("location", "")
         parsed = urlparse(location)
         hostname = parsed.hostname
         if hostname:
-            try:
-                ip = ipaddress.ip_address(hostname)
-                if _is_private_ip(ip):
-                    msg = f"Redirect to private IP blocked: {location}"
-                    raise PermissionError(msg)
-            except ValueError:
-                pass  # Hostname, not IP literal — DNS will be checked on connect
-            if hostname in ("localhost", "localhost.localdomain"):
-                msg = f"Redirect to localhost blocked: {location}"
-                raise PermissionError(msg)
+            # Resolve and validate — reuse the same function as initial URL check
+            await _resolve_and_validate_host(hostname)
 
 
 async def _fetch_url(url: str) -> tuple[bytes, str | None]:
@@ -310,6 +304,7 @@ async def _fetch_url(url: str) -> tuple[bytes, str | None]:
     """
     async with httpx.AsyncClient(
         timeout=30.0,
+        follow_redirects=True,
         max_redirects=5,
         event_hooks={"response": [_validate_redirect_target]},
     ) as client:

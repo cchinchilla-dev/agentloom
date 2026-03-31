@@ -37,7 +37,7 @@ spec:
       ports:
         - protocol: TCP
           port: 4317
-    # Ollama — in-cluster service or external
+    # Ollama — in-cluster only (use ipBlock for external Ollama)
     - to:
         - namespaceSelector: {}
       ports:

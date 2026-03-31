@@ -50,15 +50,18 @@ class LLMCallStep(BaseStep):
         # Resolve multimodal attachments
         content_blocks: list[ContentBlock] = []
         if step.attachments:
-            resolved_attachments = [
-                Attachment(
-                    type=att.type,
-                    source=att.source.format_map(SafeFormatDict(template_vars)),
-                    media_type=att.media_type,
-                    fetch=att.fetch,
-                )
-                for att in step.attachments
-            ]
+            try:
+                resolved_attachments = [
+                    Attachment(
+                        type=att.type,
+                        source=att.source.format_map(SafeFormatDict(template_vars)),
+                        media_type=att.media_type,
+                        fetch=att.fetch,
+                    )
+                    for att in step.attachments
+                ]
+            except (KeyError, ValueError) as e:
+                raise StepError(step.id, f"Attachment template error: {e}") from e
             try:
                 content_blocks = await resolve_attachments(
                     resolved_attachments, sandbox=context.sandbox_config

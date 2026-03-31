@@ -59,10 +59,13 @@ spec:
           args:
             - |
               ollama serve &
+              server_pid=$!
               sleep 5
               ollama pull "$OLLAMA_PULL_MODEL"
-              kill %1 2>/dev/null
-              exit 0
+              pull_status=$?
+              kill "$server_pid" 2>/dev/null || true
+              wait "$server_pid" 2>/dev/null || true
+              exit "$pull_status"
           env:
             - name: OLLAMA_MODELS
               value: /models
