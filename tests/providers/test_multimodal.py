@@ -95,9 +95,7 @@ class TestEstimateContentTokens:
         assert estimate_content_tokens([]) == 0
 
     def test_document_block(self) -> None:
-        blocks: list[ContentBlock] = [
-            DocumentBlock(data="abc", media_type="application/pdf")
-        ]
+        blocks: list[ContentBlock] = [DocumentBlock(data="abc", media_type="application/pdf")]
         assert estimate_content_tokens(blocks) == 200
 
     def test_audio_block(self) -> None:
@@ -337,30 +335,34 @@ class TestOpenAIAudioFormats:
 
         provider = OpenAIProvider(api_key="test-key")
         with pytest.raises(ProviderError, match="only supports WAV and MP3"):
-            provider._format_messages([
-                {
-                    "role": "user",
-                    "content": [
-                        TextBlock(text="transcribe"),
-                        AudioBlock(data="abc", media_type="audio/ogg"),
-                    ],
-                }
-            ])
+            provider._format_messages(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            TextBlock(text="transcribe"),
+                            AudioBlock(data="abc", media_type="audio/ogg"),
+                        ],
+                    }
+                ]
+            )
         await provider.close()
 
     def test_wav_format_detected(self) -> None:
         from agentloom.providers.multimodal import AudioBlock, TextBlock
         from agentloom.providers.openai import OpenAIProvider
 
-        result = OpenAIProvider._format_messages([
-            {
-                "role": "user",
-                "content": [
-                    TextBlock(text="transcribe"),
-                    AudioBlock(data="abc", media_type="audio/wav"),
-                ],
-            }
-        ])
+        result = OpenAIProvider._format_messages(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        TextBlock(text="transcribe"),
+                        AudioBlock(data="abc", media_type="audio/wav"),
+                    ],
+                }
+            ]
+        )
         audio_part = result[0]["content"][1]
         assert audio_part["input_audio"]["format"] == "wav"
 
@@ -368,14 +370,16 @@ class TestOpenAIAudioFormats:
         from agentloom.providers.multimodal import AudioBlock, TextBlock
         from agentloom.providers.openai import OpenAIProvider
 
-        result = OpenAIProvider._format_messages([
-            {
-                "role": "user",
-                "content": [
-                    TextBlock(text="transcribe"),
-                    AudioBlock(data="abc", media_type="audio/mpeg"),
-                ],
-            }
-        ])
+        result = OpenAIProvider._format_messages(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        TextBlock(text="transcribe"),
+                        AudioBlock(data="abc", media_type="audio/mpeg"),
+                    ],
+                }
+            ]
+        )
         audio_part = result[0]["content"][1]
         assert audio_part["input_audio"]["format"] == "mp3"

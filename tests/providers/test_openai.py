@@ -125,15 +125,17 @@ class TestOpenAIProvider:
 
         provider = OpenAIProvider(api_key="test-key")
         with pytest.raises(ProviderError, match="does not support PDF"):
-            provider._format_messages([
-                {
-                    "role": "user",
-                    "content": [
-                        TextBlock(text="Summarize"),
-                        DocumentBlock(data="abc", media_type="application/pdf"),
-                    ],
-                }
-            ])
+            provider._format_messages(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            TextBlock(text="Summarize"),
+                            DocumentBlock(data="abc", media_type="application/pdf"),
+                        ],
+                    }
+                ]
+            )
         await provider.close()
 
     def test_base_url_normalization(self) -> None:

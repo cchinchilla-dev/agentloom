@@ -163,15 +163,17 @@ class TestAnthropicProvider:
 
         provider = AnthropicProvider(api_key="test-key")
         with pytest.raises(ProviderError, match="does not support audio"):
-            provider._format_messages([
-                {
-                    "role": "user",
-                    "content": [
-                        TextBlock(text="Transcribe"),
-                        AudioBlock(data="abc", media_type="audio/wav"),
-                    ],
-                }
-            ])
+            provider._format_messages(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            TextBlock(text="Transcribe"),
+                            AudioBlock(data="abc", media_type="audio/wav"),
+                        ],
+                    }
+                ]
+            )
         await provider.close()
 
     def test_base_url_normalization(self) -> None:

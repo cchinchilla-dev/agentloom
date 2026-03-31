@@ -205,10 +205,7 @@ async def _validate_url_sandbox(url: str, sandbox: SandboxConfig) -> None:
     hostname = urlparse(url).hostname or ""
 
     if sandbox.allowed_domains and hostname not in sandbox.allowed_domains:
-        msg = (
-            f"URL domain '{hostname}' not in sandbox allowed_domains: "
-            f"{sandbox.allowed_domains}"
-        )
+        msg = f"URL domain '{hostname}' not in sandbox allowed_domains: {sandbox.allowed_domains}"
         raise PermissionError(msg)
 
     await _resolve_and_validate_host(hostname)

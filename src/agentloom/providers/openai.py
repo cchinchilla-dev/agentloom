@@ -74,10 +74,12 @@ class OpenAIProvider(BaseProvider):
                                 f"OpenAI only supports WAV and MP3 audio, "
                                 f"got '{block.media_type}'.",
                             )
-                        parts.append({
-                            "type": "input_audio",
-                            "input_audio": {"data": block.data, "format": fmt},
-                        })
+                        parts.append(
+                            {
+                                "type": "input_audio",
+                                "input_audio": {"data": block.data, "format": fmt},
+                            }
+                        )
                     elif isinstance(block, DocumentBlock):
                         raise ProviderError(
                             "openai",

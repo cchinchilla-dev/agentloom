@@ -60,12 +60,14 @@ class GoogleProvider(BaseProvider):
                     if isinstance(block, TextBlock):
                         parts.append({"text": block.text})
                     elif isinstance(block, (ImageBlock, DocumentBlock, AudioBlock)):
-                        parts.append({
-                            "inline_data": {
-                                "mime_type": block.media_type,
-                                "data": block.data,
-                            },
-                        })
+                        parts.append(
+                            {
+                                "inline_data": {
+                                    "mime_type": block.media_type,
+                                    "data": block.data,
+                                },
+                            }
+                        )
                     elif isinstance(block, ImageURLBlock):
                         raise ProviderError(
                             "google",

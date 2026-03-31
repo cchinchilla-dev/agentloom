@@ -68,31 +68,37 @@ class AnthropicProvider(BaseProvider):
                     if isinstance(block, TextBlock):
                         parts.append({"type": "text", "text": block.text})
                     elif isinstance(block, ImageBlock):
-                        parts.append({
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": block.media_type,
-                                "data": block.data,
-                            },
-                        })
+                        parts.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": block.media_type,
+                                    "data": block.data,
+                                },
+                            }
+                        )
                     elif isinstance(block, ImageURLBlock):
-                        parts.append({
-                            "type": "image",
-                            "source": {
-                                "type": "url",
-                                "url": block.url,
-                            },
-                        })
+                        parts.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "url",
+                                    "url": block.url,
+                                },
+                            }
+                        )
                     elif isinstance(block, DocumentBlock):
-                        parts.append({
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": block.media_type,
-                                "data": block.data,
-                            },
-                        })
+                        parts.append(
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": block.media_type,
+                                    "data": block.data,
+                                },
+                            }
+                        )
                     elif isinstance(block, AudioBlock):
                         raise ProviderError(
                             "anthropic",

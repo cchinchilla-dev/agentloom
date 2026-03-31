@@ -125,15 +125,17 @@ class TestOllamaProvider:
 
         provider = OllamaProvider()
         with pytest.raises(ProviderError, match="does not support document"):
-            provider._format_messages([
-                {
-                    "role": "user",
-                    "content": [
-                        TextBlock(text="Read"),
-                        DocumentBlock(data="abc", media_type="application/pdf"),
-                    ],
-                }
-            ])
+            provider._format_messages(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            TextBlock(text="Read"),
+                            DocumentBlock(data="abc", media_type="application/pdf"),
+                        ],
+                    }
+                ]
+            )
         await provider.close()
 
     async def test_audio_attachment_raises(self) -> None:
@@ -141,15 +143,17 @@ class TestOllamaProvider:
 
         provider = OllamaProvider()
         with pytest.raises(ProviderError, match="does not support audio"):
-            provider._format_messages([
-                {
-                    "role": "user",
-                    "content": [
-                        TextBlock(text="Transcribe"),
-                        AudioBlock(data="abc", media_type="audio/wav"),
-                    ],
-                }
-            ])
+            provider._format_messages(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            TextBlock(text="Transcribe"),
+                            AudioBlock(data="abc", media_type="audio/wav"),
+                        ],
+                    }
+                ]
+            )
         await provider.close()
 
     @respx.mock
