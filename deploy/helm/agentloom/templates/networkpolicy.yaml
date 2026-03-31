@@ -38,8 +38,9 @@ spec:
         - protocol: TCP
           port: 4317
     {{- if .Values.networkPolicy.allowOllama }}
-    # Ollama (local dev)
-    - to: []
+    # Ollama — in-cluster service or external
+    - to:
+        - namespaceSelector: {}
       ports:
         - protocol: TCP
           port: 11434
