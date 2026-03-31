@@ -23,43 +23,14 @@ resilience:
       - any-glob-to-any-file:
           - src/agentloom/resilience/**
 
-tests:
-  - changed-files:
-      - any-glob-to-any-file:
-          - tests/**
-
-documentation:
-  - changed-files:
-      - any-glob-to-any-file:
-          - docs/**
-          - README.md
-          - CONTRIBUTING.md
-          - CODE_OF_CONDUCT.md
-          - deploy/INFRASTRUCTURE.md
-          - deploy/DASHBOARD.md
-          - examples/README.md
-
 infrastructure:
   - changed-files:
       - any-glob-to-any-file:
           - deploy/**
           - Dockerfile
           - .dockerignore
-          - scripts/audit_infra.py
-          - scripts/audit_integration.py
 
 ci:
   - changed-files:
       - any-glob-to-any-file:
           - .github/workflows/**
-
-dependencies:
-  - changed-files:
-      - any-glob-to-any-file:
-          - pyproject.toml
-          - uv.lock
-
-release:
-  - changed-files:
-      - any-glob-to-any-file:
-          - CHANGELOG.md

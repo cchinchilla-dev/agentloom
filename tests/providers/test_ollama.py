@@ -72,6 +72,91 @@ class TestOllamaProvider:
         assert p.supports_model("gpt-4o-mini")
 
     @respx.mock
+    async def test_multimodal_image_block_formatting(self) -> None:
+        route = respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        from agentloom.providers.multimodal import ImageBlock, TextBlock
+
+        provider = OllamaProvider()
+        await provider.complete(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        TextBlock(text="Describe this image"),
+                        ImageBlock(data="abc123", media_type="image/jpeg"),
+                    ],
+                }
+            ],
+            model="llava",
+        )
+        import json
+
+        body = json.loads(route.calls[0].request.content)
+        msg = body["messages"][0]
+        assert msg["content"] == "Describe this image"
+        assert msg["images"] == ["abc123"]
+        await provider.close()
+
+    async def test_multimodal_url_passthrough_raises(self) -> None:
+        from agentloom.providers.multimodal import ImageURLBlock, TextBlock
+
+        provider = OllamaProvider()
+        with pytest.raises(ProviderError, match="does not support URL passthrough"):
+            await provider.complete(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            TextBlock(text="Describe"),
+                            ImageURLBlock(
+                                url="https://example.com/img.jpg", media_type="image/jpeg"
+                            ),
+                        ],
+                    }
+                ],
+                model="llava",
+            )
+        await provider.close()
+
+    async def test_document_attachment_raises(self) -> None:
+        from agentloom.providers.multimodal import DocumentBlock, TextBlock
+
+        provider = OllamaProvider()
+        with pytest.raises(ProviderError, match="does not support document"):
+            provider._format_messages(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            TextBlock(text="Read"),
+                            DocumentBlock(data="abc", media_type="application/pdf"),
+                        ],
+                    }
+                ]
+            )
+        await provider.close()
+
+    async def test_audio_attachment_raises(self) -> None:
+        from agentloom.providers.multimodal import AudioBlock, TextBlock
+
+        provider = OllamaProvider()
+        with pytest.raises(ProviderError, match="does not support audio"):
+            provider._format_messages(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            TextBlock(text="Transcribe"),
+                            AudioBlock(data="abc", media_type="audio/wav"),
+                        ],
+                    }
+                ]
+            )
+        await provider.close()
+
+    @respx.mock
     async def test_custom_base_url(self) -> None:
         respx.post("http://192.168.1.100:11434/api/chat").mock(
             return_value=httpx.Response(200, json=MOCK_RESPONSE)

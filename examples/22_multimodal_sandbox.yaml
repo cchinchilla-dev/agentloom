@@ -1,0 +1,28 @@
+name: multimodal-sandboxed
+version: "1.0"
+description: >
+  Image analysis with sandbox restrictions on URL fetching.
+  Only URLs from allowed_domains can be fetched.
+  Demonstrates security controls for multi-modal attachments.
+
+config:
+  provider: openai
+  model: gpt-4o
+  sandbox:
+    enabled: true
+    allow_network: true
+    allowed_domains:
+      - placehold.co
+      - httpbin.org
+
+state:
+  trusted_url: "https://placehold.co/200x200/blue/white.png?text=OK"
+
+steps:
+  - id: analyze_trusted
+    type: llm_call
+    prompt: "Describe this image from a trusted domain."
+    attachments:
+      - type: image
+        source: "{state.trusted_url}"
+    output: trusted_result

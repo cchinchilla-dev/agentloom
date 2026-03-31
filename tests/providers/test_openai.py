@@ -64,6 +64,84 @@ class TestOpenAIProvider:
         assert body["max_tokens"] == 100
         await provider.close()
 
+    @respx.mock
+    async def test_multimodal_image_block_formatting(self) -> None:
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        from agentloom.providers.multimodal import ImageBlock, TextBlock
+
+        provider = OpenAIProvider(api_key="test-key")
+        await provider.complete(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        TextBlock(text="Describe this image"),
+                        ImageBlock(data="abc123", media_type="image/jpeg"),
+                    ],
+                }
+            ],
+            model="gpt-4o",
+        )
+        import json
+
+        body = json.loads(route.calls[0].request.content)
+        content = body["messages"][0]["content"]
+        assert content[0] == {"type": "text", "text": "Describe this image"}
+        assert content[1]["type"] == "image_url"
+        assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,abc123"
+        await provider.close()
+
+    @respx.mock
+    async def test_multimodal_url_passthrough(self) -> None:
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        from agentloom.providers.multimodal import ImageURLBlock, TextBlock
+
+        provider = OpenAIProvider(api_key="test-key")
+        await provider.complete(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        TextBlock(text="Describe"),
+                        ImageURLBlock(url="https://example.com/img.jpg", media_type="image/jpeg"),
+                    ],
+                }
+            ],
+            model="gpt-4o",
+        )
+        import json
+
+        body = json.loads(route.calls[0].request.content)
+        content = body["messages"][0]["content"]
+        assert content[1]["image_url"]["url"] == "https://example.com/img.jpg"
+        await provider.close()
+
+    async def test_pdf_attachment_raises(self) -> None:
+        from agentloom.providers.multimodal import DocumentBlock, TextBlock
+
+        provider = OpenAIProvider(api_key="test-key")
+        with pytest.raises(ProviderError, match="does not support PDF"):
+            provider._format_messages(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            TextBlock(text="Summarize"),
+                            DocumentBlock(data="abc", media_type="application/pdf"),
+                        ],
+                    }
+                ]
+            )
+        await provider.close()
+
+    def test_base_url_normalization(self) -> None:
+        p = OpenAIProvider(api_key="k", base_url="https://api.openai.com")
+        assert p.base_url == "https://api.openai.com/v1"
+
     def test_supports_gpt_models(self) -> None:
         p = OpenAIProvider(api_key="k")
         assert p.supports_model("gpt-4o-mini")

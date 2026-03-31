@@ -268,6 +268,7 @@ class WorkflowEngine:
             tool_registry=self.tool_registry,
             workflow_model=self.workflow.config.model,
             workflow_provider=self.workflow.config.provider,
+            sandbox_config=self.workflow.config.sandbox,
         )
 
         # Execute with retry
@@ -307,6 +308,7 @@ class WorkflowEngine:
                             result.duration_ms,
                             result.cost_usd,
                             result.token_usage.total_tokens,
+                            attachment_count=result.attachment_count,
                         )
                         if result.provider and result.model:
                             self.observer.on_provider_call(
@@ -393,6 +395,7 @@ class WorkflowEngine:
                     last_result.cost_usd,
                     last_result.token_usage.total_tokens,
                     error=last_result.error,
+                    attachment_count=last_result.attachment_count,
                 )
 
             logger.error(

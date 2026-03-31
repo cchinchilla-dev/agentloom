@@ -16,6 +16,7 @@ from agentloom.core.models import (
 from agentloom.core.results import TokenUsage
 from agentloom.providers.base import BaseProvider, ProviderResponse
 from agentloom.providers.gateway import ProviderGateway
+from agentloom.providers.multimodal import extract_text_content
 from agentloom.tools.base import BaseTool
 from agentloom.tools.registry import ToolRegistry
 
@@ -33,7 +34,7 @@ class MockProvider(BaseProvider):
 
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -48,7 +49,8 @@ class MockProvider(BaseProvider):
             }
         )
 
-        last_msg = messages[-1]["content"] if messages else ""
+        last_content = messages[-1].get("content", "") if messages else ""
+        last_msg = extract_text_content(last_content)
         content = self.responses.get(last_msg, self._default_response)
 
         return ProviderResponse(

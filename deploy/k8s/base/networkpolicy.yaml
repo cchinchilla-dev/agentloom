@@ -37,8 +37,9 @@ spec:
       ports:
         - protocol: TCP
           port: 4317
-    # Ollama (local dev — override in production overlays)
-    - to: []
+    # Ollama — in-cluster only (use ipBlock for external Ollama)
+    - to:
+        - namespaceSelector: {}
       ports:
         - protocol: TCP
           port: 11434

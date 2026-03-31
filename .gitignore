@@ -35,3 +35,4 @@ node_modules/
 .claude/settings.local.json
 .claude/worktrees/
 .claude/CLAUDE.md
+deploy/terraform/agentloom-dev-config

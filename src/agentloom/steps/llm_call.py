@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
+from agentloom.core.models import Attachment
 from agentloom.core.results import StepResult, StepStatus
 from agentloom.exceptions import StepError
+from agentloom.providers.multimodal import (
+    ContentBlock,
+    build_multimodal_content,
+    resolve_attachments,
+)
 from agentloom.steps.base import BaseStep, StepContext
 
 logger = logging.getLogger("agentloom.steps")
@@ -40,11 +47,34 @@ class LLMCallStep(BaseStep):
         except (KeyError, ValueError) as e:
             raise StepError(step.id, f"Prompt template error: {e}") from e
 
+        # Resolve multimodal attachments
+        content_blocks: list[ContentBlock] = []
+        if step.attachments:
+            try:
+                resolved_attachments = [
+                    Attachment(
+                        type=att.type,
+                        source=att.source.format_map(SafeFormatDict(template_vars)),
+                        media_type=att.media_type,
+                        fetch=att.fetch,
+                    )
+                    for att in step.attachments
+                ]
+            except (KeyError, ValueError) as e:
+                raise StepError(step.id, f"Attachment template error: {e}") from e
+            try:
+                content_blocks = await resolve_attachments(
+                    resolved_attachments, sandbox=context.sandbox_config
+                )
+            except Exception as e:
+                raise StepError(step.id, f"Attachment resolution error: {e}") from e
+
         # Build messages
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         if rendered_system:
             messages.append({"role": "system", "content": rendered_system})
-        messages.append({"role": "user", "content": rendered_prompt})
+        user_content = build_multimodal_content(rendered_prompt, content_blocks)
+        messages.append({"role": "user", "content": user_content})
 
         # Call provider
         try:
@@ -78,6 +108,7 @@ class LLMCallStep(BaseStep):
             cost_usd=response.cost_usd,
             model=response.model,
             provider=response.provider,
+            attachment_count=len(content_blocks),
         )
 
     @staticmethod

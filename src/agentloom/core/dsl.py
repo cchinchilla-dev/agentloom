@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from agentloom.core.models import (
+    Attachment,
     Condition,
     StepDefinition,
     StepType,
@@ -36,6 +37,7 @@ class WorkflowBuilder:
         model: str | None = None,
         output: str | None = None,
         depends_on: list[str] | None = None,
+        attachments: list[Attachment] | None = None,
         **kwargs: Any,
     ) -> WorkflowBuilder:
         """Add an LLM call step."""
@@ -48,6 +50,7 @@ class WorkflowBuilder:
                 model=model,
                 output=output,
                 depends_on=depends_on or [],
+                attachments=attachments or [],
                 **kwargs,
             )
         )

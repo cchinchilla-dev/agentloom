@@ -7,11 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Multi-modal input support for `llm_call` steps — images, PDFs, and audio via `attachments` field (#68)
+  - Provider-native formatting: OpenAI (images, audio), Anthropic (images, PDFs), Google (images, PDFs, audio), Ollama (images)
+  - URL fetching with `fetch: local` (default) or `fetch: provider` passthrough
+  - SSRF protection: blocks private/reserved IP ranges (RFC 1918, loopback, link-local)
+  - Sandbox integration: `allowed_domains`, `allow_network`, and `readable_paths` enforced for attachments
+  - Attachment size limit (20 MB default)
+  - `attachment_count` in `StepResult`, OTel span attribute, and `agentloom_attachments_total` metric
+  - Grafana dashboard "Multi-modal" row with attachments panels
+  - Multi-modal workflow examples (19–24)
+- `AGENTLOOM_*` env var prefix for all configuration overrides (#5)
+- YAML-based pricing table replacing hardcoded Python dict (#6)
+- Provider auto-discovery moved from CLI hack to `config.discover_providers()`
+
 ### Planned
 
 - Streaming responses from providers (currently falls back to full completion)
-- YAML-based provider config (replace env var discovery)
-- Load pricing table from YAML instead of hardcoded Python dict
 - Array index support in state paths (e.g., `state.items[0]`)
 
 ## [0.2.0] - 2026-03-30
@@ -78,11 +91,11 @@ First public release.
 - No streaming support (falls back to full completion)
 - Router expressions use first-match-wins, no priority ordering
 - ~~Rate limiter doesn't account for response tokens (only prompt tokens)~~ (fixed in 0.1.1)
-- Provider discovery from env vars only, should be a config file
+- ~~Provider discovery from env vars only, should be a config file~~ (fixed in Unreleased)
 - ~~Shell command tool has no sandboxing (FIXME in code)~~ (fixed in 0.1.2)
 - ~~File tools accept arbitrary paths (no path sanitization)~~ (fixed in 0.1.2)
 - Router expressions use `eval()` — must be trusted input (not user-facing)
-- Pricing table hardcoded in Python, should be YAML config
+- ~~Pricing table hardcoded in Python, should be YAML config~~ (fixed in Unreleased)
 - No array index support in state paths (e.g., `state.items[0]`)
 - ~~Sync state access in step executors bypasses async lock~~ (fixed in 0.1.2)
 - Budget enforcement is post-hoc — a single expensive step can overshoot before being stopped

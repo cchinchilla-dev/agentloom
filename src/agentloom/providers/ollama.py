@@ -9,6 +9,13 @@ import httpx
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
 from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.multimodal import (
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    ImageURLBlock,
+    TextBlock,
+)
 
 
 class OllamaProvider(BaseProvider):
@@ -31,9 +38,45 @@ class OllamaProvider(BaseProvider):
             timeout=120.0,  # Local models can be slow
         )
 
+    @staticmethod
+    def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert internal content blocks to Ollama's images format."""
+        formatted: list[dict[str, Any]] = []
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                formatted.append({"role": msg["role"], "content": content})
+            else:
+                text_parts: list[str] = []
+                images: list[str] = []
+                for block in content:
+                    if isinstance(block, TextBlock):
+                        text_parts.append(block.text)
+                    elif isinstance(block, ImageBlock):
+                        images.append(block.data)
+                    elif isinstance(block, (DocumentBlock, AudioBlock)):
+                        raise ProviderError(
+                            "ollama",
+                            f"Ollama does not support {block.type} attachments.",
+                        )
+                    elif isinstance(block, ImageURLBlock):
+                        raise ProviderError(
+                            "ollama",
+                            "Ollama does not support URL passthrough for images. "
+                            "Use fetch: local instead.",
+                        )
+                entry: dict[str, Any] = {
+                    "role": msg["role"],
+                    "content": " ".join(text_parts),
+                }
+                if images:
+                    entry["images"] = images
+                formatted.append(entry)
+        return formatted
+
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -41,7 +84,7 @@ class OllamaProvider(BaseProvider):
     ) -> ProviderResponse:
         payload: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": self._format_messages(messages),
             "stream": False,
         }
         options: dict[str, Any] = {}

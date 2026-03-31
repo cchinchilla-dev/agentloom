@@ -73,6 +73,112 @@ class TestGoogleProvider:
             )
         await provider.close()
 
+    @respx.mock
+    async def test_multimodal_image_block_formatting(self) -> None:
+        route = respx.post(url__regex=r".*/models/gemini.*").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        from agentloom.providers.multimodal import ImageBlock, TextBlock
+
+        provider = GoogleProvider(api_key="test-key")
+        await provider.complete(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        TextBlock(text="Describe this image"),
+                        ImageBlock(data="abc123", media_type="image/jpeg"),
+                    ],
+                }
+            ],
+            model="gemini-2.5-flash",
+        )
+        import json
+
+        body = json.loads(route.calls[0].request.content)
+        parts = body["contents"][0]["parts"]
+        assert parts[0] == {"text": "Describe this image"}
+        assert parts[1]["inline_data"]["mime_type"] == "image/jpeg"
+        assert parts[1]["inline_data"]["data"] == "abc123"
+        await provider.close()
+
+    async def test_multimodal_url_passthrough_raises(self) -> None:
+        from agentloom.providers.multimodal import ImageURLBlock, TextBlock
+
+        provider = GoogleProvider(api_key="test-key")
+        with pytest.raises(ProviderError, match="does not support URL passthrough"):
+            await provider.complete(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            TextBlock(text="Describe"),
+                            ImageURLBlock(
+                                url="https://example.com/img.jpg", media_type="image/jpeg"
+                            ),
+                        ],
+                    }
+                ],
+                model="gemini-2.5-flash",
+            )
+        await provider.close()
+
+    @respx.mock
+    async def test_multimodal_document_block_formatting(self) -> None:
+        route = respx.post(url__regex=r".*/models/gemini.*").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        from agentloom.providers.multimodal import DocumentBlock, TextBlock
+
+        provider = GoogleProvider(api_key="test-key")
+        await provider.complete(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        TextBlock(text="Summarize"),
+                        DocumentBlock(data="pdf_b64", media_type="application/pdf"),
+                    ],
+                }
+            ],
+            model="gemini-2.5-flash",
+        )
+        import json
+
+        body = json.loads(route.calls[0].request.content)
+        parts = body["contents"][0]["parts"]
+        assert parts[1]["inline_data"]["mime_type"] == "application/pdf"
+        assert parts[1]["inline_data"]["data"] == "pdf_b64"
+        await provider.close()
+
+    @respx.mock
+    async def test_multimodal_audio_block_formatting(self) -> None:
+        route = respx.post(url__regex=r".*/models/gemini.*").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        from agentloom.providers.multimodal import AudioBlock, TextBlock
+
+        provider = GoogleProvider(api_key="test-key")
+        await provider.complete(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        TextBlock(text="Transcribe"),
+                        AudioBlock(data="audio_b64", media_type="audio/wav"),
+                    ],
+                }
+            ],
+            model="gemini-2.5-flash",
+        )
+        import json
+
+        body = json.loads(route.calls[0].request.content)
+        parts = body["contents"][0]["parts"]
+        assert parts[1]["inline_data"]["mime_type"] == "audio/wav"
+        assert parts[1]["inline_data"]["data"] == "audio_b64"
+        await provider.close()
+
     def test_supports_gemini_models(self) -> None:
         p = GoogleProvider(api_key="k")
         assert p.supports_model("gemini-2.5-flash")

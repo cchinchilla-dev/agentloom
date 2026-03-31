@@ -10,6 +10,13 @@ import httpx
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
 from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.multimodal import (
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    ImageURLBlock,
+    TextBlock,
+)
 from agentloom.providers.pricing import calculate_cost
 
 
@@ -31,29 +38,54 @@ class GoogleProvider(BaseProvider):
             timeout=60.0,
         )
 
+    @staticmethod
+    def _format_messages(
+        messages: list[dict[str, Any]],
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """Convert internal messages to Gemini contents + system instruction."""
+        system_instruction: str | None = None
+        contents: list[dict[str, Any]] = []
+        for msg in messages:
+            if msg["role"] == "system":
+                content = msg.get("content", "")
+                system_instruction = content if isinstance(content, str) else str(content)
+                continue
+            role = "user" if msg["role"] == "user" else "model"
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                contents.append({"role": role, "parts": [{"text": content}]})
+            else:
+                parts: list[dict[str, Any]] = []
+                for block in content:
+                    if isinstance(block, TextBlock):
+                        parts.append({"text": block.text})
+                    elif isinstance(block, (ImageBlock, DocumentBlock, AudioBlock)):
+                        parts.append(
+                            {
+                                "inline_data": {
+                                    "mime_type": block.media_type,
+                                    "data": block.data,
+                                },
+                            }
+                        )
+                    elif isinstance(block, ImageURLBlock):
+                        raise ProviderError(
+                            "google",
+                            "Google Gemini does not support URL passthrough for images. "
+                            "Use fetch: local instead.",
+                        )
+                contents.append({"role": role, "parts": parts})
+        return system_instruction, contents
+
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
-        # Convert OpenAI-style messages to Gemini format
-        contents = []
-        system_instruction = None
-
-        for msg in messages:
-            if msg["role"] == "system":
-                system_instruction = msg["content"]
-            else:
-                role = "user" if msg["role"] == "user" else "model"
-                contents.append(
-                    {
-                        "role": role,
-                        "parts": [{"text": msg["content"]}],
-                    }
-                )
+        system_instruction, contents = self._format_messages(messages)
 
         payload: dict[str, Any] = {"contents": contents}
 
