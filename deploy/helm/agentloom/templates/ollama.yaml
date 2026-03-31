@@ -1,0 +1,102 @@
+{{- if .Values.ollama.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentloom.fullname" . }}-ollama
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentloom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "agentloom.name" . }}-ollama
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "agentloom.name" . }}-ollama
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ollama
+          image: {{ .Values.ollama.image }}
+          ports:
+            - name: http
+              containerPort: 11434
+              protocol: TCP
+          env:
+            - name: OLLAMA_MODELS
+              value: /models
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.ollama.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /api/tags
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /models
+      initContainers:
+        - name: pull-model
+          image: {{ .Values.ollama.image }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              ollama serve &
+              sleep 5
+              ollama pull "$OLLAMA_PULL_MODEL"
+              kill %1 2>/dev/null
+              exit 0
+          env:
+            - name: OLLAMA_MODELS
+              value: /models
+            - name: OLLAMA_PULL_MODEL
+              value: {{ .Values.ollama.model | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.ollama.resources | nindent 12 }}
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /models
+      volumes:
+        - name: ollama-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentloom.fullname" . }}-ollama
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentloom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "agentloom.name" . }}-ollama
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - port: 11434
+      targetPort: http
+      protocol: TCP
+      name: http
+{{- end }}
