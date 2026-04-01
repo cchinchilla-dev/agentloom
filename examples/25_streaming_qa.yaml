@@ -1,0 +1,19 @@
+name: streaming-qa
+version: "1.0"
+description: >
+  Simple Q&A with streaming enabled. Tokens are displayed in real-time
+  when run with `--stream`. Usage and cost are tracked normally.
+
+config:
+  provider: openai
+  model: gpt-4o-mini
+  stream: true
+
+state:
+  question: "Explain the concept of streaming in LLM APIs in three sentences."
+
+steps:
+  - id: answer
+    type: llm_call
+    prompt: "Answer this question concisely: {state.question}"
+    output: answer
