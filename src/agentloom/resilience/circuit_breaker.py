@@ -123,6 +123,36 @@ class CircuitBreaker:
         if self._state == CircuitState.HALF_OPEN or self._failure_count >= self.fail_threshold:
             self._set_state(CircuitState.OPEN)
 
+    def allow_request(self) -> None:
+        """Pre-check for streaming: raises CircuitOpenError if a request should not proceed.
+
+        Unlike ``call()``, this does not wrap a coroutine — it only validates
+        that the circuit allows a new request through.  Pair with
+        ``record_success()`` / ``record_failure()`` after the work completes.
+
+        NOTE: Under concurrent streaming (parallel DAG steps), multiple
+        coroutines may pass ``allow_request()`` before any calls
+        ``record_success()``.  In the HALF_OPEN state this can exceed
+        ``half_open_max_calls``.  This is acceptable under cooperative
+        (single-threaded) concurrency but would require a lock if
+        moved to a threaded executor.
+        """
+        current_state = self.state
+        if current_state == CircuitState.OPEN:
+            raise CircuitOpenError(self.name)
+        if current_state == CircuitState.HALF_OPEN:
+            if self._half_open_calls >= self.half_open_max_calls:
+                raise CircuitOpenError(self.name)
+            self._half_open_calls += 1
+
+    def record_success(self) -> None:
+        """Record a successful call (deferred feedback for streaming)."""
+        self._on_success()
+
+    def record_failure(self) -> None:
+        """Record a failed call (deferred feedback for streaming)."""
+        self._on_failure()
+
     def reset(self) -> None:
         """Manually reset the circuit breaker to closed state."""
         self._set_state(CircuitState.CLOSED)

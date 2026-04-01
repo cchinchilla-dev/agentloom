@@ -18,13 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `attachment_count` in `StepResult`, OTel span attribute, and `agentloom_attachments_total` metric
   - Grafana dashboard "Multi-modal" row with attachments panels
   - Multi-modal workflow examples (19–24)
+- Streaming support for LLM responses with real-time token output (#3)
+  - `StreamResponse` accumulator with per-provider SSE/NDJSON parsing
+  - All 4 providers: OpenAI (SSE), Anthropic (SSE), Google (SSE), Ollama (NDJSON)
+  - Gateway `stream()` with circuit breaker + rate limiter integration
+  - `config.stream: true` (workflow-level) and per-step `stream:` override
+  - CLI `--stream` flag for real-time terminal output
+  - `time_to_first_token_ms` in `StepResult` and OTel span attributes
+  - `agentloom_stream_responses_total` and `agentloom_time_to_first_token_seconds` metrics
+  - Grafana "Streaming" dashboard row with TTFT quantiles
+  - Streaming examples (25–26)
 - `AGENTLOOM_*` env var prefix for all configuration overrides (#5)
 - YAML-based pricing table replacing hardcoded Python dict (#6)
 - Provider auto-discovery moved from CLI hack to `config.discover_providers()`
 
 ### Planned
 
-- Streaming responses from providers (currently falls back to full completion)
 - Array index support in state paths (e.g., `state.items[0]`)
 
 ## [0.2.0] - 2026-03-30
@@ -88,7 +97,7 @@ First public release.
 
 ### Known Limitations
 
-- No streaming support (falls back to full completion)
+- ~~No streaming support (falls back to full completion)~~ (fixed in Unreleased)
 - Router expressions use first-match-wins, no priority ordering
 - ~~Rate limiter doesn't account for response tokens (only prompt tokens)~~ (fixed in 0.1.1)
 - ~~Provider discovery from env vars only, should be a config file~~ (fixed in Unreleased)

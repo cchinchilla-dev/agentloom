@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
-from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.multimodal import (
     AudioBlock,
     DocumentBlock,
@@ -18,6 +21,8 @@ from agentloom.providers.multimodal import (
     TextBlock,
 )
 from agentloom.providers.pricing import calculate_cost
+
+logger = logging.getLogger("agentloom.providers.anthropic")
 
 
 class AnthropicProvider(BaseProvider):
@@ -165,6 +170,76 @@ class AnthropicProvider(BaseProvider):
             raw_response=data,
             finish_reason=data.get("stop_reason"),
         )
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> StreamResponse:
+        system_prompt, filtered_messages = self._format_messages(messages)
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": filtered_messages,
+            "max_tokens": max_tokens or 4096,
+            "stream": True,
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        if temperature is not None:
+            payload["temperature"] = temperature
+
+        sr = StreamResponse(model=model, provider="anthropic")
+        prompt_tokens = 0
+        completion_tokens = 0
+
+        async def _generate() -> AsyncIterator[str]:
+            nonlocal prompt_tokens, completion_tokens
+            async with self._client.stream("POST", "/messages", json=payload) as resp:
+                if resp.status_code != 200:
+                    await resp.aread()
+                    raise ProviderError(
+                        "anthropic",
+                        f"API error {resp.status_code}: {resp.text}",
+                        status_code=resp.status_code,
+                    )
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    try:
+                        data = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        logger.warning("Malformed SSE chunk, skipping: %s", line[:200])
+                        continue
+                    event_type = data.get("type", "")
+                    if event_type == "message_start":
+                        usage = data.get("message", {}).get("usage", {})
+                        prompt_tokens = usage.get("input_tokens", 0)
+                        sr.model = data.get("message", {}).get("model", model)
+                    elif event_type == "content_block_delta":
+                        text = data.get("delta", {}).get("text", "")
+                        if text:
+                            yield text
+                    elif event_type == "message_delta":
+                        delta = data.get("delta", {})
+                        sr.finish_reason = delta.get("stop_reason")
+                        usage = data.get("usage", {})
+                        completion_tokens = usage.get("output_tokens", 0)
+                        # Set usage immediately so the gateway wrapper sees
+                        # populated values before StopAsyncIteration propagates.
+                        sr.usage = TokenUsage(
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=prompt_tokens + completion_tokens,
+                        )
+                        sr.cost_usd = calculate_cost(model, prompt_tokens, completion_tokens)
+
+        sr._set_iterator(_generate())
+        return sr
 
     def supports_model(self, model: str) -> bool:
         return "claude" in model

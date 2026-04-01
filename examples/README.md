@@ -178,3 +178,19 @@ Transcribes an audio clip and analyzes the transcript for topic, sentiment,
 and action items. Requires a provider that supports audio (OpenAI or Google).
 OpenAI only accepts WAV and MP3 formats. Anthropic and Ollama will reject audio.
 Demonstrates: `type: audio` attachment, transcription + analysis pipeline.
+
+---
+
+### 25 — Streaming: Simple QA
+Streams LLM output token-by-token in real-time. Uses `config.stream: true`
+at the workflow level. Run with `--stream` to see tokens appear live.
+Demonstrates: `stream` config, `--stream` CLI flag, time-to-first-token tracking.
+
+```bash
+agentloom run examples/25_streaming_qa.yaml --stream
+```
+
+### 26 — Streaming + Multi-modal
+Combines streaming with image input. The image is fetched locally, and the
+LLM description is streamed back in real-time.
+Demonstrates: streaming + attachments composability, real-time vision output.

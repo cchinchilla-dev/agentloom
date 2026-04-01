@@ -17,6 +17,10 @@ class WorkflowObserver:
     """Observes workflow execution, emitting OTel spans and Prometheus metrics.
 
     Both *tracing* and *metrics* are optional — pass ``None`` to disable either.
+
+    Note: Hook signatures may gain new keyword arguments with defaults in
+    future versions.  Subclasses that override hooks should accept ``**kwargs``
+    for forward compatibility.
     """
 
     def __init__(
@@ -71,13 +75,14 @@ class WorkflowObserver:
     # Step lifecycle
     # ------------------------------------------------------------------
 
-    def on_step_start(self, step_id: str, step_type: str) -> None:
+    def on_step_start(self, step_id: str, step_type: str, stream: bool = False) -> None:
         if self._tracing:
             span = self._tracing.start_span(
                 f"step:{step_id}",
                 attributes={
                     "step.id": step_id,
                     "step.type": step_type,
+                    "step.stream": stream,
                 },
             )
             self._step_spans[step_id] = span
@@ -92,10 +97,14 @@ class WorkflowObserver:
         tokens: int = 0,
         error: str | None = None,
         attachment_count: int = 0,
+        time_to_first_token_ms: float | None = None,
+        stream: bool = False,
     ) -> None:
         # Metrics
         if self._metrics:
-            self._metrics.record_step_execution(step_type, status, duration_ms / 1000.0)
+            self._metrics.record_step_execution(
+                step_type, status, duration_ms / 1000.0, stream=stream
+            )
             if attachment_count > 0:
                 self._metrics.record_attachments(step_type, attachment_count)
 
@@ -108,6 +117,8 @@ class WorkflowObserver:
             span.set_attribute("step.tokens", tokens)
             if attachment_count > 0:
                 span.set_attribute("step.attachments", attachment_count)
+            if time_to_first_token_ms is not None:
+                span.set_attribute("step.time_to_first_token_ms", time_to_first_token_ms)
             if error:
                 span.set_attribute("step.error", error)
             if self._tracing:
@@ -119,13 +130,20 @@ class WorkflowObserver:
     # Provider-level events (called from gateway if observer is attached)
     # ------------------------------------------------------------------
 
-    def on_provider_call(self, provider: str, model: str, latency_s: float) -> None:
+    def on_provider_call(
+        self, provider: str, model: str, latency_s: float, stream: bool = False
+    ) -> None:
         if self._metrics:
-            self._metrics.record_provider_call(provider, model, latency_s)
+            self._metrics.record_provider_call(provider, model, latency_s, stream=stream)
 
     def on_provider_error(self, provider: str, error_type: str) -> None:
         if self._metrics:
             self._metrics.record_provider_error(provider, error_type)
+
+    def on_stream_response(self, provider: str, model: str, ttft_s: float) -> None:
+        if self._metrics:
+            self._metrics.record_stream_response(provider, model)
+            self._metrics.record_time_to_first_token(provider, model, ttft_s)
 
     def on_tokens(
         self,

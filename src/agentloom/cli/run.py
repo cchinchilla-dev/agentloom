@@ -29,9 +29,10 @@ def run(
     budget: float | None = typer.Option(None, "--budget", "-b", help="Maximum budget in USD."),
     lite: bool = typer.Option(False, "--lite", help="Run in lite mode (no observability)."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    stream: bool = typer.Option(False, "--stream", help="Stream LLM output in real-time."),
 ) -> None:
     """Execute a workflow from a YAML definition file."""
-    anyio.run(_run_async, workflow_path, state, provider, model, budget, lite, output_json)
+    anyio.run(_run_async, workflow_path, state, provider, model, budget, lite, output_json, stream)
 
 
 async def _run_async(
@@ -42,6 +43,7 @@ async def _run_async(
     budget: float | None,
     lite: bool,
     output_json: bool,
+    stream: bool = False,
 ) -> None:
     """Async implementation of the run command."""
     from agentloom.core.engine import WorkflowEngine
@@ -64,6 +66,8 @@ async def _run_async(
         workflow.config.model = model_override
     if budget is not None:
         workflow.config.budget_usd = budget
+    if stream:
+        workflow.config.stream = True
 
     # Parse state overrides
     initial_state = dict(workflow.state)
@@ -98,6 +102,15 @@ async def _run_async(
     # Setup observability (unless --lite)
     observer = _setup_observer(lite)
 
+    # Setup stream callback
+    stream_callback = None
+    if stream and not output_json:
+
+        def _on_chunk(step_id: str, text: str) -> None:
+            typer.echo(text, nl=False)
+
+        stream_callback = _on_chunk
+
     # Run engine
     engine = WorkflowEngine(
         workflow=workflow,
@@ -105,10 +118,14 @@ async def _run_async(
         provider_gateway=gateway,
         tool_registry=tool_registry,
         observer=observer,
+        on_stream_chunk=stream_callback,
     )
 
     typer.echo(f"Running workflow: {workflow.name}")
     result = await engine.run()
+
+    if stream and not output_json:
+        typer.echo()  # Newline after streamed output
 
     # Output results
     if output_json:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -23,6 +24,8 @@ class StepContext(BaseModel):
     workflow_model: str = "gpt-4o-mini"
     workflow_provider: str = "openai"
     sandbox_config: SandboxConfig = Field(default_factory=SandboxConfig)
+    stream: bool = False
+    on_stream_chunk: Callable[[str, str], None] | None = None
 
 
 class BaseStep(ABC):

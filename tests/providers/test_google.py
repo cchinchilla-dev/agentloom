@@ -179,6 +179,43 @@ class TestGoogleProvider:
         assert parts[1]["inline_data"]["data"] == "audio_b64"
         await provider.close()
 
+    @respx.mock
+    async def test_streaming_yields_chunks(self) -> None:
+        sse = (
+            'data: {"candidates":[{"content":{"parts":[{"text":"Gemini"}],"role":"model"}}]}\n\n'
+            'data: {"candidates":[{"content":{"parts":[{"text":" says"}],"role":"model"}}]}\n\n'
+            'data: {"candidates":[{"content":{"parts":[{"text":" hi"}],"role":"model"},'
+            '"finishReason":"STOP"}],'
+            '"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":4,"totalTokenCount":12}}\n\n'
+        )
+        respx.post(url__regex=r".*/models/gemini.*streamGenerateContent.*").mock(
+            return_value=httpx.Response(200, content=sse.encode())
+        )
+        provider = GoogleProvider(api_key="test-key")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}], model="gemini-2.5-flash"
+        )
+        chunks = [chunk async for chunk in sr]
+        assert chunks == ["Gemini", " says", " hi"]
+        assert sr.content == "Gemini says hi"
+        assert sr.usage.total_tokens == 12
+        assert sr.finish_reason == "STOP"
+        await provider.close()
+
+    @respx.mock
+    async def test_streaming_api_error(self) -> None:
+        respx.post(url__regex=r".*/models/gemini.*streamGenerateContent.*").mock(
+            return_value=httpx.Response(404, text="model not found")
+        )
+        provider = GoogleProvider(api_key="test-key")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}], model="gemini-2.5-flash"
+        )
+        with pytest.raises(ProviderError, match="404"):
+            async for _ in sr:
+                pass
+        await provider.close()
+
     def test_supports_gemini_models(self) -> None:
         p = GoogleProvider(api_key="k")
         assert p.supports_model("gemini-2.5-flash")

@@ -59,6 +59,8 @@ class MetricsManager:
         self._workflow_histogram: Any = None
         self._cost_counter: Any = None
         self._attachment_counter: Any = None
+        self._stream_counter: Any = None
+        self._ttft_histogram: Any = None
         self._circuit_states: dict[str, int] = {}  # provider -> state int
 
         # prometheus_client instruments (fallback)
@@ -130,6 +132,15 @@ class MetricsManager:
             "agentloom_attachments_total",
             description="Total multi-modal attachments processed",
         )
+        self._stream_counter = meter.create_counter(
+            "agentloom_stream_responses_total",
+            description="Total streamed LLM responses",
+        )
+        self._ttft_histogram = meter.create_histogram(
+            "agentloom_time_to_first_token_seconds",
+            description="Time to first token for streamed responses",
+            unit="s",
+        )
 
         # Circuit breaker gauge (callback-based, reads from _circuit_states)
         states = self._circuit_states
@@ -157,12 +168,12 @@ class MetricsManager:
         self._prom_counters["step_executions"] = prom.Counter(
             "agentloom_step_executions_total",
             "Total step executions",
-            ["step_type", "status"],
+            ["step_type", "status", "stream"],
         )
         self._prom_counters["provider_calls"] = prom.Counter(
             "agentloom_provider_calls_total",
             "Total provider API calls",
-            ["provider", "model"],
+            ["provider", "model", "stream"],
         )
         self._prom_counters["provider_errors"] = prom.Counter(
             "agentloom_provider_errors_total",
@@ -177,19 +188,30 @@ class MetricsManager:
         self._prom_histograms["step_duration"] = prom.Histogram(
             "agentloom_step_duration_seconds",
             "Step execution duration",
-            ["step_type"],
+            ["step_type", "stream"],
             buckets=[0.1, 0.5, 1, 2, 5, 10, 30, 60],
         )
         self._prom_histograms["provider_latency"] = prom.Histogram(
             "agentloom_provider_latency_seconds",
             "Provider API call latency",
-            ["provider"],
+            ["provider", "stream"],
             buckets=[0.1, 0.5, 1, 2, 5, 10, 30],
         )
         self._prom_counters["attachments"] = prom.Counter(
             "agentloom_attachments_total",
             "Total multi-modal attachments processed",
             ["step_type"],
+        )
+        self._prom_counters["stream_responses"] = prom.Counter(
+            "agentloom_stream_responses_total",
+            "Total streamed LLM responses",
+            ["provider", "model"],
+        )
+        self._prom_histograms["ttft"] = prom.Histogram(
+            "agentloom_time_to_first_token_seconds",
+            "Time to first token for streamed responses",
+            ["provider", "model"],
+            buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
         )
         self._prom_gauges["budget_remaining"] = prom.Gauge(
             "agentloom_budget_remaining_usd",
@@ -223,25 +245,43 @@ class MetricsManager:
         else:
             self._prom_counters["workflow_runs"].labels(workflow=workflow, status=status).inc()
 
-    def record_step_execution(self, step_type: str, status: str, duration_s: float) -> None:
+    def record_step_execution(
+        self, step_type: str, status: str, duration_s: float, stream: bool = False
+    ) -> None:
         if not self._enabled:
             return
+        stream_str = str(stream).lower()
         if self._backend == "otel":
-            self._step_counter.add(1, {"step_type": step_type, "status": status})
-            self._step_histogram.record(duration_s, {"step_type": step_type})
+            self._step_counter.add(
+                1, {"step_type": step_type, "status": status, "stream": stream_str}
+            )
+            self._step_histogram.record(duration_s, {"step_type": step_type, "stream": stream_str})
         else:
-            self._prom_counters["step_executions"].labels(step_type=step_type, status=status).inc()
-            self._prom_histograms["step_duration"].labels(step_type=step_type).observe(duration_s)
+            self._prom_counters["step_executions"].labels(
+                step_type=step_type, status=status, stream=stream_str
+            ).inc()
+            self._prom_histograms["step_duration"].labels(
+                step_type=step_type, stream=stream_str
+            ).observe(duration_s)
 
-    def record_provider_call(self, provider: str, model: str, latency_s: float) -> None:
+    def record_provider_call(
+        self, provider: str, model: str, latency_s: float, stream: bool = False
+    ) -> None:
         if not self._enabled:
             return
+        stream_str = str(stream).lower()
         if self._backend == "otel":
-            self._provider_counter.add(1, {"provider": provider, "model": model})
-            self._provider_histogram.record(latency_s, {"provider": provider})
+            self._provider_counter.add(
+                1, {"provider": provider, "model": model, "stream": stream_str}
+            )
+            self._provider_histogram.record(latency_s, {"provider": provider, "stream": stream_str})
         else:
-            self._prom_counters["provider_calls"].labels(provider=provider, model=model).inc()
-            self._prom_histograms["provider_latency"].labels(provider=provider).observe(latency_s)
+            self._prom_counters["provider_calls"].labels(
+                provider=provider, model=model, stream=stream_str
+            ).inc()
+            self._prom_histograms["provider_latency"].labels(
+                provider=provider, stream=stream_str
+            ).observe(latency_s)
 
     def record_provider_error(self, provider: str, error_type: str) -> None:
         if not self._enabled:
@@ -286,6 +326,22 @@ class MetricsManager:
             self._attachment_counter.add(count, {"step_type": step_type})
         else:
             self._prom_counters["attachments"].labels(step_type=step_type).inc(count)
+
+    def record_stream_response(self, provider: str, model: str) -> None:
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._stream_counter.add(1, {"provider": provider, "model": model})
+        else:
+            self._prom_counters["stream_responses"].labels(provider=provider, model=model).inc()
+
+    def record_time_to_first_token(self, provider: str, model: str, ttft_s: float) -> None:
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._ttft_histogram.record(ttft_s, {"provider": provider, "model": model})
+        else:
+            self._prom_histograms["ttft"].labels(provider=provider, model=model).observe(ttft_s)
 
     def set_budget_remaining(self, workflow: str, remaining: float) -> None:
         # NOTE: only Prometheus backend — OTel gauge for budget not yet implemented

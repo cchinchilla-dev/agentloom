@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import pytest
@@ -14,7 +15,7 @@ from agentloom.core.models import (
     WorkflowDefinition,
 )
 from agentloom.core.results import TokenUsage
-from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.gateway import ProviderGateway
 from agentloom.providers.multimodal import extract_text_content
 from agentloom.tools.base import BaseTool
@@ -60,6 +61,28 @@ class MockProvider(BaseProvider):
             usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
             cost_usd=0.001,
         )
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> StreamResponse:
+        response = await self.complete(messages, model, temperature, max_tokens, **kwargs)
+        sr = StreamResponse(model=model, provider="mock")
+
+        async def _generate() -> AsyncGenerator[str, None]:
+            words = response.content.split(" ")
+            for i, word in enumerate(words):
+                yield word if i == 0 else " " + word
+            sr.usage = response.usage
+            sr.cost_usd = response.cost_usd
+            sr.finish_reason = response.finish_reason
+
+        sr._set_iterator(_generate())
+        return sr
 
     def supports_model(self, model: str) -> bool:
         return True

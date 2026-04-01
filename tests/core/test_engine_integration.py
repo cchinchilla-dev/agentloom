@@ -407,7 +407,7 @@ class TestObserverIntegration:
 
         assert result.status == WorkflowStatus.SUCCESS
         observer.on_workflow_start.assert_called_once_with("obs-test")
-        observer.on_step_start.assert_called_once_with("s", "llm_call")
+        observer.on_step_start.assert_called_once_with("s", "llm_call", stream=False)
         observer.on_step_end.assert_called_once()
         observer.on_workflow_end.assert_called_once()
         # Provider call and token events also fired
@@ -437,6 +437,79 @@ class TestObserverIntegration:
         observer.on_workflow_end.assert_called_once()
         call_args = observer.on_workflow_end.call_args
         assert call_args[0][1] == "failed"  # status arg
+
+    async def test_streaming_wiring(self) -> None:
+        """Verify stream=True propagates through engine to observer and callback."""
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        observer = MagicMock()
+        chunks: list[str] = []
+
+        def _on_chunk(step_id: str, text: str) -> None:
+            chunks.append(text)
+
+        wf = WorkflowDefinition(
+            name="stream-test",
+            config=WorkflowConfig(provider="mock", model="mock-model", stream=True),
+            steps=[
+                StepDefinition(
+                    id="s",
+                    type=StepType.LLM_CALL,
+                    prompt="hi",
+                    output="out",
+                ),
+            ],
+        )
+        engine = WorkflowEngine(
+            workflow=wf,
+            provider_gateway=gw,
+            observer=observer,
+            on_stream_chunk=_on_chunk,
+        )
+        result = await engine.run()
+
+        assert result.status == WorkflowStatus.SUCCESS
+        # Observer received stream=True
+        observer.on_step_start.assert_called_once_with("s", "llm_call", stream=True)
+        # Callback was invoked
+        assert len(chunks) > 0
+        assert "".join(chunks) == "Mock response"
+        # TTFT was reported
+        step_end_kwargs = observer.on_step_end.call_args[1]
+        assert step_end_kwargs.get("stream") is True
+        assert step_end_kwargs.get("time_to_first_token_ms") is not None
+
+    async def test_step_level_stream_override(self) -> None:
+        """Per-step stream: false overrides config.stream: true."""
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        observer = MagicMock()
+        wf = WorkflowDefinition(
+            name="override-test",
+            config=WorkflowConfig(provider="mock", model="mock-model", stream=True),
+            steps=[
+                StepDefinition(
+                    id="s",
+                    type=StepType.LLM_CALL,
+                    prompt="hi",
+                    output="out",
+                    stream=False,
+                ),
+            ],
+        )
+        engine = WorkflowEngine(workflow=wf, provider_gateway=gw, observer=observer)
+        result = await engine.run()
+
+        assert result.status == WorkflowStatus.SUCCESS
+        # Step-level stream=False wins
+        observer.on_step_start.assert_called_once_with("s", "llm_call", stream=False)
+        # No TTFT for non-streaming
+        sr = result.step_results["s"]
+        assert sr.time_to_first_token_ms is None
 
 
 # -- Subworkflow integration --

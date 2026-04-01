@@ -11,7 +11,7 @@ imagePullSecrets: []
 workflow:
   definition: ""           # inline workflow YAML
   existingConfigMap: ""    # reference to existing ConfigMap
-  args: []                 # extra CLI args: ["--budget", "0.50"]
+  args: []                 # extra CLI args: ["--budget", "0.50", "--stream"]
 
 schedule:
   enabled: false           # false -> Job, true -> CronJob

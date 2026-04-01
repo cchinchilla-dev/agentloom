@@ -157,6 +157,42 @@ class TestOllamaProvider:
         await provider.close()
 
     @respx.mock
+    async def test_streaming_yields_chunks(self) -> None:
+        ndjson = (
+            '{"model":"phi4","message":{"role":"assistant","content":"Local"},"done":false}\n'
+            '{"model":"phi4","message":{"role":"assistant","content":" response"},"done":false}\n'
+            '{"model":"phi4","message":{"role":"assistant","content":""},"done":true,'
+            '"done_reason":"stop","prompt_eval_count":15,"eval_count":10}\n'
+        )
+        respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(200, content=ndjson.encode())
+        )
+        provider = OllamaProvider()
+        sr = await provider.stream(messages=[{"role": "user", "content": "hi"}], model="phi4")
+        chunks = [chunk async for chunk in sr]
+        assert chunks == ["Local", " response"]
+        assert sr.content == "Local response"
+        assert sr.usage.prompt_tokens == 15
+        assert sr.usage.completion_tokens == 10
+        assert sr.finish_reason == "stop"
+        assert sr.cost_usd == 0.0
+        await provider.close()
+
+    @respx.mock
+    async def test_streaming_api_error(self) -> None:
+        respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(404, text='{"error":"model not found"}')
+        )
+        provider = OllamaProvider()
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}], model="nonexistent"
+        )
+        with pytest.raises(ProviderError, match="404"):
+            async for _ in sr:
+                pass
+        await provider.close()
+
+    @respx.mock
     async def test_custom_base_url(self) -> None:
         respx.post("http://192.168.1.100:11434/api/chat").mock(
             return_value=httpx.Response(200, json=MOCK_RESPONSE)
