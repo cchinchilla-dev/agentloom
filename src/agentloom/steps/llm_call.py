@@ -144,10 +144,12 @@ class LLMCallStep(BaseStep):
                 duration_ms=duration,
             )
 
-        # TTFT measures time from "stream ready" (after gateway.stream()
-        # returns) to the first yielded chunk.  This excludes connection
-        # setup and rate-limiter wait, focusing on the provider's
-        # inference latency.
+        # TTFT measures wall-clock time from just before the first stream
+        # iteration to the first yielded chunk.  This *includes* HTTP
+        # connection setup (the provider iterator is lazy), so it reflects
+        # end-to-end latency to first token from the consumer's perspective.
+        # Rate-limiter wait is excluded (happens before gateway.stream()
+        # returns).
         ttft_ms: float | None = None
         stream_start = time.monotonic()
         first_chunk = True

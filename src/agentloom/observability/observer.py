@@ -17,6 +17,10 @@ class WorkflowObserver:
     """Observes workflow execution, emitting OTel spans and Prometheus metrics.
 
     Both *tracing* and *metrics* are optional — pass ``None`` to disable either.
+
+    Note: Hook signatures may gain new keyword arguments with defaults in
+    future versions.  Subclasses that override hooks should accept ``**kwargs``
+    for forward compatibility.
     """
 
     def __init__(

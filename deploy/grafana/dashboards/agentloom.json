@@ -1083,7 +1083,7 @@
       "targets": [
         {
           "expr": "sum by(provider)(agentloom_provider_calls_total{provider=~\"$provider\",stream=~\"$stream\"})",
-          "legendFormat": "{{provider}} / {{model}}",
+          "legendFormat": "{{provider}}",
           "refId": "A"
         }
       ],
@@ -2375,21 +2375,6 @@
               "instant": true
             }
           ],
-          "options": {
-            "tooltip": {
-              "mode": "multi",
-              "sort": "none"
-            },
-            "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "mean",
-                "max",
-                "lastNotNull"
-              ]
-            }
-          },
           "options": {
             "reduceOptions": {
               "calcs": ["lastNotNull"],

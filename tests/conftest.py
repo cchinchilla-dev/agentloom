@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import pytest
@@ -72,7 +73,7 @@ class MockProvider(BaseProvider):
         response = await self.complete(messages, model, temperature, max_tokens, **kwargs)
         sr = StreamResponse(model=model, provider="mock")
 
-        async def _generate():  # type: ignore[return]
+        async def _generate() -> AsyncGenerator[str, None]:
             words = response.content.split(" ")
             for i, word in enumerate(words):
                 yield word if i == 0 else " " + word

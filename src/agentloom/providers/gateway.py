@@ -232,6 +232,7 @@ class ProviderGateway:
                     _entry: ProviderEntry = entry,
                     _outer: StreamResponse = outer_sr,
                 ) -> AsyncIterator[str]:
+                    _cb_recorded = False
                     try:
                         # Iterate the raw provider iterator directly to avoid
                         # double chunk accumulation (inner + outer StreamResponse).
@@ -241,18 +242,25 @@ class ProviderGateway:
                         async for chunk in raw_iter:
                             yield chunk
                         _entry.circuit_breaker.record_success()
+                        _cb_recorded = True
                         if _entry.rate_limiter and _inner.usage.completion_tokens:
                             await _entry.rate_limiter.consume_response_tokens(
                                 _inner.usage.completion_tokens
                             )
                     except Exception as exc:
                         _entry.circuit_breaker.record_failure()
+                        _cb_recorded = True
                         if self._observer:
                             hook = getattr(self._observer, "on_provider_error", None)
                             if hook:
                                 hook(_entry.provider.name, type(exc).__name__)
                         raise
                     finally:
+                        # Handle early termination (GeneratorExit from aclose(),
+                        # task cancellation) — treat as failure so HALF_OPEN
+                        # call counts stay consistent.
+                        if not _cb_recorded:
+                            _entry.circuit_breaker.record_failure()
                         _outer.usage = _inner.usage
                         _outer.cost_usd = _inner.cost_usd
                         _outer.finish_reason = _inner.finish_reason
@@ -273,7 +281,14 @@ class ProviderGateway:
                 continue
 
             except Exception as e:
-                msg = f"Provider '{entry.provider.name}' failed: {e}"
+                # Setup failures (rate limiter, provider.stream()) must feed
+                # back to the circuit breaker — allow_request() already
+                # incremented the half-open counter.
+                entry.circuit_breaker.record_failure()
+                msg = (
+                    f"Provider '{entry.provider.name}' failed to start "
+                    f"streaming for model '{model}': {e}"
+                )
                 errors.append(msg)
                 logger.warning(msg)
                 if self._observer:
