@@ -80,6 +80,9 @@ class StepDefinition(BaseModel):
     # Multimodal attachments (images, etc.)
     attachments: list[Attachment] = Field(default_factory=list)
 
+    # Streaming (None = inherit from workflow config)
+    stream: bool | None = None
+
     # Output mapping
     output: str | None = None
 
@@ -114,6 +117,7 @@ class WorkflowConfig(BaseModel):
     budget_usd: float | None = None
     timeout: float | None = None
     max_concurrent_steps: int = 10
+    stream: bool = False
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
 

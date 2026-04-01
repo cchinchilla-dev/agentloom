@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 
 import anyio
@@ -43,6 +44,7 @@ class WorkflowEngine:
         tool_registry: Any | None = None,
         step_registry: StepRegistry | None = None,
         observer: Any | None = None,
+        on_stream_chunk: Callable[[str, str], None] | None = None,
     ) -> None:
         self.workflow = workflow
         self.state = state_manager or StateManager(initial_state=dict(workflow.state))
@@ -50,6 +52,7 @@ class WorkflowEngine:
         self.tool_registry = tool_registry
         self.step_registry = step_registry or create_default_registry()
         self.observer = observer
+        self._stream_callback = on_stream_chunk
         self._budget_spent: float = 0.0
 
         # Wire observer into gateway for circuit breaker events
@@ -253,8 +256,12 @@ class WorkflowEngine:
 
         logger.debug("Executing step: %s (type=%s)", step_id, step_def.type.value)
 
+        should_stream = (
+            step_def.stream if step_def.stream is not None else self.workflow.config.stream
+        )
+
         if self.observer:
-            self.observer.on_step_start(step_id, step_def.type.value)
+            self.observer.on_step_start(step_id, step_def.type.value, stream=should_stream)
 
         # Get the executor
         executor_cls = self.step_registry.get(step_def.type)
@@ -269,6 +276,8 @@ class WorkflowEngine:
             workflow_model=self.workflow.config.model,
             workflow_provider=self.workflow.config.provider,
             sandbox_config=self.workflow.config.sandbox,
+            stream=should_stream,
+            on_stream_chunk=self._stream_callback,
         )
 
         # Execute with retry
@@ -309,12 +318,15 @@ class WorkflowEngine:
                             result.cost_usd,
                             result.token_usage.total_tokens,
                             attachment_count=result.attachment_count,
+                            time_to_first_token_ms=result.time_to_first_token_ms,
+                            stream=should_stream,
                         )
                         if result.provider and result.model:
                             self.observer.on_provider_call(
                                 result.provider,
                                 result.model,
                                 result.duration_ms / 1000.0,
+                                stream=should_stream,
                             )
                             if result.token_usage.total_tokens > 0:
                                 self.observer.on_tokens(
@@ -322,6 +334,12 @@ class WorkflowEngine:
                                     result.model,
                                     result.token_usage.prompt_tokens,
                                     result.token_usage.completion_tokens,
+                                )
+                            if result.time_to_first_token_ms is not None:
+                                self.observer.on_stream_response(
+                                    result.provider,
+                                    result.model,
+                                    result.time_to_first_token_ms / 1000.0,
                                 )
 
                     logger.debug(
@@ -396,6 +414,7 @@ class WorkflowEngine:
                     last_result.token_usage.total_tokens,
                     error=last_result.error,
                     attachment_count=last_result.attachment_count,
+                    stream=should_stream,
                 )
 
             logger.error(

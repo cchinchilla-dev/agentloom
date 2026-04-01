@@ -38,6 +38,7 @@ class WorkflowBuilder:
         output: str | None = None,
         depends_on: list[str] | None = None,
         attachments: list[Attachment] | None = None,
+        stream: bool | None = None,
         **kwargs: Any,
     ) -> WorkflowBuilder:
         """Add an LLM call step."""
@@ -51,6 +52,7 @@ class WorkflowBuilder:
                 output=output,
                 depends_on=depends_on or [],
                 attachments=attachments or [],
+                stream=stream,
                 **kwargs,
             )
         )
