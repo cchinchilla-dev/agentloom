@@ -176,6 +176,54 @@ class TestAnthropicProvider:
             )
         await provider.close()
 
+    @respx.mock
+    async def test_streaming_yields_chunks(self) -> None:
+        lines = [
+            'data: {"type":"message_start","message":'
+            '{"id":"msg_1","model":"claude-haiku-4-5-20251001",'
+            '"usage":{"input_tokens":12,"output_tokens":0}}}\n\n',
+            'data: {"type":"content_block_delta","index":0,'
+            '"delta":{"type":"text_delta","text":"Hi"}}\n\n',
+            'data: {"type":"content_block_delta","index":0,'
+            '"delta":{"type":"text_delta","text":" there"}}\n\n',
+            'data: {"type":"message_delta",'
+            '"delta":{"stop_reason":"end_turn"},'
+            '"usage":{"output_tokens":8}}\n\n',
+            'data: {"type":"message_stop"}\n\n',
+        ]
+        sse = "".join(lines)
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, content=sse.encode())
+        )
+        provider = AnthropicProvider(api_key="test-key")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hello"}],
+            model="claude-haiku-4-5-20251001",
+        )
+        chunks = [chunk async for chunk in sr]
+        assert chunks == ["Hi", " there"]
+        assert sr.content == "Hi there"
+        assert sr.usage.prompt_tokens == 12
+        assert sr.usage.completion_tokens == 8
+        assert sr.finish_reason == "end_turn"
+        assert sr.cost_usd > 0
+        await provider.close()
+
+    @respx.mock
+    async def test_streaming_api_error(self) -> None:
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(500, text="internal error")
+        )
+        provider = AnthropicProvider(api_key="test-key")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-haiku-4-5-20251001",
+        )
+        with pytest.raises(ProviderError, match="500"):
+            async for _ in sr:
+                pass
+        await provider.close()
+
     def test_base_url_normalization(self) -> None:
         p = AnthropicProvider(api_key="k", base_url="https://api.anthropic.com")
         assert p.base_url == "https://api.anthropic.com/v1"

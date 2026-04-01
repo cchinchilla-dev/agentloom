@@ -259,3 +259,84 @@ class TestLLMCallStep:
         assert result.status == StepStatus.SUCCESS
         user_msg = provider.calls[0]["messages"][0]
         assert isinstance(user_msg["content"], str)
+
+    async def test_streaming_execution(self, step: LLMCallStep) -> None:
+        from tests.conftest import MockProvider
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="s",
+                type=StepType.LLM_CALL,
+                prompt="Hello",
+                output="out",
+            ),
+            state_manager=StateManager(initial_state={}),
+            provider_gateway=gw,
+            workflow_model="mock-model",
+            stream=True,
+        )
+        result = await step.execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+        assert result.output == "Mock response"
+        assert result.token_usage.total_tokens == 30
+        assert result.time_to_first_token_ms is not None
+        assert result.time_to_first_token_ms >= 0
+
+    async def test_streaming_callback_invoked(self, step: LLMCallStep) -> None:
+        from tests.conftest import MockProvider
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        received_chunks: list[tuple[str, str]] = []
+
+        def _on_chunk(step_id: str, text: str) -> None:
+            received_chunks.append((step_id, text))
+
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="s",
+                type=StepType.LLM_CALL,
+                prompt="Hello",
+                output="out",
+            ),
+            state_manager=StateManager(initial_state={}),
+            provider_gateway=gw,
+            workflow_model="mock-model",
+            stream=True,
+            on_stream_chunk=_on_chunk,
+        )
+        result = await step.execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+        assert len(received_chunks) > 0
+        assert all(sid == "s" for sid, _ in received_chunks)
+        assert "".join(text for _, text in received_chunks) == "Mock response"
+
+    async def test_nonstreaming_backward_compat(self, step: LLMCallStep) -> None:
+        """stream=False preserves existing complete() behavior."""
+        from tests.conftest import MockProvider
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="s",
+                type=StepType.LLM_CALL,
+                prompt="Hello",
+                output="out",
+            ),
+            state_manager=StateManager(initial_state={}),
+            provider_gateway=gw,
+            workflow_model="mock-model",
+            stream=False,
+        )
+        result = await step.execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+        assert result.time_to_first_token_ms is None

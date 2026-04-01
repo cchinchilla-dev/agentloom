@@ -46,7 +46,9 @@ class TestStepLifecycle:
         metrics = MagicMock()
         observer = WorkflowObserver(metrics=metrics)
         observer.on_step_end("step1", "llm_call", "success", 200.0)
-        metrics.record_step_execution.assert_called_once_with("llm_call", "success", 0.2)
+        metrics.record_step_execution.assert_called_once_with(
+            "llm_call", "success", 0.2, stream=False
+        )
 
     def test_on_step_end_ends_span(self) -> None:
         tracing = MagicMock()
@@ -69,7 +71,9 @@ class TestProviderEvents:
         metrics = MagicMock()
         observer = WorkflowObserver(metrics=metrics)
         observer.on_provider_call("openai", "gpt-4o-mini", 0.5)
-        metrics.record_provider_call.assert_called_once_with("openai", "gpt-4o-mini", 0.5)
+        metrics.record_provider_call.assert_called_once_with(
+            "openai", "gpt-4o-mini", 0.5, stream=False
+        )
 
     def test_on_provider_error(self) -> None:
         metrics = MagicMock()
