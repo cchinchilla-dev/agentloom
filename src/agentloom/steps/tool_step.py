@@ -69,7 +69,7 @@ class ToolStep(BaseStep):
         resolved: dict[str, Any] = {}
         for key, value in args.items():
             if isinstance(value, str) and value.startswith("state."):
-                path = value[len("state."):]
+                path = value[len("state.") :]
                 resolved[key] = StateManager._resolve_key(state, path)
             else:
                 resolved[key] = value

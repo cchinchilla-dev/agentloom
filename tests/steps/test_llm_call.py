@@ -37,7 +37,6 @@ class TestDotAccessDict:
         d = DotAccessDict({"x": 1})
         assert f"{d}" == str({"x": 1})
 
-
     def test_list_access_returns_dot_access_list(self) -> None:
         d = DotAccessDict({"items": ["a", "b"]})
         assert isinstance(d.items, DotAccessList)

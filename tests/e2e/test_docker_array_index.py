@@ -31,8 +31,13 @@ def test_array_index_tests_in_docker() -> None:
     # Run the state array-index tests inside the container
     run = subprocess.run(
         [
-            "docker", "run", "--rm", "agentloom:dev-test",
-            "pytest", "tests/core/test_state.py::TestArrayIndexPaths", "-v",
+            "docker",
+            "run",
+            "--rm",
+            "agentloom:dev-test",
+            "pytest",
+            "tests/core/test_state.py::TestArrayIndexPaths",
+            "-v",
         ],
         capture_output=True,
         text=True,

@@ -46,7 +46,6 @@ class TestResolveArgs:
         )
         assert result == {"greeting": "hello", "name": "Alice"}
 
-
     def test_state_reference_with_index(self) -> None:
         state = {"items": ["first", "second"]}
         result = ToolStep._resolve_args({"val": "state.items[0]"}, state)
