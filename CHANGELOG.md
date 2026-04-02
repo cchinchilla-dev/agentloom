@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `DotAccessList` wrapper for `str.format_map()` template rendering
   - `ToolStep._resolve_args()` refactored to reuse `StateManager._resolve_key()`
   - CLI, Docker, and K8s smoke tests; example workflow (27)
+- First-class graph API for workflow DAG analysis and export (#75)
+  - `WorkflowGraph` class with `from_workflow()` and `from_dag()` factories
+  - `GraphNode` and `GraphEdge` frozen Pydantic models
+  - Path algorithms: `all_paths()`, `prime_paths()`, `critical_path()`
+  - Export formats: `to_dict()`, `to_dot()` (Graphviz), `to_pnml()` (Petri Net), `to_mermaid()`
+  - Optional `to_networkx()` via `pip install agentloom[graph]`
+  - Properties: `nodes`, `edges`, `roots`, `leaves`, `layers`
 - Test coverage reporting via Codecov with 85% minimum threshold and README badge (#70)
 
 ## [0.2.0] - 2026-03-30
