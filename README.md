@@ -39,6 +39,8 @@ Existing frameworks (LangGraph, CrewAI, AutoGen) treat observability and resilie
 | Feature | LangGraph | CrewAI | AutoGen | AgentLoom |
 |---|---|---|---|---|
 | Workflow definition | Python API | Decorators | Agent chat | **YAML + Python DSL** |
+| Streaming | Via API | No | Via API | **YAML config + CLI flag** |
+| Multi-modal input | Via messages | No | Via messages | **YAML attachments** |
 | Observability | LangSmith ($) | Minimal | Minimal | **OTel + Prometheus + Grafana** |
 | Circuit breaker | No | No | No | **Built-in** |
 | Cost tracking | No | No | No | **Native with budgets** |
@@ -137,6 +139,54 @@ steps:
     prompt: "Help with: {state.user_input}"
     output: response
 ```
+
+### Multi-modal Input
+
+LLM call steps support image, PDF, and audio attachments. Sources can be URLs,
+local file paths, or inline base64. URL fetching includes SSRF protection and
+respects sandbox domain restrictions.
+
+```yaml
+steps:
+  - id: analyze
+    type: llm_call
+    prompt: "Describe what you see in this image."
+    attachments:
+      - type: image
+        source: "{state.image_url}"
+    output: description
+```
+
+| Type | OpenAI | Anthropic | Google | Ollama |
+|---|---|---|---|---|
+| `image` | yes | yes | yes | yes |
+| `pdf` | -- | yes | yes | -- |
+| `audio` | yes | -- | yes | -- |
+
+### Streaming
+
+Stream LLM responses token-by-token for real-time output. Enable at the
+workflow level, per-step, or via CLI flag.
+
+```yaml
+config:
+  stream: true    # workflow-level default
+
+steps:
+  - id: answer
+    type: llm_call
+    stream: true  # per-step override
+    prompt: "Answer: {question}"
+```
+
+```bash
+# CLI flag (overrides workflow config)
+agentloom run workflow.yaml --stream
+```
+
+All providers support streaming: OpenAI (SSE), Anthropic (SSE), Google (SSE),
+Ollama (NDJSON). Token usage, cost, and time-to-first-token are tracked
+normally.
 
 ## Python DSL
 
@@ -251,7 +301,7 @@ Autonomous agent frameworks solve a real problem — open-ended tasks where the 
 
 ```bash
 uv sync --group dev --all-extras   # install with all extras
-uv run pytest                       # 458 tests, ~5s
+uv run pytest                       # ~5s
 uv run ruff check src/ tests/      # lint (ruff replaces flake8+isort)
 uv run ruff format src/ tests/     # autoformat
 uv run mypy src/                   # strict type checking

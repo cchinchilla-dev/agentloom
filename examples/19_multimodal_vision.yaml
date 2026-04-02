@@ -1,0 +1,31 @@
+name: multimodal-url
+version: "1.0"
+description: >
+  Analyze an image fetched from a URL (fetch: local mode).
+  The pod downloads the image and sends it as base64 to the LLM.
+  Requires a vision-capable model (GPT-4o, Claude, Gemini, LLaVA).
+
+config:
+  provider: openai
+  model: gpt-4o
+
+state:
+  image_url: "https://placehold.co/400x300/orange/white.png?text=AgentLoom"
+
+steps:
+  - id: describe
+    type: llm_call
+    prompt: "Describe what you see in this image. What text, colors, and shapes are present?"
+    attachments:
+      - type: image
+        source: "{state.image_url}"
+    output: description
+
+  - id: summarize
+    type: llm_call
+    depends_on: [describe]
+    prompt: >
+      Given this description of an image: {state.description}
+
+      Summarize in exactly one sentence what the image contains.
+    output: summary

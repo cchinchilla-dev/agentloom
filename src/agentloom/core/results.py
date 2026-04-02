@@ -39,6 +39,8 @@ class StepResult(BaseModel):
     cost_usd: float = 0.0
     model: str | None = None
     provider: str | None = None
+    attachment_count: int = 0
+    time_to_first_token_ms: float | None = None
 
 
 class WorkflowStatus(StrEnum):

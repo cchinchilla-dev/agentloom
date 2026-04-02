@@ -1,0 +1,25 @@
+name: multimodal-url-passthrough
+version: "1.0"
+description: >
+  Analyze an image using URL passthrough (fetch: provider mode).
+  The URL is sent directly to the LLM API — the provider fetches it.
+  Only works with providers that support URL-based images (OpenAI, Anthropic).
+  Use this when the LLM provider has network access but the pod does not,
+  or to avoid downloading large images locally.
+
+config:
+  provider: openai
+  model: gpt-4o
+
+state:
+  image_url: "https://httpbin.org/image/png"
+
+steps:
+  - id: describe
+    type: llm_call
+    prompt: "Describe this image. What do you see?"
+    attachments:
+      - type: image
+        source: "{state.image_url}"
+        fetch: provider
+    output: description

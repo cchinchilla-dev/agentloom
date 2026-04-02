@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
-from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers.multimodal import (
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    ImageURLBlock,
+    TextBlock,
+)
 from agentloom.providers.pricing import calculate_cost
+
+logger = logging.getLogger("agentloom.providers.google")
 
 
 class GoogleProvider(BaseProvider):
@@ -31,29 +43,54 @@ class GoogleProvider(BaseProvider):
             timeout=60.0,
         )
 
+    @staticmethod
+    def _format_messages(
+        messages: list[dict[str, Any]],
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """Convert internal messages to Gemini contents + system instruction."""
+        system_instruction: str | None = None
+        contents: list[dict[str, Any]] = []
+        for msg in messages:
+            if msg["role"] == "system":
+                content = msg.get("content", "")
+                system_instruction = content if isinstance(content, str) else str(content)
+                continue
+            role = "user" if msg["role"] == "user" else "model"
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                contents.append({"role": role, "parts": [{"text": content}]})
+            else:
+                parts: list[dict[str, Any]] = []
+                for block in content:
+                    if isinstance(block, TextBlock):
+                        parts.append({"text": block.text})
+                    elif isinstance(block, (ImageBlock, DocumentBlock, AudioBlock)):
+                        parts.append(
+                            {
+                                "inline_data": {
+                                    "mime_type": block.media_type,
+                                    "data": block.data,
+                                },
+                            }
+                        )
+                    elif isinstance(block, ImageURLBlock):
+                        raise ProviderError(
+                            "google",
+                            "Google Gemini does not support URL passthrough for images. "
+                            "Use fetch: local instead.",
+                        )
+                contents.append({"role": role, "parts": parts})
+        return system_instruction, contents
+
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
-        # Convert OpenAI-style messages to Gemini format
-        contents = []
-        system_instruction = None
-
-        for msg in messages:
-            if msg["role"] == "system":
-                system_instruction = msg["content"]
-            else:
-                role = "user" if msg["role"] == "user" else "model"
-                contents.append(
-                    {
-                        "role": role,
-                        "parts": [{"text": msg["content"]}],
-                    }
-                )
+        system_instruction, contents = self._format_messages(messages)
 
         payload: dict[str, Any] = {"contents": contents}
 
@@ -113,6 +150,71 @@ class GoogleProvider(BaseProvider):
             raw_response=data,
             finish_reason=finish_reason,
         )
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> StreamResponse:
+        system_instruction, contents = self._format_messages(messages)
+
+        payload: dict[str, Any] = {"contents": contents}
+        if system_instruction:
+            payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+        generation_config: dict[str, Any] = {}
+        if temperature is not None:
+            generation_config["temperature"] = temperature
+        if max_tokens is not None:
+            generation_config["maxOutputTokens"] = max_tokens
+        if generation_config:
+            payload["generationConfig"] = generation_config
+
+        url = f"/models/{model}:streamGenerateContent?alt=sse&key={self.api_key}"
+        sr = StreamResponse(model=model, provider="google")
+
+        async def _generate() -> AsyncIterator[str]:
+            async with self._client.stream("POST", url, json=payload) as resp:
+                if resp.status_code != 200:
+                    await resp.aread()
+                    raise ProviderError(
+                        "google",
+                        f"API error {resp.status_code}: {resp.text}",
+                        status_code=resp.status_code,
+                    )
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    try:
+                        data = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        logger.warning("Malformed SSE chunk, skipping: %s", line[:200])
+                        continue
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        text = "".join(p.get("text", "") for p in parts)
+                        if text:
+                            yield text
+                        fr = candidates[0].get("finishReason")
+                        if fr:
+                            sr.finish_reason = fr
+                    usage_data = data.get("usageMetadata")
+                    if usage_data:
+                        sr.usage = TokenUsage(
+                            prompt_tokens=usage_data.get("promptTokenCount", 0),
+                            completion_tokens=usage_data.get("candidatesTokenCount", 0),
+                            total_tokens=usage_data.get("totalTokenCount", 0),
+                        )
+                        sr.cost_usd = calculate_cost(
+                            model, sr.usage.prompt_tokens, sr.usage.completion_tokens
+                        )
+
+        sr._set_iterator(_generate())
+        return sr
 
     def supports_model(self, model: str) -> bool:
         return "gemini" in model

@@ -29,9 +29,10 @@ def run(
     budget: float | None = typer.Option(None, "--budget", "-b", help="Maximum budget in USD."),
     lite: bool = typer.Option(False, "--lite", help="Run in lite mode (no observability)."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    stream: bool = typer.Option(False, "--stream", help="Stream LLM output in real-time."),
 ) -> None:
     """Execute a workflow from a YAML definition file."""
-    anyio.run(_run_async, workflow_path, state, provider, model, budget, lite, output_json)
+    anyio.run(_run_async, workflow_path, state, provider, model, budget, lite, output_json, stream)
 
 
 async def _run_async(
@@ -42,6 +43,7 @@ async def _run_async(
     budget: float | None,
     lite: bool,
     output_json: bool,
+    stream: bool = False,
 ) -> None:
     """Async implementation of the run command."""
     from agentloom.core.engine import WorkflowEngine
@@ -64,6 +66,8 @@ async def _run_async(
         workflow.config.model = model_override
     if budget is not None:
         workflow.config.budget_usd = budget
+    if stream:
+        workflow.config.stream = True
 
     # Parse state overrides
     initial_state = dict(workflow.state)
@@ -98,6 +102,15 @@ async def _run_async(
     # Setup observability (unless --lite)
     observer = _setup_observer(lite)
 
+    # Setup stream callback
+    stream_callback = None
+    if stream and not output_json:
+
+        def _on_chunk(step_id: str, text: str) -> None:
+            typer.echo(text, nl=False)
+
+        stream_callback = _on_chunk
+
     # Run engine
     engine = WorkflowEngine(
         workflow=workflow,
@@ -105,10 +118,14 @@ async def _run_async(
         provider_gateway=gateway,
         tool_registry=tool_registry,
         observer=observer,
+        on_stream_chunk=stream_callback,
     )
 
     typer.echo(f"Running workflow: {workflow.name}")
     result = await engine.run()
+
+    if stream and not output_json:
+        typer.echo()  # Newline after streamed output
 
     # Output results
     if output_json:
@@ -159,55 +176,40 @@ def _setup_observer(lite: bool) -> WorkflowObserver | None:
 
 
 def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
-    """Setup providers based on available API keys."""
-    # HACK: provider discovery from env vars — should really be in a config file
-    import os
+    """Setup providers from config-driven discovery."""
+    import importlib
 
-    if os.environ.get("OPENAI_API_KEY"):
-        from agentloom.providers.openai import OpenAIProvider
+    from agentloom.config import load_config
 
-        gateway.register(
-            OpenAIProvider(),
-            priority=0 if default_provider == "openai" else 10,
-            models=[
-                "gpt-4o-mini",
-                "gpt-4o",
-                "gpt-4.1",
-                "o4-mini",
-            ],
-        )
+    config = load_config(default_provider_override=default_provider)
 
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        from agentloom.providers.anthropic import AnthropicProvider
+    _PROVIDER_CLASSES: dict[str, tuple[str, str]] = {
+        "openai": ("agentloom.providers.openai", "OpenAIProvider"),
+        "anthropic": ("agentloom.providers.anthropic", "AnthropicProvider"),
+        "google": ("agentloom.providers.google", "GoogleProvider"),
+        "ollama": ("agentloom.providers.ollama", "OllamaProvider"),
+    }
 
-        gateway.register(
-            AnthropicProvider(),
-            priority=0 if default_provider == "anthropic" else 10,
-            models=[
-                "claude-haiku-4-5-20251001",
-            ],
-        )
+    for pc in config.providers:
+        entry = _PROVIDER_CLASSES.get(pc.name)
+        if entry is None:
+            continue
+        mod_path, cls_name = entry
+        mod = importlib.import_module(mod_path)
+        provider_cls = getattr(mod, cls_name)
 
-    if os.environ.get("GOOGLE_API_KEY"):
-        from agentloom.providers.google import GoogleProvider
+        kwargs: dict[str, object] = {}
+        if pc.api_key:
+            kwargs["api_key"] = pc.api_key
+        if pc.base_url:
+            kwargs["base_url"] = pc.base_url
 
         gateway.register(
-            GoogleProvider(),
-            priority=0 if default_provider == "google" else 10,
-            models=[
-                "gemini-2.5-flash",
-            ],
+            provider_cls(**kwargs),
+            priority=pc.priority,
+            is_fallback=pc.is_fallback,
+            models=pc.models if pc.models else None,
         )
-
-    # Ollama is always available as fallback (local/LAN)
-    from agentloom.providers.ollama import OllamaProvider
-
-    ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-    gateway.register(
-        OllamaProvider(base_url=ollama_url),
-        priority=0 if default_provider == "ollama" else 100,
-        is_fallback=True,
-    )
 
 
 def _print_result(result: object) -> None:
@@ -243,6 +245,8 @@ def _print_result(result: object) -> None:
         line = f"  {icon} {step_id} ({sr.duration_ms:.0f}ms)"
         if sr.cost_usd > 0:
             line += f" ${sr.cost_usd:.4f}"
+        if sr.attachment_count > 0:
+            line += f" [{sr.attachment_count} attachment{'s' if sr.attachment_count > 1 else ''}]"
         typer.echo(line)
 
     # Show final output

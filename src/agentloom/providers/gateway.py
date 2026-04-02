@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 from agentloom.exceptions import CircuitOpenError, ProviderError
-from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers.multimodal import estimate_content_tokens
 from agentloom.resilience.circuit_breaker import CircuitBreaker
 from agentloom.resilience.rate_limiter import RateLimiter
 
@@ -101,7 +103,7 @@ class ProviderGateway:
 
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -122,8 +124,10 @@ class ProviderGateway:
         for entry in candidates:
             try:
                 if entry.rate_limiter:
-                    # Estimate prompt tokens from message length (~4 chars per token)
-                    estimated_tokens = sum(len(m.get("content", "")) for m in messages) // 4
+                    # Estimate prompt tokens from message content
+                    estimated_tokens = sum(
+                        estimate_content_tokens(m.get("content", "")) for m in messages
+                    )
                     await entry.rate_limiter.acquire(token_count=estimated_tokens)
 
                 async def _call(e: ProviderEntry = entry) -> ProviderResponse:
@@ -157,6 +161,134 @@ class ProviderGateway:
 
             except Exception as e:
                 msg = f"Provider '{entry.provider.name}' failed: {e}"
+                errors.append(msg)
+                logger.warning(msg)
+                if self._observer:
+                    error_hook = getattr(self._observer, "on_provider_error", None)
+                    if error_hook:
+                        error_hook(entry.provider.name, type(e).__name__)
+                continue
+
+        raise ProviderError(
+            "gateway",
+            f"All providers failed for model '{model}': " + "; ".join(errors),
+        )
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> StreamResponse:
+        """Route a streaming request with fallback and resilience.
+
+        NOTE: Mid-stream fallback is not supported.  Once a provider starts
+        streaming successfully, the gateway commits to that provider.  If the
+        connection drops mid-stream the error propagates to the caller and the
+        engine's retry logic will re-attempt the entire step (potentially
+        routing to a different provider if the circuit breaker has tripped).
+        """
+        candidates = self._get_candidates(model)
+
+        if not candidates:
+            raise ProviderError(
+                "gateway",
+                f"No provider registered for model '{model}'",
+            )
+
+        errors: list[str] = []
+
+        for entry in candidates:
+            try:
+                entry.circuit_breaker.allow_request()
+            except CircuitOpenError:
+                msg = f"Provider '{entry.provider.name}' circuit is open"
+                errors.append(msg)
+                logger.warning(msg)
+                continue
+
+            try:
+                if entry.rate_limiter:
+                    estimated_tokens = sum(
+                        estimate_content_tokens(m.get("content", "")) for m in messages
+                    )
+                    await entry.rate_limiter.acquire(token_count=estimated_tokens)
+
+                inner_sr = await entry.provider.stream(
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs,
+                )
+
+                # Wrap with resilience feedback
+                outer_sr = StreamResponse(model=inner_sr.model, provider=inner_sr.provider)
+
+                async def _wrapped_iter(
+                    _inner: StreamResponse = inner_sr,
+                    _entry: ProviderEntry = entry,
+                    _outer: StreamResponse = outer_sr,
+                ) -> AsyncIterator[str]:
+                    _cb_recorded = False
+                    try:
+                        # Iterate the raw provider iterator directly to avoid
+                        # double chunk accumulation (inner + outer StreamResponse).
+                        raw_iter = _inner._iterator
+                        if raw_iter is None:
+                            return
+                        async for chunk in raw_iter:
+                            yield chunk
+                        _entry.circuit_breaker.record_success()
+                        _cb_recorded = True
+                        if _entry.rate_limiter and _inner.usage.completion_tokens:
+                            await _entry.rate_limiter.consume_response_tokens(
+                                _inner.usage.completion_tokens
+                            )
+                    except Exception as exc:
+                        _entry.circuit_breaker.record_failure()
+                        _cb_recorded = True
+                        if self._observer:
+                            hook = getattr(self._observer, "on_provider_error", None)
+                            if hook:
+                                hook(_entry.provider.name, type(exc).__name__)
+                        raise
+                    finally:
+                        # Handle early termination (GeneratorExit from aclose(),
+                        # task cancellation) — treat as failure so HALF_OPEN
+                        # call counts stay consistent.
+                        if not _cb_recorded:
+                            _entry.circuit_breaker.record_failure()
+                        _outer.usage = _inner.usage
+                        _outer.cost_usd = _inner.cost_usd
+                        _outer.finish_reason = _inner.finish_reason
+                        _outer.model = _inner.model
+
+                outer_sr._set_iterator(_wrapped_iter())
+                logger.debug(
+                    "Provider '%s' streaming for model '%s'",
+                    entry.provider.name,
+                    model,
+                )
+                return outer_sr
+
+            except CircuitOpenError:
+                msg = f"Provider '{entry.provider.name}' circuit is open"
+                errors.append(msg)
+                logger.warning(msg)
+                continue
+
+            except Exception as e:
+                # Setup failures (rate limiter, provider.stream()) must feed
+                # back to the circuit breaker — allow_request() already
+                # incremented the half-open counter.
+                entry.circuit_breaker.record_failure()
+                msg = (
+                    f"Provider '{entry.provider.name}' failed to start "
+                    f"streaming for model '{model}': {e}"
+                )
                 errors.append(msg)
                 logger.warning(msg)
                 if self._observer:

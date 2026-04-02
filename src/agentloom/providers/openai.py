@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
-from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers.multimodal import (
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    ImageURLBlock,
+    TextBlock,
+)
 from agentloom.providers.pricing import calculate_cost
+
+logger = logging.getLogger("agentloom.providers.openai")
 
 
 class OpenAIProvider(BaseProvider):
@@ -24,6 +36,9 @@ class OpenAIProvider(BaseProvider):
         base_url: str = "https://api.openai.com/v1",
         **kwargs: Any,
     ) -> None:
+        # Normalize base_url: SDK-style URLs (without /v1) need the suffix.
+        if base_url and not base_url.rstrip("/").endswith("/v1"):
+            base_url = base_url.rstrip("/") + "/v1"
         super().__init__(api_key=api_key, base_url=base_url, **kwargs)
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self._client = httpx.AsyncClient(
@@ -35,9 +50,52 @@ class OpenAIProvider(BaseProvider):
             timeout=60.0,
         )
 
+    @staticmethod
+    def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert internal content blocks to OpenAI's vision/audio format."""
+        formatted: list[dict[str, Any]] = []
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                formatted.append({"role": msg["role"], "content": content})
+            else:
+                parts: list[dict[str, Any]] = []
+                for block in content:
+                    if isinstance(block, TextBlock):
+                        parts.append({"type": "text", "text": block.text})
+                    elif isinstance(block, ImageBlock):
+                        data_url = f"data:{block.media_type};base64,{block.data}"
+                        parts.append({"type": "image_url", "image_url": {"url": data_url}})
+                    elif isinstance(block, ImageURLBlock):
+                        parts.append({"type": "image_url", "image_url": {"url": block.url}})
+                    elif isinstance(block, AudioBlock):
+                        if "wav" in block.media_type:
+                            fmt = "wav"
+                        elif "mp3" in block.media_type or "mpeg" in block.media_type:
+                            fmt = "mp3"
+                        else:
+                            raise ProviderError(
+                                "openai",
+                                f"OpenAI only supports WAV and MP3 audio, "
+                                f"got '{block.media_type}'.",
+                            )
+                        parts.append(
+                            {
+                                "type": "input_audio",
+                                "input_audio": {"data": block.data, "format": fmt},
+                            }
+                        )
+                    elif isinstance(block, DocumentBlock):
+                        raise ProviderError(
+                            "openai",
+                            "OpenAI does not support PDF attachments in chat completions.",
+                        )
+                formatted.append({"role": msg["role"], "content": parts})
+        return formatted
+
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -45,7 +103,7 @@ class OpenAIProvider(BaseProvider):
     ) -> ProviderResponse:
         payload: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": self._format_messages(messages),
         }
         if temperature is not None:
             payload["temperature"] = temperature
@@ -83,6 +141,71 @@ class OpenAIProvider(BaseProvider):
             raw_response=data,
             finish_reason=data["choices"][0].get("finish_reason"),
         )
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> StreamResponse:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": self._format_messages(messages),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+
+        sr = StreamResponse(model=model, provider="openai")
+
+        async def _generate() -> AsyncIterator[str]:
+            async with self._client.stream("POST", "/chat/completions", json=payload) as resp:
+                if resp.status_code != 200:
+                    await resp.aread()
+                    raise ProviderError(
+                        "openai",
+                        f"API error {resp.status_code}: {resp.text}",
+                        status_code=resp.status_code,
+                    )
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        logger.warning("Malformed SSE chunk, skipping: %s", data_str[:200])
+                        continue
+                    choices = data.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        text = delta.get("content")
+                        if text:
+                            yield text
+                        fr = choices[0].get("finish_reason")
+                        if fr:
+                            sr.finish_reason = fr
+                    usage_data = data.get("usage")
+                    if usage_data:
+                        sr.usage = TokenUsage(
+                            prompt_tokens=usage_data.get("prompt_tokens", 0),
+                            completion_tokens=usage_data.get("completion_tokens", 0),
+                            total_tokens=usage_data.get("total_tokens", 0),
+                        )
+                        sr.cost_usd = calculate_cost(
+                            model, sr.usage.prompt_tokens, sr.usage.completion_tokens
+                        )
+
+        sr._set_iterator(_generate())
+        return sr
 
     def supports_model(self, model: str) -> bool:
         # HACK: prefix matching means "o3" matches "o3-mini" too — good enough for now

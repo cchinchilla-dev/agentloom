@@ -11,7 +11,7 @@ imagePullSecrets: []
 workflow:
   definition: ""           # inline workflow YAML
   existingConfigMap: ""    # reference to existing ConfigMap
-  args: []                 # extra CLI args: ["--budget", "0.50"]
+  args: []                 # extra CLI args: ["--budget", "0.50", "--stream"]
 
 schedule:
   enabled: false           # false -> Job, true -> CronJob
@@ -71,6 +71,28 @@ serviceAccount:
 
 namespace:
   create: false
+
+ollama:
+  # Deploy Ollama as an in-cluster service in the same namespace.
+  # When enabled, OLLAMA_BASE_URL is automatically set on agentloom pods.
+  #
+  # Memory requirements depend on the model:
+  #   - phi4:      ~9 GB (text only)
+  #   - llava:7b:  ~5 GB (vision)
+  #   - moondream: ~2 GB (vision, lightweight)
+  #
+  # For kind/local clusters, the container runtime (Colima, Docker Desktop)
+  # must have enough RAM allocated. Example for Colima:
+  #   colima start --memory 8 --cpu 4
+  enabled: false
+  image: ollama/ollama:latest
+  model: phi4
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 250m
+    limits:
+      memory: 4Gi
 
 networkPolicy:
   enabled: true

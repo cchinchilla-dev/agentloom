@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
+from agentloom.core.models import Attachment, StepDefinition
 from agentloom.core.results import StepResult, StepStatus
 from agentloom.exceptions import StepError
+from agentloom.providers.multimodal import (
+    ContentBlock,
+    build_multimodal_content,
+    resolve_attachments,
+)
 from agentloom.steps.base import BaseStep, StepContext
 
 logger = logging.getLogger("agentloom.steps")
@@ -40,13 +47,41 @@ class LLMCallStep(BaseStep):
         except (KeyError, ValueError) as e:
             raise StepError(step.id, f"Prompt template error: {e}") from e
 
+        # Resolve multimodal attachments
+        content_blocks: list[ContentBlock] = []
+        if step.attachments:
+            try:
+                resolved_attachments = [
+                    Attachment(
+                        type=att.type,
+                        source=att.source.format_map(SafeFormatDict(template_vars)),
+                        media_type=att.media_type,
+                        fetch=att.fetch,
+                    )
+                    for att in step.attachments
+                ]
+            except (KeyError, ValueError) as e:
+                raise StepError(step.id, f"Attachment template error: {e}") from e
+            try:
+                content_blocks = await resolve_attachments(
+                    resolved_attachments, sandbox=context.sandbox_config
+                )
+            except Exception as e:
+                raise StepError(step.id, f"Attachment resolution error: {e}") from e
+
         # Build messages
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         if rendered_system:
             messages.append({"role": "system", "content": rendered_system})
-        messages.append({"role": "user", "content": rendered_prompt})
+        user_content = build_multimodal_content(rendered_prompt, content_blocks)
+        messages.append({"role": "user", "content": user_content})
 
-        # Call provider
+        # Call provider (streaming or batch)
+        if context.stream:
+            return await self._execute_stream(
+                context, messages, model, step, start, len(content_blocks)
+            )
+
         try:
             response = await context.provider_gateway.complete(
                 messages=messages,
@@ -78,6 +113,91 @@ class LLMCallStep(BaseStep):
             cost_usd=response.cost_usd,
             model=response.model,
             provider=response.provider,
+            attachment_count=len(content_blocks),
+        )
+
+    async def _execute_stream(
+        self,
+        context: StepContext,
+        messages: list[dict[str, Any]],
+        model: str,
+        step: StepDefinition,
+        start: float,
+        attachment_count: int,
+    ) -> StepResult:
+        """Execute the LLM call in streaming mode."""
+        if context.provider_gateway is None:
+            raise StepError(step.id, "No provider gateway configured")
+        try:
+            sr = await context.provider_gateway.stream(
+                messages=messages,
+                model=model,
+                temperature=step.temperature,
+                max_tokens=step.max_tokens,
+            )
+        except Exception as e:
+            duration = (time.monotonic() - start) * 1000
+            return StepResult(
+                step_id=step.id,
+                status=StepStatus.FAILED,
+                error=str(e),
+                duration_ms=duration,
+            )
+
+        # TTFT measures wall-clock time from just before the first stream
+        # iteration to the first yielded chunk.  This *includes* HTTP
+        # connection setup (the provider iterator is lazy), so it reflects
+        # end-to-end latency to first token from the consumer's perspective.
+        # Rate-limiter wait is excluded (happens before gateway.stream()
+        # returns).
+        ttft_ms: float | None = None
+        stream_start = time.monotonic()
+        first_chunk = True
+
+        try:
+            async for chunk in sr:
+                if first_chunk:
+                    ttft_ms = (time.monotonic() - stream_start) * 1000
+                    first_chunk = False
+                if context.on_stream_chunk:
+                    try:
+                        context.on_stream_chunk(step.id, chunk)
+                    except Exception:
+                        logger.warning("Stream chunk callback failed, disabling")
+                        context.on_stream_chunk = None
+        except Exception as e:
+            duration = (time.monotonic() - start) * 1000
+            return StepResult(
+                step_id=step.id,
+                status=StepStatus.FAILED,
+                error=str(e),
+                duration_ms=duration,
+            )
+        finally:
+            # Ensure the underlying httpx stream is closed even on partial
+            # consumption (e.g. MAX_ACCUMULATED_BYTES exceeded).
+            if sr._iterator is not None:
+                aclose = getattr(sr._iterator, "aclose", None)
+                if aclose:
+                    await aclose()
+
+        response = sr.to_provider_response()
+        duration = (time.monotonic() - start) * 1000
+
+        if step.output:
+            await context.state_manager.set(step.output, response.content)
+
+        return StepResult(
+            step_id=step.id,
+            status=StepStatus.SUCCESS,
+            output=response.content,
+            duration_ms=duration,
+            token_usage=response.usage,
+            cost_usd=response.cost_usd,
+            model=response.model,
+            provider=response.provider,
+            attachment_count=attachment_count,
+            time_to_first_token_ms=ttft_ms,
         )
 
     @staticmethod

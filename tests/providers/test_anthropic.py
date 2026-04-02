@@ -68,6 +68,166 @@ class TestAnthropicProvider:
             )
         await provider.close()
 
+    @respx.mock
+    async def test_multimodal_image_block_formatting(self) -> None:
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        from agentloom.providers.multimodal import ImageBlock, TextBlock
+
+        provider = AnthropicProvider(api_key="test-key")
+        await provider.complete(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        TextBlock(text="Describe this image"),
+                        ImageBlock(data="abc123", media_type="image/jpeg"),
+                    ],
+                }
+            ],
+            model="claude-haiku-4-5-20251001",
+        )
+        import json
+
+        body = json.loads(route.calls[0].request.content)
+        content = body["messages"][0]["content"]
+        assert content[0] == {"type": "text", "text": "Describe this image"}
+        assert content[1]["type"] == "image"
+        assert content[1]["source"]["type"] == "base64"
+        assert content[1]["source"]["media_type"] == "image/jpeg"
+        assert content[1]["source"]["data"] == "abc123"
+        await provider.close()
+
+    @respx.mock
+    async def test_multimodal_url_passthrough(self) -> None:
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        from agentloom.providers.multimodal import ImageURLBlock, TextBlock
+
+        provider = AnthropicProvider(api_key="test-key")
+        await provider.complete(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        TextBlock(text="Describe"),
+                        ImageURLBlock(url="https://example.com/img.jpg", media_type="image/jpeg"),
+                    ],
+                }
+            ],
+            model="claude-haiku-4-5-20251001",
+        )
+        import json
+
+        body = json.loads(route.calls[0].request.content)
+        content = body["messages"][0]["content"]
+        assert content[1]["type"] == "image"
+        assert content[1]["source"]["type"] == "url"
+        assert content[1]["source"]["url"] == "https://example.com/img.jpg"
+        await provider.close()
+
+    @respx.mock
+    async def test_multimodal_document_block_formatting(self) -> None:
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        from agentloom.providers.multimodal import DocumentBlock, TextBlock
+
+        provider = AnthropicProvider(api_key="test-key")
+        await provider.complete(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        TextBlock(text="Summarize this PDF"),
+                        DocumentBlock(data="pdf_b64", media_type="application/pdf"),
+                    ],
+                }
+            ],
+            model="claude-haiku-4-5-20251001",
+        )
+        import json
+
+        body = json.loads(route.calls[0].request.content)
+        content = body["messages"][0]["content"]
+        assert content[1]["type"] == "document"
+        assert content[1]["source"]["type"] == "base64"
+        assert content[1]["source"]["media_type"] == "application/pdf"
+        assert content[1]["source"]["data"] == "pdf_b64"
+        await provider.close()
+
+    async def test_audio_attachment_raises(self) -> None:
+        from agentloom.providers.multimodal import AudioBlock, TextBlock
+
+        provider = AnthropicProvider(api_key="test-key")
+        with pytest.raises(ProviderError, match="does not support audio"):
+            provider._format_messages(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            TextBlock(text="Transcribe"),
+                            AudioBlock(data="abc", media_type="audio/wav"),
+                        ],
+                    }
+                ]
+            )
+        await provider.close()
+
+    @respx.mock
+    async def test_streaming_yields_chunks(self) -> None:
+        lines = [
+            'data: {"type":"message_start","message":'
+            '{"id":"msg_1","model":"claude-haiku-4-5-20251001",'
+            '"usage":{"input_tokens":12,"output_tokens":0}}}\n\n',
+            'data: {"type":"content_block_delta","index":0,'
+            '"delta":{"type":"text_delta","text":"Hi"}}\n\n',
+            'data: {"type":"content_block_delta","index":0,'
+            '"delta":{"type":"text_delta","text":" there"}}\n\n',
+            'data: {"type":"message_delta",'
+            '"delta":{"stop_reason":"end_turn"},'
+            '"usage":{"output_tokens":8}}\n\n',
+            'data: {"type":"message_stop"}\n\n',
+        ]
+        sse = "".join(lines)
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, content=sse.encode())
+        )
+        provider = AnthropicProvider(api_key="test-key")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hello"}],
+            model="claude-haiku-4-5-20251001",
+        )
+        chunks = [chunk async for chunk in sr]
+        assert chunks == ["Hi", " there"]
+        assert sr.content == "Hi there"
+        assert sr.usage.prompt_tokens == 12
+        assert sr.usage.completion_tokens == 8
+        assert sr.finish_reason == "end_turn"
+        assert sr.cost_usd > 0
+        await provider.close()
+
+    @respx.mock
+    async def test_streaming_api_error(self) -> None:
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(500, text="internal error")
+        )
+        provider = AnthropicProvider(api_key="test-key")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-haiku-4-5-20251001",
+        )
+        with pytest.raises(ProviderError, match="500"):
+            async for _ in sr:
+                pass
+        await provider.close()
+
+    def test_base_url_normalization(self) -> None:
+        p = AnthropicProvider(api_key="k", base_url="https://api.anthropic.com")
+        assert p.base_url == "https://api.anthropic.com/v1"
+
     def test_supports_claude_models(self) -> None:
         p = AnthropicProvider(api_key="k")
         assert p.supports_model("claude-haiku-4-5-20251001")

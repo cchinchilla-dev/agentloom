@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from agentloom.core.models import StepDefinition, StepType, WorkflowConfig
+from agentloom.core.models import Attachment, StepDefinition, StepType, WorkflowConfig
 from agentloom.core.results import StepStatus
 from agentloom.core.state import StateManager
 from agentloom.providers.gateway import ProviderGateway
@@ -156,3 +156,187 @@ class TestLLMCallStep:
         # Verify system message was sent
         assert provider.calls[0]["messages"][0]["role"] == "system"
         assert "helpful" in provider.calls[0]["messages"][0]["content"]
+
+    async def test_multimodal_attachment_resolved(self, step: LLMCallStep) -> None:
+        """Attachments are resolved and passed as content blocks."""
+        import base64
+        import tempfile
+
+        from agentloom.providers.multimodal import ImageBlock, TextBlock
+
+        # Create a tiny image file
+        tiny_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
+            "nGP4z8BQDwAEgAF/pooBPQAAAABJRU5ErkJggg=="
+        )
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(tiny_png)
+            f.flush()
+            img_path = f.name
+
+        from tests.conftest import MockProvider
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        ctx = self._make_context(
+            StepDefinition(
+                id="analyze",
+                type=StepType.LLM_CALL,
+                prompt="Describe this image",
+                attachments=[Attachment(type="image", source=img_path)],
+                output="desc",
+            ),
+            gateway=gw,
+        )
+        result = await step.execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+
+        # Verify content blocks were sent
+        user_msg = provider.calls[0]["messages"][0]
+        assert user_msg["role"] == "user"
+        content = user_msg["content"]
+        assert isinstance(content, list)
+        assert isinstance(content[0], TextBlock)
+        assert isinstance(content[1], ImageBlock)
+        assert content[1].media_type == "image/png"
+        # Verify attachment_count is set on StepResult
+        assert result.attachment_count == 1
+
+    async def test_attachment_source_template_rendered(self, step: LLMCallStep) -> None:
+        """Template variables in attachment source are resolved."""
+        import base64
+        import tempfile
+
+        tiny_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
+            "nGP4z8BQDwAEgAF/pooBPQAAAABJRU5ErkJggg=="
+        )
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(tiny_png)
+            f.flush()
+            img_path = f.name
+
+        from tests.conftest import MockProvider
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        ctx = self._make_context(
+            StepDefinition(
+                id="analyze",
+                type=StepType.LLM_CALL,
+                prompt="Describe",
+                attachments=[Attachment(type="image", source="{state.img}")],
+                output="desc",
+            ),
+            state={"img": img_path},
+            gateway=gw,
+        )
+        result = await step.execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+
+    async def test_text_only_backward_compat(self, step: LLMCallStep) -> None:
+        """Steps without attachments produce plain string messages."""
+        from tests.conftest import MockProvider
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        ctx = self._make_context(
+            StepDefinition(
+                id="s",
+                type=StepType.LLM_CALL,
+                prompt="Hello",
+                output="out",
+            ),
+            gateway=gw,
+        )
+        result = await step.execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+        user_msg = provider.calls[0]["messages"][0]
+        assert isinstance(user_msg["content"], str)
+
+    async def test_streaming_execution(self, step: LLMCallStep) -> None:
+        from tests.conftest import MockProvider
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="s",
+                type=StepType.LLM_CALL,
+                prompt="Hello",
+                output="out",
+            ),
+            state_manager=StateManager(initial_state={}),
+            provider_gateway=gw,
+            workflow_model="mock-model",
+            stream=True,
+        )
+        result = await step.execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+        assert result.output == "Mock response"
+        assert result.token_usage.total_tokens == 30
+        assert result.time_to_first_token_ms is not None
+        assert result.time_to_first_token_ms >= 0
+
+    async def test_streaming_callback_invoked(self, step: LLMCallStep) -> None:
+        from tests.conftest import MockProvider
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        received_chunks: list[tuple[str, str]] = []
+
+        def _on_chunk(step_id: str, text: str) -> None:
+            received_chunks.append((step_id, text))
+
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="s",
+                type=StepType.LLM_CALL,
+                prompt="Hello",
+                output="out",
+            ),
+            state_manager=StateManager(initial_state={}),
+            provider_gateway=gw,
+            workflow_model="mock-model",
+            stream=True,
+            on_stream_chunk=_on_chunk,
+        )
+        result = await step.execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+        assert len(received_chunks) > 0
+        assert all(sid == "s" for sid, _ in received_chunks)
+        assert "".join(text for _, text in received_chunks) == "Mock response"
+
+    async def test_nonstreaming_backward_compat(self, step: LLMCallStep) -> None:
+        """stream=False preserves existing complete() behavior."""
+        from tests.conftest import MockProvider
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="s",
+                type=StepType.LLM_CALL,
+                prompt="Hello",
+                output="out",
+            ),
+            state_manager=StateManager(initial_state={}),
+            provider_gateway=gw,
+            workflow_model="mock-model",
+            stream=False,
+        )
+        result = await step.execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+        assert result.time_to_first_token_ms is None

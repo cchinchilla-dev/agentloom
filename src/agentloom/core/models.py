@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,25 @@ class StepType(StrEnum):
     TOOL = "tool"
     ROUTER = "router"
     SUBWORKFLOW = "subworkflow"
+
+
+class Attachment(BaseModel):
+    """Multi-modal attachment for an LLM call step.
+
+    ``source`` may be a URL, a local file path, or a raw base64 string.
+    Template variables (e.g. ``{state.image_url}``) are resolved at runtime.
+
+    Supported types:
+
+    * ``image`` — JPEG, PNG, GIF, WebP (all providers)
+    * ``pdf`` — PDF documents (Anthropic, Google)
+    * ``audio`` — WAV, MP3, OGG, FLAC (OpenAI, Google)
+    """
+
+    type: Literal["image", "pdf", "audio"] = "image"
+    source: str
+    media_type: str | None = None
+    fetch: Literal["local", "provider"] = "local"
 
 
 class RetryConfig(BaseModel):
@@ -58,6 +77,12 @@ class StepDefinition(BaseModel):
     workflow_path: str | None = None
     workflow_inline: dict[str, Any] | None = None
 
+    # Multimodal attachments (images, etc.)
+    attachments: list[Attachment] = Field(default_factory=list)
+
+    # Streaming (None = inherit from workflow config)
+    stream: bool | None = None
+
     # Output mapping
     output: str | None = None
 
@@ -92,6 +117,7 @@ class WorkflowConfig(BaseModel):
     budget_usd: float | None = None
     timeout: float | None = None
     max_concurrent_steps: int = 10
+    stream: bool = False
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
 

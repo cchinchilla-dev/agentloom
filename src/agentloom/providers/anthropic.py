@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
-from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers.multimodal import (
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    ImageURLBlock,
+    TextBlock,
+)
 from agentloom.providers.pricing import calculate_cost
+
+logger = logging.getLogger("agentloom.providers.anthropic")
 
 
 class AnthropicProvider(BaseProvider):
@@ -24,6 +36,10 @@ class AnthropicProvider(BaseProvider):
         base_url: str = "https://api.anthropic.com/v1",
         **kwargs: Any,
     ) -> None:
+        # Normalize base_url: SDK-style URLs (without /v1) need the suffix
+        # for our direct httpx calls (e.g. ANTHROPIC_BASE_URL from Claude Desktop).
+        if base_url and not base_url.rstrip("/").endswith("/v1"):
+            base_url = base_url.rstrip("/") + "/v1"
         super().__init__(api_key=api_key, base_url=base_url, **kwargs)
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         self._client = httpx.AsyncClient(
@@ -36,22 +52,75 @@ class AnthropicProvider(BaseProvider):
             timeout=60.0,
         )
 
+    @staticmethod
+    def _format_messages(
+        messages: list[dict[str, Any]],
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """Extract system prompt and convert content blocks to Anthropic format."""
+        system_prompt: str | None = None
+        formatted: list[dict[str, Any]] = []
+        for msg in messages:
+            if msg["role"] == "system":
+                content = msg.get("content", "")
+                system_prompt = content if isinstance(content, str) else str(content)
+                continue
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                formatted.append({"role": msg["role"], "content": content})
+            else:
+                parts: list[dict[str, Any]] = []
+                for block in content:
+                    if isinstance(block, TextBlock):
+                        parts.append({"type": "text", "text": block.text})
+                    elif isinstance(block, ImageBlock):
+                        parts.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": block.media_type,
+                                    "data": block.data,
+                                },
+                            }
+                        )
+                    elif isinstance(block, ImageURLBlock):
+                        parts.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "url",
+                                    "url": block.url,
+                                },
+                            }
+                        )
+                    elif isinstance(block, DocumentBlock):
+                        parts.append(
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": block.media_type,
+                                    "data": block.data,
+                                },
+                            }
+                        )
+                    elif isinstance(block, AudioBlock):
+                        raise ProviderError(
+                            "anthropic",
+                            "Anthropic does not support audio attachments.",
+                        )
+                formatted.append({"role": msg["role"], "content": parts})
+        return system_prompt, formatted
+
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
-        # Anthropic uses a separate system param, not a system message
-        system_prompt = None
-        filtered_messages = []
-        for msg in messages:
-            if msg["role"] == "system":
-                system_prompt = msg["content"]
-            else:
-                filtered_messages.append(msg)
+        system_prompt, filtered_messages = self._format_messages(messages)
 
         payload: dict[str, Any] = {
             "model": model,
@@ -101,6 +170,76 @@ class AnthropicProvider(BaseProvider):
             raw_response=data,
             finish_reason=data.get("stop_reason"),
         )
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> StreamResponse:
+        system_prompt, filtered_messages = self._format_messages(messages)
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": filtered_messages,
+            "max_tokens": max_tokens or 4096,
+            "stream": True,
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        if temperature is not None:
+            payload["temperature"] = temperature
+
+        sr = StreamResponse(model=model, provider="anthropic")
+        prompt_tokens = 0
+        completion_tokens = 0
+
+        async def _generate() -> AsyncIterator[str]:
+            nonlocal prompt_tokens, completion_tokens
+            async with self._client.stream("POST", "/messages", json=payload) as resp:
+                if resp.status_code != 200:
+                    await resp.aread()
+                    raise ProviderError(
+                        "anthropic",
+                        f"API error {resp.status_code}: {resp.text}",
+                        status_code=resp.status_code,
+                    )
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    try:
+                        data = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        logger.warning("Malformed SSE chunk, skipping: %s", line[:200])
+                        continue
+                    event_type = data.get("type", "")
+                    if event_type == "message_start":
+                        usage = data.get("message", {}).get("usage", {})
+                        prompt_tokens = usage.get("input_tokens", 0)
+                        sr.model = data.get("message", {}).get("model", model)
+                    elif event_type == "content_block_delta":
+                        text = data.get("delta", {}).get("text", "")
+                        if text:
+                            yield text
+                    elif event_type == "message_delta":
+                        delta = data.get("delta", {})
+                        sr.finish_reason = delta.get("stop_reason")
+                        usage = data.get("usage", {})
+                        completion_tokens = usage.get("output_tokens", 0)
+                        # Set usage immediately so the gateway wrapper sees
+                        # populated values before StopAsyncIteration propagates.
+                        sr.usage = TokenUsage(
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=prompt_tokens + completion_tokens,
+                        )
+                        sr.cost_usd = calculate_cost(model, prompt_tokens, completion_tokens)
+
+        sr._set_iterator(_generate())
+        return sr
 
     def supports_model(self, model: str) -> bool:
         return "claude" in model

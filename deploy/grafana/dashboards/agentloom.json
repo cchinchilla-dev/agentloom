@@ -623,12 +623,12 @@
       },
       "targets": [
         {
-          "expr": "sum(agentloom_step_executions_total{status=\"success\"})",
+          "expr": "sum(agentloom_step_executions_total{status=\"success\",stream=~\"$stream\"})",
           "legendFormat": "success: {{step_type}}",
           "refId": "A"
         },
         {
-          "expr": "sum(agentloom_step_executions_total{status=\"failed\"})",
+          "expr": "sum(agentloom_step_executions_total{status=\"failed\",stream=~\"$stream\"})",
           "legendFormat": "failed: {{step_type}}",
           "refId": "B"
         }
@@ -711,17 +711,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by(le,step_type)(agentloom_step_duration_seconds_bucket))",
+          "expr": "histogram_quantile(0.50, sum by(le,step_type)(agentloom_step_duration_seconds_bucket{stream=~\"$stream\"}))",
           "legendFormat": "p50 {{step_type}}",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by(le,step_type)(agentloom_step_duration_seconds_bucket))",
+          "expr": "histogram_quantile(0.95, sum by(le,step_type)(agentloom_step_duration_seconds_bucket{stream=~\"$stream\"}))",
           "legendFormat": "p95 {{step_type}}",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by(le,step_type)(agentloom_step_duration_seconds_bucket))",
+          "expr": "histogram_quantile(0.99, sum by(le,step_type)(agentloom_step_duration_seconds_bucket{stream=~\"$stream\"}))",
           "legendFormat": "p99 {{step_type}}",
           "refId": "C"
         }
@@ -1020,17 +1020,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by(le,provider)(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\"}))",
+          "expr": "histogram_quantile(0.50, sum by(le,provider)(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\",stream=~\"$stream\"}))",
           "legendFormat": "p50 {{provider}}",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by(le,provider)(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\"}))",
+          "expr": "histogram_quantile(0.95, sum by(le,provider)(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\",stream=~\"$stream\"}))",
           "legendFormat": "p95 {{provider}}",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by(le,provider)(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\"}))",
+          "expr": "histogram_quantile(0.99, sum by(le,provider)(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\",stream=~\"$stream\"}))",
           "legendFormat": "p99 {{provider}}",
           "refId": "C"
         }
@@ -1082,8 +1082,8 @@
       },
       "targets": [
         {
-          "expr": "sum by(provider)(agentloom_provider_calls_total{provider=~\"$provider\"})",
-          "legendFormat": "{{provider}} / {{model}}",
+          "expr": "sum by(provider)(agentloom_provider_calls_total{provider=~\"$provider\",stream=~\"$stream\"})",
+          "legendFormat": "{{provider}}",
           "refId": "A"
         }
       ],
@@ -1915,13 +1915,507 @@
     },
     {
       "type": "row",
-      "title": "Traces",
+      "title": "Multi-modal",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 68
+      },
+      "panels": [],
+      "id": 38
+    },
+    {
+      "type": "timeseries",
+      "title": "Attachments Processed",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 39,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 69
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (step_type) (agentloom_attachments_total{step_type=~\"$step_type\"})",
+          "legendFormat": "{{step_type}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Total Attachments",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 40,
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 69
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(agentloom_attachments_total)",
+          "legendFormat": "attachments",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "piechart",
+      "title": "Attachments by Step Type",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 41,
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 69
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "right"
+        },
+        "pieType": "donut",
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (step_type) (agentloom_attachments_total)",
+          "legendFormat": "{{step_type}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Streaming",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 77
+      },
+      "id": 42,
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Streamed Responses",
+          "description": "Total streamed LLM responses per provider",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 43,
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 78
+          },
+          "targets": [
+            {
+              "expr": "sum by (provider)(agentloom_stream_responses_total{provider=~\"$provider\"})",
+              "legendFormat": "{{provider}}",
+              "refId": "A",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "orientation": "vertical",
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "textMode": "value_and_name"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "blue"
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Time to First Token",
+          "description": "Average TTFT per provider",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 44,
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 78
+          },
+          "targets": [
+            {
+              "expr": "agentloom_time_to_first_token_seconds_sum{provider=~\"$provider\"} / agentloom_time_to_first_token_seconds_count{provider=~\"$provider\"}",
+              "legendFormat": "{{provider}}/{{model}}",
+              "refId": "A",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "orientation": "vertical",
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "textMode": "value_and_name"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 1},
+                  {"color": "red", "value": 3}
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "bargauge",
+          "title": "Avg TTFT by Provider",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 45,
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 78
+          },
+          "targets": [
+            {
+              "expr": "agentloom_time_to_first_token_seconds_sum{provider=~\"$provider\"} / agentloom_time_to_first_token_seconds_count{provider=~\"$provider\"}",
+              "legendFormat": "{{provider}} / {{model}}",
+              "refId": "A",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "horizontal",
+            "displayMode": "gradient",
+            "minVizWidth": 0,
+            "minVizHeight": 10
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "decimals": 3,
+              "noValue": "0",
+              "color": {
+                "mode": "continuous-blues"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Total Streamed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 46,
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 86
+          },
+          "targets": [
+            {
+              "expr": "sum(agentloom_stream_responses_total)",
+              "legendFormat": "Total Streamed",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "orientation": "auto",
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "light-blue"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "light-blue",
+                    "value": null
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Streaming Ratio",
+          "description": "Percentage of LLM calls using streaming",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 47,
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 86
+          },
+          "targets": [
+            {
+              "expr": "sum(agentloom_step_executions_total{step_type=\"llm_call\",stream=\"true\"}) / sum(agentloom_step_executions_total{step_type=\"llm_call\"}) * 100",
+              "legendFormat": "Streaming Ratio",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "orientation": "auto",
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "noValue": "0",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "gray",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 25
+                  },
+                  {
+                    "color": "green",
+                    "value": 50
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "type": "bargauge",
+          "title": "Stream vs Batch Duration",
+          "description": "Average step duration: streamed vs batch",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 48,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 86
+          },
+          "targets": [
+            {
+              "expr": "agentloom_step_duration_seconds_sum{step_type=\"llm_call\",stream=\"true\"} / agentloom_step_duration_seconds_count{step_type=\"llm_call\",stream=\"true\"}",
+              "legendFormat": "Streamed avg",
+              "refId": "A",
+              "instant": true
+            },
+            {
+              "expr": "agentloom_step_duration_seconds_sum{step_type=\"llm_call\",stream=\"false\"} / agentloom_step_duration_seconds_count{step_type=\"llm_call\",stream=\"false\"}",
+              "legendFormat": "Batch avg",
+              "refId": "B",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "orientation": "horizontal",
+            "displayMode": "gradient",
+            "showUnfilled": true,
+            "minVizWidth": 0,
+            "minVizHeight": 10
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "color": {
+                "mode": "continuous-GrYlRd"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 2},
+                  {"color": "red", "value": 5}
+                ]
+              }
+            },
+            "overrides": []
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Traces",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 78
       },
       "panels": [],
       "id": 36
@@ -1939,7 +2433,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 69
+        "y": 79
       },
       "targets": [
         {
@@ -2036,6 +2530,38 @@
         "current": {},
         "hide": 0,
         "sort": 1
+      },
+      {
+        "name": "step_type",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(agentloom_step_executions_total, step_type)",
+          "refId": "StandardVariableQuery"
+        },
+        "definition": "label_values(agentloom_step_executions_total, step_type)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {},
+        "hide": 0,
+        "sort": 1
+      },
+      {
+        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "includeAll": true,
+        "label": "Stream",
+        "multi": false,
+        "name": "stream",
+        "options": [],
+        "query": "label_values(agentloom_step_executions_total, stream)",
+        "refresh": 2,
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"}
       }
     ]
   },
@@ -2054,6 +2580,6 @@
   "timezone": "browser",
   "title": "AgentLoom",
   "uid": "agentloom-main",
-  "version": 2,
+  "version": 4,
   "refresh": ""
 }

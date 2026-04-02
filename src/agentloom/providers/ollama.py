@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+import json
+import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
-from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers.multimodal import (
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    ImageURLBlock,
+    TextBlock,
+)
+
+logger = logging.getLogger("agentloom.providers.ollama")
 
 
 class OllamaProvider(BaseProvider):
@@ -31,9 +43,45 @@ class OllamaProvider(BaseProvider):
             timeout=120.0,  # Local models can be slow
         )
 
+    @staticmethod
+    def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert internal content blocks to Ollama's images format."""
+        formatted: list[dict[str, Any]] = []
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                formatted.append({"role": msg["role"], "content": content})
+            else:
+                text_parts: list[str] = []
+                images: list[str] = []
+                for block in content:
+                    if isinstance(block, TextBlock):
+                        text_parts.append(block.text)
+                    elif isinstance(block, ImageBlock):
+                        images.append(block.data)
+                    elif isinstance(block, (DocumentBlock, AudioBlock)):
+                        raise ProviderError(
+                            "ollama",
+                            f"Ollama does not support {block.type} attachments.",
+                        )
+                    elif isinstance(block, ImageURLBlock):
+                        raise ProviderError(
+                            "ollama",
+                            "Ollama does not support URL passthrough for images. "
+                            "Use fetch: local instead.",
+                        )
+                entry: dict[str, Any] = {
+                    "role": msg["role"],
+                    "content": " ".join(text_parts),
+                }
+                if images:
+                    entry["images"] = images
+                formatted.append(entry)
+        return formatted
+
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -41,7 +89,7 @@ class OllamaProvider(BaseProvider):
     ) -> ProviderResponse:
         payload: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": self._format_messages(messages),
             "stream": False,
         }
         options: dict[str, Any] = {}
@@ -85,6 +133,65 @@ class OllamaProvider(BaseProvider):
             raw_response=data,
             finish_reason=data.get("done_reason"),
         )
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> StreamResponse:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": self._format_messages(messages),
+            "stream": True,
+        }
+        options: dict[str, Any] = {}
+        if temperature is not None:
+            options["temperature"] = temperature
+        if max_tokens is not None:
+            options["num_predict"] = max_tokens
+        if options:
+            payload["options"] = options
+
+        sr = StreamResponse(model=model, provider="ollama")
+
+        async def _generate() -> AsyncIterator[str]:
+            async with self._client.stream("POST", "/api/chat", json=payload) as resp:
+                if resp.status_code != 200:
+                    await resp.aread()
+                    raise ProviderError(
+                        "ollama",
+                        f"API error {resp.status_code}: {resp.text}",
+                        status_code=resp.status_code,
+                    )
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.warning("Malformed NDJSON chunk, skipping: %s", line[:200])
+                        continue
+                    if data.get("done"):
+                        sr.finish_reason = data.get("done_reason")
+                        prompt_tokens = data.get("prompt_eval_count", 0)
+                        completion_tokens = data.get("eval_count", 0)
+                        sr.usage = TokenUsage(
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=prompt_tokens + completion_tokens,
+                        )
+                        sr.model = data.get("model", model)
+                        break
+                    text = data.get("message", {}).get("content", "")
+                    if text:
+                        yield text
+
+        sr._set_iterator(_generate())
+        return sr
 
     def supports_model(self, model: str) -> bool:
         # Ollama accepts any model name — it downloads on demand if not present.

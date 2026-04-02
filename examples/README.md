@@ -141,3 +141,56 @@ path outside allowed directory (`/etc/hostname`), network disabled, and pipe inj
 (`echo | cat`). Only the first step (`echo`) succeeds — the rest are blocked with
 `SandboxViolationError`.
 Demonstrates: sandbox enforcement, command injection prevention, path and network blocking.
+
+---
+
+### 19 — Multi-modal: URL Image
+Fetches an image from a public URL and asks the LLM to describe it. The pod
+downloads the image locally and sends it to the provider as base64 (`fetch: local`,
+the default). A second step summarizes the description.
+Demonstrates: `attachments`, URL fetch with local download, multi-step vision pipeline.
+
+### 20 — Multi-modal: Base64 Inline
+Analyzes an image embedded directly in the workflow state as a base64 string. No
+network access is needed — the image data is self-contained in the YAML.
+Demonstrates: inline base64 attachment, offline-capable vision, explicit `media_type`.
+
+### 21 — Multi-modal: URL Passthrough
+Sends the image URL directly to the LLM provider API (`fetch: provider`). The
+provider fetches the image itself. Only works with providers that support URL-based
+vision input (OpenAI, Anthropic). Google and Ollama will reject this with a clear error.
+Demonstrates: `fetch: provider` mode, provider-side image fetching.
+
+### 22 — Multi-modal: Sandboxed URL
+Image analysis with sandbox restrictions on URL fetching. Only domains listed in
+`config.sandbox.allowed_domains` are permitted. Requests to other domains are
+blocked with a `PermissionError` before any network call is made.
+Demonstrates: sandbox `allowed_domains` for attachments, security controls for vision input.
+
+### 23 — Multi-modal: PDF Document
+Extracts key points from a PDF document and generates an executive summary.
+Requires a provider that supports PDF attachments (Anthropic or Google).
+OpenAI and Ollama will reject PDF attachments with a clear error.
+Demonstrates: `type: pdf` attachment, document analysis pipeline.
+
+### 24 — Multi-modal: Audio Transcription
+Transcribes an audio clip and analyzes the transcript for topic, sentiment,
+and action items. Requires a provider that supports audio (OpenAI or Google).
+OpenAI only accepts WAV and MP3 formats. Anthropic and Ollama will reject audio.
+Demonstrates: `type: audio` attachment, transcription + analysis pipeline.
+
+---
+
+### 25 — Streaming: Simple QA
+Streams LLM output token-by-token in real-time. Uses `config.stream: true`
+at the workflow level. Run with `--stream` to see tokens appear live.
+Demonstrates: `stream` config, `--stream` CLI flag, time-to-first-token tracking.
+
+```bash
+agentloom run examples/25_streaming_qa.yaml --stream
+```
+
+### 26 — Streaming + Multi-modal
+Combines streaming with image input. The image is fetched locally, and the
+LLM description is streamed back in real-time.
+Demonstrates: streaming + attachments composability, real-time vision output.

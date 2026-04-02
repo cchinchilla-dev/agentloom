@@ -1,0 +1,22 @@
+name: streaming-multimodal
+version: "1.0"
+description: >
+  Streaming combined with multi-modal input. The image is fetched locally
+  and the LLM description is streamed back in real-time.
+
+config:
+  provider: openai
+  model: gpt-4o
+  stream: true
+
+state:
+  image_url: "https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png"
+
+steps:
+  - id: describe
+    type: llm_call
+    prompt: "Describe what you see in this image in detail."
+    attachments:
+      - type: image
+        source: "{state.image_url}"
+    output: description

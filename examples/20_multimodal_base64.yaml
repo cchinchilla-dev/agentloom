@@ -1,0 +1,24 @@
+name: multimodal-base64
+version: "1.0"
+description: >
+  Analyze an image provided as inline base64 data.
+  No network access needed — the image is embedded directly in state.
+  Useful for offline environments or pre-processed images.
+
+config:
+  provider: openai
+  model: gpt-4o
+
+state:
+  # A 2x2 pixel PNG: red, green, blue, white quadrants.
+  image_data: "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR4nGP4z8DwHwyBNBgAAEnICff5q7YNAAAAAElFTkSuQmCC"
+
+steps:
+  - id: analyze
+    type: llm_call
+    prompt: "This is a very small test image. Describe the colors you can see."
+    attachments:
+      - type: image
+        source: "{state.image_data}"
+        media_type: image/png
+    output: analysis

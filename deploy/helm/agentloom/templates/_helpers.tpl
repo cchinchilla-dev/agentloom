@@ -92,10 +92,16 @@ containers:
       - secretRef:
           name: {{ .Values.provider.existingSecret | default (printf "%s-provider-keys" (include "agentloom.fullname" .)) }}
     {{- end }}
-    {{- if .Values.observability.enabled }}
+    {{- if or .Values.observability.enabled .Values.ollama.enabled }}
     env:
+      {{- if .Values.observability.enabled }}
       - name: OTEL_EXPORTER_OTLP_ENDPOINT
         value: {{ .Values.observability.otelEndpoint | quote }}
+      {{- end }}
+      {{- if .Values.ollama.enabled }}
+      - name: OLLAMA_BASE_URL
+        value: "http://{{ include "agentloom.fullname" . }}-ollama.{{ .Release.Namespace }}.svc.cluster.local:11434"
+      {{- end }}
     {{- end }}
     resources:
       {{- toYaml .Values.resources | nindent 6 }}
