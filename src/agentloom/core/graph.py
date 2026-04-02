@@ -201,3 +201,118 @@ class WorkflowGraph:
         if self._workflow is None:
             return None
         return self._workflow.get_step(node_id)
+
+    # ------------------------------------------------------------------
+    # Path algorithms
+    # ------------------------------------------------------------------
+
+    def all_paths(self) -> list[list[str]]:
+        """Return all simple paths from every root to every leaf.
+
+        The result is deterministically sorted.
+        """
+        leaves = set(self.leaves)
+        result: list[list[str]] = []
+
+        def dfs(node: str, current: list[str]) -> None:
+            current.append(node)
+            if node in leaves:
+                result.append(list(current))
+            else:
+                for successor in sorted(self._dag.successors(node)):
+                    dfs(successor, current)
+            current.pop()
+
+        for root in self.roots:
+            dfs(root, [])
+
+        return sorted(result)
+
+    def prime_paths(self) -> list[list[str]]:
+        """Return all prime (maximal simple) paths in the graph.
+
+        A prime path is a maximal simple path: it cannot be extended at either
+        end without repeating a node, and it is not a contiguous sub-sequence
+        of any longer path in the result set.
+
+        The result is deterministically sorted.
+        """
+        # Start with all single-node paths.
+        paths: list[list[str]] = [[node_id] for node_id in sorted(self._dag.nodes)]
+
+        # Iteratively extend each path.
+        changed = True
+        while changed:
+            changed = False
+            new_paths: list[list[str]] = []
+            for path in paths:
+                last = path[-1]
+                successors = sorted(self._dag.successors(last))
+                extended = False
+                for succ in successors:
+                    if succ not in path:  # keep it simple (acyclic)
+                        new_paths.append(path + [succ])
+                        extended = True
+                        changed = True
+                if not extended:
+                    new_paths.append(path)
+            paths = new_paths
+
+        # De-duplicate.
+        seen: set[tuple[str, ...]] = set()
+        unique: list[list[str]] = []
+        for path in paths:
+            key = tuple(path)
+            if key not in seen:
+                seen.add(key)
+                unique.append(path)
+
+        # Filter: remove any path that is a contiguous sub-sequence of another.
+        def is_subpath(candidate: list[str], other: list[str]) -> bool:
+            if len(candidate) >= len(other):
+                return False
+            n = len(candidate)
+            return any(other[i : i + n] == candidate for i in range(len(other) - n + 1))
+
+        prime: list[list[str]] = []
+        for i, path in enumerate(unique):
+            dominated = any(is_subpath(path, other) for j, other in enumerate(unique) if i != j)
+            if not dominated:
+                prime.append(path)
+
+        return sorted(prime)
+
+    def critical_path(self) -> list[str]:
+        """Return the longest path through the graph (by hop count).
+
+        Uses topological-order dynamic programming.  Returns an empty list
+        for an empty graph.
+        """
+        topo = self._dag.topological_sort()
+        if not topo:
+            return []
+
+        dist: dict[str, int] = {}
+        prev: dict[str, str | None] = {}
+
+        for node in topo:
+            preds = self._dag.predecessors(node)
+            if not preds:
+                dist[node] = 1
+                prev[node] = None
+            else:
+                best_pred = max(preds, key=lambda p: dist.get(p, 0))
+                dist[node] = dist.get(best_pred, 0) + 1
+                prev[node] = best_pred
+
+        # Node with the greatest distance is the end of the critical path.
+        end = max(topo, key=lambda n: dist.get(n, 0))
+
+        path: list[str] = []
+        current: str | None = end
+        while current is not None:
+            path.append(current)
+            current = prev.get(current)
+
+        path.reverse()
+        return path
