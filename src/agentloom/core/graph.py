@@ -28,8 +28,8 @@ class GraphNode(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _default_label(cls, values: dict[str, object]) -> dict[str, object]:
-        if not values.get("label"):
+    def _default_label(cls, values: object) -> object:
+        if isinstance(values, dict) and not values.get("label"):
             values["label"] = values.get("id", "")
         return values
 
@@ -289,7 +289,7 @@ class WorkflowGraph:
                 dist[node] = 1
                 prev[node] = None
             else:
-                best_pred = max(preds, key=lambda p: dist.get(p, 0))
+                best_pred = max(sorted(preds), key=lambda p: (dist.get(p, 0), p))
                 dist[node] = dist.get(best_pred, 0) + 1
                 prev[node] = best_pred
 
@@ -363,9 +363,10 @@ class WorkflowGraph:
             },
         )
 
-        # One place per node.
+        # One place per node (prefixed to avoid collisions with transition IDs).
         for node in self.nodes:
-            place = ET.SubElement(net, "place", attrib={"id": node.id})
+            place_id = f"p_{node.id}"
+            place = ET.SubElement(net, "place", attrib={"id": place_id})
             name_el = ET.SubElement(place, "name")
             ET.SubElement(name_el, "text").text = node.id
 
@@ -380,12 +381,12 @@ class WorkflowGraph:
             ET.SubElement(
                 net,
                 "arc",
-                attrib={"id": f"a{idx}_in", "source": edge.source, "target": t_id},
+                attrib={"id": f"a{idx}_in", "source": f"p_{edge.source}", "target": t_id},
             )
             ET.SubElement(
                 net,
                 "arc",
-                attrib={"id": f"a{idx}_out", "source": t_id, "target": edge.target},
+                attrib={"id": f"a{idx}_out", "source": t_id, "target": f"p_{edge.target}"},
             )
 
         ET.indent(root_el, space="  ")
@@ -393,12 +394,28 @@ class WorkflowGraph:
 
     def to_mermaid(self) -> str:
         """Render the graph as a Mermaid flowchart string."""
+
+        def _mermaid_id(text: str) -> str:
+            """Sanitise a node ID for Mermaid (alphanumeric + underscore only)."""
+            return "".join(c if c.isalnum() or c == "_" else "_" for c in text)
+
+        def _mermaid_label(text: str) -> str:
+            """Escape special characters in a Mermaid label."""
+            return (
+                text.replace('"', "#quot;")
+                .replace("|", "#vert;")
+                .replace("[", "#lsqb;")
+                .replace("]", "#rsqb;")
+                .replace("{", "#lbrace;")
+                .replace("}", "#rbrace;")
+            )
+
         lines: list[str] = ["graph TD"]
 
         # Node declarations with shape based on type.
         for node in self.nodes:
-            nid = node.id
-            lbl = node.label
+            nid = _mermaid_id(node.id)
+            lbl = _mermaid_label(node.label)
             if node.type == StepType.ROUTER:
                 lines.append(f"    {nid}{{{lbl}}}")
             elif node.type == StepType.TOOL:
@@ -406,15 +423,17 @@ class WorkflowGraph:
             elif node.type == StepType.SUBWORKFLOW:
                 lines.append(f"    {nid}[[{lbl}]]")
             else:
-                lines.append(f"    {nid}[{lbl}]")
+                lines.append(f'    {nid}["{lbl}"]')
 
         # Edges.
         for edge in self.edges:
+            src = _mermaid_id(edge.source)
+            tgt = _mermaid_id(edge.target)
             if edge.label:
-                safe_lbl = edge.label.replace('"', "#quot;").replace("|", "#vert;")
-                lines.append(f"    {edge.source} -->|{safe_lbl}| {edge.target}")
+                safe_lbl = _mermaid_label(edge.label)
+                lines.append(f"    {src} -->|{safe_lbl}| {tgt}")
             else:
-                lines.append(f"    {edge.source} --> {edge.target}")
+                lines.append(f"    {src} --> {tgt}")
 
         return "\n".join(lines)
 

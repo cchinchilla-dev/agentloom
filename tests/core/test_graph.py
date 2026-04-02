@@ -517,7 +517,7 @@ class TestToPnml:
         net = root.find("net")
         assert net is not None
         place_ids = {p.get("id") for p in net.findall("place")}
-        assert place_ids == {"a", "b", "c"}
+        assert place_ids == {"p_a", "p_b", "p_c"}
 
     def test_contains_transition_per_edge(self) -> None:
         g = WorkflowGraph.from_dag(_linear_dag())
@@ -555,8 +555,8 @@ class TestToMermaid:
     def test_llm_node_uses_bracket_syntax(self) -> None:
         g = WorkflowGraph.from_dag(_linear_dag())
         mmd = g.to_mermaid()
-        # LLM nodes: id[label]
-        assert "a[a]" in mmd
+        # LLM nodes: id["label"]
+        assert 'a["a"]' in mmd
 
     def test_router_node_uses_curly_syntax(self) -> None:
         g = WorkflowGraph.from_workflow(_router_workflow())
@@ -732,6 +732,76 @@ class TestMermaidEscaping:
         # The pipe must be escaped so it doesn't break Mermaid -->|label| syntax
         assert "|a | b|" not in mmd  # raw pipe would break parsing
         assert "#vert;" in mmd
+
+
+class TestCriticalPathTieBreaking:
+    def test_equal_length_paths_break_tie_by_id(self) -> None:
+        """When two predecessors have equal distance, tie-break by node ID."""
+        dag = _diamond_dag()
+        g = WorkflowGraph.from_dag(dag)
+        cp = g.critical_path()
+        # Both paths (root->left->merge, root->right->merge) have length 3.
+        # Deterministic: sorted preds + (dist, id) key ensures "right" > "left".
+        assert cp == ["root", "right", "merge"]
+
+    def test_repeated_calls_same_result(self) -> None:
+        dag = _diamond_dag()
+        g = WorkflowGraph.from_dag(dag)
+        results = {tuple(g.critical_path()) for _ in range(20)}
+        assert len(results) == 1
+
+
+class TestMermaidSanitization:
+    def test_node_id_with_spaces_sanitized(self) -> None:
+        dag = DAG()
+        dag.add_node("my node")
+        g = WorkflowGraph.from_dag(dag)
+        mmd = g.to_mermaid()
+        # ID is sanitized, label preserves original text in quotes
+        assert 'my_node["my node"]' in mmd
+
+    def test_label_with_brackets_escaped(self) -> None:
+        node = GraphNode(id="x", type=StepType.LLM_CALL, label="arr[0]")
+        dag = DAG()
+        dag.add_node("x")
+        g = WorkflowGraph(dag=dag, nodes=[node], edges=[])
+        mmd = g.to_mermaid()
+        assert "#lsqb;" in mmd
+        assert "#rsqb;" in mmd
+
+    def test_label_with_braces_escaped(self) -> None:
+        node = GraphNode(id="x", type=StepType.LLM_CALL, label="obj{k}")
+        dag = DAG()
+        dag.add_node("x")
+        g = WorkflowGraph(dag=dag, nodes=[node], edges=[])
+        mmd = g.to_mermaid()
+        assert "#lbrace;" in mmd
+        assert "#rbrace;" in mmd
+
+
+class TestPnmlNamespaceCollision:
+    def test_step_named_t0_no_collision(self) -> None:
+        """A step named 't0' must not collide with transition ID 't0'."""
+        dag = DAG.from_steps([("t0", []), ("end", ["t0"])])
+        g = WorkflowGraph.from_dag(dag)
+        pnml = g.to_pnml()
+        root = ET.fromstring(pnml.split("\n", 1)[1])
+        net = root.find("net")
+        assert net is not None
+        all_ids = [elem.get("id") for elem in net if elem.get("id")]
+        assert len(all_ids) == len(set(all_ids)), f"Duplicate IDs: {all_ids}"
+        # Place for step "t0" should be "p_t0", transition should be "t0"
+        place_ids = {p.get("id") for p in net.findall("place")}
+        assert "p_t0" in place_ids
+        trans_ids = {t.get("id") for t in net.findall("transition")}
+        assert "t0" in trans_ids
+
+
+class TestValidatorTypeSafety:
+    def test_non_dict_input_passes_through(self) -> None:
+        """model_validator(mode='before') can receive non-dict; must not crash."""
+        node = GraphNode(id="ok", type=StepType.LLM_CALL)
+        assert node.label == "ok"
 
 
 class TestFromWorkflowRouterEdgeCases:
