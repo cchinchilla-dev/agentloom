@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agentloom.core.results import StepResult, StepStatus, TokenUsage
 from agentloom.core.state import StateManager
 
@@ -149,6 +151,72 @@ class TestStepResults:
         assert len(all_results) == 2
         assert "a" in all_results
         assert "b" in all_results
+
+
+class TestArrayIndexPaths:
+    """Test array index support in dotted key paths."""
+
+    async def test_get_simple_index(self) -> None:
+        sm = StateManager(initial_state={"items": ["a", "b", "c"]})
+        assert await sm.get("items[0]") == "a"
+        assert await sm.get("items[2]") == "c"
+
+    async def test_get_nested_after_index(self) -> None:
+        sm = StateManager(initial_state={"items": [{"name": "Alice"}, {"name": "Bob"}]})
+        assert await sm.get("items[0].name") == "Alice"
+        assert await sm.get("items[1].name") == "Bob"
+
+    async def test_get_negative_index(self) -> None:
+        sm = StateManager(initial_state={"items": [1, 2, 3]})
+        assert await sm.get("items[-1]") == 3
+        assert await sm.get("items[-2]") == 2
+
+    async def test_get_multi_dimensional(self) -> None:
+        sm = StateManager(initial_state={"matrix": [[1, 2], [3, 4]]})
+        assert await sm.get("matrix[0][1]") == 2
+        assert await sm.get("matrix[1][0]") == 3
+
+    async def test_get_out_of_bounds_returns_default(self) -> None:
+        sm = StateManager(initial_state={"items": [1]})
+        assert await sm.get("items[5]") is None
+        assert await sm.get("items[5]", "fallback") == "fallback"
+
+    async def test_get_negative_out_of_bounds(self) -> None:
+        sm = StateManager(initial_state={"items": [1]})
+        assert await sm.get("items[-10]") is None
+
+    async def test_get_index_on_non_list(self) -> None:
+        sm = StateManager(initial_state={"name": "Alice"})
+        assert await sm.get("name[0]") is None
+
+    async def test_get_deep_mixed_path(self) -> None:
+        sm = StateManager(initial_state={"a": {"b": [{}, {"c": "val"}]}})
+        assert await sm.get("a.b[1].c") == "val"
+
+    async def test_set_at_index(self) -> None:
+        sm = StateManager(initial_state={"items": ["old", "keep"]})
+        await sm.set("items[0]", "new")
+        assert await sm.get("items[0]") == "new"
+        assert await sm.get("items[1]") == "keep"
+
+    async def test_set_nested_after_index(self) -> None:
+        sm = StateManager(initial_state={"items": [{"name": "old"}]})
+        await sm.set("items[0].name", "new")
+        assert await sm.get("items[0].name") == "new"
+
+    async def test_set_out_of_bounds_raises(self) -> None:
+        sm = StateManager(initial_state={"items": [1]})
+        with pytest.raises(IndexError):
+            await sm.set("items[5]", "x")
+
+    def test_sync_get_with_index(self) -> None:
+        sm = StateManager(initial_state={"items": ["a", "b"]})
+        assert sm.get_sync("items[0]") == "a"
+
+    def test_sync_set_with_index(self) -> None:
+        sm = StateManager(initial_state={"items": ["old"]})
+        sm.set_sync("items[0]", "new")
+        assert sm.get_sync("items[0]") == "new"
 
 
 class TestCheckpoint:
