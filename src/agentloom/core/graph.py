@@ -16,11 +16,6 @@ if TYPE_CHECKING:
     from agentloom.core.models import StepDefinition, WorkflowDefinition
 
 
-# ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
-
-
 class GraphNode(BaseModel):
     """Immutable representation of a single node in the workflow graph."""
 
@@ -49,11 +44,6 @@ class GraphEdge(BaseModel):
     label: str = ""
 
 
-# ---------------------------------------------------------------------------
-# WorkflowGraph
-# ---------------------------------------------------------------------------
-
-
 class WorkflowGraph:
     """Immutable first-class graph view of a workflow DAG.
 
@@ -76,10 +66,6 @@ class WorkflowGraph:
         self._nodes = nodes
         self._edges = edges
         self._workflow = workflow
-
-    # ------------------------------------------------------------------
-    # Construction
-    # ------------------------------------------------------------------
 
     @classmethod
     def from_workflow(cls, workflow: WorkflowDefinition) -> WorkflowGraph:
@@ -160,10 +146,6 @@ class WorkflowGraph:
         edges.sort(key=lambda e: (e.source, e.target))
         return cls(dag=dag, nodes=nodes, edges=edges, workflow=None)
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
     @property
     def nodes(self) -> list[GraphNode]:
         """Nodes in topological order."""
@@ -191,10 +173,6 @@ class WorkflowGraph:
         """Nodes grouped into parallel-execution layers."""
         return self._dag.execution_layers()
 
-    # ------------------------------------------------------------------
-    # Query
-    # ------------------------------------------------------------------
-
     def get_step_definition(self, node_id: str) -> StepDefinition | None:
         """Return the :class:`~agentloom.core.models.StepDefinition` for *node_id*.
 
@@ -204,10 +182,6 @@ class WorkflowGraph:
         if self._workflow is None:
             return None
         return self._workflow.get_step(node_id)
-
-    # ------------------------------------------------------------------
-    # Path algorithms
-    # ------------------------------------------------------------------
 
     def all_paths(self) -> list[list[str]]:
         """Return all simple paths from every root to every leaf.
@@ -330,10 +304,6 @@ class WorkflowGraph:
 
         path.reverse()
         return path
-
-    # ------------------------------------------------------------------
-    # Export
-    # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, object]:
         """Serialise the graph to a plain dictionary.
