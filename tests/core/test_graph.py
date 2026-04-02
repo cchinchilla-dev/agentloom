@@ -655,3 +655,138 @@ class TestToNetworkx:
             pytest.raises(ImportError, match="networkx"),
         ):
             g.to_networkx()
+
+
+# ---------------------------------------------------------------------------
+# Audit-driven edge-case tests
+# ---------------------------------------------------------------------------
+
+
+class TestPrimePathsEdgeCases:
+    def test_empty_graph(self) -> None:
+        g = WorkflowGraph.from_dag(DAG())
+        assert g.prime_paths() == []
+
+    def test_disconnected_graph(self) -> None:
+        dag = DAG.from_steps([("a", []), ("b", ["a"]), ("x", []), ("y", ["x"])])
+        g = WorkflowGraph.from_dag(dag)
+        primes = g.prime_paths()
+        assert ["a", "b"] in primes
+        assert ["x", "y"] in primes
+
+    def test_max_paths_limit_raises(self) -> None:
+        # Fan-out graph: root -> n1, n2, ..., n10; each ni -> leaf
+        dag = DAG()
+        dag.add_node("root")
+        dag.add_node("leaf")
+        for i in range(10):
+            nid = f"n{i}"
+            dag.add_edge("root", nid)
+            dag.add_edge(nid, "leaf")
+        g = WorkflowGraph.from_dag(dag)
+        # A very low limit should trigger the safeguard
+        with pytest.raises(ValueError, match="exceeded"):
+            g.prime_paths(max_paths=5)
+
+    def test_default_max_paths_allows_normal_graphs(self) -> None:
+        g = WorkflowGraph.from_dag(_diamond_dag())
+        # Should not raise — diamond is well within limits
+        primes = g.prime_paths()
+        assert len(primes) >= 2
+
+
+class TestCriticalPathDeterminism:
+    def test_tie_breaking_is_deterministic(self) -> None:
+        g = WorkflowGraph.from_dag(_diamond_dag())
+        # Call multiple times — same result every time
+        results = [g.critical_path() for _ in range(10)]
+        assert all(r == results[0] for r in results)
+
+
+class TestEdgesDefensiveCopy:
+    def test_mutating_returned_edges_does_not_affect_internal_state(self) -> None:
+        g = WorkflowGraph.from_dag(_linear_dag())
+        edges = g.edges
+        original_len = len(edges)
+        edges.clear()
+        assert len(g.edges) == original_len
+
+
+class TestPnmlIdCollisions:
+    def test_underscore_node_ids_produce_unique_pnml_ids(self) -> None:
+        # Nodes with underscores that could collide with naive separator
+        dag = DAG.from_steps([("a_b", []), ("c", ["a_b"]), ("a", []), ("b_c", ["a"])])
+        g = WorkflowGraph.from_dag(dag)
+        pnml = g.to_pnml()
+        root = ET.fromstring(pnml.split("\n", 1)[1])
+        net = root.find("net")
+        assert net is not None
+        # All IDs must be unique
+        all_ids: list[str] = []
+        for elem in net:
+            eid = elem.get("id")
+            if eid:
+                all_ids.append(eid)
+        assert len(all_ids) == len(set(all_ids)), f"Duplicate IDs found: {all_ids}"
+
+
+class TestDotEscaping:
+    def test_backslash_in_label_is_escaped(self) -> None:
+        dag = DAG()
+        dag.add_node("a\\b")
+        g = WorkflowGraph.from_dag(dag)
+        dot = g.to_dot()
+        assert "\\\\" in dot  # backslash should be doubled
+
+
+class TestMermaidEscaping:
+    def test_pipe_in_edge_label_is_escaped(self) -> None:
+        wf = WorkflowDefinition(
+            name="test",
+            steps=[
+                StepDefinition(id="start", type=StepType.LLM_CALL, prompt="hi"),
+                StepDefinition(
+                    id="route",
+                    type=StepType.ROUTER,
+                    depends_on=["start"],
+                    conditions=[Condition(expression="a | b", target="end")],
+                ),
+                StepDefinition(
+                    id="end",
+                    type=StepType.LLM_CALL,
+                    depends_on=["route"],
+                    prompt="bye",
+                ),
+            ],
+        )
+        g = WorkflowGraph.from_workflow(wf)
+        mmd = g.to_mermaid()
+        # The pipe must be escaped so it doesn't break Mermaid -->|label| syntax
+        assert "|a | b|" not in mmd  # raw pipe would break parsing
+        assert "#vert;" in mmd
+
+
+class TestFromWorkflowRouterEdgeCases:
+    def test_router_with_no_conditions_only_default(self) -> None:
+        wf = WorkflowDefinition(
+            name="test",
+            steps=[
+                StepDefinition(id="start", type=StepType.LLM_CALL, prompt="hi"),
+                StepDefinition(
+                    id="route",
+                    type=StepType.ROUTER,
+                    depends_on=["start"],
+                    conditions=[],
+                    default="end",
+                ),
+                StepDefinition(
+                    id="end",
+                    type=StepType.LLM_CALL,
+                    depends_on=["route"],
+                    prompt="bye",
+                ),
+            ],
+        )
+        g = WorkflowGraph.from_workflow(wf)
+        edge_map = {(e.source, e.target): e.label for e in g.edges}
+        assert edge_map[("route", "end")] == "default"

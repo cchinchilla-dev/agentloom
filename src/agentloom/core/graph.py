@@ -231,12 +231,18 @@ class WorkflowGraph:
 
         return sorted(result)
 
-    def prime_paths(self) -> list[list[str]]:
+    _MAX_PRIME_PATHS = 10_000
+
+    def prime_paths(self, *, max_paths: int = _MAX_PRIME_PATHS) -> list[list[str]]:
         """Return all prime (maximal simple) paths in the graph.
 
         A prime path is a maximal simple path: it cannot be extended at either
         end without repeating a node, and it is not a contiguous sub-sequence
         of any longer path in the result set.
+
+        Args:
+            max_paths: Safety limit on intermediate path count.  Raises
+                :class:`ValueError` if exceeded (default 10 000).
 
         The result is deterministically sorted.
         """
@@ -260,6 +266,11 @@ class WorkflowGraph:
                 if not extended:
                     new_paths.append(path)
             paths = new_paths
+            if len(paths) > max_paths:
+                raise ValueError(
+                    f"Prime path enumeration exceeded {max_paths} intermediate paths. "
+                    f"Graph is too complex; pass a higher max_paths to override."
+                )
 
         # De-duplicate.
         seen: set[tuple[str, ...]] = set()
@@ -348,22 +359,24 @@ class WorkflowGraph:
             StepType.SUBWORKFLOW: "doubleoctagon",
         }
 
+        def _dot_escape(text: str) -> str:
+            return text.replace("\\", "\\\\").replace('"', '\\"')
+
         lines: list[str] = ["digraph workflow {", "    rankdir=LR;"]
 
         for node in self.nodes:
             shape = _SHAPES.get(node.type, "box")
-            safe_label = node.label.replace('"', '\\"')
-            safe_id = node.id.replace('"', '\\"')
-            lines.append(f'    "{safe_id}" [label="{safe_label}", shape={shape}];')
+            lines.append(
+                f'    "{_dot_escape(node.id)}" [label="{_dot_escape(node.label)}", shape={shape}];'
+            )
 
         for edge in self.edges:
-            safe_src = edge.source.replace('"', '\\"')
-            safe_tgt = edge.target.replace('"', '\\"')
+            src = _dot_escape(edge.source)
+            tgt = _dot_escape(edge.target)
             if edge.label:
-                safe_lbl = edge.label.replace('"', '\\"')
-                lines.append(f'    "{safe_src}" -> "{safe_tgt}" [label="{safe_lbl}"];')
+                lines.append(f'    "{src}" -> "{tgt}" [label="{_dot_escape(edge.label)}"];')
             else:
-                lines.append(f'    "{safe_src}" -> "{safe_tgt}";')
+                lines.append(f'    "{src}" -> "{tgt}";')
 
         lines.append("}")
         return "\n".join(lines)
@@ -386,9 +399,9 @@ class WorkflowGraph:
             name_el = ET.SubElement(place, "name")
             ET.SubElement(name_el, "text").text = node.id
 
-        # One transition + two arcs per edge.
-        for edge in self.edges:
-            t_id = f"t_{edge.source}_{edge.target}"
+        # One transition + two arcs per edge (index-based IDs to avoid collisions).
+        for idx, edge in enumerate(self.edges):
+            t_id = f"t{idx}"
             label_text = f"{edge.source}->{edge.target}"
             transition = ET.SubElement(net, "transition", attrib={"id": t_id})
             name_el = ET.SubElement(transition, "name")
@@ -397,26 +410,16 @@ class WorkflowGraph:
             ET.SubElement(
                 net,
                 "arc",
-                attrib={
-                    "id": f"a_{edge.source}_{edge.target}_in",
-                    "source": edge.source,
-                    "target": t_id,
-                },
+                attrib={"id": f"a{idx}_in", "source": edge.source, "target": t_id},
             )
             ET.SubElement(
                 net,
                 "arc",
-                attrib={
-                    "id": f"a_{edge.source}_{edge.target}_out",
-                    "source": t_id,
-                    "target": edge.target,
-                },
+                attrib={"id": f"a{idx}_out", "source": t_id, "target": edge.target},
             )
 
         ET.indent(root_el, space="  ")
-        return "<?xml version='1.0' encoding='UTF-8'?>\n" + ET.tostring(
-            root_el, encoding="unicode"
-        )
+        return "<?xml version='1.0' encoding='UTF-8'?>\n" + ET.tostring(root_el, encoding="unicode")
 
     def to_mermaid(self) -> str:
         """Render the graph as a Mermaid flowchart string."""
@@ -438,7 +441,7 @@ class WorkflowGraph:
         # Edges.
         for edge in self.edges:
             if edge.label:
-                safe_lbl = edge.label.replace('"', "#quot;")
+                safe_lbl = edge.label.replace('"', "#quot;").replace("|", "#vert;")
                 lines.append(f"    {edge.source} -->|{safe_lbl}| {edge.target}")
             else:
                 lines.append(f"    {edge.source} --> {edge.target}")
