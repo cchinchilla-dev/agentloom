@@ -6,7 +6,7 @@ on:
   push:
     branches: ["release/**"]
   pull_request:
-    types: [labeled]
+    types: [labeled, synchronize]
   workflow_dispatch:
 
 concurrency:
@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 20
     if: >-
       github.event_name != 'pull_request'
-      || github.event.label.name == 'e2e'
+      || contains(github.event.pull_request.labels.*.name, 'e2e')
     services:
       ollama:
         image: ollama/ollama:latest
