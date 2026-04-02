@@ -435,7 +435,7 @@ class WorkflowGraph:
         if not is_available(nx_or_proxy):
             # nx_or_proxy is a MissingDependencyProxy; delegate to its _raise().
             getattr(nx_or_proxy, "_raise")()
-            return None  # unreachable — _raise() always raises ImportError
+            return None  # pragma: no cover
 
         # Narrow to ModuleType so mypy is satisfied for attribute access.
         nx: ModuleType = nx_or_proxy  # type: ignore[assignment]
