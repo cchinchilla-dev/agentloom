@@ -11,7 +11,7 @@ from agentloom.core.results import StepStatus
 from agentloom.core.state import StateManager
 from agentloom.providers.gateway import ProviderGateway
 from agentloom.steps.base import StepContext
-from agentloom.steps.llm_call import DotAccessDict, LLMCallStep, SafeFormatDict
+from agentloom.steps.llm_call import DotAccessDict, DotAccessList, LLMCallStep, SafeFormatDict
 
 # -- DotAccessDict --
 
@@ -36,6 +36,65 @@ class TestDotAccessDict:
     def test_format_renders_dict(self) -> None:
         d = DotAccessDict({"x": 1})
         assert f"{d}" == str({"x": 1})
+
+    def test_list_access_returns_dot_access_list(self) -> None:
+        d = DotAccessDict({"items": ["a", "b"]})
+        assert isinstance(d.items, DotAccessList)
+
+    def test_list_nested_dict_access(self) -> None:
+        d = DotAccessDict({"items": [{"name": "Alice"}]})
+        assert d.items[0].name == "Alice"
+
+    def test_list_out_of_bounds_returns_empty(self) -> None:
+        d = DotAccessDict({"items": [1]})
+        assert d.items[5] == ""
+
+    def test_format_map_with_index(self) -> None:
+        state = {"items": ["alpha", "beta"]}
+        flat: dict[str, object] = dict(state)
+        flat["state"] = DotAccessDict(state)
+        result = "{state.items[0]}".format_map(flat)
+        assert result == "alpha"
+
+
+# -- DotAccessList --
+
+
+class TestDotAccessList:
+    def test_int_index(self) -> None:
+        dl = DotAccessList(["a", "b", "c"])
+        assert dl[0] == "a"
+        assert dl[2] == "c"
+
+    def test_string_index(self) -> None:
+        dl = DotAccessList(["a", "b"])
+        assert dl["1"] == "b"
+
+    def test_negative_index(self) -> None:
+        dl = DotAccessList([1, 2, 3])
+        assert dl[-1] == 3
+
+    def test_out_of_bounds(self) -> None:
+        dl = DotAccessList([1])
+        assert dl[5] == ""
+
+    def test_nested_dict_wrapping(self) -> None:
+        dl = DotAccessList([{"key": "val"}])
+        assert isinstance(dl[0], DotAccessDict)
+        assert dl[0].key == "val"
+
+    def test_nested_list_wrapping(self) -> None:
+        dl = DotAccessList([[1, 2]])
+        assert isinstance(dl[0], DotAccessList)
+        assert dl[0][1] == 2
+
+    def test_str_representation(self) -> None:
+        dl = DotAccessList([1, 2])
+        assert str(dl) == "[1, 2]"
+
+    def test_invalid_string_index(self) -> None:
+        dl = DotAccessList(["a"])
+        assert dl["abc"] == ""
 
 
 # -- SafeFormatDict --

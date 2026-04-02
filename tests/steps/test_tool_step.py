@@ -46,6 +46,16 @@ class TestResolveArgs:
         )
         assert result == {"greeting": "hello", "name": "Alice"}
 
+    def test_state_reference_with_index(self) -> None:
+        state = {"items": ["first", "second"]}
+        result = ToolStep._resolve_args({"val": "state.items[0]"}, state)
+        assert result == {"val": "first"}
+
+    def test_state_reference_with_nested_index(self) -> None:
+        state = {"items": [{"name": "Alice"}, {"name": "Bob"}]}
+        result = ToolStep._resolve_args({"val": "state.items[1].name"}, state)
+        assert result == {"val": "Bob"}
+
 
 class TestToolStep:
     @pytest.fixture

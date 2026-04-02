@@ -4,12 +4,44 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import anyio
 
 from agentloom.core.results import StepResult, StepStatus
+
+_SEGMENT_RE = re.compile(r"^([^\[]*)((?:\[-?\d+\])*)$")
+_INDEX_RE = re.compile(r"\[(-?\d+)\]")
+
+
+def _parse_path(key: str) -> list[str | int]:
+    """Split a dotted key with optional array indices into access operations.
+
+    Examples::
+
+        "items[0].name"  -> ["items", 0, "name"]
+        "matrix[0][1]"   -> ["matrix", 0, 1]
+        "a.b.c"          -> ["a", "b", "c"]
+    """
+    if not key:
+        raise ValueError("State path must not be empty")
+    parts: list[str | int] = []
+    for segment in key.split("."):
+        if not segment:
+            raise ValueError(f"Empty segment in state path '{key}'")
+        m = _SEGMENT_RE.match(segment)
+        if m:
+            name, indices = m.group(1), m.group(2)
+            if name:
+                parts.append(name)
+            if indices:
+                parts.extend(int(i) for i in _INDEX_RE.findall(indices))
+        else:
+            # Fallback: treat the whole segment as a dict key
+            parts.append(segment)
+    return parts
 
 
 class StateManager:
@@ -109,11 +141,16 @@ class StateManager:
 
     @staticmethod
     def _resolve_key(data: dict[str, Any], key: str, default: Any = None) -> Any:
-        """Resolve a dotted key like 'state.user_input' from nested dicts."""
-        parts = key.split(".")
+        """Resolve a dotted key like 'user.name' or 'items[0].name' from nested data."""
+        parts = _parse_path(key)
         current: Any = data
         for part in parts:
-            if isinstance(current, dict) and part in current:
+            if isinstance(part, int):
+                if isinstance(current, list) and -len(current) <= part < len(current):
+                    current = current[part]
+                else:
+                    return default
+            elif isinstance(current, dict) and part in current:
                 current = current[part]
             else:
                 return default
@@ -121,12 +158,38 @@ class StateManager:
 
     @staticmethod
     def _set_nested(data: dict[str, Any], key: str, value: Any) -> None:
-        """Set a value at a dotted key path, creating intermediate dicts."""
-        # TODO: handle array indices like state.items[0]
-        parts = key.split(".")
-        current = data
+        """Set a value at a dotted key path.
+
+        Creates intermediate dicts for missing string segments, but does not
+        create or resize lists.  For integer path segments the list and indexed
+        element must already exist; otherwise ``IndexError`` is raised.
+        """
+        parts = _parse_path(key)
+        current: Any = data
         for part in parts[:-1]:
-            if part not in current or not isinstance(current[part], dict):
-                current[part] = {}
-            current = current[part]
-        current[parts[-1]] = value
+            if isinstance(part, int):
+                if isinstance(current, list) and -len(current) <= part < len(current):
+                    current = current[part]
+                else:
+                    raise IndexError(f"List index {part} out of range in path '{key}'")
+            else:
+                if part not in current or not isinstance(current[part], (dict, list)):
+                    current[part] = {}
+                current = current[part]
+            if not isinstance(current, (dict, list)):
+                raise TypeError(
+                    f"Expected dict or list at '{part}' in path '{key}', "
+                    f"got {type(current).__name__}"
+                )
+        last = parts[-1]
+        if isinstance(last, int):
+            if isinstance(current, list) and -len(current) <= last < len(current):
+                current[last] = value
+            else:
+                raise IndexError(f"List index {last} out of range in path '{key}'")
+        else:
+            if not isinstance(current, dict):
+                raise TypeError(
+                    f"Cannot set key '{last}' on {type(current).__name__} in path '{key}'"
+                )
+            current[last] = value

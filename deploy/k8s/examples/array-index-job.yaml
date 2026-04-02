@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: array-index-workflow
+  namespace: agentloom
+data:
+  workflow.yaml: |
+    name: array-index-demo
+    version: "1.0"
+    description: Validates array index state paths in K8s
+    config:
+      provider: ollama
+      model: phi4
+    state:
+      items: ["alpha", "beta", "gamma"]
+    steps:
+      - id: pick_first
+        type: llm_call
+        prompt: "The first item is: {state.items[0]}. Repeat it back."
+        output: result
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: array-index-smoke
+  namespace: agentloom
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  activeDeadlineSeconds: 300
+  template:
+    spec:
+      serviceAccountName: agentloom
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: runner
+          image: ghcr.io/cchinchilla-dev/agentloom:latest
+          args: ["validate", "/workflows/workflow.yaml"]
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: workflow
+              mountPath: /workflows
+              readOnly: true
+      volumes:
+        - name: workflow
+          configMap:
+            name: array-index-workflow

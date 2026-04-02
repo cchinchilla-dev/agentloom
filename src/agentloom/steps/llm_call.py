@@ -229,7 +229,42 @@ class DotAccessDict:
         value = self._data[name]
         if isinstance(value, dict):
             return DotAccessDict(value)
+        if isinstance(value, list):
+            return DotAccessList(value)
         return value
+
+    def __getitem__(self, key: str | int) -> object:
+        if isinstance(key, int):
+            return ""
+        return self.__getattr__(key)
+
+    def __str__(self) -> str:
+        return str(self._data)
+
+    def __format__(self, format_spec: str) -> str:
+        return str(self._data)
+
+
+class DotAccessList:
+    """Wrapper that allows index access on a list for template rendering."""
+
+    def __init__(self, data: list[object]) -> None:
+        self._data = data
+
+    def __getitem__(self, index: int | str) -> object:
+        if isinstance(index, str):
+            try:
+                index = int(index)
+            except ValueError:
+                return ""
+        if -len(self._data) <= index < len(self._data):
+            value = self._data[index]
+            if isinstance(value, dict):
+                return DotAccessDict(value)
+            if isinstance(value, list):
+                return DotAccessList(value)
+            return value
+        return ""
 
     def __str__(self) -> str:
         return str(self._data)

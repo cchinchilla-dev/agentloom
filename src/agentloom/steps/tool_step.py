@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from agentloom.core.results import StepResult, StepStatus
+from agentloom.core.state import StateManager
 from agentloom.exceptions import StepError
 from agentloom.steps.base import BaseStep, StepContext
 
@@ -69,15 +70,7 @@ class ToolStep(BaseStep):
         for key, value in args.items():
             if isinstance(value, str) and value.startswith("state."):
                 path = value[len("state.") :]
-                parts = path.split(".")
-                current: Any = state
-                for part in parts:
-                    if isinstance(current, dict):
-                        current = current.get(part)
-                    else:
-                        current = None
-                        break
-                resolved[key] = current
+                resolved[key] = StateManager._resolve_key(state, path)
             else:
                 resolved[key] = value
         return resolved
