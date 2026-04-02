@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Ollama e2e integration tests against a live Docker instance (5 smoke tests) (#71)
+- CI workflow `e2e-ollama.yml` — weekly schedule, `release/**` branches, `e2e` label on PRs, manual dispatch
+
 ### Planned
 
 - Streaming responses from providers (currently falls back to full completion)
