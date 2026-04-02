@@ -218,6 +218,26 @@ class TestArrayIndexPaths:
         sm.set_sync("items[0]", "new")
         assert sm.get_sync("items[0]") == "new"
 
+    async def test_empty_path_raises(self) -> None:
+        sm = StateManager()
+        with pytest.raises(ValueError, match="must not be empty"):
+            await sm.get("")
+
+    async def test_empty_segment_raises(self) -> None:
+        sm = StateManager()
+        with pytest.raises(ValueError, match="Empty segment"):
+            await sm.get("a..b")
+
+    async def test_set_through_scalar_raises_type_error(self) -> None:
+        sm = StateManager(initial_state={"items": ["hello"]})
+        with pytest.raises(TypeError, match="Expected dict or list"):
+            await sm.set("items[0].name", "x")
+
+    async def test_set_string_key_on_list_raises_type_error(self) -> None:
+        sm = StateManager(initial_state={"data": [1, 2]})
+        with pytest.raises(TypeError, match="Cannot set key"):
+            await sm.set("data.foo", "x")
+
 
 class TestCheckpoint:
     """Test checkpoint save and load functionality."""

@@ -25,8 +25,12 @@ def _parse_path(key: str) -> list[str | int]:
         "matrix[0][1]"   -> ["matrix", 0, 1]
         "a.b.c"          -> ["a", "b", "c"]
     """
+    if not key:
+        raise ValueError("State path must not be empty")
     parts: list[str | int] = []
     for segment in key.split("."):
+        if not segment:
+            raise ValueError(f"Empty segment in state path '{key}'")
         m = _SEGMENT_RE.match(segment)
         if m:
             name, indices = m.group(1), m.group(2)
@@ -154,7 +158,12 @@ class StateManager:
 
     @staticmethod
     def _set_nested(data: dict[str, Any], key: str, value: Any) -> None:
-        """Set a value at a dotted key path, creating intermediate dicts."""
+        """Set a value at a dotted key path.
+
+        Creates intermediate dicts for missing string segments, but does not
+        create or resize lists.  For integer path segments the list and indexed
+        element must already exist; otherwise ``IndexError`` is raised.
+        """
         parts = _parse_path(key)
         current: Any = data
         for part in parts[:-1]:
@@ -167,6 +176,11 @@ class StateManager:
                 if part not in current or not isinstance(current[part], (dict, list)):
                     current[part] = {}
                 current = current[part]
+            if not isinstance(current, (dict, list)):
+                raise TypeError(
+                    f"Expected dict or list at '{part}' in path '{key}', "
+                    f"got {type(current).__name__}"
+                )
         last = parts[-1]
         if isinstance(last, int):
             if isinstance(current, list) and -len(current) <= last < len(current):
@@ -174,4 +188,8 @@ class StateManager:
             else:
                 raise IndexError(f"List index {last} out of range in path '{key}'")
         else:
+            if not isinstance(current, dict):
+                raise TypeError(
+                    f"Cannot set key '{last}' on {type(current).__name__} in path '{key}'"
+                )
             current[last] = value
