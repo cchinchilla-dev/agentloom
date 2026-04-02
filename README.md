@@ -27,6 +27,7 @@
 - [Architecture](#architecture)
 - [Workflow Definition (YAML)](#workflow-definition-yaml)
 - [Python DSL](#python-dsl)
+- [Graph API](#graph-api)
 - [Observability](#observability)
 - [Deploy](#deploy)
 - [Why not autonomous agents?](#why-not-autonomous-agents)
@@ -91,8 +92,8 @@ agentloom visualize examples/03_router_workflow.yaml
 +-----------------------------------------------------+
 |                  Provider Gateway                   |
 |  +-----------------------------------------------+  |
-|  | OpenAI | Anthropic | Google | Ollama           | |
-|  | + Fallback | Circuit Breaker | Rate Limiter    | |
+|  | OpenAI | Anthropic | Google | Ollama          |  |
+|  | + Fallback | Circuit Breaker | Rate Limiter   |  |
 |  +-----------------------------------------------+  |
 +-----------------------------------------------------+
 |              Observability (optional)               |
@@ -201,6 +202,40 @@ wf = (
     .add_llm_step("answer", prompt="Answer: {question}", output="answer")
     .build()
 )
+```
+
+## Graph API
+
+Programmatic access to the workflow DAG for analysis, visualization, and test coverage.
+
+```python
+from agentloom import WorkflowGraph
+from agentloom.core.parser import WorkflowParser
+
+workflow = WorkflowParser.from_yaml("examples/03_router_workflow.yaml")
+graph = WorkflowGraph.from_workflow(workflow)
+
+graph.roots            # entry-point step IDs
+graph.leaves           # terminal step IDs
+graph.critical_path()  # longest path (latency bottleneck)
+graph.all_paths()      # every root-to-leaf path
+graph.prime_paths()    # maximal simple paths for test coverage
+
+# Export
+graph.to_dot()       # Graphviz DOT
+graph.to_mermaid()   # Mermaid flowchart
+graph.to_pnml()      # Petri Net Markup Language
+graph.to_dict()      # JSON-serializable dict
+```
+
+Optional NetworkX integration:
+
+```bash
+pip install agentloom[graph]
+```
+
+```python
+nx_graph = graph.to_networkx()  # networkx.DiGraph
 ```
 
 ## Observability

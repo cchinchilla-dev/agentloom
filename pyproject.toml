@@ -36,7 +36,8 @@ observability = [
     "opentelemetry-exporter-otlp>=1.20",
     "prometheus-client>=0.19",
 ]
-all = ["agentloom[observability]"]
+graph = ["networkx>=3.0"]
+all = ["agentloom[observability]", "agentloom[graph]"]
 
 [dependency-groups]
 dev = [
@@ -104,6 +105,11 @@ disable_error_code = ["misc", "union-attr"]
 module = "agentloom.cli.*"
 # CLI uses late imports and typer patterns
 disable_error_code = ["misc"]
+
+[[tool.mypy.overrides]]
+module = "agentloom.core.graph"
+# Uses dynamic imports via compat.try_import() for optional networkx
+disable_error_code = ["union-attr"]
 
 [[tool.mypy.overrides]]
 module = "agentloom.tools.registry"
