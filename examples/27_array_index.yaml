@@ -1,0 +1,16 @@
+name: array-index-demo
+version: "1.0"
+description: Demonstrates array index access in state paths
+
+config:
+  provider: ollama
+  model: phi4
+
+state:
+  items: ["alpha", "beta", "gamma"]
+
+steps:
+  - id: pick_first
+    type: llm_call
+    prompt: "The first item is: {state.items[0]}. Repeat it back."
+    output: result

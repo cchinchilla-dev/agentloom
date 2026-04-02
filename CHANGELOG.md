@@ -33,10 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provider auto-discovery moved from CLI hack to `config.discover_providers()`
 - Ollama e2e integration tests against a live Docker instance (5 smoke tests) (#71)
 - CI workflow `e2e-ollama.yml` — weekly schedule, `release/**` branches, `e2e` label on PRs, manual dispatch
-
-### Planned
-
-- Array index support in state paths (e.g., `state.items[0]`)
+- Array index support in state paths (e.g., `state.items[0]`, `items[0].name`, `results[-1]`)
+  - `_parse_path()` helper with regex-based bracket parsing in `StateManager`
+  - `_resolve_key()` and `_set_nested()` handle list indexing with bounds checking
+  - `DotAccessList` wrapper for `str.format_map()` template rendering
+  - `ToolStep._resolve_args()` refactored to reuse `StateManager._resolve_key()`
+  - CLI, Docker, and K8s smoke tests; example workflow (27)
 
 ## [0.2.0] - 2026-03-30
 
