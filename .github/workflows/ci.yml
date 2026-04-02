@@ -41,11 +41,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group dev --all-extras
       - run: uv run pytest --cov=agentloom --cov-report=xml --cov-report=term-missing
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7
+      - uses: codecov/codecov-action@18283e04ce6e62d37312384ff67231eb8fd56d24  # v5
         if: matrix.python-version == '3.12'
         with:
-          name: coverage
-          path: coverage.xml
+          files: coverage.xml
+          fail_ci_if_error: ${{ github.event_name == 'push' }}
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   manifests:
     name: Validate K8s manifests

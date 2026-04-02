@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `DotAccessList` wrapper for `str.format_map()` template rendering
   - `ToolStep._resolve_args()` refactored to reuse `StateManager._resolve_key()`
   - CLI, Docker, and K8s smoke tests; example workflow (27)
+- Test coverage reporting via Codecov with 85% minimum threshold and README badge (#70)
 
 ## [0.2.0] - 2026-03-30
 

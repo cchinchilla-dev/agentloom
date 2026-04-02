@@ -12,6 +12,8 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/cchinchilla-dev/agentloom/actions/workflows/ci.yml"><img src="https://github.com/cchinchilla-dev/agentloom/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/github/cchinchilla-dev/agentloom"><img src="https://codecov.io/github/cchinchilla-dev/agentloom/graph/badge.svg" alt="Coverage"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
 </p>
