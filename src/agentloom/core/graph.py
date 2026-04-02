@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from agentloom.compat import is_available, try_import
 from agentloom.core.dag import DAG
 from agentloom.core.models import StepType
 
@@ -316,3 +319,159 @@ class WorkflowGraph:
 
         path.reverse()
         return path
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialise the graph to a plain dictionary.
+
+        Includes node/edge lists, root/leaf sets, execution layers, and the
+        critical path.
+        """
+        return {
+            "nodes": [node.model_dump() for node in self.nodes],
+            "edges": [edge.model_dump() for edge in self.edges],
+            "roots": self.roots,
+            "leaves": self.leaves,
+            "layers": self.layers,
+            "critical_path": self.critical_path(),
+        }
+
+    def to_dot(self) -> str:
+        """Render the graph as a Graphviz DOT string."""
+        _SHAPES: dict[StepType, str] = {
+            StepType.LLM_CALL: "box, style=rounded",
+            StepType.TOOL: "trapezium",
+            StepType.ROUTER: "diamond",
+            StepType.SUBWORKFLOW: "doubleoctagon",
+        }
+
+        lines: list[str] = ["digraph workflow {", "    rankdir=LR;"]
+
+        for node in self.nodes:
+            shape = _SHAPES.get(node.type, "box")
+            safe_label = node.label.replace('"', '\\"')
+            safe_id = node.id.replace('"', '\\"')
+            lines.append(f'    "{safe_id}" [label="{safe_label}", shape={shape}];')
+
+        for edge in self.edges:
+            safe_src = edge.source.replace('"', '\\"')
+            safe_tgt = edge.target.replace('"', '\\"')
+            if edge.label:
+                safe_lbl = edge.label.replace('"', '\\"')
+                lines.append(f'    "{safe_src}" -> "{safe_tgt}" [label="{safe_lbl}"];')
+            else:
+                lines.append(f'    "{safe_src}" -> "{safe_tgt}";')
+
+        lines.append("}")
+        return "\n".join(lines)
+
+    def to_pnml(self) -> str:
+        """Render the graph as a PNML (Petri Net Markup Language) string."""
+        root_el = ET.Element("pnml")
+        net = ET.SubElement(
+            root_el,
+            "net",
+            attrib={
+                "id": "workflow",
+                "type": "http://www.pnml.org/version-2009/grammar/pnmlcoremodel",
+            },
+        )
+
+        # One place per node.
+        for node in self.nodes:
+            place = ET.SubElement(net, "place", attrib={"id": node.id})
+            name_el = ET.SubElement(place, "name")
+            ET.SubElement(name_el, "text").text = node.id
+
+        # One transition + two arcs per edge.
+        for edge in self.edges:
+            t_id = f"t_{edge.source}_{edge.target}"
+            label_text = f"{edge.source}->{edge.target}"
+            transition = ET.SubElement(net, "transition", attrib={"id": t_id})
+            name_el = ET.SubElement(transition, "name")
+            ET.SubElement(name_el, "text").text = label_text
+
+            ET.SubElement(
+                net,
+                "arc",
+                attrib={
+                    "id": f"a_{edge.source}_{edge.target}_in",
+                    "source": edge.source,
+                    "target": t_id,
+                },
+            )
+            ET.SubElement(
+                net,
+                "arc",
+                attrib={
+                    "id": f"a_{edge.source}_{edge.target}_out",
+                    "source": t_id,
+                    "target": edge.target,
+                },
+            )
+
+        ET.indent(root_el, space="  ")
+        return "<?xml version='1.0' encoding='UTF-8'?>\n" + ET.tostring(
+            root_el, encoding="unicode"
+        )
+
+    def to_mermaid(self) -> str:
+        """Render the graph as a Mermaid flowchart string."""
+        lines: list[str] = ["graph TD"]
+
+        # Node declarations with shape based on type.
+        for node in self.nodes:
+            nid = node.id
+            lbl = node.label
+            if node.type == StepType.ROUTER:
+                lines.append(f"    {nid}{{{lbl}}}")
+            elif node.type == StepType.TOOL:
+                lines.append(f"    {nid}[/{lbl}/]")
+            elif node.type == StepType.SUBWORKFLOW:
+                lines.append(f"    {nid}[[{lbl}]]")
+            else:
+                lines.append(f"    {nid}[{lbl}]")
+
+        # Edges.
+        for edge in self.edges:
+            if edge.label:
+                safe_lbl = edge.label.replace('"', "#quot;")
+                lines.append(f"    {edge.source} -->|{safe_lbl}| {edge.target}")
+            else:
+                lines.append(f"    {edge.source} --> {edge.target}")
+
+        return "\n".join(lines)
+
+    def to_networkx(self) -> object:
+        """Return a ``networkx.DiGraph`` representation of this workflow graph.
+
+        Requires the ``graph`` optional extra::
+
+            pip install agentloom[graph]
+
+        Node attributes: ``type`` (:class:`str`), ``label`` (:class:`str`).
+        Edge attributes: ``label`` (:class:`str`).
+
+        Raises:
+            ImportError: If *networkx* is not installed.
+        """
+        nx_or_proxy = try_import("networkx", extra="graph")
+        if not is_available(nx_or_proxy):
+            # nx_or_proxy is a MissingDependencyProxy; delegate to its _raise().
+            getattr(nx_or_proxy, "_raise")()
+            return None  # unreachable — _raise() always raises ImportError
+
+        # Narrow to ModuleType so mypy is satisfied for attribute access.
+        nx: ModuleType = nx_or_proxy  # type: ignore[assignment]
+        graph = nx.DiGraph()
+
+        for node in self.nodes:
+            graph.add_node(node.id, type=str(node.type), label=node.label)
+
+        for edge in self.edges:
+            graph.add_edge(edge.source, edge.target, label=edge.label)
+
+        return graph
