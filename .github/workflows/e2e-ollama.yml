@@ -1,0 +1,68 @@
+name: E2E — Ollama
+
+on:
+  schedule:
+    - cron: "30 4 * * 1"  # Weekly, Monday 04:30 UTC
+  push:
+    branches: ["release/**"]
+  pull_request:
+    types: [labeled, synchronize]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-ollama-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-ollama:
+    name: Ollama integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: >-
+      github.event_name != 'pull_request'
+      || contains(github.event.pull_request.labels.*.name, 'e2e')
+    services:
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8
+        with:
+          enable-cache: true
+
+      - name: Wait for Ollama
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:11434/ > /dev/null 2>&1; then
+              echo "Ollama is ready"
+              exit 0
+            fi
+            echo "Waiting for Ollama... ($i/30)"
+            sleep 2
+          done
+          echo "Ollama failed to start"
+          exit 1
+
+      - name: Pull model
+        run: |
+          curl --silent --show-error --fail --max-time 600 \
+            http://localhost:11434/api/pull \
+            -d '{"name":"qwen2.5:0.5b"}' | tail -1
+
+      - name: Verify model is ready
+        run: |
+          curl --silent --fail http://localhost:11434/api/tags | \
+            python3 -c "import sys, json; models = json.load(sys.stdin)['models']; assert any('qwen2.5:0.5b' in m['name'] for m in models), 'Model not found'; print('Model ready')"
+
+      - run: uv sync --group dev --all-extras
+
+      - name: Run e2e tests
+        run: uv run pytest -m e2e -v --tb=short
+        env:
+          OLLAMA_BASE_URL: http://localhost:11434

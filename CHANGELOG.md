@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AGENTLOOM_*` env var prefix for all configuration overrides (#5)
 - YAML-based pricing table replacing hardcoded Python dict (#6)
 - Provider auto-discovery moved from CLI hack to `config.discover_providers()`
+- Ollama e2e integration tests against a live Docker instance (5 smoke tests) (#71)
+- CI workflow `e2e-ollama.yml` — weekly schedule, `release/**` branches, `e2e` label on PRs, manual dispatch
 
 ### Planned
 
