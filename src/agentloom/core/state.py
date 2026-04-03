@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -118,19 +119,24 @@ class StateManager:
         """Save current state to a JSON file."""
         async with self._lock:
             data = {
-                "state": self._state,
+                "state": copy.deepcopy(self._state),
                 "step_results": {k: v.model_dump() for k, v in self._step_results.items()},
             }
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # NOTE: blocking I/O — acceptable for checkpoint frequency (once per workflow).
-        # For high-frequency saves, replace with anyio.Path or anyio.to_thread.run_sync.
-        path.write_text(json.dumps(data, indent=2, default=str))
+
+        def _write(p: Path, payload: dict[str, Any]) -> None:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(payload, indent=2, default=str))
+
+        await anyio.to_thread.run_sync(partial(_write, Path(path), data))
 
     @classmethod
-    def from_checkpoint(cls, path: str | Path) -> StateManager:
+    async def from_checkpoint(cls, path: str | Path) -> StateManager:
         """Restore state from a JSON checkpoint file."""
-        data = json.loads(Path(path).read_text())
+
+        def _read(p: Path) -> dict[str, Any]:
+            return json.loads(p.read_text())  # type: ignore[no-any-return]
+
+        data = await anyio.to_thread.run_sync(partial(_read, Path(path)))
         manager = cls(initial_state=data.get("state", {}))
         for step_id, result_data in data.get("step_results", {}).items():
             manager._step_results[step_id] = StepResult.model_validate(result_data)
