@@ -45,6 +45,7 @@ class ProviderGateway:
     def __init__(self) -> None:
         self._providers: list[ProviderEntry] = []
         self._model_mapping: dict[str, list[ProviderEntry]] = {}
+        self._candidate_cache: dict[str, list[ProviderEntry]] = {}
         self._observer: Any | None = None
 
     def set_observer(self, observer: Any) -> None:
@@ -90,6 +91,8 @@ class ProviderGateway:
             self._model_mapping.setdefault(model, []).append(entry)
             self._model_mapping[model].sort(key=lambda e: e.priority)
 
+        self._candidate_cache.clear()
+
     def _wire_circuit_callback(self, entry: ProviderEntry) -> None:
         """Connect a provider's circuit breaker to the observer."""
         obs = self._observer
@@ -110,7 +113,6 @@ class ProviderGateway:
         **kwargs: Any,
     ) -> ProviderResponse:
         """Route a completion request to the appropriate provider with fallback."""
-        # TODO: cache this lookup, rebuilding every call is wasteful
         candidates = self._get_candidates(model)
 
         if not candidates:
@@ -307,10 +309,14 @@ class ProviderGateway:
         if model in self._model_mapping:
             return self._model_mapping[model]
 
-        candidates = [e for e in self._providers if e.provider.supports_model(model)]
+        if model in self._candidate_cache:
+            return self._candidate_cache[model]
 
+        candidates = [e for e in self._providers if e.provider.supports_model(model)]
         fallbacks = [e for e in self._providers if e.is_fallback and e not in candidates]
-        return candidates + fallbacks
+        result = candidates + fallbacks
+        self._candidate_cache[model] = result
+        return result
 
     async def close(self) -> None:
         """Close all provider connections."""
