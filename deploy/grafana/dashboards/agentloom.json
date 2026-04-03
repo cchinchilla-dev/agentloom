@@ -1914,6 +1914,59 @@
       }
     },
     {
+      "type": "timeseries",
+      "title": "Budget Remaining",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 49,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 68
+      },
+      "targets": [
+        {
+          "expr": "agentloom_budget_remaining_usd{workflow=~\"$workflow\"}",
+          "legendFormat": "{{workflow}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "drawStyle": "line",
+            "spanNulls": false,
+            "showPoints": "auto",
+            "pointSize": 5
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#73BF69"
+          }
+        }
+      }
+    },
+    {
       "type": "row",
       "title": "Multi-modal",
       "collapsed": false,
@@ -1921,7 +1974,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 68
+        "y": 76
       },
       "panels": [],
       "id": 38
@@ -1938,7 +1991,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 69
+        "y": 77
       },
       "fieldConfig": {
         "defaults": {
@@ -1985,7 +2038,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 69
+        "y": 77
       },
       "fieldConfig": {
         "defaults": {
@@ -2031,7 +2084,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 69
+        "y": 77
       },
       "fieldConfig": {
         "defaults": {
@@ -2069,7 +2122,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 77
+        "y": 85
       },
       "id": 42,
       "panels": [
@@ -2086,7 +2139,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 78
+            "y": 86
           },
           "targets": [
             {
@@ -2133,7 +2186,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 78
+            "y": 86
           },
           "targets": [
             {
@@ -2185,7 +2238,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 78
+            "y": 86
           },
           "targets": [
             {
@@ -2238,7 +2291,7 @@
             "h": 4,
             "w": 6,
             "x": 0,
-            "y": 86
+            "y": 94
           },
           "targets": [
             {
@@ -2294,7 +2347,7 @@
             "h": 4,
             "w": 6,
             "x": 6,
-            "y": 86
+            "y": 94
           },
           "targets": [
             {
@@ -2359,7 +2412,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 86
+            "y": 94
           },
           "targets": [
             {
@@ -2415,7 +2468,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 78
+        "y": 86
       },
       "panels": [],
       "id": 36
@@ -2433,7 +2486,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 79
+        "y": 87
       },
       "targets": [
         {
