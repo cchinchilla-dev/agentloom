@@ -119,7 +119,7 @@ class StateManager:
         """Save current state to a JSON file."""
         async with self._lock:
             data = {
-                "state": self._state,
+                "state": copy.deepcopy(self._state),
                 "step_results": {k: v.model_dump() for k, v in self._step_results.items()},
             }
 
