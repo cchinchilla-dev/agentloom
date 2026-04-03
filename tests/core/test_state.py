@@ -273,7 +273,7 @@ class TestCheckpoint:
         checkpoint_path = tmp_path / "checkpoint.json"
         await sm.save_checkpoint(checkpoint_path)
 
-        restored = StateManager.from_checkpoint(checkpoint_path)
+        restored = await StateManager.from_checkpoint(checkpoint_path)
         assert restored.get_sync("key") == "value"
 
     async def test_load_checkpoint_restores_step_results(self, tmp_path: Path) -> None:
@@ -289,7 +289,7 @@ class TestCheckpoint:
         checkpoint_path = tmp_path / "checkpoint.json"
         await sm.save_checkpoint(checkpoint_path)
 
-        restored = StateManager.from_checkpoint(checkpoint_path)
+        restored = await StateManager.from_checkpoint(checkpoint_path)
         step_result = restored._step_results.get("s1")
         assert step_result is not None
         assert step_result.status == StepStatus.SUCCESS
