@@ -33,9 +33,7 @@ class WorkflowObserver:
         self._workflow_span: Any | None = None
         self._step_spans: dict[str, Any] = {}
 
-    # ------------------------------------------------------------------
     # Workflow lifecycle
-    # ------------------------------------------------------------------
 
     def on_workflow_start(self, workflow_name: str) -> None:
         if self._tracing:
@@ -71,9 +69,7 @@ class WorkflowObserver:
                 span.end()
             self._workflow_span = None
 
-    # ------------------------------------------------------------------
     # Step lifecycle
-    # ------------------------------------------------------------------
 
     def on_step_start(self, step_id: str, step_type: str, stream: bool = False) -> None:
         if self._tracing:
@@ -126,9 +122,7 @@ class WorkflowObserver:
             else:
                 span.end()
 
-    # ------------------------------------------------------------------
     # Provider-level events (called from gateway if observer is attached)
-    # ------------------------------------------------------------------
 
     def on_provider_call(
         self, provider: str, model: str, latency_s: float, stream: bool = False
@@ -155,9 +149,7 @@ class WorkflowObserver:
         if self._metrics:
             self._metrics.record_tokens(provider, model, prompt_tokens, completion_tokens)
 
-    # ------------------------------------------------------------------
     # Circuit breaker events (called from gateway via callback)
-    # ------------------------------------------------------------------
 
     def on_circuit_state_change(self, provider: str, old_state: str, new_state: str) -> None:
         state_map = {"closed": 0, "open": 1, "half_open": 2}
@@ -171,9 +163,13 @@ class WorkflowObserver:
         if self._metrics:
             self._metrics.set_circuit_state(provider, state_int)
 
-    # ------------------------------------------------------------------
+    # Budget events
+
+    def on_budget_remaining(self, workflow: str, remaining: float) -> None:
+        if self._metrics:
+            self._metrics.set_budget_remaining(workflow, remaining)
+
     # Shutdown
-    # ------------------------------------------------------------------
 
     def shutdown(self) -> None:
         if self._metrics:

@@ -301,6 +301,13 @@ class WorkflowEngine:
                     # Cooperative concurrency makes this safe in practice (no preemption
                     # between read and write), but a proper BudgetEnforcer refactor is planned.
                     self._budget_spent += result.cost_usd
+                    if self.observer and self.workflow.config.budget_usd is not None:
+                        hook = getattr(self.observer, "on_budget_remaining", None)
+                        if hook:
+                            hook(
+                                self.workflow.name,
+                                max(0.0, self.workflow.config.budget_usd - self._budget_spent),
+                            )
                     if (
                         self.workflow.config.budget_usd is not None
                         and self._budget_spent > self.workflow.config.budget_usd

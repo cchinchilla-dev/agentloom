@@ -339,6 +339,25 @@ class TestBudgetEnforcement:
         result = await engine.run()
         assert result.status in (WorkflowStatus.FAILED, WorkflowStatus.BUDGET_EXCEEDED)
 
+    async def test_budget_remaining_emitted_to_observer(self) -> None:
+        provider = MockProvider()  # costs 0.001 per call
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        wf = WorkflowDefinition(
+            name="budget-obs",
+            config=WorkflowConfig(provider="mock", model="mock-model", budget_usd=1.0),
+            steps=[
+                StepDefinition(id="a", type=StepType.LLM_CALL, prompt="a", output="oa"),
+            ],
+        )
+        observer = MagicMock()
+        engine = WorkflowEngine(workflow=wf, provider_gateway=gw, observer=observer)
+        await engine.run()
+        observer.on_budget_remaining.assert_called_once()
+        remaining = observer.on_budget_remaining.call_args[0][1]
+        assert remaining >= 0.0
+
     async def test_within_budget_completes(self) -> None:
         provider = MockProvider()  # costs 0.001 per call
         gw = ProviderGateway()

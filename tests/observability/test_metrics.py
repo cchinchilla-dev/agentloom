@@ -74,7 +74,7 @@ class TestMetricsEnabled:
     def test_set_budget_remaining(self) -> None:
         mm = MetricsManager(enabled=True)
         mm.set_budget_remaining("wf", 0.42)
-        # No error regardless of backend
+        assert mm._budget_remaining["wf"] == 0.42
         if mm._backend == "otel":
             mm.shutdown()
 

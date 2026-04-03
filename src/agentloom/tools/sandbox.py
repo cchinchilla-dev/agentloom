@@ -65,9 +65,7 @@ class ToolSandbox:
         self._allowed_domains = {d.lower() for d in (allowed_domains or [])}
         self._max_write_bytes = max_write_bytes
 
-    # ------------------------------------------------------------------
     # Internal helpers
-    # ------------------------------------------------------------------
 
     def _paths_for_read(self) -> list[Path]:
         return self._allowed_paths + self._readable_paths
@@ -89,9 +87,7 @@ class ToolSandbox:
                 continue
         return False
 
-    # ------------------------------------------------------------------
     # Public validation API
-    # ------------------------------------------------------------------
 
     def validate_command(self, command: str) -> None:
         """Validate a shell command against the allowlist.

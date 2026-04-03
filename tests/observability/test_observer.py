@@ -102,6 +102,18 @@ class TestCircuitBreakerEvents:
         metrics.set_circuit_state.assert_called_with("p", 2)
 
 
+class TestBudgetEvents:
+    def test_on_budget_remaining(self) -> None:
+        metrics = MagicMock()
+        observer = WorkflowObserver(metrics=metrics)
+        observer.on_budget_remaining("wf", 0.75)
+        metrics.set_budget_remaining.assert_called_once_with("wf", 0.75)
+
+    def test_on_budget_remaining_no_metrics(self) -> None:
+        observer = WorkflowObserver()
+        observer.on_budget_remaining("wf", 0.5)  # no error
+
+
 class TestShutdown:
     def test_shutdown_calls_both(self) -> None:
         tracing = MagicMock()
