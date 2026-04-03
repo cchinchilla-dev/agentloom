@@ -62,6 +62,7 @@ class MetricsManager:
         self._stream_counter: Any = None
         self._ttft_histogram: Any = None
         self._circuit_states: dict[str, int] = {}  # provider -> state int
+        self._budget_remaining: dict[str, float] = {}  # workflow -> remaining USD
 
         # prometheus_client instruments (fallback)
         self._prom_counters: dict[str, Any] = {}
@@ -76,9 +77,7 @@ class MetricsManager:
         elif _HAS_PROM:
             self._setup_prom()
 
-    # ------------------------------------------------------------------
     # Setup
-    # ------------------------------------------------------------------
 
     def _setup_otel(self, endpoint: str) -> None:
         exporter = otel_metric_exporter.OTLPMetricExporter(endpoint=endpoint, insecure=True)
@@ -156,6 +155,20 @@ class MetricsManager:
             description="Circuit breaker state (0=closed, 1=open, 2=half_open)",
         )
 
+        # Budget remaining gauge (callback-based, reads from _budget_remaining)
+        budget = self._budget_remaining
+
+        def _cb_budget(options: Any) -> Any:  # noqa: ANN401
+            Observation = otel_api_metrics.Observation
+            for wf, val in budget.items():
+                yield Observation(val, {"workflow": wf})
+
+        meter.create_observable_gauge(
+            "agentloom_budget_remaining_usd",
+            callbacks=[_cb_budget],
+            description="Remaining budget in USD",
+        )
+
         self._backend = "otel"
         logger.debug("Metrics: OTLP push → %s", endpoint)
 
@@ -226,9 +239,7 @@ class MetricsManager:
         self._backend = "prom"
         logger.debug("Metrics: prometheus_client (pull)")
 
-    # ------------------------------------------------------------------
     # Recording
-    # ------------------------------------------------------------------
 
     def record_workflow_run(
         self, workflow: str, status: str, duration_s: float = 0.0, cost_usd: float = 0.0
@@ -344,8 +355,10 @@ class MetricsManager:
             self._prom_histograms["ttft"].labels(provider=provider, model=model).observe(ttft_s)
 
     def set_budget_remaining(self, workflow: str, remaining: float) -> None:
-        # NOTE: only Prometheus backend — OTel gauge for budget not yet implemented
-        if self._enabled and self._backend == "prom":
+        if not self._enabled:
+            return
+        self._budget_remaining[workflow] = remaining
+        if self._backend == "prom":
             self._prom_gauges["budget_remaining"].labels(workflow=workflow).set(remaining)
 
     def set_circuit_state(self, provider: str, state: int) -> None:
@@ -357,9 +370,7 @@ class MetricsManager:
         if self._backend == "prom":
             self._prom_gauges["circuit_state"].labels(provider=provider).set(state)
 
-    # ------------------------------------------------------------------
     # Lifecycle
-    # ------------------------------------------------------------------
 
     def shutdown(self) -> None:
         """Flush pending metrics before process exit."""
