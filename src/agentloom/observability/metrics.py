@@ -146,7 +146,7 @@ class MetricsManager:
 
         def _cb_circuit(options: Any) -> Any:  # noqa: ANN401
             Observation = otel_api_metrics.Observation
-            for prov, val in states.items():
+            for prov, val in list(states.items()):
                 yield Observation(val, {"provider": prov})
 
         meter.create_observable_gauge(
@@ -158,9 +158,9 @@ class MetricsManager:
         # Budget remaining gauge (callback-based, reads from _budget_remaining)
         budget = self._budget_remaining
 
-        def _cb_budget(options: Any) -> Any:  # noqa: ANN401
+        def _cb_budget(options: Any) -> Any:  # noqa: ANN401  # pragma: no cover
             Observation = otel_api_metrics.Observation
-            for wf, val in budget.items():
+            for wf, val in list(budget.items()):
                 yield Observation(val, {"workflow": wf})
 
         meter.create_observable_gauge(

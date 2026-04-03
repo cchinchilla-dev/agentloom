@@ -306,7 +306,7 @@ class WorkflowEngine:
                         if hook:
                             hook(
                                 self.workflow.name,
-                                self.workflow.config.budget_usd - self._budget_spent,
+                                max(0.0, self.workflow.config.budget_usd - self._budget_spent),
                             )
                     if (
                         self.workflow.config.budget_usd is not None
