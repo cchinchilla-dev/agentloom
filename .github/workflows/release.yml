@@ -26,15 +26,18 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
+          # workflow_run: check out the exact commit from the triggering run
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
           fetch-depth: 0
 
       - name: Determine tag
         id: tag
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # push: tag ref is available directly
             echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           else
-            # workflow_run: tag points at HEAD (just created by auto-tag)
+            # workflow_run: tag points at HEAD (the auto-tag commit)
             # workflow_dispatch: HEAD may be ahead, fall back to nearest tag
             TAG=$(git tag --points-at HEAD 'v*' | head -1)
             if [[ -z "${TAG}" ]]; then
