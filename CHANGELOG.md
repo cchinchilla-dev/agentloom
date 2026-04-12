@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Workflow pause mechanism — foundation for human-in-the-loop (#40)
+  - `PauseRequestedError` exception for step executors to signal a pause
+  - `StepStatus.PAUSED` and `WorkflowStatus.PAUSED` status values
+  - Engine catches pause requests, saves checkpoint with `status=paused` and `paused_step_id`, and returns cleanly
+  - Resume from paused checkpoint skips completed steps and re-runs the paused step
+  - CLI treats paused workflows as non-error (exit code 0)
+  - Functional validation script (`scripts/validate_pause_resume.py`) and K8s smoke job
 - Pluggable checkpoint backends with `BaseCheckpointer` protocol and `FileCheckpointer` default (JSON-to-disk) (#78)
   - `CheckpointData` Pydantic model with full workflow state serialization
   - Engine integration: auto-generates `run_id`, saves checkpoint on completion/failure, graceful handling of I/O errors
