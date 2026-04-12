@@ -42,17 +42,22 @@ def _write_checkpoint(
     *,
     status: str = "failed",
     completed_steps: list[str] | None = None,
+    paused_step_id: str | None = None,
+    workflow: WorkflowDefinition | None = None,
+    state: dict | None = None,
+    step_results: dict | None = None,
 ) -> None:
     """Write a checkpoint file for testing."""
-    wf = _make_workflow()
+    wf = workflow or _make_workflow()
     data = CheckpointData(
         workflow_name=wf.name,
         run_id=run_id,
         workflow_definition=wf.model_dump(),
-        state={"input": "hello"},
-        step_results={},
+        state=state or {"input": "hello"},
+        step_results=step_results or {},
         completed_steps=completed_steps or [],
         status=status,
+        paused_step_id=paused_step_id,
         created_at="2026-04-12T18:00:00+00:00",
         updated_at="2026-04-12T18:00:01+00:00",
     )
@@ -224,3 +229,149 @@ class TestResumeCommand:
                 )
 
         assert result.exit_code != 0
+
+
+def _approval_workflow() -> WorkflowDefinition:
+    """Workflow with an approval gate."""
+    return WorkflowDefinition(
+        name="approval-cli-test",
+        config=WorkflowConfig(provider="mock", model="mock-model"),
+        state={"input": "hello"},
+        steps=[
+            StepDefinition(
+                id="draft",
+                type=StepType.LLM_CALL,
+                prompt="Draft: {state.input}",
+                output="draft_text",
+            ),
+            StepDefinition(
+                id="approve",
+                type=StepType.APPROVAL_GATE,
+                depends_on=["draft"],
+                output="decision",
+            ),
+            StepDefinition(
+                id="send",
+                type=StepType.LLM_CALL,
+                depends_on=["approve"],
+                prompt="Send: {state.draft_text}",
+                output="result",
+            ),
+        ],
+    )
+
+
+class TestResumeApproval:
+    def test_resume_approve_flag(self, tmp_path: Path) -> None:
+        wf = _approval_workflow()
+        _write_checkpoint(
+            tmp_path,
+            "approve-ok",
+            status="paused",
+            paused_step_id="approve",
+            workflow=wf,
+            completed_steps=["draft"],
+            state={"input": "hello", "draft_text": "Mock response"},
+            step_results={
+                "draft": {
+                    "step_id": "draft",
+                    "status": "success",
+                    "output": "Mock response",
+                    "duration_ms": 10.0,
+                },
+            },
+        )
+
+        with patch("agentloom.cli.run._setup_providers") as mock_setup:
+            from tests.conftest import MockProvider
+
+            def _wire(gw: object, default: str) -> None:
+                from agentloom.providers.gateway import ProviderGateway
+
+                assert isinstance(gw, ProviderGateway)
+                gw.register(MockProvider(), priority=0)
+
+            mock_setup.side_effect = _wire
+
+            with patch("agentloom.cli.run._setup_observer", return_value=None):
+                result = runner.invoke(
+                    app,
+                    [
+                        "resume",
+                        "approve-ok",
+                        "--checkpoint-dir",
+                        str(tmp_path),
+                        "--lite",
+                        "--approve",
+                    ],
+                )
+
+        assert result.exit_code == 0, f"stdout: {result.output}"
+        assert "decision=approved" in result.output
+
+    def test_resume_reject_flag(self, tmp_path: Path) -> None:
+        wf = _approval_workflow()
+        _write_checkpoint(
+            tmp_path,
+            "reject-ok",
+            status="paused",
+            paused_step_id="approve",
+            workflow=wf,
+            completed_steps=["draft"],
+            state={"input": "hello", "draft_text": "Mock response"},
+            step_results={
+                "draft": {
+                    "step_id": "draft",
+                    "status": "success",
+                    "output": "Mock response",
+                    "duration_ms": 10.0,
+                },
+            },
+        )
+
+        with patch("agentloom.cli.run._setup_providers") as mock_setup:
+            from tests.conftest import MockProvider
+
+            def _wire(gw: object, default: str) -> None:
+                from agentloom.providers.gateway import ProviderGateway
+
+                assert isinstance(gw, ProviderGateway)
+                gw.register(MockProvider(), priority=0)
+
+            mock_setup.side_effect = _wire
+
+            with patch("agentloom.cli.run._setup_observer", return_value=None):
+                result = runner.invoke(
+                    app,
+                    [
+                        "resume",
+                        "reject-ok",
+                        "--checkpoint-dir",
+                        str(tmp_path),
+                        "--lite",
+                        "--reject",
+                    ],
+                )
+
+        assert result.exit_code == 0, f"stdout: {result.output}"
+        assert "decision=rejected" in result.output
+
+    def test_approve_reject_mutual_exclusion(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "both-flags", status="paused", paused_step_id="gate")
+
+        result = runner.invoke(
+            app,
+            [
+                "resume",
+                "both-flags",
+                "--checkpoint-dir",
+                str(tmp_path),
+                "--approve",
+                "--reject",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "Cannot use --approve and --reject together" in (
+            result.output + (result.stderr or "")
+        )
