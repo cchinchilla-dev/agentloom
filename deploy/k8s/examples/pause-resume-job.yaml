@@ -7,7 +7,6 @@ data:
   validate_pause_resume.py: |
     """Functional validation of pause/resume in Kubernetes."""
 
-    import asyncio
     import json
     import sys
     import tempfile
@@ -101,7 +100,8 @@ data:
 
         print("\nAll K8s pause/resume validations passed!")
 
-    asyncio.run(main())
+    import anyio
+    anyio.run(main)
 ---
 apiVersion: batch/v1
 kind: Job

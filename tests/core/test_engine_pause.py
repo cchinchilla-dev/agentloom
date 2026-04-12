@@ -21,6 +21,7 @@ from agentloom.steps.base import BaseStep, StepContext
 from agentloom.steps.registry import StepRegistry, create_default_registry
 from tests.conftest import MockProvider
 
+
 def _mock_gateway(provider: MockProvider | None = None) -> ProviderGateway:
     gw = ProviderGateway()
     gw.register(provider or MockProvider(), priority=0)

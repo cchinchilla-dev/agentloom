@@ -15,7 +15,6 @@ Or inside Docker:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 import tempfile
@@ -36,7 +35,6 @@ from agentloom.providers.gateway import ProviderGateway
 from agentloom.steps.base import BaseStep, StepContext
 from agentloom.steps.registry import StepRegistry, create_default_registry
 
-
 # --- Helpers ----------------------------------------------------------------
 
 
@@ -46,9 +44,7 @@ class FakeProvider(BaseProvider):
     name = "fake"
 
     async def complete(self, messages, model, **kwargs):  # noqa: ANN001,ANN003
-        return ProviderResponse(
-            content="fake-output", model=model, provider="fake"
-        )
+        return ProviderResponse(content="fake-output", model=model, provider="fake")
 
     async def stream(self, *a, **kw):  # noqa: ANN002,ANN003
         raise NotImplementedError
@@ -228,4 +224,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import anyio
+
+    anyio.run(main)
