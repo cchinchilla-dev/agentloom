@@ -34,9 +34,14 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           else
+            # workflow_run: tag points at HEAD (just created by auto-tag)
+            # workflow_dispatch: HEAD may be ahead, fall back to nearest tag
             TAG=$(git tag --points-at HEAD 'v*' | head -1)
             if [[ -z "${TAG}" ]]; then
-              echo "::error::No version tag found pointing at HEAD"
+              TAG=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo "")
+            fi
+            if [[ -z "${TAG}" ]]; then
+              echo "::error::No version tag found"
               exit 1
             fi
             echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
