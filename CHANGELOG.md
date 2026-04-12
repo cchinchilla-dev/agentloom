@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Pluggable checkpoint backends with `BaseCheckpointer` protocol and `FileCheckpointer` default (JSON-to-disk) (#78)
+  - `CheckpointData` Pydantic model with full workflow state serialization
+  - Engine integration: auto-generates `run_id`, saves checkpoint on completion/failure, graceful handling of I/O errors
+  - `WorkflowEngine.from_checkpoint()` classmethod to reconstruct and resume from a checkpoint, skipping completed steps
+  - `agentloom run --checkpoint` and `--checkpoint-dir` flags
+  - `agentloom resume <run_id>` CLI command to resume paused or failed workflows
+  - `agentloom runs` CLI command to list all checkpointed runs
+  - Example workflow (28) and documentation
+
 ## [0.3.0] - 2026-04-12
 
 ### Added

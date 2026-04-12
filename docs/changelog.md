@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **Pluggable checkpoint backends** with `BaseCheckpointer` protocol and `FileCheckpointer` default (#78)
+    - `CheckpointData` model with full workflow state serialization
+    - Engine integration: auto `run_id`, checkpoint on completion/failure, graceful I/O error handling
+    - `WorkflowEngine.from_checkpoint()` to reconstruct and resume, skipping completed steps
+    - `agentloom run --checkpoint` and `--checkpoint-dir` flags
+    - `agentloom resume <run_id>` and `agentloom runs` CLI commands
+    - Example workflow (28) and documentation
+
 ## [0.3.0] — 2026-04-12
 
 ### Added
