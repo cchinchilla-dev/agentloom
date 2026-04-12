@@ -1,0 +1,39 @@
+name: approval-gate-demo
+description: >
+  Demonstrates the approval_gate step type.  The workflow drafts an email,
+  pauses for human approval, then formats the final version.
+
+  Usage:
+    agentloom run examples/29_approval_gate.yaml --checkpoint -s topic="project update"
+    agentloom runs                          # shows status: paused
+    agentloom resume <run_id> --approve     # or --reject
+    agentloom runs                          # shows status: success
+
+config:
+  provider: openai
+  model: gpt-4o-mini
+
+state:
+  topic: quarterly results
+
+steps:
+  - id: draft
+    type: llm_call
+    prompt: "Draft a short professional email about: {state.topic}"
+    output: draft_text
+
+  - id: approve
+    type: approval_gate
+    depends_on: [draft]
+    timeout_seconds: 3600
+    on_timeout: reject
+    output: decision
+
+  - id: finalise
+    type: llm_call
+    depends_on: [approve]
+    prompt: >
+      The reviewer's decision was: {state.decision}.
+      Original draft: {state.draft_text}
+      If approved, polish the draft. If rejected, explain that the email was discarded.
+    output: result
