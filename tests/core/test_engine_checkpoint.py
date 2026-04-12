@@ -9,6 +9,7 @@ from agentloom.checkpointing.base import BaseCheckpointer, CheckpointData
 from agentloom.checkpointing.file import FileCheckpointer
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import (
+    Condition,
     StepDefinition,
     StepType,
     WorkflowConfig,
@@ -283,3 +284,101 @@ class TestCheckpointErrorHandling:
 
         loaded = await checkpointer.load(engine.run_id)
         assert loaded.status == "failed"
+
+
+class TestResumeWithRouter:
+    """Test that resuming a workflow with routers restores branch activation."""
+
+    async def test_resume_restores_router_activation(self, tmp_path: Path) -> None:
+        """When a completed router is skipped on resume, its target must still activate."""
+        workflow = WorkflowDefinition(
+            name="router-resume",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={"input": "test", "classification": "billing"},
+            steps=[
+                StepDefinition(
+                    id="classify",
+                    type=StepType.LLM_CALL,
+                    prompt="Classify: {state.input}",
+                    output="classification",
+                ),
+                StepDefinition(
+                    id="route",
+                    type=StepType.ROUTER,
+                    depends_on=["classify"],
+                    conditions=[
+                        Condition(expression="state.classification == 'billing'", target="billing"),
+                    ],
+                    default="general",
+                ),
+                StepDefinition(
+                    id="billing",
+                    type=StepType.LLM_CALL,
+                    depends_on=["route"],
+                    prompt="Handle billing: {state.input}",
+                    output="response",
+                ),
+                StepDefinition(
+                    id="general",
+                    type=StepType.LLM_CALL,
+                    depends_on=["route"],
+                    prompt="Handle general: {state.input}",
+                    output="response",
+                ),
+            ],
+        )
+
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+
+        # Build a checkpoint where classify + route are done, billing/general pending.
+        # The router chose "billing".
+        checkpoint_data = CheckpointData(
+            workflow_name="router-resume",
+            run_id="router-run",
+            workflow_definition=workflow.model_dump(),
+            state={
+                "input": "test",
+                "classification": "billing",
+                "steps": {
+                    "classify": {"output": "billing", "status": "success"},
+                    "route": {"output": "billing", "status": "success"},
+                },
+            },
+            step_results={
+                "classify": {
+                    "step_id": "classify",
+                    "status": "success",
+                    "output": "billing",
+                    "duration_ms": 5.0,
+                },
+                "route": {
+                    "step_id": "route",
+                    "status": "success",
+                    "output": "billing",
+                    "duration_ms": 1.0,
+                },
+            },
+            completed_steps=["classify", "route"],
+            status="failed",
+            created_at="2026-04-12T10:00:00+00:00",
+            updated_at="2026-04-12T10:00:01+00:00",
+        )
+        await checkpointer.save(checkpoint_data)
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, priority=0)
+
+        resumed = await WorkflowEngine.from_checkpoint(
+            checkpoint_data=checkpoint_data,
+            checkpointer=checkpointer,
+            provider_gateway=gw,
+        )
+        result = await resumed.run()
+
+        assert result.status == WorkflowStatus.SUCCESS
+        # Only billing should have run, general should be skipped
+        assert result.step_results["billing"].status == StepStatus.SUCCESS
+        assert result.step_results["general"].status == StepStatus.SKIPPED
+        # Provider called once (for billing only)
+        assert len(provider.calls) == 1
