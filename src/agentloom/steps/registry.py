@@ -22,6 +22,7 @@ class StepRegistry:
 
 def create_default_registry() -> StepRegistry:
     """Create a registry with all built-in step types."""
+    from agentloom.steps.approval_gate import ApprovalGateStep
     from agentloom.steps.llm_call import LLMCallStep
     from agentloom.steps.router import RouterStep
     from agentloom.steps.subworkflow import SubworkflowStep
@@ -32,4 +33,5 @@ def create_default_registry() -> StepRegistry:
     registry.register(StepType.ROUTER, RouterStep)
     registry.register(StepType.TOOL, ToolStep)
     registry.register(StepType.SUBWORKFLOW, SubworkflowStep)
+    registry.register(StepType.APPROVAL_GATE, ApprovalGateStep)
     return registry

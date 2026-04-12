@@ -15,6 +15,7 @@ class StepType(StrEnum):
     TOOL = "tool"
     ROUTER = "router"
     SUBWORKFLOW = "subworkflow"
+    APPROVAL_GATE = "approval_gate"
 
 
 class Attachment(BaseModel):
@@ -76,6 +77,10 @@ class StepDefinition(BaseModel):
     # Subworkflow fields
     workflow_path: str | None = None
     workflow_inline: dict[str, Any] | None = None
+
+    # Approval gate fields
+    timeout_seconds: int | None = None
+    on_timeout: Literal["approve", "reject"] | None = None
 
     # Multimodal attachments (images, etc.)
     attachments: list[Attachment] = Field(default_factory=list)
