@@ -13,7 +13,7 @@ from agentloom.checkpointing.file import FileCheckpointer
 def _make_checkpoint(
     run_id: str = "abc123",
     workflow_name: str = "test-workflow",
-    status: str = "completed",
+    status: str = "success",
 ) -> CheckpointData:
     return CheckpointData(
         workflow_name=workflow_name,
@@ -70,9 +70,9 @@ class TestFileCheckpointerSaveLoad:
     async def test_save_overwrites_existing(self, tmp_path: Path) -> None:
         cp = FileCheckpointer(checkpoint_dir=tmp_path)
         await cp.save(_make_checkpoint(status="running"))
-        await cp.save(_make_checkpoint(status="completed"))
+        await cp.save(_make_checkpoint(status="success"))
         loaded = await cp.load("abc123")
-        assert loaded.status == "completed"
+        assert loaded.status == "success"
 
 
 class TestFileCheckpointerListRuns:
@@ -109,3 +109,46 @@ class TestFileCheckpointerDelete:
         cp = FileCheckpointer(checkpoint_dir=tmp_path)
         with pytest.raises(KeyError, match="No checkpoint found"):
             await cp.delete("nonexistent")
+
+
+class TestFileCheckpointerSecurity:
+    """Tests for directory traversal and input validation."""
+
+    async def test_load_rejects_path_traversal(self, tmp_path: Path) -> None:
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        with pytest.raises(ValueError, match="Invalid run_id"):
+            await cp.load("../../etc/passwd")
+
+    async def test_delete_rejects_path_traversal(self, tmp_path: Path) -> None:
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        with pytest.raises(ValueError, match="Invalid run_id"):
+            await cp.delete("../secret")
+
+    async def test_load_rejects_empty_run_id(self, tmp_path: Path) -> None:
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        with pytest.raises(ValueError, match="Invalid run_id"):
+            await cp.load("")
+
+    async def test_load_rejects_slash_in_run_id(self, tmp_path: Path) -> None:
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        with pytest.raises(ValueError, match="Invalid run_id"):
+            await cp.load("foo/bar")
+
+
+class TestFileCheckpointerCorruption:
+    """Tests for corrupted checkpoint handling."""
+
+    async def test_load_corrupted_file_raises_value_error(self, tmp_path: Path) -> None:
+        (tmp_path / "bad.json").write_text("not valid json {{{")
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        with pytest.raises(ValueError, match="unreadable or corrupted"):
+            await cp.load("bad")
+
+    async def test_list_runs_skips_corrupted_files(self, tmp_path: Path) -> None:
+        # Write one valid and one corrupted checkpoint
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        await cp.save(_make_checkpoint(run_id="good"))
+        (tmp_path / "corrupt.json").write_text("broken json")
+        entries = await cp.list_runs()
+        assert len(entries) == 1
+        assert entries[0].run_id == "good"

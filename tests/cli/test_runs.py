@@ -21,7 +21,7 @@ def _write_checkpoint(cp_dir: Path, run_id: str, workflow_name: str = "wf") -> N
         workflow_definition={"name": workflow_name, "steps": []},
         state={},
         completed_steps=[],
-        status="completed",
+        status="success",
         created_at="2026-04-12T10:00:00+00:00",
         updated_at="2026-04-12T10:00:01+00:00",
     )

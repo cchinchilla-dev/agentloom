@@ -80,7 +80,7 @@ On `agentloom resume <run_id>`:
 3. Skips already-completed steps and continues from where it left off.
 
 Checkpoint files are stored as JSON in `.agentloom/checkpoints/` by default
-(configurable via `--checkpoint-dir` or the `AGENTLOOM_CHECKPOINT_DIR` env var).
+(configurable via `--checkpoint-dir`).
 
 ## State
 

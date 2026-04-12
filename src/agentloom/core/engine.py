@@ -84,13 +84,20 @@ class WorkflowEngine:
         step_results = await self.state.all_step_results()
         state_snapshot = await self.state.get_state_snapshot()
 
+        # Derive completed_steps from step_results so mid-layer aborts are captured
+        completed_steps = sorted(
+            step_id
+            for step_id, result in step_results.items()
+            if result.status == StepStatus.SUCCESS
+        )
+
         data = CheckpointData(
             workflow_name=self.workflow.name,
             run_id=self.run_id,
             workflow_definition=self.workflow.model_dump(),
             state=state_snapshot,
             step_results={k: v.model_dump() for k, v in step_results.items()},
-            completed_steps=sorted(self._completed_steps),
+            completed_steps=completed_steps,
             status=status,
             paused_step_id=paused_step_id,
             created_at=self._checkpoint_created_at,
@@ -125,12 +132,12 @@ class WorkflowEngine:
         """
         workflow = WorkflowDefinition.model_validate(checkpoint_data.workflow_definition)
 
-        # Restore state manager with completed step results
+        # Restore state manager with completed step results via the public API
+        # so internal state, snapshots, and locking remain consistent.
         state_manager = StateManager(initial_state=checkpoint_data.state)
         for step_id, result_data in checkpoint_data.step_results.items():
             result = StepResult.model_validate(result_data)
-            state_manager._step_results[step_id] = result
-            state_manager._step_status[step_id] = result.status
+            await state_manager.set_step_result(step_id, result)
 
         engine = cls(
             workflow=workflow,
@@ -186,6 +193,18 @@ class WorkflowEngine:
                     # Skip steps already completed in a previous run (resume)
                     if step_id in self._completed_steps:
                         logger.debug("Skipping already-completed step: %s", step_id)
+                        # If this was a router, restore its activation so
+                        # downstream branch filtering works correctly.
+                        step_def = self.workflow.get_step(step_id)
+                        if step_def and step_def.type == StepType.ROUTER:
+                            step_res = await self.state.get_step_result(step_id)
+                            if (
+                                step_res
+                                and step_res.status == StepStatus.SUCCESS
+                                and step_res.output
+                            ):
+                                activated_targets = activated_targets or set()
+                                activated_targets.add(step_res.output)
                         continue
 
                     if step_id in skipped_steps:

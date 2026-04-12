@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from agentloom.checkpointing.base import BaseCheckpointer, CheckpointData
@@ -50,11 +51,8 @@ def _mock_gateway() -> ProviderGateway:
 class TestEngineCheckpoint:
     """Test that the engine saves checkpoints when a checkpointer is provided."""
 
-    async def test_checkpoint_saved_on_success(self, tmp_path: object) -> None:
-        from pathlib import Path
-
-        cp_dir = Path(str(tmp_path))
-        checkpointer = FileCheckpointer(checkpoint_dir=cp_dir)
+    async def test_checkpoint_saved_on_success(self, tmp_path: Path) -> None:
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
         workflow = _two_step_workflow()
 
         engine = WorkflowEngine(
@@ -74,11 +72,8 @@ class TestEngineCheckpoint:
         assert "step_b" in loaded.completed_steps
         assert loaded.workflow_name == "checkpoint-test"
 
-    async def test_checkpoint_preserves_state(self, tmp_path: object) -> None:
-        from pathlib import Path
-
-        cp_dir = Path(str(tmp_path))
-        checkpointer = FileCheckpointer(checkpoint_dir=cp_dir)
+    async def test_checkpoint_preserves_state(self, tmp_path: Path) -> None:
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
         workflow = _two_step_workflow()
 
         engine = WorkflowEngine(
@@ -93,10 +88,7 @@ class TestEngineCheckpoint:
         assert "result_a" in loaded.state
         assert "result_b" in loaded.state
 
-    async def test_no_checkpoint_without_checkpointer(self, tmp_path: object) -> None:
-        from pathlib import Path
-
-        cp_dir = Path(str(tmp_path))
+    async def test_no_checkpoint_without_checkpointer(self, tmp_path: Path) -> None:
         workflow = _two_step_workflow()
 
         engine = WorkflowEngine(
@@ -107,15 +99,12 @@ class TestEngineCheckpoint:
         assert result.status == WorkflowStatus.SUCCESS
 
         # No files should be created
-        checkpointer = FileCheckpointer(checkpoint_dir=cp_dir)
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
         runs = await checkpointer.list_runs()
         assert runs == []
 
-    async def test_custom_run_id(self, tmp_path: object) -> None:
-        from pathlib import Path
-
-        cp_dir = Path(str(tmp_path))
-        checkpointer = FileCheckpointer(checkpoint_dir=cp_dir)
+    async def test_custom_run_id(self, tmp_path: Path) -> None:
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
 
         engine = WorkflowEngine(
             workflow=_two_step_workflow(),
@@ -132,11 +121,8 @@ class TestEngineCheckpoint:
 class TestEngineResumeFromCheckpoint:
     """Test that from_checkpoint reconstructs the engine and skips completed steps."""
 
-    async def test_resume_skips_completed_steps(self, tmp_path: object) -> None:
-        from pathlib import Path
-
-        cp_dir = Path(str(tmp_path))
-        checkpointer = FileCheckpointer(checkpoint_dir=cp_dir)
+    async def test_resume_skips_completed_steps(self, tmp_path: Path) -> None:
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
 
         # Run first, then checkpoint
         engine = WorkflowEngine(
@@ -166,12 +152,9 @@ class TestEngineResumeFromCheckpoint:
         # Provider should NOT have been called — all steps were already done
         assert len(provider.calls) == 0
 
-    async def test_resume_continues_from_midpoint(self, tmp_path: object) -> None:
+    async def test_resume_continues_from_midpoint(self, tmp_path: Path) -> None:
         """Simulate resuming when only step_a was completed."""
-        from pathlib import Path
-
-        cp_dir = Path(str(tmp_path))
-        checkpointer = FileCheckpointer(checkpoint_dir=cp_dir)
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
         workflow = _two_step_workflow()
 
         # Manually create a checkpoint where only step_a is done
@@ -222,7 +205,7 @@ class TestEngineResumeFromCheckpoint:
 class TestCheckpointErrorHandling:
     """Test that checkpoint save failures are handled gracefully."""
 
-    async def test_save_checkpoint_io_error_is_swallowed(self, tmp_path: object) -> None:
+    async def test_save_checkpoint_io_error_is_swallowed(self, tmp_path: Path) -> None:
         """Engine should continue even if checkpoint save raises an I/O error."""
 
         class FailingCheckpointer(BaseCheckpointer):
@@ -247,16 +230,11 @@ class TestCheckpointErrorHandling:
         # Should still succeed even though checkpoint save failed
         assert result.status == WorkflowStatus.SUCCESS
 
-    async def test_checkpoint_saved_on_budget_exceeded(self, tmp_path: object) -> None:
+    async def test_checkpoint_saved_on_budget_exceeded(self, tmp_path: Path) -> None:
         """Engine should save checkpoint when budget is exceeded."""
-        from pathlib import Path
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
 
-        cp_dir = Path(str(tmp_path))
-        checkpointer = FileCheckpointer(checkpoint_dir=cp_dir)
-
-        # Use two steps so that the first one exhausts the budget and the
-        # second one (in a new layer) triggers the BudgetExceededError check
-        # before entering the task group.  MockProvider costs $0.001 per call.
+        # MockProvider costs $0.001 per call — budget is $0.0001 so it overruns.
         workflow = WorkflowDefinition(
             name="budget-test",
             config=WorkflowConfig(provider="mock", model="mock-model", budget_usd=0.0001),
@@ -284,12 +262,9 @@ class TestCheckpointErrorHandling:
         loaded = await checkpointer.load(engine.run_id)
         assert loaded.status in ("budget_exceeded", "failed")
 
-    async def test_checkpoint_saved_on_failure(self, tmp_path: object) -> None:
+    async def test_checkpoint_saved_on_failure(self, tmp_path: Path) -> None:
         """Engine should save checkpoint with 'failed' status on exception."""
-        from pathlib import Path
-
-        cp_dir = Path(str(tmp_path))
-        checkpointer = FileCheckpointer(checkpoint_dir=cp_dir)
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
 
         class ErrorProvider(MockProvider):
             async def complete(self, *args: Any, **kwargs: Any) -> Any:

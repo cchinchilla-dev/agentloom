@@ -74,12 +74,6 @@ async def _resume_async(
     _setup_providers(gateway, engine.workflow.config.provider)
     engine.provider_gateway = gateway
 
-    # Wire observer
-    if gateway:
-        set_obs = getattr(gateway, "set_observer", None)
-        if set_obs and engine.observer:
-            set_obs(engine.observer)
-
     # Setup tools
     sandbox_cfg = engine.workflow.config.sandbox
     sandbox = ToolSandbox(
