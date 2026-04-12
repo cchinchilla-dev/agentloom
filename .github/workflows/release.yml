@@ -3,18 +3,51 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_run:
+    workflows: ["Auto Tag"]
+    types: [completed]
 
 permissions:
   contents: write
   id-token: write
 
 jobs:
+  resolve-tag:
+    name: Resolve tag
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push'
+      || (github.event_name == 'workflow_run'
+          && github.event.workflow_run.conclusion == 'success')
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            if [[ -z "${TAG}" || "${TAG}" != v* ]]; then
+              echo "No version tag found, skipping"
+              exit 1
+            fi
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build
+    needs: resolve-tag
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
           fetch-depth: 0
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8
         with:
@@ -27,7 +60,7 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: build
+    needs: [resolve-tag, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
@@ -41,12 +74,13 @@ jobs:
 
       - uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe  # v2
         with:
+          tag_name: ${{ needs.resolve-tag.outputs.tag }}
           generate_release_notes: true
           files: dist/*
 
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: [resolve-tag, build]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
