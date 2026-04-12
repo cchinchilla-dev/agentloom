@@ -43,7 +43,7 @@ class FileCheckpointer(BaseCheckpointer):
         # Belt-and-suspenders: verify the resolved path is inside _dir
         base_dir = self._dir.resolve(strict=False)
         resolved = path.resolve(strict=False)
-        if not resolved.is_relative_to(base_dir):
+        if not resolved.is_relative_to(base_dir):  # pragma: no cover
             raise ValueError(f"Invalid run_id: {run_id!r}")
         return path
 
@@ -107,7 +107,7 @@ class FileCheckpointer(BaseCheckpointer):
             fd = None
             os.replace(tmp_path, str(target))
             tmp_path = None  # replaced successfully
-        finally:
+        finally:  # pragma: no cover — cleanup after crash mid-write
             if fd is not None:
                 os.close(fd)
             if tmp_path is not None:

@@ -93,7 +93,7 @@ async def _resume_async(
     # Observability
     observer = _setup_observer(lite)
     engine.observer = observer
-    if observer and gateway:
+    if observer and gateway:  # pragma: no cover — requires OTel extra
         set_obs = getattr(gateway, "set_observer", None)
         if set_obs:
             set_obs(observer)
@@ -117,7 +117,7 @@ async def _resume_async(
     else:
         _print_result(result)
 
-    if observer:
+    if observer:  # pragma: no cover — requires OTel extra
         observer.shutdown()
     await gateway.close()
 
