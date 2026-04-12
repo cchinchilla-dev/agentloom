@@ -1,0 +1,26 @@
+name: checkpoint-resume-demo
+version: "1.0"
+description: >
+  Demonstrates checkpointing and resume. Run with --checkpoint to persist
+  execution state. If the workflow fails mid-execution, resume from the
+  last checkpoint with: agentloom resume <run_id>
+
+config:
+  provider: ollama
+  model: phi4
+  max_retries: 1
+
+state:
+  topic: "renewable energy"
+
+steps:
+  - id: research
+    type: llm_call
+    prompt: "List 3 key facts about {state.topic} in one sentence each."
+    output: facts
+
+  - id: summarize
+    type: llm_call
+    depends_on: [research]
+    prompt: "Write a one-paragraph summary from these facts: {state.facts}"
+    output: summary

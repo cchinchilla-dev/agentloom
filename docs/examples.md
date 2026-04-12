@@ -1,6 +1,6 @@
 # Examples
 
-27 example workflows covering basic patterns to production-grade pipelines. All examples run with Ollama (free, local) or any cloud provider.
+28 example workflows covering basic patterns to production-grade pipelines. All examples run with Ollama (free, local) or any cloud provider.
 
 ```bash
 # Validate any example
@@ -241,3 +241,25 @@ Combines streaming with image input. The image is fetched locally, and the LLM d
 Array index support in state paths (`state.items[0]`, `items[0].name`, `results[-1]`).
 
 **Demonstrates:** bracket-based array indexing in state and templates.
+
+---
+
+## Checkpointing
+
+### 28 — Checkpoint & Resume
+
+Two-step workflow with checkpointing enabled. Persists execution state so failed
+or interrupted runs can be resumed without re-executing completed steps.
+
+**Demonstrates:** `--checkpoint` flag, `agentloom runs`, `agentloom resume`.
+
+```bash
+# Run with checkpointing
+agentloom run examples/28_checkpoint_resume.yaml --checkpoint --lite
+
+# List checkpointed runs
+agentloom runs
+
+# Resume a failed or interrupted run
+agentloom resume <run_id> --lite
+```

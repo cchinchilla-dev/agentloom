@@ -42,6 +42,46 @@ steps:                                      # at least one step required
 | `stream` | `bool` | `false` | Enable streaming by default |
 | `sandbox` | `object` | disabled | Security sandbox config |
 
+## Checkpointing
+
+Persist workflow execution state so failed or paused runs can be resumed
+without re-executing completed steps.
+
+### CLI usage
+
+```bash
+# Run with checkpointing enabled
+agentloom run workflow.yaml --checkpoint
+
+# Custom checkpoint directory
+agentloom run workflow.yaml --checkpoint --checkpoint-dir /data/checkpoints
+
+# List all checkpointed runs
+agentloom runs
+agentloom runs --json
+
+# Resume a previous run
+agentloom resume <run_id>
+agentloom resume <run_id> --lite --json
+```
+
+### How it works
+
+When `--checkpoint` is enabled, the engine:
+
+1. Generates a unique **run ID** (printed at startup).
+2. Saves a checkpoint file after the workflow completes (success or failure).
+3. The checkpoint contains the full workflow definition, state, and step results.
+
+On `agentloom resume <run_id>`:
+
+1. Loads the checkpoint from disk.
+2. Reconstructs the workflow engine with the saved state.
+3. Skips already-completed steps and continues from where it left off.
+
+Checkpoint files are stored as JSON in `.agentloom/checkpoints/` by default
+(configurable via `--checkpoint-dir`).
+
 ## State
 
 State variables are initialized in the `state` block and accessible in templates:

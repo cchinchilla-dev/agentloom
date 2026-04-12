@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from agentloom.observability.metrics import MetricsManager
+import pytest
+
+from agentloom.observability.metrics import (
+    _HAS_OTEL_METRICS,
+    _HAS_PROM,
+    MetricsManager,
+)
+
+_HAS_BACKEND = _HAS_OTEL_METRICS or _HAS_PROM
 
 
 class TestMetricsDisabled:
@@ -19,6 +27,7 @@ class TestMetricsDisabled:
         mm.shutdown()
 
 
+@pytest.mark.skipif(not _HAS_BACKEND, reason="No metrics backend installed")
 class TestMetricsEnabled:
     """Test with whatever backend is available (OTel in CI, may vary locally)."""
 

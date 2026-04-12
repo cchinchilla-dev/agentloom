@@ -37,3 +37,5 @@ node_modules/
 .claude/CLAUDE.md
 deploy/terraform/agentloom-dev-config
 site/
+.agentloom/checkpoints/*
+!.agentloom/checkpoints/.gitkeep

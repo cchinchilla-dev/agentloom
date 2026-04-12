@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import anyio
 
+from agentloom.checkpointing.base import BaseCheckpointer, CheckpointData
 from agentloom.core.models import StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.results import (
@@ -45,6 +48,8 @@ class WorkflowEngine:
         step_registry: StepRegistry | None = None,
         observer: Any | None = None,
         on_stream_chunk: Callable[[str, str], None] | None = None,
+        checkpointer: BaseCheckpointer | None = None,
+        run_id: str | None = None,
     ) -> None:
         self.workflow = workflow
         self.state = state_manager or StateManager(initial_state=dict(workflow.state))
@@ -55,11 +60,99 @@ class WorkflowEngine:
         self._stream_callback = on_stream_chunk
         self._budget_spent: float = 0.0
 
+        # Checkpointing
+        self._checkpointer = checkpointer
+        self.run_id = run_id or (uuid.uuid4().hex[:12] if checkpointer else "")
+        self._completed_steps: set[str] = set()
+        self._checkpoint_created_at = datetime.now(UTC).isoformat()
+
         # Wire observer into gateway for circuit breaker events
         if observer and provider_gateway:
             set_obs = getattr(provider_gateway, "set_observer", None)
             if set_obs:
                 set_obs(observer)
+
+    async def _save_checkpoint(
+        self,
+        status: str,
+        paused_step_id: str | None = None,
+    ) -> None:
+        """Persist current execution state via the configured checkpointer."""
+        if self._checkpointer is None:
+            return
+
+        step_results = await self.state.all_step_results()
+        state_snapshot = await self.state.get_state_snapshot()
+
+        # Derive completed_steps from step_results so mid-layer aborts are captured
+        completed_steps = sorted(
+            step_id
+            for step_id, result in step_results.items()
+            if result.status == StepStatus.SUCCESS
+        )
+
+        data = CheckpointData(
+            workflow_name=self.workflow.name,
+            run_id=self.run_id,
+            workflow_definition=self.workflow.model_dump(),
+            state=state_snapshot,
+            step_results={k: v.model_dump() for k, v in step_results.items()},
+            completed_steps=completed_steps,
+            status=status,
+            paused_step_id=paused_step_id,
+            created_at=self._checkpoint_created_at,
+            updated_at=datetime.now(UTC).isoformat(),
+        )
+        try:
+            await self._checkpointer.save(data)
+        except Exception:
+            logger.warning(
+                "Failed to save checkpoint for run '%s' — continuing without checkpoint",
+                self.run_id,
+                exc_info=True,
+            )
+            return
+        logger.debug("Checkpoint saved: run_id=%s status=%s", self.run_id, status)
+
+    @classmethod
+    async def from_checkpoint(
+        cls,
+        checkpoint_data: CheckpointData,
+        checkpointer: BaseCheckpointer,
+        provider_gateway: Any | None = None,
+        tool_registry: Any | None = None,
+        step_registry: StepRegistry | None = None,
+        observer: Any | None = None,
+        on_stream_chunk: Callable[[str, str], None] | None = None,
+    ) -> WorkflowEngine:
+        """Reconstruct an engine from a checkpoint, ready to resume.
+
+        The returned engine's :meth:`run` will skip already-completed steps
+        and continue execution from where it left off.
+        """
+        workflow = WorkflowDefinition.model_validate(checkpoint_data.workflow_definition)
+
+        # Restore state manager with completed step results via the public API
+        # so internal state, snapshots, and locking remain consistent.
+        state_manager = StateManager(initial_state=checkpoint_data.state)
+        for step_id, result_data in checkpoint_data.step_results.items():
+            result = StepResult.model_validate(result_data)
+            await state_manager.set_step_result(step_id, result)
+
+        engine = cls(
+            workflow=workflow,
+            state_manager=state_manager,
+            provider_gateway=provider_gateway,
+            tool_registry=tool_registry,
+            step_registry=step_registry,
+            observer=observer,
+            on_stream_chunk=on_stream_chunk,
+            checkpointer=checkpointer,
+            run_id=checkpoint_data.run_id,
+        )
+        engine._completed_steps = set(checkpoint_data.completed_steps)
+        engine._checkpoint_created_at = checkpoint_data.created_at
+        return engine
 
     async def run(self) -> WorkflowResult:
         """Execute the workflow end-to-end.
@@ -97,6 +190,23 @@ class WorkflowEngine:
                 # Filter layer: skip steps not activated by a router
                 active_steps = []
                 for step_id in layer:
+                    # Skip steps already completed in a previous run (resume)
+                    if step_id in self._completed_steps:
+                        logger.debug("Skipping already-completed step: %s", step_id)
+                        # If this was a router, restore its activation so
+                        # downstream branch filtering works correctly.
+                        step_def = self.workflow.get_step(step_id)
+                        if step_def and step_def.type == StepType.ROUTER:
+                            step_res = await self.state.get_step_result(step_id)
+                            if (
+                                step_res
+                                and step_res.status == StepStatus.SUCCESS
+                                and step_res.output
+                            ):
+                                activated_targets = activated_targets or set()
+                                activated_targets.add(step_res.output)
+                        continue
+
                     if step_id in skipped_steps:
                         await self.state.set_step_result(
                             step_id,
@@ -133,6 +243,12 @@ class WorkflowEngine:
                 async with anyio.create_task_group() as tg:
                     for step_id in active_steps:
                         tg.start_soon(self._execute_step_with_limit, step_id, limiter)
+
+                # Track completed steps for checkpoint/resume
+                for step_id in active_steps:
+                    step_result = await self.state.get_step_result(step_id)
+                    if step_result and step_result.status == StepStatus.SUCCESS:
+                        self._completed_steps.add(step_id)
 
                 # After layer execution, check for router results
                 activated_targets_for_next = set()
@@ -183,6 +299,8 @@ class WorkflowEngine:
                 error=failed_steps[0].error if failed_steps else None,
             )
 
+            await self._save_checkpoint(status.value)
+
             if self.observer:
                 self.observer.on_workflow_end(
                     workflow_name, status.value, duration, total_tokens, total_cost
@@ -198,8 +316,9 @@ class WorkflowEngine:
 
             return result
 
-        except BudgetExceededError as e:
+        except BudgetExceededError as e:  # pragma: no cover — anyio wraps in ExceptionGroup
             duration = (time.monotonic() - start) * 1000
+            await self._save_checkpoint("budget_exceeded")
             if self.observer:
                 self.observer.on_workflow_end(
                     workflow_name, "budget_exceeded", duration, 0, self._budget_spent
@@ -214,8 +333,9 @@ class WorkflowEngine:
                 error=str(e),
             )
 
-        except WorkflowTimeoutError as e:
+        except WorkflowTimeoutError as e:  # pragma: no cover — anyio wraps in ExceptionGroup
             duration = (time.monotonic() - start) * 1000
+            await self._save_checkpoint("timeout")
             if self.observer:
                 self.observer.on_workflow_end(workflow_name, "timeout", duration, 0, 0.0)
             return WorkflowResult(
@@ -229,6 +349,7 @@ class WorkflowEngine:
 
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
+            await self._save_checkpoint("failed")
             if self.observer:
                 self.observer.on_workflow_end(
                     workflow_name, "failed", duration, 0, self._budget_spent

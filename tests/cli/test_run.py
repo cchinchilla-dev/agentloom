@@ -41,6 +41,69 @@ class TestRunCommand:
         assert "key=value" in (result.output + (result.stderr or ""))
 
 
+class TestRunCheckpoint:
+    def test_checkpoint_flag_creates_checkpoint(self) -> None:
+        """Running with --checkpoint should print a run ID and create a checkpoint file."""
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(SIMPLE_YAML)
+            f.flush()
+            with tempfile.TemporaryDirectory() as cp_dir:
+                with patch("agentloom.cli.run._setup_providers") as mock_setup:
+                    from tests.conftest import MockProvider
+
+                    def _wire(gw: object, default: str) -> None:
+                        from agentloom.providers.gateway import ProviderGateway
+
+                        assert isinstance(gw, ProviderGateway)
+                        gw.register(MockProvider(), priority=0)
+
+                    mock_setup.side_effect = _wire
+
+                    with patch("agentloom.cli.run._setup_observer", return_value=None):
+                        result = runner.invoke(
+                            app,
+                            [
+                                "run",
+                                f.name,
+                                "--checkpoint",
+                                "--checkpoint-dir",
+                                cp_dir,
+                                "--lite",
+                            ],
+                        )
+
+                assert result.exit_code == 0, f"stdout: {result.output}"
+                assert "Run ID:" in result.output
+
+                # Verify checkpoint file exists
+                from pathlib import Path
+
+                cp_files = list(Path(cp_dir).glob("*.json"))
+                assert len(cp_files) == 1
+
+    def test_no_run_id_without_checkpoint_flag(self) -> None:
+        """Running without --checkpoint should not print a run ID."""
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(SIMPLE_YAML)
+            f.flush()
+            with patch("agentloom.cli.run._setup_providers") as mock_setup:
+                from tests.conftest import MockProvider
+
+                def _wire(gw: object, default: str) -> None:
+                    from agentloom.providers.gateway import ProviderGateway
+
+                    assert isinstance(gw, ProviderGateway)
+                    gw.register(MockProvider(), priority=0)
+
+                mock_setup.side_effect = _wire
+
+                with patch("agentloom.cli.run._setup_observer", return_value=None):
+                    result = runner.invoke(app, ["run", f.name, "--lite"])
+
+            assert result.exit_code == 0, f"stdout: {result.output}"
+            assert "Run ID:" not in result.output
+
+
 class TestSetupProviders:
     def test_ollama_always_registered(self) -> None:
         from agentloom.cli.run import _setup_providers
@@ -109,11 +172,15 @@ class TestSetupObserver:
         # Either way, no error should occur
 
     def test_observer_respects_otel_endpoint_env(self) -> None:
+        from types import ModuleType
+
         from agentloom.cli.run import _setup_observer
 
         custom = "http://collector.internal:4317"
+        fake_mod = ModuleType("fake_otel")
         with (
             patch.dict("os.environ", {"OTEL_EXPORTER_OTLP_ENDPOINT": custom}),
+            patch("agentloom.compat.try_import", return_value=fake_mod),
             patch("agentloom.observability.tracing.TracingManager") as mock_tm,
             patch("agentloom.observability.metrics.MetricsManager") as mock_mm,
         ):
