@@ -124,7 +124,7 @@ config:
   model: gemini-2.5-flash
 ```
 
-See the [Provider Gateway](#architecture) for fallback, circuit breaker, and rate limiter details.
+See the [Architecture](#architecture) section for fallback, circuit breaker, and rate limiter details.
 
 ## Workflow Definition (YAML)
 
