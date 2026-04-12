@@ -70,3 +70,16 @@ class StepTimeoutError(StepError):
 
     def __init__(self, step_id: str, timeout: float) -> None:
         super().__init__(step_id, f"Timed out after {timeout}s")
+
+
+class PauseRequestedError(AgentLoomError):
+    """A step has requested the workflow to pause.
+
+    Raised by step executors (e.g. an approval gate) to signal that the
+    engine should save a checkpoint and stop execution until a human
+    resumes the workflow.
+    """
+
+    def __init__(self, step_id: str, message: str = "") -> None:
+        self.step_id = step_id
+        super().__init__(message or f"Pause requested at step '{step_id}'")
