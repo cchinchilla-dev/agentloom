@@ -21,11 +21,6 @@ from agentloom.steps.base import BaseStep, StepContext
 from agentloom.steps.registry import StepRegistry, create_default_registry
 from tests.conftest import MockProvider
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _mock_gateway(provider: MockProvider | None = None) -> ProviderGateway:
     gw = ProviderGateway()
     gw.register(provider or MockProvider(), priority=0)
@@ -99,11 +94,6 @@ def _registry_that_pauses_on(step_id: str) -> StepRegistry:
     return reg
 
 
-# ---------------------------------------------------------------------------
-# Test _extract_pause_error helper
-# ---------------------------------------------------------------------------
-
-
 class TestExtractPauseError:
     def test_bare_pause_error(self) -> None:
         err = PauseRequestedError("s1")
@@ -126,11 +116,6 @@ class TestExtractPauseError:
 
     def test_unrelated_exception(self) -> None:
         assert _extract_pause_error(RuntimeError("x")) is None
-
-
-# ---------------------------------------------------------------------------
-# Engine pause tests
-# ---------------------------------------------------------------------------
 
 
 class TestEnginePause:
@@ -207,10 +192,23 @@ class TestEnginePause:
         assert "result_a" in result.final_state
         assert "result_b" not in result.final_state
 
+    async def test_pause_notifies_observer(self) -> None:
+        """Observer.on_workflow_end is called with 'paused' status."""
+        from unittest.mock import MagicMock
 
-# ---------------------------------------------------------------------------
-# Resume from paused checkpoint
-# ---------------------------------------------------------------------------
+        observer = MagicMock()
+        engine = WorkflowEngine(
+            workflow=_three_step_workflow(),
+            provider_gateway=_mock_gateway(),
+            step_registry=_registry_that_pauses_on("step_b"),
+            observer=observer,
+        )
+        result = await engine.run()
+
+        assert result.status == WorkflowStatus.PAUSED
+        observer.on_workflow_end.assert_called_once()
+        call_args = observer.on_workflow_end.call_args
+        assert call_args[0][1] == "paused"
 
 
 class TestResumeFromPaused:
@@ -352,11 +350,6 @@ class TestResumeFromPaused:
         assert len(provider.calls) == 2
         assert result.step_results["step_b"].status == StepStatus.SUCCESS
         assert result.step_results["step_c"].status == StepStatus.SUCCESS
-
-
-# ---------------------------------------------------------------------------
-# Pause with router
-# ---------------------------------------------------------------------------
 
 
 class TestPauseWithRouter:
