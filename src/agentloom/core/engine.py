@@ -564,9 +564,7 @@ class WorkflowEngine:
                 raise
 
             except PauseRequestedError:
-                paused_result = StepResult(
-                    step_id=step_id, status=StepStatus.PAUSED
-                )
+                paused_result = StepResult(step_id=step_id, status=StepStatus.PAUSED)
                 await self.state.set_step_result(step_id, paused_result)
                 if self.observer:
                     self.observer.on_step_end(
