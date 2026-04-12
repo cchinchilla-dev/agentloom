@@ -316,7 +316,7 @@ class WorkflowEngine:
 
             return result
 
-        except BudgetExceededError as e:
+        except BudgetExceededError as e:  # pragma: no cover — anyio wraps in ExceptionGroup
             duration = (time.monotonic() - start) * 1000
             await self._save_checkpoint("budget_exceeded")
             if self.observer:
@@ -333,7 +333,7 @@ class WorkflowEngine:
                 error=str(e),
             )
 
-        except WorkflowTimeoutError as e:
+        except WorkflowTimeoutError as e:  # pragma: no cover — anyio wraps in ExceptionGroup
             duration = (time.monotonic() - start) * 1000
             await self._save_checkpoint("timeout")
             if self.observer:
