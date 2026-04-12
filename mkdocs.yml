@@ -1,0 +1,72 @@
+site_name: AgentLoom
+site_url: https://cchinchilla-dev.github.io/agentloom/
+site_description: Deterministic LLM workflow orchestration with native observability, resilience, and cost control.
+repo_url: https://github.com/cchinchilla-dev/agentloom
+repo_name: cchinchilla-dev/agentloom
+
+theme:
+  name: material
+  logo: images/logo_transparecy.png
+  favicon: images/logo_transparecy.png
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - Getting Started: index.md
+  - Architecture: architecture.md
+  - Providers: providers.md
+  - Workflow YAML: workflow-yaml.md
+  - Python DSL: python-dsl.md
+  - Graph API: graph-api.md
+  - Examples: examples.md
+  - Observability: observability.md
+  - Deployment: deployment.md
+  - Contributing: contributing.md
+  - Changelog: changelog.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - toc:
+      permalink: true
+  - tables
+
+extra_css:
+  - stylesheets/extra.css
