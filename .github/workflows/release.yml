@@ -6,6 +6,7 @@ on:
   workflow_run:
     workflows: ["Auto Tag"]
     types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: write
