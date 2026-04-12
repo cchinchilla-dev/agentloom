@@ -172,11 +172,15 @@ class TestSetupObserver:
         # Either way, no error should occur
 
     def test_observer_respects_otel_endpoint_env(self) -> None:
+        from types import ModuleType
+
         from agentloom.cli.run import _setup_observer
 
         custom = "http://collector.internal:4317"
+        fake_mod = ModuleType("fake_otel")
         with (
             patch.dict("os.environ", {"OTEL_EXPORTER_OTLP_ENDPOINT": custom}),
+            patch("agentloom.compat.try_import", return_value=fake_mod),
             patch("agentloom.observability.tracing.TracingManager") as mock_tm,
             patch("agentloom.observability.metrics.MetricsManager") as mock_mm,
         ):
