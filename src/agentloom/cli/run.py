@@ -30,9 +30,25 @@ def run(
     lite: bool = typer.Option(False, "--lite", help="Run in lite mode (no observability)."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     stream: bool = typer.Option(False, "--stream", help="Stream LLM output in real-time."),
+    checkpoint: bool = typer.Option(False, "--checkpoint", help="Enable checkpointing."),
+    checkpoint_dir: str = typer.Option(
+        ".agentloom/checkpoints", "--checkpoint-dir", help="Checkpoint storage directory."
+    ),
 ) -> None:
     """Execute a workflow from a YAML definition file."""
-    anyio.run(_run_async, workflow_path, state, provider, model, budget, lite, output_json, stream)
+    anyio.run(
+        _run_async,
+        workflow_path,
+        state,
+        provider,
+        model,
+        budget,
+        lite,
+        output_json,
+        stream,
+        checkpoint,
+        checkpoint_dir,
+    )
 
 
 async def _run_async(
@@ -44,6 +60,8 @@ async def _run_async(
     lite: bool,
     output_json: bool,
     stream: bool = False,
+    checkpoint: bool = False,
+    checkpoint_dir: str = ".agentloom/checkpoints",
 ) -> None:
     """Async implementation of the run command."""
     from agentloom.core.engine import WorkflowEngine
@@ -111,6 +129,13 @@ async def _run_async(
 
         stream_callback = _on_chunk
 
+    # Setup checkpointer
+    checkpointer = None
+    if checkpoint:
+        from agentloom.checkpointing.file import FileCheckpointer
+
+        checkpointer = FileCheckpointer(checkpoint_dir=checkpoint_dir)
+
     # Run engine
     engine = WorkflowEngine(
         workflow=workflow,
@@ -119,9 +144,12 @@ async def _run_async(
         tool_registry=tool_registry,
         observer=observer,
         on_stream_chunk=stream_callback,
+        checkpointer=checkpointer,
     )
 
     typer.echo(f"Running workflow: {workflow.name}")
+    if engine.run_id:
+        typer.echo(f"Run ID: {engine.run_id}")
     result = await engine.run()
 
     if stream and not output_json:

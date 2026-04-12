@@ -33,6 +33,7 @@
 - [Graph API](#graph-api)
 - [Observability](#observability)
 - [Deploy](#deploy)
+- [Checkpointing](#checkpointing)
 - [Why not autonomous agents?](#why-not-autonomous-agents)
 - [Development](#development)
 - [Contributing](#contributing)
@@ -51,6 +52,7 @@ Existing frameworks (LangGraph, CrewAI, AutoGen) treat observability and resilie
 | Circuit breaker | No | No | No | **Built-in** |
 | Cost tracking | No | No | No | **Native with budgets** |
 | Multi-provider fallback | Manual | No | No | **Automatic** |
+| Checkpoint & resume | No | No | No | **Built-in** |
 | Dependencies | Heavy | Medium | Medium | **Minimal** |
 
 ## Quick Start
@@ -74,6 +76,11 @@ agentloom validate examples/03_router_workflow.yaml
 
 # Visualize the DAG
 agentloom visualize examples/03_router_workflow.yaml
+
+# Run with checkpointing (resume on failure)
+agentloom run examples/01_simple_qa.yaml --checkpoint
+agentloom runs            # list checkpointed runs
+agentloom resume <run_id> # resume from checkpoint
 ```
 
 ## Architecture
@@ -336,6 +343,23 @@ kubectl apply -f deploy/argocd/application.yaml
 ```
 
 See [deploy/INFRASTRUCTURE.md](deploy/INFRASTRUCTURE.md) for the full deployment guide, security hardening details, Helm chart reference, and CI/CD pipeline documentation.
+
+## Checkpointing
+
+Persist workflow execution state so failed or interrupted runs can be resumed without re-executing completed steps.
+
+```bash
+# Enable checkpointing
+agentloom run workflow.yaml --checkpoint
+
+# List all runs
+agentloom runs
+
+# Resume a failed run (skips completed steps)
+agentloom resume <run_id>
+```
+
+Checkpoints are stored as JSON files in `.agentloom/checkpoints/` by default. The backend is pluggable — implement `BaseCheckpointer` to store checkpoints in Redis, S3, or any other backend. In Kubernetes, mount a PersistentVolumeClaim to share checkpoints across Jobs.
 
 ## Why not autonomous agents?
 

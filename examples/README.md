@@ -194,3 +194,26 @@ agentloom run examples/25_streaming_qa.yaml --stream
 Combines streaming with image input. The image is fetched locally, and the
 LLM description is streamed back in real-time.
 Demonstrates: streaming + attachments composability, real-time vision output.
+
+---
+
+### 27 — Array Index Access
+Accesses array elements in state using bracket notation (`{state.items[0]}`).
+Demonstrates: array index state paths, bracket notation in templates.
+
+### 28 — Checkpoint & Resume
+Two-step workflow with checkpointing enabled. Run with `--checkpoint` to
+persist execution state. If the workflow fails mid-execution, resume from the
+last checkpoint instead of re-running completed steps.
+Demonstrates: `--checkpoint` flag, `agentloom runs`, `agentloom resume`.
+
+```bash
+# Run with checkpointing
+agentloom run examples/28_checkpoint_resume.yaml --checkpoint --lite
+
+# List checkpointed runs
+agentloom runs
+
+# Resume a failed or interrupted run
+agentloom resume <run_id> --lite
+```
