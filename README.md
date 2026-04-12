@@ -25,6 +25,7 @@
 - [Why AgentLoom?](#why-agentloom)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
+- [Providers](#providers)
 - [Workflow Definition (YAML)](#workflow-definition-yaml)
 - [Python DSL](#python-dsl)
 - [Graph API](#graph-api)
@@ -103,6 +104,28 @@ agentloom visualize examples/03_router_workflow.yaml
 +-----------------------------------------------------+
 ```
 
+## Providers
+
+Four providers are included out of the box. The gateway routes requests based on model name and falls back automatically when a provider is unavailable.
+
+| Capability | OpenAI | Anthropic | Google | Ollama |
+|---|---|---|---|---|
+| Models | `gpt-*`, `o3*`, `o4*` | `claude*` | `gemini*` | Any local model |
+| Streaming | SSE | SSE | SSE | NDJSON |
+| Image input | yes | yes | yes | yes |
+| PDF input | -- | yes | yes | -- |
+| Audio input | yes | -- | yes | -- |
+| Cost tracking | yes | yes | yes | free (local) |
+
+```yaml
+# Switch provider in any workflow
+config:
+  provider: google
+  model: gemini-2.5-flash
+```
+
+See the [Architecture](#architecture) section for fallback, circuit breaker, and rate limiter details.
+
 ## Workflow Definition (YAML)
 
 ```yaml
@@ -147,7 +170,7 @@ steps:
 
 LLM call steps support image, PDF, and audio attachments. Sources can be URLs,
 local file paths, or inline base64. URL fetching includes SSRF protection and
-respects sandbox domain restrictions.
+respects sandbox domain restrictions. See the [Providers](#providers) table for per-provider support.
 
 ```yaml
 steps:
@@ -159,12 +182,6 @@ steps:
         source: "{state.image_url}"
     output: description
 ```
-
-| Type | OpenAI | Anthropic | Google | Ollama |
-|---|---|---|---|---|
-| `image` | yes | yes | yes | yes |
-| `pdf` | -- | yes | yes | -- |
-| `audio` | yes | -- | yes | -- |
 
 ### Streaming
 
@@ -187,9 +204,8 @@ steps:
 agentloom run workflow.yaml --stream
 ```
 
-All providers support streaming: OpenAI (SSE), Anthropic (SSE), Google (SSE),
-Ollama (NDJSON). Token usage, cost, and time-to-first-token are tracked
-normally.
+All providers support streaming (see [Providers](#providers) for protocol details).
+Token usage, cost, and time-to-first-token are tracked normally.
 
 ## Python DSL
 
