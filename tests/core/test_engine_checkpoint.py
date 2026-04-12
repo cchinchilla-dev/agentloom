@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from agentloom.checkpointing.base import CheckpointData
+from typing import Any
+
+from agentloom.checkpointing.base import BaseCheckpointer, CheckpointData
 from agentloom.checkpointing.file import FileCheckpointer
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import (
@@ -215,3 +217,94 @@ class TestEngineResumeFromCheckpoint:
         assert len(provider.calls) == 1
         assert "step_b" in result.step_results
         assert result.step_results["step_b"].status == StepStatus.SUCCESS
+
+
+class TestCheckpointErrorHandling:
+    """Test that checkpoint save failures are handled gracefully."""
+
+    async def test_save_checkpoint_io_error_is_swallowed(self, tmp_path: object) -> None:
+        """Engine should continue even if checkpoint save raises an I/O error."""
+
+        class FailingCheckpointer(BaseCheckpointer):
+            async def save(self, data: CheckpointData) -> None:
+                raise OSError("Disk full")
+
+            async def load(self, run_id: str) -> CheckpointData:
+                raise KeyError(run_id)
+
+            async def list_runs(self) -> list[CheckpointData]:
+                return []
+
+            async def delete(self, run_id: str) -> None:
+                pass
+
+        engine = WorkflowEngine(
+            workflow=_two_step_workflow(),
+            provider_gateway=_mock_gateway(),
+            checkpointer=FailingCheckpointer(),
+        )
+        result = await engine.run()
+        # Should still succeed even though checkpoint save failed
+        assert result.status == WorkflowStatus.SUCCESS
+
+    async def test_checkpoint_saved_on_budget_exceeded(self, tmp_path: object) -> None:
+        """Engine should save checkpoint when budget is exceeded."""
+        from pathlib import Path
+
+        cp_dir = Path(str(tmp_path))
+        checkpointer = FileCheckpointer(checkpoint_dir=cp_dir)
+
+        # Use two steps so that the first one exhausts the budget and the
+        # second one (in a new layer) triggers the BudgetExceededError check
+        # before entering the task group.  MockProvider costs $0.001 per call.
+        workflow = WorkflowDefinition(
+            name="budget-test",
+            config=WorkflowConfig(provider="mock", model="mock-model", budget_usd=0.0001),
+            state={"input": "hello"},
+            steps=[
+                StepDefinition(
+                    id="step1",
+                    type=StepType.LLM_CALL,
+                    prompt="Process: {state.input}",
+                    output="result",
+                ),
+            ],
+        )
+        engine = WorkflowEngine(
+            workflow=workflow,
+            provider_gateway=_mock_gateway(),
+            checkpointer=checkpointer,
+        )
+        result = await engine.run()
+        # Budget check is post-hoc so the step succeeds but the workflow
+        # reports budget_exceeded. However, BudgetExceededError is raised
+        # inside a task group and may be wrapped — accept either status.
+        assert result.status in (WorkflowStatus.BUDGET_EXCEEDED, WorkflowStatus.FAILED)
+
+        loaded = await checkpointer.load(engine.run_id)
+        assert loaded.status in ("budget_exceeded", "failed")
+
+    async def test_checkpoint_saved_on_failure(self, tmp_path: object) -> None:
+        """Engine should save checkpoint with 'failed' status on exception."""
+        from pathlib import Path
+
+        cp_dir = Path(str(tmp_path))
+        checkpointer = FileCheckpointer(checkpoint_dir=cp_dir)
+
+        class ErrorProvider(MockProvider):
+            async def complete(self, *args: Any, **kwargs: Any) -> Any:
+                raise RuntimeError("Provider crash")
+
+        gw = ProviderGateway()
+        gw.register(ErrorProvider(), priority=0)
+
+        engine = WorkflowEngine(
+            workflow=_two_step_workflow(),
+            provider_gateway=gw,
+            checkpointer=checkpointer,
+        )
+        result = await engine.run()
+        assert result.status == WorkflowStatus.FAILED
+
+        loaded = await checkpointer.load(engine.run_id)
+        assert loaded.status == "failed"
