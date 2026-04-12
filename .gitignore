@@ -36,3 +36,4 @@ node_modules/
 .claude/worktrees/
 .claude/CLAUDE.md
 deploy/terraform/agentloom-dev-config
+site/

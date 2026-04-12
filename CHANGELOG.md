@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Documentation site with mkdocs-material — getting started, architecture, providers, workflow YAML reference, Python DSL, graph API, examples, observability, deployment, contributing, and changelog pages. Auto-deployed to GitHub Pages on push to main (#72)
 - Multi-modal input support for `llm_call` steps — images, PDFs, and audio via `attachments` field (#68)
   - Provider-native formatting: OpenAI (images, audio), Anthropic (images, PDFs), Google (images, PDFs, audio), Ollama (images)
   - URL fetching with `fetch: local` (default) or `fetch: provider` passthrough

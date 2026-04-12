@@ -16,12 +16,14 @@
   <a href="https://codecov.io/github/cchinchilla-dev/agentloom"><img src="https://codecov.io/github/cchinchilla-dev/agentloom/graph/badge.svg" alt="Coverage"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+  <a href="https://cchinchilla-dev.github.io/agentloom/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Docs"></a>
 </p>
 
 ---
 
 ## Table of Contents
 
+- [Documentation](https://cchinchilla-dev.github.io/agentloom/)
 - [Why AgentLoom?](#why-agentloom)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
