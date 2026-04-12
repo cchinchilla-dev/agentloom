@@ -227,3 +227,19 @@ class TestPrintResult:
             final_state={},
         )
         _print_result(result)
+
+    def test_prints_paused(self) -> None:
+        from agentloom.cli.run import _print_result
+        from agentloom.core.results import StepResult, StepStatus, WorkflowResult, WorkflowStatus
+
+        result = WorkflowResult(
+            workflow_name="test",
+            status=WorkflowStatus.PAUSED,
+            error="Pause requested at step 'review'",
+            step_results={
+                "draft": StepResult(step_id="draft", status=StepStatus.SUCCESS, duration_ms=100.0),
+                "review": StepResult(step_id="review", status=StepStatus.PAUSED),
+            },
+            final_state={"draft_output": "hello"},
+        )
+        _print_result(result)
