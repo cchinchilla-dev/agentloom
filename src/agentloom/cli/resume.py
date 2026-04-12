@@ -17,12 +17,34 @@ def resume(
         None, "--provider", "-p", help="Override default provider."
     ),
     model: str | None = typer.Option(None, "--model", "-m", help="Override default model."),
+    approve: bool = typer.Option(False, "--approve", help="Approve a pending approval gate."),
+    reject: bool = typer.Option(False, "--reject", help="Reject a pending approval gate."),
     lite: bool = typer.Option(False, "--lite", help="Run in lite mode (no observability)."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     stream: bool = typer.Option(False, "--stream", help="Stream LLM output in real-time."),
 ) -> None:
     """Resume a paused or failed workflow from its last checkpoint."""
-    anyio.run(_resume_async, run_id, checkpoint_dir, provider, model, lite, output_json, stream)
+    if approve and reject:
+        typer.echo("Cannot use --approve and --reject together.", err=True)
+        raise typer.Exit(1)
+
+    decision: str | None = None
+    if approve:
+        decision = "approved"
+    elif reject:
+        decision = "rejected"
+
+    anyio.run(
+        _resume_async,
+        run_id,
+        checkpoint_dir,
+        provider,
+        model,
+        decision,
+        lite,
+        output_json,
+        stream,
+    )
 
 
 async def _resume_async(
@@ -30,6 +52,7 @@ async def _resume_async(
     checkpoint_dir: str,
     provider_override: str | None,
     model_override: str | None,
+    decision: str | None,
     lite: bool,
     output_json: bool,
     stream: bool,
@@ -50,15 +73,27 @@ async def _resume_async(
         typer.echo(f"No checkpoint found for run '{run_id}'.", err=True)
         raise typer.Exit(1)
 
-    typer.echo(
-        f"Resuming workflow '{checkpoint_data.workflow_name}' "
-        f"(run {run_id}, status={checkpoint_data.status})"
-    )
+    # Build approval decisions map for the paused step
+    approval_decisions: dict[str, str] = {}
+    if decision and checkpoint_data.paused_step_id:
+        approval_decisions[checkpoint_data.paused_step_id] = decision
+
+    if decision:
+        typer.echo(
+            f"Resuming workflow '{checkpoint_data.workflow_name}' "
+            f"(run {run_id}, decision={decision} for step '{checkpoint_data.paused_step_id}')"
+        )
+    else:
+        typer.echo(
+            f"Resuming workflow '{checkpoint_data.workflow_name}' "
+            f"(run {run_id}, status={checkpoint_data.status})"
+        )
 
     # Reconstruct engine
     engine = await WorkflowEngine.from_checkpoint(
         checkpoint_data=checkpoint_data,
         checkpointer=checkpointer,
+        approval_decisions=approval_decisions or None,
     )
 
     # Apply overrides
