@@ -11,7 +11,7 @@ AgentLoom is a **deterministic workflow orchestrator** — not an autonomous age
 |                   Workflow Engine                   |
 |  +-----------+  +-----------+  +---------------+    |
 |  |DAG Parser |  | Scheduler |  | State Manager |    |
-|  |& Validator|  |  (anyio)  |  |  (Pydantic)   |    |
+|  |& Validator|  |  (anyio)  |  |  (dict+lock)  |    |
 |  +-----------+  +-----------+  +---------------+    |
 +-----------------------------------------------------+
 |                   Step Executors                    |
@@ -114,7 +114,7 @@ state["items[0].name"]         # array indexing
 - All steps in a workflow share the same state instance
 - Steps with `output: key` write their result to `state[key]`
 - Templates use `{state.key}` or `{key}` (flat namespace) for interpolation
-- State is implemented with Pydantic models for validation
+- Workflow state is stored as a plain dictionary and accessed/updated through `StateManager`
 
 ## Provider gateway
 
