@@ -121,5 +121,5 @@ async def _resume_async(
         observer.shutdown()
     await gateway.close()
 
-    if result.status != WorkflowStatus.SUCCESS:
+    if result.status not in (WorkflowStatus.SUCCESS, WorkflowStatus.PAUSED):
         raise typer.Exit(1)

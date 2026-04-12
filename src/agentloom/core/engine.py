@@ -23,6 +23,7 @@ from agentloom.core.results import (
 from agentloom.core.state import StateManager
 from agentloom.exceptions import (
     BudgetExceededError,
+    PauseRequestedError,
     WorkflowError,
     WorkflowTimeoutError,
 )
@@ -30,6 +31,23 @@ from agentloom.steps.base import BaseStep, StepContext
 from agentloom.steps.registry import StepRegistry, create_default_registry
 
 logger = logging.getLogger("agentloom.engine")
+
+
+def _extract_pause_error(exc: BaseException) -> PauseRequestedError | None:
+    """Unwrap a ``PauseRequestedError`` from an ``ExceptionGroup``.
+
+    anyio task groups always wrap step exceptions in an ``ExceptionGroup``,
+    so we need to inspect the group to find pause requests.  Returns
+    ``None`` if *exc* does not contain a ``PauseRequestedError``.
+    """
+    if isinstance(exc, PauseRequestedError):
+        return exc
+    if isinstance(exc, ExceptionGroup):
+        for inner in exc.exceptions:
+            found = _extract_pause_error(inner)
+            if found is not None:
+                return found
+    return None
 
 
 class WorkflowEngine:
@@ -349,6 +367,38 @@ class WorkflowEngine:
 
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
+
+            # Check for PauseRequestedError wrapped in ExceptionGroup
+            # (anyio task groups always wrap step exceptions).
+            pause_err = _extract_pause_error(e)
+            if pause_err is not None:
+                await self._save_checkpoint("paused", paused_step_id=pause_err.step_id)
+                step_results = await self.state.all_step_results()
+                final_state = await self.state.get_state_snapshot()
+                if self.observer:
+                    self.observer.on_workflow_end(
+                        workflow_name,
+                        "paused",
+                        duration,
+                        sum(r.token_usage.total_tokens for r in step_results.values()),
+                        sum(r.cost_usd for r in step_results.values()),
+                    )
+                logger.info(
+                    "Workflow '%s' paused at step '%s'",
+                    workflow_name,
+                    pause_err.step_id,
+                )
+                return WorkflowResult(
+                    workflow_name=workflow_name,
+                    status=WorkflowStatus.PAUSED,
+                    step_results=step_results,
+                    final_state=final_state,
+                    total_duration_ms=duration,
+                    total_tokens=sum(r.token_usage.total_tokens for r in step_results.values()),
+                    total_cost_usd=sum(r.cost_usd for r in step_results.values()),
+                    error=str(pause_err),
+                )
+
             await self._save_checkpoint("failed")
             if self.observer:
                 self.observer.on_workflow_end(
@@ -511,6 +561,13 @@ class WorkflowEngine:
                 break
 
             except BudgetExceededError:
+                raise
+
+            except PauseRequestedError:
+                await self.state.set_step_result(
+                    step_id,
+                    StepResult(step_id=step_id, status=StepStatus.PAUSED),
+                )
                 raise
 
             except Exception as e:
