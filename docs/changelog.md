@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- **Approval gate step type** — human-in-the-loop decision point (#41)
+    - `StepType.APPROVAL_GATE` pauses the workflow and waits for human approval or rejection
+    - Decision injected via `_approval.<step_id>` state key on resume
+    - `--approve` / `--reject` flags on `agentloom resume`
+    - `timeout_seconds` and `on_timeout` fields for automatic resolution
+    - Example workflow (29), validation script, and K8s smoke job
+- **Workflow pause mechanism** — foundation for human-in-the-loop (#40)
+    - `PauseRequestedError` exception for step executors to signal a pause
+    - `StepStatus.PAUSED` and `WorkflowStatus.PAUSED` status values
+    - Engine catches pause requests, saves checkpoint with `status=paused` and `paused_step_id`, and returns cleanly
+    - Resume from paused checkpoint skips completed steps and re-runs the paused step
+    - CLI treats paused workflows as non-error (exit code 0)
+    - Functional validation script and K8s smoke job
 - **Pluggable checkpoint backends** with `BaseCheckpointer` protocol and `FileCheckpointer` default (#78)
     - `CheckpointData` model with full workflow state serialization
     - Engine integration: auto `run_id`, checkpoint on completion/failure, graceful I/O error handling
