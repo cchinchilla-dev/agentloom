@@ -17,6 +17,7 @@ class StepStatus(StrEnum):
     FAILED = "failed"
     SKIPPED = "skipped"
     TIMEOUT = "timeout"
+    PAUSED = "paused"
 
 
 class TokenUsage(BaseModel):
@@ -50,6 +51,7 @@ class WorkflowStatus(StrEnum):
     FAILED = "failed"
     TIMEOUT = "timeout"
     BUDGET_EXCEEDED = "budget_exceeded"
+    PAUSED = "paused"
 
 
 class WorkflowResult(BaseModel):

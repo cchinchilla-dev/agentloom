@@ -165,7 +165,7 @@ async def _run_async(
         observer.shutdown()
     await gateway.close()
 
-    if result.status != WorkflowStatus.SUCCESS:
+    if result.status not in (WorkflowStatus.SUCCESS, WorkflowStatus.PAUSED):
         raise typer.Exit(1)
 
 
@@ -251,6 +251,7 @@ def _print_result(result: object) -> None:
         "failed": "[FAIL]",
         "timeout": "[TIMEOUT]",
         "budget_exceeded": "[BUDGET]",
+        "paused": "[PAUSED]",
     }
 
     typer.echo(f"\n{'=' * 60}")
@@ -265,11 +266,12 @@ def _print_result(result: object) -> None:
 
     typer.echo("\nSteps:")
     for step_id, sr in r.step_results.items():
-        icon = (
-            "[OK]"
-            if sr.status == StepStatus.SUCCESS
-            else ("[SKIP]" if sr.status == StepStatus.SKIPPED else "[FAIL]")
-        )
+        step_icons = {
+            StepStatus.SUCCESS: "[OK]",
+            StepStatus.SKIPPED: "[SKIP]",
+            StepStatus.PAUSED: "[PAUSED]",
+        }
+        icon = step_icons.get(sr.status, "[FAIL]")
         line = f"  {icon} {step_id} ({sr.duration_ms:.0f}ms)"
         if sr.cost_usd > 0:
             line += f" ${sr.cost_usd:.4f}"
