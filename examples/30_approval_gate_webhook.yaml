@@ -1,0 +1,33 @@
+name: approval-gate-webhook
+description: >
+  Approval gate with webhook notification. When the gate pauses,
+  a POST is sent to the configured URL so external systems (Slack, CI)
+  can act on the pending approval.
+
+config:
+  provider: openai
+  model: gpt-4o-mini
+
+state:
+  topic: quarterly budget review
+
+steps:
+  - id: draft
+    type: llm_call
+    prompt: "Draft a short email about: {state.topic}"
+    output: draft_text
+
+  - id: approve
+    type: approval_gate
+    depends_on: [draft]
+    notify:
+      url: "http://localhost:8642/webhook"
+    timeout_seconds: 3600
+    on_timeout: reject
+    output: decision
+
+  - id: send
+    type: llm_call
+    depends_on: [approve]
+    prompt: "Finalize the email ({state.decision}): {state.draft_text}"
+    output: result
