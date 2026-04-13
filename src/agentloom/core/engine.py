@@ -142,11 +142,17 @@ class WorkflowEngine:
         step_registry: StepRegistry | None = None,
         observer: Any | None = None,
         on_stream_chunk: Callable[[str, str], None] | None = None,
+        approval_decisions: dict[str, str] | None = None,
     ) -> WorkflowEngine:
         """Reconstruct an engine from a checkpoint, ready to resume.
 
         The returned engine's :meth:`run` will skip already-completed steps
         and continue execution from where it left off.
+
+        Args:
+            approval_decisions: Optional map of ``step_id → "approved"|"rejected"``
+                injected into state so that paused approval gate steps can read
+                the human decision on re-execution.
         """
         workflow = WorkflowDefinition.model_validate(checkpoint_data.workflow_definition)
 
@@ -156,6 +162,11 @@ class WorkflowEngine:
         for step_id, result_data in checkpoint_data.step_results.items():
             result = StepResult.model_validate(result_data)
             await state_manager.set_step_result(step_id, result)
+
+        # Inject approval decisions so gate steps find them on re-execution
+        if approval_decisions:
+            for step_id, decision in approval_decisions.items():
+                await state_manager.set(f"_approval.{step_id}", decision)
 
         engine = cls(
             workflow=workflow,

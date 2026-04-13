@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Approval gate step type — human-in-the-loop decision point (#41)
+  - `StepType.APPROVAL_GATE` pauses the workflow and waits for human approval or rejection
+  - Decision injected via `_approval.<step_id>` state key on resume
+  - `--approve` / `--reject` mutually exclusive flags on `agentloom resume`
+  - `timeout_seconds` and `on_timeout` schema fields (consumed by webhook callback server in #42)
+  - Example workflow (29), validation script, and K8s smoke job
 - Workflow pause mechanism — foundation for human-in-the-loop (#40)
   - `PauseRequestedError` exception for step executors to signal a pause
   - `StepStatus.PAUSED` and `WorkflowStatus.PAUSED` status values

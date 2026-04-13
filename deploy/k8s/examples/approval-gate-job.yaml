@@ -1,13 +1,12 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: pause-resume-script
+  name: approval-gate-script
   namespace: agentloom
 data:
-  validate_pause_resume.py: |
-    """Functional validation of pause/resume in Kubernetes."""
+  validate_approval_gate.py: |
+    """Functional validation of approval gate in Kubernetes."""
 
-    import json
     import sys
     import tempfile
     from pathlib import Path
@@ -21,12 +20,8 @@ data:
         WorkflowDefinition,
     )
     from agentloom.core.results import StepStatus, WorkflowStatus
-    from agentloom.exceptions import PauseRequestedError
     from agentloom.providers.base import BaseProvider, ProviderResponse
     from agentloom.providers.gateway import ProviderGateway
-    from agentloom.steps.base import BaseStep, StepContext
-    from agentloom.core.results import StepResult
-    from agentloom.steps.registry import create_default_registry
 
     class FakeProvider(BaseProvider):
         name = "fake"
@@ -37,37 +32,24 @@ data:
         def supports_model(self, model):
             return True
 
-    class PausingStep(BaseStep):
-        async def execute(self, context):
-            if context.step_definition.id == "step_b":
-                raise PauseRequestedError("step_b")
-            from agentloom.steps.llm_call import LLMCallStep
-            return await LLMCallStep().execute(context)
-
     def _gw():
         gw = ProviderGateway()
         gw.register(FakeProvider(), priority=0)
         return gw
 
-    def _reg():
-        reg = create_default_registry()
-        reg.register(StepType.LLM_CALL, PausingStep)
-        return reg
-
     def _wf():
         return WorkflowDefinition(
-            name="pause-k8s",
+            name="approval-k8s",
             config=WorkflowConfig(provider="fake", model="fake"),
             state={"input": "hello"},
             steps=[
-                StepDefinition(id="step_a", type=StepType.LLM_CALL,
-                               prompt="A: {state.input}", output="result_a"),
-                StepDefinition(id="step_b", type=StepType.LLM_CALL,
-                               depends_on=["step_a"],
-                               prompt="B: {state.result_a}", output="result_b"),
-                StepDefinition(id="step_c", type=StepType.LLM_CALL,
-                               depends_on=["step_b"],
-                               prompt="C: {state.result_b}", output="result_c"),
+                StepDefinition(id="draft", type=StepType.LLM_CALL,
+                               prompt="Draft: {state.input}", output="draft_text"),
+                StepDefinition(id="approve", type=StepType.APPROVAL_GATE,
+                               depends_on=["draft"], output="decision"),
+                StepDefinition(id="send", type=StepType.LLM_CALL,
+                               depends_on=["approve"],
+                               prompt="Send: {state.draft_text}", output="result"),
             ],
         )
 
@@ -75,30 +57,31 @@ data:
         with tempfile.TemporaryDirectory() as cp_dir:
             ckpt = FileCheckpointer(checkpoint_dir=Path(cp_dir))
 
-            print("[1/3] Running workflow (should pause)...")
+            print("[1/3] Running workflow (should pause at approval gate)...")
             eng = WorkflowEngine(workflow=_wf(), provider_gateway=_gw(),
-                                 step_registry=_reg(), checkpointer=ckpt,
-                                 run_id="k8s-pause")
+                                 checkpointer=ckpt, run_id="k8s-approval")
             r = await eng.run()
             assert r.status == WorkflowStatus.PAUSED, f"Expected PAUSED, got {r.status}"
-            print("  OK: paused")
+            assert r.step_results["approve"].status == StepStatus.PAUSED
+            print("  OK: paused at approval gate")
 
-            print("[2/3] Verifying checkpoint...")
-            loaded = await ckpt.load("k8s-pause")
-            assert loaded.status == "paused"
-            assert loaded.paused_step_id == "step_b"
-            assert "step_a" in loaded.completed_steps
-            print("  OK: checkpoint valid")
-
-            print("[3/3] Resuming...")
-            data = await ckpt.load("k8s-pause")
+            print("[2/3] Resuming with approval...")
+            data = await ckpt.load("k8s-approval")
             resumed = await WorkflowEngine.from_checkpoint(
-                checkpoint_data=data, checkpointer=ckpt, provider_gateway=_gw())
+                checkpoint_data=data, checkpointer=ckpt, provider_gateway=_gw(),
+                approval_decisions={"approve": "approved"})
             r2 = await resumed.run()
             assert r2.status == WorkflowStatus.SUCCESS, f"Expected SUCCESS, got {r2.status}"
-            print("  OK: resumed successfully")
+            assert r2.final_state.get("decision") == "approved"
+            print("  OK: completed with decision=approved")
 
-        print("\nAll K8s pause/resume validations passed!")
+            print("[3/3] Verifying final checkpoint...")
+            final = await ckpt.load("k8s-approval")
+            assert final.status == "success"
+            assert final.paused_step_id is None
+            print("  OK: checkpoint updated to success")
+
+        print("\nAll K8s approval gate validations passed!")
 
     import anyio
     anyio.run(main)
@@ -106,7 +89,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: pause-resume-smoke
+  name: approval-gate-smoke
   namespace: agentloom
 spec:
   backoffLimit: 0
@@ -124,7 +107,7 @@ spec:
           image: agentloom:dev
           imagePullPolicy: Never
           command: ["python3"]
-          args: ["/scripts/validate_pause_resume.py"]
+          args: ["/scripts/validate_approval_gate.py"]
           env:
             - name: UV_CACHE_DIR
               value: /tmp/.uv-cache
@@ -146,4 +129,4 @@ spec:
       volumes:
         - name: script
           configMap:
-            name: pause-resume-script
+            name: approval-gate-script
