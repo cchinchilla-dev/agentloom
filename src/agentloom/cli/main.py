@@ -10,6 +10,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+from agentloom.cli.callback_server import callback_server  # noqa: E402
 from agentloom.cli.info import info  # noqa: E402
 from agentloom.cli.resume import resume  # noqa: E402
 from agentloom.cli.run import run  # noqa: E402
@@ -23,6 +24,7 @@ app.command("runs")(runs)
 app.command("validate")(validate)
 app.command("visualize")(visualize)
 app.command("info")(info)
+app.command("callback-server")(callback_server)
 
 
 if __name__ == "__main__":
