@@ -78,7 +78,7 @@ class StepDefinition(BaseModel):
     workflow_path: str | None = None
     workflow_inline: dict[str, Any] | None = None
 
-    # Approval gate fields
+    # Approval gate fields (timeout enforced by callback server — #42)
     timeout_seconds: int | None = None
     on_timeout: Literal["approve", "reject"] | None = None
 

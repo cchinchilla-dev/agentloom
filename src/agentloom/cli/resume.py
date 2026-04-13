@@ -75,7 +75,13 @@ async def _resume_async(
 
     # Build approval decisions map for the paused step
     approval_decisions: dict[str, str] = {}
-    if decision and checkpoint_data.paused_step_id:
+    if decision:
+        if checkpoint_data.status != "paused" or not checkpoint_data.paused_step_id:
+            typer.echo(
+                f"Run '{run_id}' is not paused at an approval gate.",
+                err=True,
+            )
+            raise typer.Exit(1)
         approval_decisions[checkpoint_data.paused_step_id] = decision
 
     if decision:

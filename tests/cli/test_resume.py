@@ -375,3 +375,16 @@ class TestResumeApproval:
         assert "Cannot use --approve and --reject together" in (
             result.output + (result.stderr or "")
         )
+
+    def test_approve_on_non_paused_run_fails(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "not-paused", status="failed", paused_step_id=None)
+
+        result = runner.invoke(
+            app,
+            ["resume", "not-paused", "--checkpoint-dir", str(tmp_path), "--approve"],
+        )
+
+        assert result.exit_code != 0
+        assert "not paused at an approval gate" in (
+            result.output + (result.stderr or "")
+        )

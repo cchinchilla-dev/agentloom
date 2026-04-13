@@ -25,8 +25,8 @@ steps:
   - id: approve
     type: approval_gate
     depends_on: [draft]
-    timeout_seconds: 3600
-    on_timeout: reject
+    timeout_seconds: 3600      # enforced by callback server (#42)
+    on_timeout: reject         # auto-decision when timeout expires (#42)
     output: decision
 
   - id: finalise

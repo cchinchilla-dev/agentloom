@@ -10,7 +10,7 @@ All notable changes to this project are documented here. The format follows [Kee
     - `StepType.APPROVAL_GATE` pauses the workflow and waits for human approval or rejection
     - Decision injected via `_approval.<step_id>` state key on resume
     - `--approve` / `--reject` flags on `agentloom resume`
-    - `timeout_seconds` and `on_timeout` fields for automatic resolution
+    - `timeout_seconds` and `on_timeout` schema fields (consumed by webhook callback server in #42)
     - Example workflow (29), validation script, and K8s smoke job
 - **Workflow pause mechanism** — foundation for human-in-the-loop (#40)
     - `PauseRequestedError` exception for step executors to signal a pause
