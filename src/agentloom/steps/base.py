@@ -23,7 +23,10 @@ class StepContext(BaseModel):
     tool_registry: Any | None = None  # ToolRegistry
     workflow_model: str = "gpt-4o-mini"
     workflow_provider: str = "openai"
+    run_id: str = ""
+    workflow_name: str = ""
     sandbox_config: SandboxConfig = Field(default_factory=SandboxConfig)
+    observer: Any | None = None  # WorkflowObserver
     stream: bool = False
     on_stream_chunk: Callable[[str, str], None] | None = None
 

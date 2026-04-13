@@ -455,9 +455,12 @@ class WorkflowEngine:
             state_manager=self.state,
             provider_gateway=self.provider_gateway,
             tool_registry=self.tool_registry,
+            run_id=self.run_id,
+            workflow_name=self.workflow.name,
             workflow_model=self.workflow.config.model,
             workflow_provider=self.workflow.config.provider,
             sandbox_config=self.workflow.config.sandbox,
+            observer=self.observer,
             stream=should_stream,
             on_stream_chunk=self._stream_callback,
         )
