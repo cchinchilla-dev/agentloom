@@ -385,6 +385,4 @@ class TestResumeApproval:
         )
 
         assert result.exit_code != 0
-        assert "not paused at an approval gate" in (
-            result.output + (result.stderr or "")
-        )
+        assert "not paused at an approval gate" in (result.output + (result.stderr or ""))
