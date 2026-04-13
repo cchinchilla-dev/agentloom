@@ -123,7 +123,7 @@ spec:
         - name: runner
           image: agentloom:dev
           imagePullPolicy: Never
-          command: ["/build/.venv/bin/python"]
+          command: ["python3"]
           args: ["/scripts/validate_pause_resume.py"]
           env:
             - name: UV_CACHE_DIR
