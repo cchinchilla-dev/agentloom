@@ -102,6 +102,42 @@ class TestCircuitBreakerEvents:
         metrics.set_circuit_state.assert_called_with("p", 2)
 
 
+class TestHITLEvents:
+    def test_on_approval_gate_records_metrics(self) -> None:
+        metrics = MagicMock()
+        observer = WorkflowObserver(metrics=metrics)
+        observer.on_approval_gate("gate", "my-wf", "approved")
+        metrics.record_approval_gate.assert_called_once_with("my-wf", "approved")
+
+    def test_on_approval_gate_sets_span_attribute(self) -> None:
+        tracing = MagicMock()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_step_start("gate", "approval_gate")
+        span = tracing.start_span.return_value
+        observer.on_approval_gate("gate", "my-wf", "rejected")
+        span.set_attribute.assert_any_call("approval_gate.decision", "rejected")
+
+    def test_on_webhook_delivery_records_metrics(self) -> None:
+        metrics = MagicMock()
+        observer = WorkflowObserver(metrics=metrics)
+        observer.on_webhook_delivery("gate", "my-wf", "success", 1.5)
+        metrics.record_webhook_delivery.assert_called_once_with("my-wf", "success", 1.5)
+
+    def test_on_webhook_delivery_sets_span_attributes(self) -> None:
+        tracing = MagicMock()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_step_start("gate", "approval_gate")
+        span = tracing.start_span.return_value
+        observer.on_webhook_delivery("gate", "my-wf", "failed", 6.0)
+        span.set_attribute.assert_any_call("webhook.status", "failed")
+        span.set_attribute.assert_any_call("webhook.latency_s", 6.0)
+
+    def test_no_metrics_no_error(self) -> None:
+        observer = WorkflowObserver()
+        observer.on_approval_gate("gate", "wf", "pending")
+        observer.on_webhook_delivery("gate", "wf", "success", 0.5)
+
+
 class TestBudgetEvents:
     def test_on_budget_remaining(self) -> None:
         metrics = MagicMock()

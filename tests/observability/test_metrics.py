@@ -22,6 +22,8 @@ class TestMetricsDisabled:
         mm.record_provider_call("openai", "gpt-4o-mini", 0.3)
         mm.record_provider_error("openai", "timeout")
         mm.record_tokens("openai", "gpt-4o-mini", 100, 50)
+        mm.record_approval_gate("wf", "approved")
+        mm.record_webhook_delivery("wf", "success", 0.5)
         mm.set_budget_remaining("wf", 0.5)
         mm.set_circuit_state("openai", 1)
         mm.shutdown()
@@ -84,6 +86,21 @@ class TestMetricsEnabled:
         mm = MetricsManager(enabled=True)
         mm.set_budget_remaining("wf", 0.42)
         assert mm._budget_remaining["wf"] == 0.42
+        if mm._backend == "otel":
+            mm.shutdown()
+
+    def test_record_approval_gate(self) -> None:
+        mm = MetricsManager(enabled=True)
+        mm.record_approval_gate("wf", "approved")
+        mm.record_approval_gate("wf", "rejected")
+        mm.record_approval_gate("wf", "pending")
+        if mm._backend == "otel":
+            mm.shutdown()
+
+    def test_record_webhook_delivery(self) -> None:
+        mm = MetricsManager(enabled=True)
+        mm.record_webhook_delivery("wf", "success", 0.5)
+        mm.record_webhook_delivery("wf", "failed", 6.0)
         if mm._backend == "otel":
             mm.shutdown()
 

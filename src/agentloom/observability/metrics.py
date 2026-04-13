@@ -140,6 +140,19 @@ class MetricsManager:
             description="Time to first token for streamed responses",
             unit="s",
         )
+        self._approval_gate_counter = meter.create_counter(
+            "agentloom_approval_gates_total",
+            description="Total approval gate decisions",
+        )
+        self._webhook_counter = meter.create_counter(
+            "agentloom_webhook_deliveries_total",
+            description="Total webhook delivery attempts",
+        )
+        self._webhook_histogram = meter.create_histogram(
+            "agentloom_webhook_latency_seconds",
+            description="Webhook delivery latency",
+            unit="s",
+        )
 
         # Circuit breaker gauge (callback-based, reads from _circuit_states)
         states = self._circuit_states
@@ -225,6 +238,22 @@ class MetricsManager:
             "Time to first token for streamed responses",
             ["provider", "model"],
             buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+        )
+        self._prom_counters["approval_gates"] = prom.Counter(
+            "agentloom_approval_gates_total",
+            "Total approval gate decisions",
+            ["decision", "workflow"],
+        )
+        self._prom_counters["webhook_deliveries"] = prom.Counter(
+            "agentloom_webhook_deliveries_total",
+            "Total webhook delivery attempts",
+            ["status", "workflow"],
+        )
+        self._prom_histograms["webhook_latency"] = prom.Histogram(
+            "agentloom_webhook_latency_seconds",
+            "Webhook delivery latency",
+            ["status"],
+            buckets=[0.1, 0.5, 1, 2, 5, 10, 30],
         )
         self._prom_gauges["budget_remaining"] = prom.Gauge(
             "agentloom_budget_remaining_usd",
@@ -353,6 +382,24 @@ class MetricsManager:
             self._ttft_histogram.record(ttft_s, {"provider": provider, "model": model})
         else:
             self._prom_histograms["ttft"].labels(provider=provider, model=model).observe(ttft_s)
+
+    def record_approval_gate(self, workflow: str, decision: str) -> None:
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._approval_gate_counter.add(1, {"decision": decision, "workflow": workflow})
+        else:
+            self._prom_counters["approval_gates"].labels(decision=decision, workflow=workflow).inc()
+
+    def record_webhook_delivery(self, workflow: str, status: str, latency_s: float) -> None:
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._webhook_counter.add(1, {"status": status, "workflow": workflow})
+            self._webhook_histogram.record(latency_s, {"status": status})
+        else:
+            self._prom_counters["webhook_deliveries"].labels(status=status, workflow=workflow).inc()
+            self._prom_histograms["webhook_latency"].labels(status=status).observe(latency_s)
 
     def set_budget_remaining(self, workflow: str, remaining: float) -> None:
         if not self._enabled:

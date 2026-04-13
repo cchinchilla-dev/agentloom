@@ -163,6 +163,25 @@ class WorkflowObserver:
         if self._metrics:
             self._metrics.set_circuit_state(provider, state_int)
 
+    # Human-in-the-loop events
+
+    def on_approval_gate(self, step_id: str, workflow_name: str, decision: str) -> None:
+        if self._metrics:
+            self._metrics.record_approval_gate(workflow_name, decision)
+        span = self._step_spans.get(step_id)
+        if span:
+            span.set_attribute("approval_gate.decision", decision)
+
+    def on_webhook_delivery(
+        self, step_id: str, workflow_name: str, status: str, latency_s: float
+    ) -> None:
+        if self._metrics:
+            self._metrics.record_webhook_delivery(workflow_name, status, latency_s)
+        span = self._step_spans.get(step_id)
+        if span:
+            span.set_attribute("webhook.status", status)
+            span.set_attribute("webhook.latency_s", latency_s)
+
     # Budget events
 
     def on_budget_remaining(self, workflow: str, remaining: float) -> None:
