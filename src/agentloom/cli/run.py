@@ -34,6 +34,12 @@ def run(
     checkpoint_dir: str = typer.Option(
         ".agentloom/checkpoints", "--checkpoint-dir", help="Checkpoint storage directory."
     ),
+    mock_responses: Path | None = typer.Option(
+        None, "--mock-responses", help="Replay responses from a JSON file via MockProvider."
+    ),
+    record: Path | None = typer.Option(
+        None, "--record", help="Record provider responses to a JSON file for later replay."
+    ),
 ) -> None:
     """Execute a workflow from a YAML definition file."""
     anyio.run(
@@ -48,6 +54,8 @@ def run(
         stream,
         checkpoint,
         checkpoint_dir,
+        mock_responses,
+        record,
     )
 
 
@@ -62,6 +70,8 @@ async def _run_async(
     stream: bool = False,
     checkpoint: bool = False,
     checkpoint_dir: str = ".agentloom/checkpoints",
+    mock_responses: Path | None = None,
+    record: Path | None = None,
 ) -> None:
     """Async implementation of the run command."""
     from agentloom.core.engine import WorkflowEngine
@@ -70,14 +80,12 @@ async def _run_async(
     from agentloom.tools.registry import ToolRegistry
     from agentloom.tools.sandbox import ToolSandbox
 
-    # Parse workflow
     try:
         workflow = WorkflowParser.from_yaml(workflow_path)
     except Exception as e:
         typer.echo(f"Error loading workflow: {e}", err=True)
         raise typer.Exit(1)
 
-    # Apply overrides
     if provider_override:
         workflow.config.provider = provider_override
     if model_override:
@@ -87,7 +95,6 @@ async def _run_async(
     if stream:
         workflow.config.stream = True
 
-    # Parse state overrides
     initial_state = dict(workflow.state)
     for item in state_args:
         if "=" not in item:
@@ -98,11 +105,30 @@ async def _run_async(
 
     state_manager = StateManager(initial_state=initial_state)
 
-    # Setup provider gateway
     gateway = ProviderGateway()
-    _setup_providers(gateway, workflow.config.provider)
+    # Setup observability (unless --lite) — done early so providers can hook into it
+    observer = _setup_observer(lite)
 
-    # Setup tools with sandbox from workflow config
+    if mock_responses is not None:
+        from agentloom.providers.mock import MockProvider
+
+        workflow.config.provider = "mock"
+        gateway.register(
+            MockProvider(
+                responses_file=mock_responses,
+                observer=observer,
+                workflow_name=workflow.name,
+            ),
+            priority=0,
+        )
+    else:
+        _setup_providers(gateway, workflow.config.provider)
+        if record is not None:
+            from agentloom.providers.recorder import RecordingProvider
+
+            for entry in list(gateway._providers):
+                entry.provider = RecordingProvider(entry.provider, record, observer=observer)
+
     sandbox_cfg = workflow.config.sandbox
     sandbox = ToolSandbox(
         enabled=sandbox_cfg.enabled,
@@ -117,10 +143,6 @@ async def _run_async(
     tool_registry = ToolRegistry()
     register_builtins(tool_registry, sandbox=sandbox)
 
-    # Setup observability (unless --lite)
-    observer = _setup_observer(lite)
-
-    # Setup stream callback
     stream_callback = None
     if stream and not output_json:
 
@@ -129,14 +151,12 @@ async def _run_async(
 
         stream_callback = _on_chunk
 
-    # Setup checkpointer
     checkpointer = None
     if checkpoint:
         from agentloom.checkpointing.file import FileCheckpointer
 
         checkpointer = FileCheckpointer(checkpoint_dir=checkpoint_dir)
 
-    # Run engine
     engine = WorkflowEngine(
         workflow=workflow,
         state_manager=state_manager,
@@ -279,7 +299,6 @@ def _print_result(result: object) -> None:
             line += f" [{sr.attachment_count} attachment{'s' if sr.attachment_count > 1 else ''}]"
         typer.echo(line)
 
-    # Show final output
     final_state = r.final_state
     typer.echo(f"\nFinal State Keys: {list(final_state.keys())}")
     typer.echo(f"{'=' * 60}")
