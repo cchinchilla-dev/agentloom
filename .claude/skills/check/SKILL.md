@@ -1,12 +1,15 @@
 ---
 name: check
-description: Run the full quality gate — tests, lint, type check. Use after making changes to verify nothing is broken.
+description: Run the full quality gate — format, lint, tests, types. Use after changes to verify nothing is broken.
 ---
 
-Run the complete quality pipeline for AgentLoom. Stop at the first failure.
+Run the pipeline in this order, stopping at the first real failure. Exact commands live in CLAUDE.md.
 
-1. `uv run pytest --tb=short -q` — if tests fail, report which ones and why
-2. `uv run ruff check src/ tests/` — if lint fails, fix with `ruff check --fix` and report what changed
-3. `uv run mypy src/` — if types fail, report the errors
+1. **Format** — run `ruff format`. Reformatted files are expected; stage them.
+2. **Lint** — run `ruff check`. Auto-fix when safe (`--fix`); escalate anything that needs a design call.
+3. **Tests** — `pytest -q`. On failure, identify the test and the root cause — don't just relay the traceback.
+4. **Types** — `mypy`. Report offending files and lines.
 
-If everything passes, say so in one line. If something fails, focus on fixing it — don't just report.
+Fix what you can. Only escalate when a failure needs a decision.
+
+If everything passes, one line: `<N> passed, format+lint+types clean`.
