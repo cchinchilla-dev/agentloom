@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- **Deterministic replay with `MockProvider` and `RecordingProvider`** — offline evaluation and reproducible tests (#76)
+    - `MockProvider` loads pre-recorded responses from a JSON file, keyed by `step_id` or SHA-256 hash of the messages
+    - Latency models: `constant`, `normal` (seeded gaussian), `replay` (uses the recorded `latency_ms`)
+    - `RecordingProvider` wraps any real provider, captures every completion to JSON, flushes per call so a crash still leaves a partial recording
+    - Merge-on-flush: multiple `RecordingProvider` instances writing to the same path accumulate instead of clobbering each other
+    - CLI flags: `agentloom run --record <file>` captures, `--mock-responses <file>` replays — fully offline, zero network
+    - Prometheus metrics: `agentloom_mock_replays_total{workflow, matched_by}`, `agentloom_recording_captures_total{provider, model}`, `agentloom_recording_latency_seconds`
+    - OTel span attributes: `mock.matched_by`, `recording.provider`, `recording.latency_s`
+    - Grafana dashboard row "Mock & Replay" with hit-ratio, captures by provider, and real-provider latency quantiles
+    - Validated end-to-end with real Anthropic calls in CLI, Docker, and Kubernetes (byte-identical replay)
 - **Webhook notifications for approval gates** — outbound HTTP on pause (#42)
     - `WebhookConfig` on `StepDefinition.notify` with URL, custom headers, and JSON body template
     - Async webhook sender with 3-retry exponential backoff (best-effort, never blocks pause)

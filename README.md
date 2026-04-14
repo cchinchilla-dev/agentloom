@@ -34,6 +34,7 @@
 - [Observability](#observability)
 - [Deploy](#deploy)
 - [Checkpointing](#checkpointing)
+- [Testing & Replay](#testing--replay)
 - [Why not autonomous agents?](#why-not-autonomous-agents)
 - [Development](#development)
 - [Contributing](#contributing)
@@ -53,6 +54,7 @@ Existing frameworks (LangGraph, CrewAI, AutoGen) treat observability and resilie
 | Cost tracking | No | No | No | **Native with budgets** |
 | Multi-provider fallback | Manual | No | No | **Automatic** |
 | Checkpoint & resume | No | No | No | **Built-in** |
+| Deterministic replay | No | No | No | **Built-in (record + mock)** |
 | Dependencies | Heavy | Medium | Medium | **Minimal** |
 
 ## Quick Start
@@ -360,6 +362,20 @@ agentloom resume <run_id>
 ```
 
 Checkpoints are stored as JSON files in `.agentloom/checkpoints/` by default. The backend is pluggable — implement `BaseCheckpointer` to store checkpoints in Redis, S3, or any other backend. In Kubernetes, mount a PersistentVolumeClaim to share checkpoints across Jobs.
+
+## Testing & Replay
+
+Record real LLM responses once, replay them offline forever — reproducible tests, CI without API keys, statistical evaluation without paying per-run.
+
+```bash
+# Capture a real run to disk (flushes per call; crashes leave partial recordings)
+agentloom run workflow.yaml --record recordings/run1.json
+
+# Replay offline — no network, no key, no cost, byte-identical output
+agentloom run workflow.yaml --mock-responses recordings/run1.json
+```
+
+Responses are keyed by `step_id` or a SHA-256 hash of the messages. `MockProvider` supports three latency models (`constant`, `normal`, `replay`) for faithful performance reproduction. Replays emit Prometheus metrics (`agentloom_mock_replays_total`, `agentloom_recording_captures_total`) and a dedicated "Mock & Replay" row in the stock Grafana dashboard. See [docs/testing-and-replay](https://cchinchilla-dev.github.io/agentloom/testing-and-replay/) and [`examples/31_record_and_replay.yaml`](examples/31_record_and_replay.yaml).
 
 ## Why not autonomous agents?
 
