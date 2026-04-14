@@ -104,6 +104,24 @@ class TestMetricsEnabled:
         if mm._backend == "otel":
             mm.shutdown()
 
+    def test_record_attachments(self) -> None:
+        mm = MetricsManager(enabled=True)
+        mm.record_attachments("llm_call", 3)
+        if mm._backend == "otel":
+            mm.shutdown()
+
+    def test_record_stream_response(self) -> None:
+        mm = MetricsManager(enabled=True)
+        mm.record_stream_response("openai", "gpt-4o-mini")
+        if mm._backend == "otel":
+            mm.shutdown()
+
+    def test_record_time_to_first_token(self) -> None:
+        mm = MetricsManager(enabled=True)
+        mm.record_time_to_first_token("openai", "gpt-4o-mini", 0.25)
+        if mm._backend == "otel":
+            mm.shutdown()
+
     def test_shutdown(self) -> None:
         mm = MetricsManager(enabled=True)
         mm.shutdown()

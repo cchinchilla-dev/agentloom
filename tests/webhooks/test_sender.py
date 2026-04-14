@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -114,3 +115,30 @@ class TestSendWebhook:
         config = WebhookConfig(url="https://hooks.example.com/wh", timeout=1.0)
         await send_webhook(config, wh_context)
         assert route.call_count == 3
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_observer_notified_on_success(self, wh_context: WebhookContext) -> None:
+        respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(200))
+        config = WebhookConfig(url="https://hooks.example.com/wh")
+        observer = MagicMock()
+        await send_webhook(config, wh_context, observer=observer)
+        observer.on_webhook_delivery.assert_called_once()
+        args = observer.on_webhook_delivery.call_args[0]
+        assert args[0] == "approve_draft"
+        assert args[1] == "email-review"
+        assert args[2] == "success"
+        assert args[3] > 0  # latency
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_observer_notified_on_failure(self, wh_context: WebhookContext) -> None:
+        respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(500))
+        config = WebhookConfig(url="https://hooks.example.com/wh", timeout=0.5)
+        observer = MagicMock()
+        await send_webhook(config, wh_context, observer=observer)
+        observer.on_webhook_delivery.assert_called_once()
+        args = observer.on_webhook_delivery.call_args[0]
+        assert args[0] == "approve_draft"
+        assert args[1] == "email-review"
+        assert args[2] == "failed"

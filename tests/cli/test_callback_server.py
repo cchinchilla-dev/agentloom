@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import anyio
 import httpx
 import pytest
 
@@ -83,22 +82,6 @@ async def _request(port: int, method: str, path: str) -> tuple[int, dict]:
 
 
 class TestCallbackServer:
-    @pytest.mark.anyio()
-    async def test_pending_endpoint(self, tmp_path: Path) -> None:
-        _write_checkpoint(tmp_path, "run-p1")
-        _write_checkpoint(tmp_path, "run-p2")
-
-        from agentloom.cli.callback_server import _serve
-
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(_serve, str(tmp_path), "127.0.0.1", 0, True)
-            # Give the server time to start
-            await anyio.sleep(0.3)
-
-            # Find the actual port by trying the request
-            # We'll use a known port instead
-            tg.cancel_scope.cancel()
-
     @pytest.mark.anyio()
     async def test_pending_lists_paused_runs(self, tmp_path: Path) -> None:
         _write_checkpoint(tmp_path, "run-list1")
@@ -256,3 +239,229 @@ class TestCallbackServer:
         status, body = responses[0]
         assert status == 404
         assert "no checkpoint" in body["error"]
+
+    @pytest.mark.anyio()
+    async def test_webhook_invalid_json(self) -> None:
+        from agentloom.cli.callback_server import _handle_webhook
+
+        responses: list[tuple[int, dict]] = []
+
+        class FakeStream:
+            async def send(self, data: bytes) -> None:
+                text = data.decode()
+                body_start = text.index("\r\n\r\n") + 4
+                body = json.loads(text[body_start:])
+                status = int(text.split(" ")[1])
+                responses.append((status, body))
+
+        await _handle_webhook(FakeStream(), "not valid json {{{")  # type: ignore[arg-type]
+        assert responses[0][0] == 200
+
+    @pytest.mark.anyio()
+    async def test_decision_not_paused_409(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "run-done", status="success", paused_step_id=None)
+
+        from agentloom.cli.callback_server import _handle_decision
+
+        responses: list[tuple[int, dict]] = []
+
+        class FakeStream:
+            async def send(self, data: bytes) -> None:
+                text = data.decode()
+                body_start = text.index("\r\n\r\n") + 4
+                body = json.loads(text[body_start:])
+                status = int(text.split(" ")[1])
+                responses.append((status, body))
+
+        await _handle_decision(
+            FakeStream(),
+            str(tmp_path),
+            True,
+            "run-done",
+            "approved",  # type: ignore[arg-type]
+        )
+        assert responses[0][0] == 409
+        assert "not paused" in responses[0][1]["error"]
+
+    @pytest.mark.anyio()
+    async def test_decision_no_paused_step_409(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "run-nostep", status="paused", paused_step_id=None)
+
+        from agentloom.cli.callback_server import _handle_decision
+
+        responses: list[tuple[int, dict]] = []
+
+        class FakeStream:
+            async def send(self, data: bytes) -> None:
+                text = data.decode()
+                body_start = text.index("\r\n\r\n") + 4
+                body = json.loads(text[body_start:])
+                status = int(text.split(" ")[1])
+                responses.append((status, body))
+
+        await _handle_decision(
+            FakeStream(),
+            str(tmp_path),
+            True,
+            "run-nostep",
+            "approved",  # type: ignore[arg-type]
+        )
+        assert responses[0][0] == 409
+        assert "no paused step" in responses[0][1]["error"]
+
+
+class TestCallbackServerHTTP:
+    """Integration tests that exercise the full HTTP routing layer."""
+
+    @pytest.mark.anyio()
+    async def test_full_http_webhook(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        class FakeStream:
+            def __init__(self, raw: bytes) -> None:
+                self._raw = raw
+                self._sent: list[bytes] = []
+
+            async def receive(self, n: int) -> bytes:
+                data, self._raw = self._raw, b""
+                return data
+
+            async def send(self, data: bytes) -> None:
+                self._sent.append(data)
+
+        body = json.dumps({"run_id": "r1", "status": "pending"})
+        raw = (
+            f"POST /webhook HTTP/1.1\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            f"\r\n"
+            f"{body}"
+        ).encode()
+
+        stream = FakeStream(raw)
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        resp_text = b"".join(stream._sent).decode()
+        assert "200 OK" in resp_text
+
+    @pytest.mark.anyio()
+    async def test_full_http_pending(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "run-http-p1")
+
+        from agentloom.cli.callback_server import _handle_request
+
+        class FakeStream:
+            def __init__(self, raw: bytes) -> None:
+                self._raw = raw
+                self._sent: list[bytes] = []
+
+            async def receive(self, n: int) -> bytes:
+                data, self._raw = self._raw, b""
+                return data
+
+            async def send(self, data: bytes) -> None:
+                self._sent.append(data)
+
+        raw = b"GET /pending HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        stream = FakeStream(raw)
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        resp_text = b"".join(stream._sent).decode()
+        assert "200 OK" in resp_text
+        assert "run-http-p1" in resp_text
+
+    @pytest.mark.anyio()
+    async def test_full_http_404(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        class FakeStream:
+            def __init__(self, raw: bytes) -> None:
+                self._raw = raw
+                self._sent: list[bytes] = []
+
+            async def receive(self, n: int) -> bytes:
+                data, self._raw = self._raw, b""
+                return data
+
+            async def send(self, data: bytes) -> None:
+                self._sent.append(data)
+
+        raw = b"GET /nonexistent HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        stream = FakeStream(raw)
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        resp_text = b"".join(stream._sent).decode()
+        assert "404 Not Found" in resp_text
+
+    @pytest.mark.anyio()
+    async def test_full_http_approve(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "run-http-a1")
+
+        from agentloom.cli.callback_server import _handle_request
+
+        class FakeStream:
+            def __init__(self, raw: bytes) -> None:
+                self._raw = raw
+                self._sent: list[bytes] = []
+
+            async def receive(self, n: int) -> bytes:
+                data, self._raw = self._raw, b""
+                return data
+
+            async def send(self, data: bytes) -> None:
+                self._sent.append(data)
+
+        raw = b"POST /approve/run-http-a1 HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        stream = FakeStream(raw)
+
+        with patch("agentloom.cli.run._setup_providers") as mock_setup:
+            from tests.conftest import MockProvider
+
+            def _wire(gw: object, default: str) -> None:
+                from agentloom.providers.gateway import ProviderGateway
+
+                assert isinstance(gw, ProviderGateway)
+                gw.register(MockProvider(), priority=0)
+
+            mock_setup.side_effect = _wire
+
+            with patch("agentloom.cli.run._setup_observer", return_value=None):
+                await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+
+        resp_text = b"".join(stream._sent).decode()
+        assert "202 Accepted" in resp_text
+
+    @pytest.mark.anyio()
+    async def test_full_http_reject(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "run-http-r1")
+
+        from agentloom.cli.callback_server import _handle_request
+
+        class FakeStream:
+            def __init__(self, raw: bytes) -> None:
+                self._raw = raw
+                self._sent: list[bytes] = []
+
+            async def receive(self, n: int) -> bytes:
+                data, self._raw = self._raw, b""
+                return data
+
+            async def send(self, data: bytes) -> None:
+                self._sent.append(data)
+
+        raw = b"POST /reject/run-http-r1 HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        stream = FakeStream(raw)
+
+        with patch("agentloom.cli.run._setup_providers") as mock_setup:
+            from tests.conftest import MockProvider
+
+            def _wire(gw: object, default: str) -> None:
+                from agentloom.providers.gateway import ProviderGateway
+
+                assert isinstance(gw, ProviderGateway)
+                gw.register(MockProvider(), priority=0)
+
+            mock_setup.side_effect = _wire
+
+            with patch("agentloom.cli.run._setup_observer", return_value=None):
+                await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+
+        resp_text = b"".join(stream._sent).decode()
+        assert "202 Accepted" in resp_text

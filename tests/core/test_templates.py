@@ -41,8 +41,22 @@ class TestDotAccessDict:
         d = DotAccessDict({"a": 1})
         assert "1" in f"{d}"
 
+    def test_private_attr_raises(self) -> None:
+        d = DotAccessDict({"a": 1})
+        # Private attrs delegate to object.__getattribute__
+        with __import__("pytest").raises(AttributeError):
+            _ = d._nonexistent
+
+    def test_int_key_returns_empty(self) -> None:
+        d = DotAccessDict({"a": 1})
+        assert d[0] == ""
+
 
 class TestDotAccessList:
+    def test_format(self) -> None:
+        lst = DotAccessList(["x", "y"])
+        assert format(lst) == "['x', 'y']"
+
     def test_index_access(self) -> None:
         lst = DotAccessList(["x", "y", "z"])
         assert lst[0] == "x"

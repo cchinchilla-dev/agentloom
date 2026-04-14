@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -25,12 +25,15 @@ def _gate_step(*, notify: WebhookConfig | None = None) -> StepDefinition:
     )
 
 
-def _context(step: StepDefinition, state: dict | None = None) -> StepContext:
+def _context(
+    step: StepDefinition, state: dict | None = None, observer: object | None = None
+) -> StepContext:
     return StepContext(
         step_definition=step,
         state_manager=StateManager(initial_state=state or {}),
         run_id="run-42",
         workflow_name="review-wf",
+        observer=observer,
     )
 
 
@@ -83,6 +86,32 @@ class TestApprovalGateWebhook:
 
         body = json.loads(route.calls[0].request.content)
         assert body["msg"] == "Approve budget review?"
+
+    @pytest.mark.anyio()
+    async def test_observer_notified_pending_on_pause(self) -> None:
+        observer = MagicMock()
+        step = _gate_step(notify=None)
+        ctx = _context(step, observer=observer)
+
+        with pytest.raises(PauseRequestedError):
+            await ApprovalGateStep().execute(ctx)
+
+        observer.on_approval_gate.assert_called_once_with("approve_draft", "review-wf", "pending")
+
+    @pytest.mark.anyio()
+    async def test_observer_notified_on_resume(self) -> None:
+        observer = MagicMock()
+        step = _gate_step(notify=None)
+        ctx = _context(
+            step,
+            state={"_approval": {"approve_draft": "approved"}},
+            observer=observer,
+        )
+
+        result = await ApprovalGateStep().execute(ctx)
+
+        assert result.output == "approved"
+        observer.on_approval_gate.assert_called_once_with("approve_draft", "review-wf", "approved")
 
     @respx.mock
     @pytest.mark.anyio()
