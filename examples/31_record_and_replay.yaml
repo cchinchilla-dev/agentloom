@@ -1,0 +1,32 @@
+name: record-and-replay
+version: "1.0"
+description: |
+  Demonstrates deterministic replay. Run once with --record against a real
+  provider to capture responses, then replay offline forever with
+  --mock-responses. Great for CI, tests, and statistical evaluation without
+  paying per-run.
+
+config:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  max_retries: 2
+
+state:
+  topic: "the Byzantine Generals Problem"
+
+steps:
+  - id: explain
+    type: llm_call
+    prompt: "Explain {state.topic} in exactly two sentences."
+    output: explanation
+
+  - id: critique
+    type: llm_call
+    prompt: |
+      Here is an explanation of {state.topic}:
+
+      {state.explanation}
+
+      List one thing this explanation gets wrong or oversimplifies.
+    output: critique
+    depends_on: [explain]

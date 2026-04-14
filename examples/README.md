@@ -217,3 +217,18 @@ agentloom runs
 # Resume a failed or interrupted run
 agentloom resume <run_id> --lite
 ```
+
+### 31 — Record & Replay
+Two-step workflow. Run once with `--record` to capture real LLM responses to
+a JSON file, then replay offline forever with `--mock-responses` — no network,
+no API key, byte-identical output.
+Demonstrates: `RecordingProvider`, `MockProvider`, deterministic replay for CI
+and statistical evaluation.
+
+```bash
+# Capture a real run (requires ANTHROPIC_API_KEY)
+agentloom run examples/31_record_and_replay.yaml --record recordings/run1.json
+
+# Replay offline — no network, no key, no cost
+agentloom run examples/31_record_and_replay.yaml --mock-responses recordings/run1.json
+```
