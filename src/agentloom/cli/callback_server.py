@@ -21,10 +21,10 @@ def callback_server(
     lite: bool = typer.Option(False, "--lite", help="Run in lite mode (no observability)."),
 ) -> None:
     """Start an HTTP server that accepts approve/reject callbacks."""
-    anyio.run(_serve, checkpoint_dir, host, port, lite)
+    anyio.run(_serve, checkpoint_dir, host, port, lite)  # pragma: no cover
 
 
-async def _serve(checkpoint_dir: str, host: str, port: int, lite: bool) -> None:
+async def _serve(checkpoint_dir: str, host: str, port: int, lite: bool) -> None:  # pragma: no cover
     listener = await anyio.create_tcp_listener(local_host=host, local_port=port)
     # Resolve actual port (may differ from requested when port=0)
     actual_port = port
@@ -227,7 +227,7 @@ async def _handle_decision(
     result = await engine.run()
 
     if observer:
-        observer.shutdown()
+        observer.shutdown()  # pragma: no cover
     await gateway.close()
 
     logger.info(

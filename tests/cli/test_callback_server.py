@@ -465,3 +465,87 @@ class TestCallbackServerHTTP:
 
         resp_text = b"".join(stream._sent).decode()
         assert "202 Accepted" in resp_text
+
+
+class TestCallbackServerEdgeCases:
+    """Edge cases for the HTTP parsing layer."""
+
+    @staticmethod
+    def _make_chunk_stream(chunks: list[bytes]):
+        class FakeStream:
+            def __init__(self) -> None:
+                self._chunks = list(chunks)
+                self._sent: list[bytes] = []
+
+            async def receive(self, n: int) -> bytes:
+                if self._chunks:
+                    return self._chunks.pop(0)
+                return b""
+
+            async def send(self, data: bytes) -> None:
+                self._sent.append(data)
+
+        return FakeStream()
+
+    @pytest.mark.anyio()
+    async def test_empty_receive_returns_silently(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        stream = self._make_chunk_stream([b""])
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        assert stream._sent == []
+
+    @pytest.mark.anyio()
+    async def test_streamed_headers(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        _write_checkpoint(tmp_path, "run-chunk")
+        chunks = [b"GET /pend", b"ing HTTP/1.1\r\n", b"Host: x\r\n\r\n"]
+        stream = self._make_chunk_stream(chunks)
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        assert b"200 OK" in b"".join(stream._sent)
+
+    @pytest.mark.anyio()
+    async def test_streamed_body(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        body = json.dumps({"run_id": "r1"})
+        headers = f"POST /webhook HTTP/1.1\r\nContent-Length: {len(body)}\r\n\r\n"
+        stream = self._make_chunk_stream([headers.encode(), body[:3].encode(), body[3:].encode()])
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        assert b"200 OK" in b"".join(stream._sent)
+
+    @pytest.mark.anyio()
+    async def test_no_double_crlf_400(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        stream = self._make_chunk_stream([b"GET /x HTTP/1.1\r\nHost: y\r\n"])
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        assert b"400 Bad Request" in b"".join(stream._sent)
+
+    @pytest.mark.anyio()
+    async def test_invalid_content_length_400(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        raw = b"POST /webhook HTTP/1.1\r\nContent-Length: not-a-number\r\n\r\n"
+        stream = self._make_chunk_stream([raw])
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        assert b"400 Bad Request" in b"".join(stream._sent)
+
+    @pytest.mark.anyio()
+    async def test_negative_content_length_400(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        raw = b"POST /webhook HTTP/1.1\r\nContent-Length: -5\r\n\r\n"
+        stream = self._make_chunk_stream([raw])
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        assert b"400 Bad Request" in b"".join(stream._sent)
+
+    @pytest.mark.anyio()
+    async def test_malformed_request_line_400(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        raw = b"GARBAGE\r\nHost: x\r\n\r\n"
+        stream = self._make_chunk_stream([raw])
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        assert b"400 Bad Request" in b"".join(stream._sent)

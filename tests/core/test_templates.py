@@ -51,6 +51,10 @@ class TestDotAccessDict:
         d = DotAccessDict({"a": 1})
         assert d[0] == ""
 
+    def test_string_key_delegates(self) -> None:
+        d = DotAccessDict({"a": 1})
+        assert d["a"] == 1
+
 
 class TestDotAccessList:
     def test_format(self) -> None:

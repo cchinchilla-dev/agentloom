@@ -82,7 +82,7 @@ class ApprovalGateStep(BaseStep):
 
         step = context.step_definition
         notify = step.notify
-        if notify is None:
+        if notify is None:  # pragma: no cover — caller already checks step.notify
             return
 
         state_snapshot = await context.state_manager.get_state_snapshot()
