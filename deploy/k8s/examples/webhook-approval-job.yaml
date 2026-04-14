@@ -1,0 +1,174 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webhook-approval-script
+  namespace: agentloom
+data:
+  validate_webhook.py: |
+    """Functional validation of webhook notifications in Kubernetes."""
+
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from agentloom.checkpointing.file import FileCheckpointer
+    from agentloom.core.engine import WorkflowEngine
+    from agentloom.core.models import (
+        StepDefinition,
+        StepType,
+        WebhookConfig,
+        WorkflowConfig,
+        WorkflowDefinition,
+    )
+    from agentloom.core.results import WorkflowStatus
+    from agentloom.providers.base import BaseProvider, ProviderResponse
+    from agentloom.providers.gateway import ProviderGateway
+    from agentloom.steps.registry import create_default_registry
+
+    class FakeProvider(BaseProvider):
+        name = "fake"
+        async def complete(self, messages, model, **kwargs):
+            return ProviderResponse(content="fake-output", model=model, provider="fake")
+        async def stream(self, *a, **kw):
+            raise NotImplementedError
+        def supports_model(self, model):
+            return True
+
+    def _gw():
+        gw = ProviderGateway()
+        gw.register(FakeProvider(), priority=0)
+        return gw
+
+    def _wf(webhook_url=None):
+        notify = None
+        if webhook_url:
+            notify = WebhookConfig(url=webhook_url, timeout=5.0)
+        return WorkflowDefinition(
+            name="webhook-k8s",
+            config=WorkflowConfig(provider="fake", model="fake"),
+            state={"input": "hello"},
+            steps=[
+                StepDefinition(id="step_a", type=StepType.LLM_CALL,
+                               prompt="A: {state.input}", output="result_a"),
+                StepDefinition(id="gate", type=StepType.APPROVAL_GATE,
+                               depends_on=["step_a"], output="decision",
+                               notify=notify),
+                StepDefinition(id="step_b", type=StepType.LLM_CALL,
+                               depends_on=["gate"],
+                               prompt="B: {state.result_a}", output="result_b"),
+            ],
+        )
+
+    async def main():
+        import anyio
+
+        received_webhooks = []
+
+        async def _capture(stream):
+            data = await stream.receive(8192)
+            text = data.decode("utf-8", errors="replace")
+            body_start = text.find("\r\n\r\n")
+            if body_start > 0:
+                body = text[body_start + 4:]
+                try:
+                    received_webhooks.append(json.loads(body))
+                except json.JSONDecodeError:
+                    received_webhooks.append({"raw": body})
+            resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
+            await stream.send(resp.encode())
+            await stream.aclose()
+
+        listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+        port = listener.extra(anyio.abc.SocketAttribute.local_port)
+        url = f"http://127.0.0.1:{port}/webhook"
+
+        with tempfile.TemporaryDirectory() as cp_dir:
+            ckpt = FileCheckpointer(checkpoint_dir=Path(cp_dir))
+
+            print("[1/4] Running workflow with webhook...")
+            async with anyio.create_task_group() as tg:
+                async def _run():
+                    eng = WorkflowEngine(
+                        workflow=_wf(url), provider_gateway=_gw(),
+                        step_registry=create_default_registry(),
+                        checkpointer=ckpt, run_id="k8s-wh")
+                    r = await eng.run()
+                    assert r.status == WorkflowStatus.PAUSED
+                    print("  OK: paused")
+                    tg.cancel_scope.cancel()
+                tg.start_soon(listener.serve, _capture)
+                tg.start_soon(_run)
+
+            print("[2/4] Verifying webhook...")
+            assert len(received_webhooks) > 0, "No webhook"
+            wh = received_webhooks[0]
+            assert wh["run_id"] == "k8s-wh"
+            assert wh["step_id"] == "gate"
+            assert wh["status"] == "awaiting_approval"
+            print(f"  OK: {wh}")
+
+            print("[3/4] Verifying checkpoint...")
+            loaded = await ckpt.load("k8s-wh")
+            assert loaded.status == "paused"
+            assert loaded.paused_step_id == "gate"
+            print("  OK: checkpoint valid")
+
+            print("[4/4] Resuming with approval...")
+            data = await ckpt.load("k8s-wh")
+            resumed = await WorkflowEngine.from_checkpoint(
+                checkpoint_data=data, checkpointer=ckpt,
+                provider_gateway=_gw(),
+                approval_decisions={"gate": "approved"})
+            r2 = await resumed.run()
+            assert r2.status == WorkflowStatus.SUCCESS
+            print("  OK: resumed successfully")
+
+        print("\nAll K8s webhook validations passed!")
+
+    import anyio
+    anyio.run(main)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: webhook-approval-smoke
+  namespace: agentloom
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  activeDeadlineSeconds: 120
+  template:
+    spec:
+      serviceAccountName: agentloom
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: runner
+          image: agentloom:dev
+          imagePullPolicy: Never
+          command: ["python3"]
+          args: ["/scripts/validate_webhook.py"]
+          env:
+            - name: UV_CACHE_DIR
+              value: /tmp/.uv-cache
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+          securityContext:
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: webhook-approval-script

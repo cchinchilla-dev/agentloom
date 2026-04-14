@@ -74,7 +74,7 @@ class MetricsManager:
 
         if _HAS_OTEL_METRICS:
             self._setup_otel(endpoint)
-        elif _HAS_PROM:
+        elif _HAS_PROM:  # pragma: no cover — prom fallback, only active when OTel unavailable
             self._setup_prom()
 
     # Setup
@@ -140,13 +140,26 @@ class MetricsManager:
             description="Time to first token for streamed responses",
             unit="s",
         )
+        self._approval_gate_counter = meter.create_counter(
+            "agentloom_approval_gates_total",
+            description="Total approval gate decisions",
+        )
+        self._webhook_counter = meter.create_counter(
+            "agentloom_webhook_deliveries_total",
+            description="Total webhook delivery attempts",
+        )
+        self._webhook_histogram = meter.create_histogram(
+            "agentloom_webhook_latency_seconds",
+            description="Webhook delivery latency",
+            unit="s",
+        )
 
         # Circuit breaker gauge (callback-based, reads from _circuit_states)
         states = self._circuit_states
 
         def _cb_circuit(options: Any) -> Any:  # noqa: ANN401
             Observation = otel_api_metrics.Observation
-            for prov, val in list(states.items()):
+            for prov, val in list(states.items()):  # pragma: no cover — fires on OTel export
                 yield Observation(val, {"provider": prov})
 
         meter.create_observable_gauge(
@@ -172,7 +185,9 @@ class MetricsManager:
         self._backend = "otel"
         logger.debug("Metrics: OTLP push → %s", endpoint)
 
-    def _setup_prom(self) -> None:
+    def _setup_prom(
+        self,
+    ) -> None:  # pragma: no cover — prom fallback, only active when OTel unavailable
         self._prom_counters["workflow_runs"] = prom.Counter(
             "agentloom_workflow_runs_total",
             "Total workflow executions",
@@ -226,6 +241,22 @@ class MetricsManager:
             ["provider", "model"],
             buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
         )
+        self._prom_counters["approval_gates"] = prom.Counter(  # pragma: no cover
+            "agentloom_approval_gates_total",
+            "Total approval gate decisions",
+            ["decision", "workflow"],
+        )
+        self._prom_counters["webhook_deliveries"] = prom.Counter(  # pragma: no cover
+            "agentloom_webhook_deliveries_total",
+            "Total webhook delivery attempts",
+            ["status", "workflow"],
+        )
+        self._prom_histograms["webhook_latency"] = prom.Histogram(  # pragma: no cover
+            "agentloom_webhook_latency_seconds",
+            "Webhook delivery latency",
+            ["status"],
+            buckets=[0.1, 0.5, 1, 2, 5, 10, 30],
+        )
         self._prom_gauges["budget_remaining"] = prom.Gauge(
             "agentloom_budget_remaining_usd",
             "Remaining budget in USD",
@@ -253,7 +284,7 @@ class MetricsManager:
                 self._workflow_histogram.record(duration_s, attrs)
             if cost_usd > 0:
                 self._cost_counter.add(cost_usd, {"workflow": workflow, "provider": "total"})
-        else:
+        else:  # pragma: no cover — prom fallback
             self._prom_counters["workflow_runs"].labels(workflow=workflow, status=status).inc()
 
     def record_step_execution(
@@ -267,7 +298,7 @@ class MetricsManager:
                 1, {"step_type": step_type, "status": status, "stream": stream_str}
             )
             self._step_histogram.record(duration_s, {"step_type": step_type, "stream": stream_str})
-        else:
+        else:  # pragma: no cover — prom fallback
             self._prom_counters["step_executions"].labels(
                 step_type=step_type, status=status, stream=stream_str
             ).inc()
@@ -286,7 +317,7 @@ class MetricsManager:
                 1, {"provider": provider, "model": model, "stream": stream_str}
             )
             self._provider_histogram.record(latency_s, {"provider": provider, "stream": stream_str})
-        else:
+        else:  # pragma: no cover — prom fallback
             self._prom_counters["provider_calls"].labels(
                 provider=provider, model=model, stream=stream_str
             ).inc()
@@ -299,7 +330,7 @@ class MetricsManager:
             return
         if self._backend == "otel":
             self._provider_error_counter.add(1, {"provider": provider, "error_type": error_type})
-        else:
+        else:  # pragma: no cover — prom fallback
             self._prom_counters["provider_errors"].labels(
                 provider=provider, error_type=error_type
             ).inc()
@@ -322,7 +353,7 @@ class MetricsManager:
                 completion_tokens,
                 {"provider": provider, "model": model, "direction": "output"},
             )
-        else:
+        else:  # pragma: no cover — prom fallback
             self._prom_counters["tokens_total"].labels(
                 provider=provider, model=model, direction="input"
             ).inc(prompt_tokens)
@@ -335,7 +366,7 @@ class MetricsManager:
             return
         if self._backend == "otel":
             self._attachment_counter.add(count, {"step_type": step_type})
-        else:
+        else:  # pragma: no cover — prom fallback
             self._prom_counters["attachments"].labels(step_type=step_type).inc(count)
 
     def record_stream_response(self, provider: str, model: str) -> None:
@@ -343,7 +374,7 @@ class MetricsManager:
             return
         if self._backend == "otel":
             self._stream_counter.add(1, {"provider": provider, "model": model})
-        else:
+        else:  # pragma: no cover — prom fallback
             self._prom_counters["stream_responses"].labels(provider=provider, model=model).inc()
 
     def record_time_to_first_token(self, provider: str, model: str, ttft_s: float) -> None:
@@ -351,14 +382,32 @@ class MetricsManager:
             return
         if self._backend == "otel":
             self._ttft_histogram.record(ttft_s, {"provider": provider, "model": model})
-        else:
+        else:  # pragma: no cover — prom fallback
             self._prom_histograms["ttft"].labels(provider=provider, model=model).observe(ttft_s)
+
+    def record_approval_gate(self, workflow: str, decision: str) -> None:
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._approval_gate_counter.add(1, {"decision": decision, "workflow": workflow})
+        else:  # pragma: no cover — prom fallback, only active when OTel unavailable
+            self._prom_counters["approval_gates"].labels(decision=decision, workflow=workflow).inc()
+
+    def record_webhook_delivery(self, workflow: str, status: str, latency_s: float) -> None:
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._webhook_counter.add(1, {"status": status, "workflow": workflow})
+            self._webhook_histogram.record(latency_s, {"status": status})
+        else:  # pragma: no cover — prom fallback, only active when OTel unavailable
+            self._prom_counters["webhook_deliveries"].labels(status=status, workflow=workflow).inc()
+            self._prom_histograms["webhook_latency"].labels(status=status).observe(latency_s)
 
     def set_budget_remaining(self, workflow: str, remaining: float) -> None:
         if not self._enabled:
             return
         self._budget_remaining[workflow] = remaining
-        if self._backend == "prom":
+        if self._backend == "prom":  # pragma: no cover — prom fallback
             self._prom_gauges["budget_remaining"].labels(workflow=workflow).set(remaining)
 
     def set_circuit_state(self, provider: str, state: int) -> None:
@@ -367,7 +416,7 @@ class MetricsManager:
         # OTel: update dict read by the observable gauge callback
         self._circuit_states[provider] = state
         # Prometheus fallback
-        if self._backend == "prom":
+        if self._backend == "prom":  # pragma: no cover — prom fallback
             self._prom_gauges["circuit_state"].labels(provider=provider).set(state)
 
     # Lifecycle

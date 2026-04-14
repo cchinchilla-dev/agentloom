@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- **Webhook notifications for approval gates** — outbound HTTP on pause (#42)
+    - `WebhookConfig` on `StepDefinition.notify` with URL, custom headers, and JSON body template
+    - Async webhook sender with 3-retry exponential backoff (best-effort, never blocks pause)
+    - `agentloom callback-server` — lightweight HTTP server for programmatic approve/reject
+    - Routes: `POST /approve/<run_id>`, `POST /reject/<run_id>`, `GET /pending`
+    - Shared template utilities extracted to `core/templates.py`
+    - Grafana dashboard "Human-in-the-Loop" row with approval gate and webhook panels
+    - Prometheus metrics: `approval_gates_total`, `webhook_deliveries_total`, `webhook_latency_seconds`
+    - OTel span attributes for approval decisions and webhook delivery
+    - Example workflow (30), validation script, and K8s smoke job
 - **Approval gate step type** — human-in-the-loop decision point (#41)
     - `StepType.APPROVAL_GATE` pauses the workflow and waits for human approval or rejection
     - Decision injected via `_approval.<step_id>` state key on resume

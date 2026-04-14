@@ -9,9 +9,10 @@ import pytest
 from agentloom.core.models import Attachment, StepDefinition, StepType, WorkflowConfig
 from agentloom.core.results import StepStatus
 from agentloom.core.state import StateManager
+from agentloom.core.templates import DotAccessDict, DotAccessList, SafeFormatDict
 from agentloom.providers.gateway import ProviderGateway
 from agentloom.steps.base import StepContext
-from agentloom.steps.llm_call import DotAccessDict, DotAccessList, LLMCallStep, SafeFormatDict
+from agentloom.steps.llm_call import LLMCallStep
 
 # -- DotAccessDict --
 

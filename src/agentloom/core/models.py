@@ -52,6 +52,15 @@ class Condition(BaseModel):
     target: str
 
 
+class WebhookConfig(BaseModel):
+    """Webhook notification config for approval gates."""
+
+    url: str
+    headers: dict[str, str] = Field(default_factory=dict)
+    body_template: str | None = None
+    timeout: float = 30.0
+
+
 class StepDefinition(BaseModel):
     """Definition of a single workflow step."""
 
@@ -81,6 +90,7 @@ class StepDefinition(BaseModel):
     # Approval gate fields (timeout enforced by callback server — #42)
     timeout_seconds: int | None = None
     on_timeout: Literal["approve", "reject"] | None = None
+    notify: WebhookConfig | None = None
 
     # Multimodal attachments (images, etc.)
     attachments: list[Attachment] = Field(default_factory=list)
