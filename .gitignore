@@ -39,3 +39,5 @@ deploy/terraform/agentloom-dev-config
 site/
 .agentloom/checkpoints/*
 !.agentloom/checkpoints/.gitkeep
+
+recordings/
