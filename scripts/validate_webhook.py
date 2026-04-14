@@ -89,13 +89,7 @@ async def main() -> None:
                 received_webhooks.append(json.loads(body))
             except json.JSONDecodeError:
                 received_webhooks.append({"raw": body})
-        response = (
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Length: 2\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "OK"
-        )
+        response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
         await stream.send(response.encode())
         await stream.aclose()
 
@@ -179,6 +173,7 @@ async def main() -> None:
     print("\nAll webhook validations passed!")
 
 
-import anyio
+if __name__ == "__main__":
+    import anyio
 
-anyio.run(main)
+    anyio.run(main)

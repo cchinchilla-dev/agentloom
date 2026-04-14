@@ -26,7 +26,13 @@ def callback_server(
 
 async def _serve(checkpoint_dir: str, host: str, port: int, lite: bool) -> None:
     listener = await anyio.create_tcp_listener(local_host=host, local_port=port)
-    typer.echo(f"Callback server listening on {host}:{port}")
+    # Resolve actual port (may differ from requested when port=0)
+    actual_port = port
+    for lnr in listener.listeners:
+        sock = lnr.extra(anyio.abc.SocketAttribute.raw_socket)
+        actual_port = sock.getsockname()[1]
+        break
+    typer.echo(f"Callback server listening on {host}:{actual_port}")
     typer.echo("  POST /webhook           — receive webhook notifications")
     typer.echo("  POST /approve/<run_id>  — approve a paused workflow")
     typer.echo("  POST /reject/<run_id>   — reject a paused workflow")
@@ -72,7 +78,14 @@ async def _handle_request(stream: anyio.abc.SocketStream, checkpoint_dir: str, l
     content_length = 0
     for line in header_section.split("\r\n")[1:]:
         if line.lower().startswith("content-length:"):
-            content_length = int(line.split(":", 1)[1].strip())
+            try:
+                content_length = int(line.split(":", 1)[1].strip())
+            except ValueError:
+                await _send_response(stream, 400, {"error": "bad request"})
+                return
+            if content_length < 0:
+                await _send_response(stream, 400, {"error": "bad request"})
+                return
             break
 
     while len(body_so_far) < content_length:
@@ -199,7 +212,7 @@ async def _handle_decision(
     observer = _setup_observer(lite)
     engine.observer = observer
 
-    # Respond immediately, then execute in background
+    # Respond with 202, then run the engine (blocking this connection)
     await _send_response(
         stream,
         202,

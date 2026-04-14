@@ -81,6 +81,10 @@ class ApprovalGateStep(BaseStep):
         from agentloom.webhooks.sender import WebhookContext, send_webhook
 
         step = context.step_definition
+        notify = step.notify
+        if notify is None:
+            return
+
         state_snapshot = await context.state_manager.get_state_snapshot()
 
         wh_context = WebhookContext(
@@ -89,4 +93,4 @@ class ApprovalGateStep(BaseStep):
             workflow_name=context.workflow_name,
             state=state_snapshot,
         )
-        await send_webhook(step.notify, wh_context, observer=context.observer)  # type: ignore[arg-type]
+        await send_webhook(notify, wh_context, observer=context.observer)

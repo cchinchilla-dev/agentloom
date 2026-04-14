@@ -5,12 +5,22 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
 from agentloom.core.models import WebhookConfig
 from agentloom.core.templates import SafeFormatDict, build_template_vars
+
+
+@runtime_checkable
+class WebhookObserver(Protocol):
+    """Minimal observer interface for webhook delivery events."""
+
+    def on_webhook_delivery(
+        self, step_id: str, workflow_name: str, status: str, latency_s: float
+    ) -> None: ...
+
 
 logger = logging.getLogger("agentloom.webhooks")
 
@@ -56,7 +66,7 @@ def _build_payload(config: WebhookConfig, context: WebhookContext) -> str:
 
 
 async def send_webhook(
-    config: WebhookConfig, context: WebhookContext, observer: Any | None = None
+    config: WebhookConfig, context: WebhookContext, observer: WebhookObserver | None = None
 ) -> None:
     """POST a webhook notification with best-effort retry.
 
@@ -84,9 +94,9 @@ async def send_webhook(
                 context.run_id,
             )
             if observer:
-                hook = getattr(observer, "on_webhook_delivery", None)
-                if hook:
-                    hook(context.step_id, context.workflow_name, "success", latency)
+                observer.on_webhook_delivery(
+                    context.step_id, context.workflow_name, "success", latency
+                )
             return
         except Exception as exc:
             if attempt < _MAX_RETRIES:
@@ -111,6 +121,6 @@ async def send_webhook(
                 )
                 logger.debug("Webhook final failure traceback", exc_info=True)
                 if observer:
-                    hook = getattr(observer, "on_webhook_delivery", None)
-                    if hook:
-                        hook(context.step_id, context.workflow_name, "failed", latency)
+                    observer.on_webhook_delivery(
+                        context.step_id, context.workflow_name, "failed", latency
+                    )
