@@ -61,6 +61,9 @@ class MetricsManager:
         self._attachment_counter: Any = None
         self._stream_counter: Any = None
         self._ttft_histogram: Any = None
+        self._mock_replay_counter: Any = None
+        self._recording_capture_counter: Any = None
+        self._recording_latency_histogram: Any = None
         self._circuit_states: dict[str, int] = {}  # provider -> state int
         self._budget_remaining: dict[str, float] = {}  # workflow -> remaining USD
 
@@ -76,8 +79,6 @@ class MetricsManager:
             self._setup_otel(endpoint)
         elif _HAS_PROM:  # pragma: no cover — prom fallback, only active when OTel unavailable
             self._setup_prom()
-
-    # Setup
 
     def _setup_otel(self, endpoint: str) -> None:
         exporter = otel_metric_exporter.OTLPMetricExporter(endpoint=endpoint, insecure=True)
@@ -151,6 +152,19 @@ class MetricsManager:
         self._webhook_histogram = meter.create_histogram(
             "agentloom_webhook_latency_seconds",
             description="Webhook delivery latency",
+            unit="s",
+        )
+        self._mock_replay_counter = meter.create_counter(
+            "agentloom_mock_replays_total",
+            description="Total MockProvider replay lookups",
+        )
+        self._recording_capture_counter = meter.create_counter(
+            "agentloom_recording_captures_total",
+            description="Total RecordingProvider captures",
+        )
+        self._recording_latency_histogram = meter.create_histogram(
+            "agentloom_recording_latency_seconds",
+            description="Latency of real provider calls captured by RecordingProvider",
             unit="s",
         )
 
@@ -251,6 +265,26 @@ class MetricsManager:
             "Total webhook delivery attempts",
             ["status", "workflow"],
         )
+        self._prom_counters["mock_replays"] = prom.Counter(  # pragma: no cover — prom fallback
+            "agentloom_mock_replays_total",
+            "Total MockProvider replay lookups",
+            ["workflow", "matched_by"],
+        )
+        self._prom_counters["recording_captures"] = (
+            prom.Counter(  # pragma: no cover — prom fallback
+                "agentloom_recording_captures_total",
+                "Total RecordingProvider captures",
+                ["provider", "model"],
+            )
+        )
+        self._prom_histograms["recording_latency"] = (
+            prom.Histogram(  # pragma: no cover — prom fallback
+                "agentloom_recording_latency_seconds",
+                "Latency of real provider calls captured by RecordingProvider",
+                ["provider", "model"],
+                buckets=[0.1, 0.5, 1, 2, 5, 10, 30],
+            )
+        )
         self._prom_histograms["webhook_latency"] = prom.Histogram(  # pragma: no cover
             "agentloom_webhook_latency_seconds",
             "Webhook delivery latency",
@@ -269,8 +303,6 @@ class MetricsManager:
         )
         self._backend = "prom"
         logger.debug("Metrics: prometheus_client (pull)")
-
-    # Recording
 
     def record_workflow_run(
         self, workflow: str, status: str, duration_s: float = 0.0, cost_usd: float = 0.0
@@ -403,6 +435,32 @@ class MetricsManager:
             self._prom_counters["webhook_deliveries"].labels(status=status, workflow=workflow).inc()
             self._prom_histograms["webhook_latency"].labels(status=status).observe(latency_s)
 
+    def record_mock_replay(self, workflow: str, matched_by: str) -> None:
+        """Record a MockProvider lookup. ``matched_by`` ∈ {step_id, prompt_hash, default}."""
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._mock_replay_counter.add(1, {"workflow": workflow, "matched_by": matched_by})
+        else:  # pragma: no cover — prom fallback
+            self._prom_counters["mock_replays"].labels(
+                workflow=workflow, matched_by=matched_by
+            ).inc()
+
+    def record_recording_capture(self, provider: str, model: str, latency_s: float) -> None:
+        """Record a RecordingProvider capture of a real provider call."""
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._recording_capture_counter.add(1, {"provider": provider, "model": model})
+            self._recording_latency_histogram.record(
+                latency_s, {"provider": provider, "model": model}
+            )
+        else:  # pragma: no cover — prom fallback
+            self._prom_counters["recording_captures"].labels(provider=provider, model=model).inc()
+            self._prom_histograms["recording_latency"].labels(
+                provider=provider, model=model
+            ).observe(latency_s)
+
     def set_budget_remaining(self, workflow: str, remaining: float) -> None:
         if not self._enabled:
             return
@@ -415,11 +473,8 @@ class MetricsManager:
             return
         # OTel: update dict read by the observable gauge callback
         self._circuit_states[provider] = state
-        # Prometheus fallback
         if self._backend == "prom":  # pragma: no cover — prom fallback
             self._prom_gauges["circuit_state"].labels(provider=provider).set(state)
-
-    # Lifecycle
 
     def shutdown(self) -> None:
         """Flush pending metrics before process exit."""

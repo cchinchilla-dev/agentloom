@@ -33,8 +33,6 @@ class WorkflowObserver:
         self._workflow_span: Any | None = None
         self._step_spans: dict[str, Any] = {}
 
-    # Workflow lifecycle
-
     def on_workflow_start(self, workflow_name: str) -> None:
         if self._tracing:
             self._workflow_span = self._tracing.start_span(
@@ -50,13 +48,11 @@ class WorkflowObserver:
         total_tokens: int,
         total_cost: float,
     ) -> None:
-        # Metrics
         if self._metrics:
             self._metrics.record_workflow_run(
                 workflow_name, status, duration_ms / 1000.0, total_cost
             )
 
-        # Span
         span = self._workflow_span
         if span:
             span.set_attribute("workflow.status", status)
@@ -68,8 +64,6 @@ class WorkflowObserver:
             else:
                 span.end()
             self._workflow_span = None
-
-    # Step lifecycle
 
     def on_step_start(self, step_id: str, step_type: str, stream: bool = False) -> None:
         if self._tracing:
@@ -96,7 +90,6 @@ class WorkflowObserver:
         time_to_first_token_ms: float | None = None,
         stream: bool = False,
     ) -> None:
-        # Metrics
         if self._metrics:
             self._metrics.record_step_execution(
                 step_type, status, duration_ms / 1000.0, stream=stream
@@ -104,7 +97,6 @@ class WorkflowObserver:
             if attachment_count > 0:
                 self._metrics.record_attachments(step_type, attachment_count)
 
-        # Span
         span = self._step_spans.pop(step_id, None)
         if span:
             span.set_attribute("step.status", status)
@@ -163,8 +155,6 @@ class WorkflowObserver:
         if self._metrics:
             self._metrics.set_circuit_state(provider, state_int)
 
-    # Human-in-the-loop events
-
     def on_approval_gate(self, step_id: str, workflow_name: str, decision: str) -> None:
         if self._metrics:
             self._metrics.record_approval_gate(workflow_name, decision)
@@ -182,13 +172,26 @@ class WorkflowObserver:
             span.set_attribute("webhook.status", status)
             span.set_attribute("webhook.latency_s", latency_s)
 
-    # Budget events
+    def on_mock_replay(self, workflow_name: str, step_id: str, matched_by: str) -> None:
+        if self._metrics:
+            self._metrics.record_mock_replay(workflow_name, matched_by)
+        span = self._step_spans.get(step_id)
+        if span:
+            span.set_attribute("mock.matched_by", matched_by)
+
+    def on_recording_capture(
+        self, step_id: str, provider: str, model: str, latency_s: float
+    ) -> None:
+        if self._metrics:
+            self._metrics.record_recording_capture(provider, model, latency_s)
+        span = self._step_spans.get(step_id)
+        if span:
+            span.set_attribute("recording.provider", provider)
+            span.set_attribute("recording.latency_s", latency_s)
 
     def on_budget_remaining(self, workflow: str, remaining: float) -> None:
         if self._metrics:
             self._metrics.set_budget_remaining(workflow, remaining)
-
-    # Shutdown
 
     def shutdown(self) -> None:
         if self._metrics:

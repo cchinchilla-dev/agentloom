@@ -138,6 +138,42 @@ class TestHITLEvents:
         observer.on_webhook_delivery("gate", "wf", "success", 0.5)
 
 
+class TestMockAndRecordingEvents:
+    def test_on_mock_replay_records_metrics(self) -> None:
+        metrics = MagicMock()
+        observer = WorkflowObserver(metrics=metrics)
+        observer.on_mock_replay("my-wf", "step_a", "step_id")
+        metrics.record_mock_replay.assert_called_once_with("my-wf", "step_id")
+
+    def test_on_mock_replay_sets_span_attribute(self) -> None:
+        tracing = MagicMock()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_step_start("step_a", "llm_call")
+        span = tracing.start_span.return_value
+        observer.on_mock_replay("my-wf", "step_a", "prompt_hash")
+        span.set_attribute.assert_any_call("mock.matched_by", "prompt_hash")
+
+    def test_on_recording_capture_records_metrics(self) -> None:
+        metrics = MagicMock()
+        observer = WorkflowObserver(metrics=metrics)
+        observer.on_recording_capture("step_a", "anthropic", "claude", 0.88)
+        metrics.record_recording_capture.assert_called_once_with("anthropic", "claude", 0.88)
+
+    def test_on_recording_capture_sets_span_attributes(self) -> None:
+        tracing = MagicMock()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_step_start("step_a", "llm_call")
+        span = tracing.start_span.return_value
+        observer.on_recording_capture("step_a", "openai", "gpt-4o-mini", 1.2)
+        span.set_attribute.assert_any_call("recording.provider", "openai")
+        span.set_attribute.assert_any_call("recording.latency_s", 1.2)
+
+    def test_no_metrics_no_error(self) -> None:
+        observer = WorkflowObserver()
+        observer.on_mock_replay("wf", "s", "default")
+        observer.on_recording_capture("s", "p", "m", 0.1)
+
+
 class TestBudgetEvents:
     def test_on_budget_remaining(self) -> None:
         metrics = MagicMock()
