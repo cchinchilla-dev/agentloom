@@ -8,7 +8,7 @@ Check CI status for AgentLoom.
 ## Process
 
 1. **List recent runs**
-   - `gh run list --limit 5`
+   - `gh run list --limit 12`
    - Show: status, conclusion, workflow name, branch, duration
 
 2. **If there are failures**

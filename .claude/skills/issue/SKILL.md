@@ -5,30 +5,43 @@ description: Create, view, or triage GitHub issues from the terminal. Pass an is
 
 Work with GitHub issues for AgentLoom.
 
-## If $ARGUMENTS is an issue number (e.g., "42")
+## If `$ARGUMENTS` is an issue number
 
-1. Fetch issue details: `gh issue view $ARGUMENTS`
-2. Read the issue body and comments
-3. Explore the relevant code in the codebase
-4. Propose an implementation plan:
-   - Which files need to change
-   - What the change involves
-   - Estimated complexity (trivial / moderate / significant)
-   - Suggested approach
-5. Ask if I should start working on it
+1. `gh issue view $ARGUMENTS`
+2. Read body + comments, explore referenced code paths.
+3. Propose an implementation plan:
+   - Files to touch
+   - Mechanism (1–2 paragraphs)
+   - Complexity: trivial / moderate / significant
+   - Open questions / decisions needed
+4. Ask before starting work.
 
-## If $ARGUMENTS is a description (e.g., "add timeout per workflow")
+## If `$ARGUMENTS` is a description
 
-1. Search existing issues for duplicates: `gh issue list --search "$ARGUMENTS"`
-2. If no duplicate, determine:
-   - **Title**: concise, imperative mood
-   - **Labels**: pick from the project's labels (bug, enhancement, core, providers, etc.)
-   - **Body**: structured with Problem, Proposed Solution, and any relevant code references
-3. Show the draft and ask for confirmation
-4. Create: `gh issue create --title "..." --body "..." --label "..."`
+1. Dedup check: `gh issue list --search "$ARGUMENTS" --state all`.
+2. Draft following the repo's issue convention:
 
-## If no $ARGUMENTS
+   **Title** — brief lowercase imperative (`add X`, `expose Y`, `fix Z`). No scopes.
 
-1. List open issues: `gh issue list --state open --limit 20`
-2. Group by label/area
-3. Suggest which ones to tackle next based on complexity and dependencies
+   **Body** — this exact structure:
+   ```
+   ### Description
+
+   <what's missing or broken, why it matters, related issues with #NN refs>
+
+   ### Proposal
+
+   <concrete approach; include code/YAML blocks where they clarify the API>
+
+   <optional: trade-offs, alternatives, notes on scope>
+   ```
+   Bugs may swap `### Proposal` for `### Repro` + `### Expected vs actual`, but keep the `###` depth.
+
+3. **Labels** — reuse existing ones; don't invent new. Pick from the label list shown by `gh label list`. Common picks: `enhancement`, `bug`, `core`, `providers`, `cli`, `observability`, `infrastructure`.
+4. Show the draft, confirm, then `gh issue create --title "..." --body "..." --label "..."`.
+
+## If no `$ARGUMENTS`
+
+1. `gh issue list --state open --limit 20`
+2. Group by label/area.
+3. Suggest next picks by complexity + dependency graph (note blockers like "depends on #NN").

@@ -1,38 +1,42 @@
 ---
 name: release
-description: Prepare and publish a new release — bump version, update changelog, tag, and push. Use when ready to ship.
+description: Cut a release — promote Unreleased → versioned in CHANGELOG, bump version, commit. CI auto-tags and publishes from the version-bump commit.
 ---
 
-Prepare a release. $ARGUMENTS should be the version bump type: `patch`, `minor`, or `major` (default: patch).
+Prepare a release. `$ARGUMENTS` is the bump type: `patch` (default), `minor`, `major`.
+
+## How this repo ships
+
+CI does the tagging and publishing. The human-side job is just: bump version + update changelog + commit to `main` with the magic message.
+
+- `.github/workflows/auto-tag.yml` watches `main` for commits whose message starts with `bump version to` → reads the version from `pyproject.toml` and pushes `v<X.Y.Z>`.
+- `.github/workflows/release.yml` triggers on the tag push → builds the wheel, creates a GitHub Release with auto-generated notes, publishes to PyPI via OIDC.
+
+So the commit message prefix (`bump version to`) is load-bearing. Don't paraphrase it.
 
 ## Process
 
-1. **Determine new version**
-   - Read current version from `src/agentloom/__init__.py`
-   - Compute new version based on $ARGUMENTS (patch: 0.1.0→0.1.1, minor: 0.1.0→0.2.0, major: 0.1.0→1.0.0)
+1. **Version**
+   - Read current from `pyproject.toml` and `src/agentloom/__init__.py`.
+   - Compute new version per semver.
 
-2. **Pre-flight checks**
-   - Run `uv run pytest --tb=short -q` — abort if tests fail
-   - Run `uv run ruff check src/` — abort if lint fails
-   - Run `uv run mypy src/` — abort if types fail
-   - Check `git status` — abort if there are uncommitted changes
+2. **Pre-flight** — run `/check`. Abort on any failure. Also abort if `git status` is dirty.
 
-3. **Generate changelog entry**
-   - Get previous tag: `git describe --tags --abbrev=0 2>/dev/null`
-   - List commits since last tag: `git log --oneline <prev_tag>..HEAD`
-   - Group by type (fix:, feat:, etc.) if conventional commits are used
-   - Prepend new section to CHANGELOG.md under `## [<version>] - <today>`
+3. **CHANGELOG** — Keep a Changelog convention already used in the repo:
+   - An `## [Unreleased]` section accumulates `### Added` / `### Changed` / `### Fixed` / `### Removed` entries during development.
+   - On release, **rename** `## [Unreleased]` to `## [<version>] - YYYY-MM-DD` (not prepend — rename in place).
+   - Insert a fresh empty `## [Unreleased]` at the top for future work.
+   - Do not rewrite or regroup existing entries. Do not auto-generate from `git log`; Unreleased is the source of truth.
+   - Sync `docs/changelog.md` if it mirrors `CHANGELOG.md`.
 
-4. **Bump version**
-   - Update `__version__` in `src/agentloom/__init__.py`
-   - Update `version` in `pyproject.toml`
+4. **Bump**
+   - `version` in `pyproject.toml`
+   - `__version__` in `src/agentloom/__init__.py`
 
-5. **Commit, tag, push**
-   - `git add pyproject.toml src/agentloom/__init__.py CHANGELOG.md`
-   - `git commit -m "release: v<version>"`
-   - `git tag v<version>`
-   - Ask for confirmation before: `git push && git push --tags`
+5. **Commit** — message **must** start with `bump version to <X.Y.Z>`. Follow `/commit` rules otherwise (no scopes, no Co-Authored-By). Do **not** run `git tag` locally — the workflow creates it.
 
-6. **Post-release**
-   - Check CI status: `gh run list --limit 1`
-   - Report: version, tag, and expected PyPI publish time
+6. **Push to main** — ask authorization first. Once pushed:
+   - Auto Tag creates `v<X.Y.Z>`.
+   - Release builds + publishes. Watch: `gh run list --limit 3`.
+
+7. **Post-release** — report tag, GitHub Release URL, and PyPI job status. If auto-tag/release fails, inspect with `/ci-status` instead of trying to recover by hand.
