@@ -65,7 +65,7 @@ async def retry_with_policy(
             )
 
             if policy.jitter:
-                backoff *= 1.0 + random.uniform(-0.25, 0.25)
+                backoff *= 1.0 + random.uniform(-0.25, 0.25)  # noqa: S311
 
             logger.warning(
                 "%s failed (attempt %d/%d), retrying in %.1fs: %s",
