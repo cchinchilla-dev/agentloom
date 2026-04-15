@@ -145,8 +145,6 @@ async def _run_async(
     tool_registry = ToolRegistry()
     register_builtins(tool_registry, sandbox=sandbox)
 
-    observer = _setup_observer(lite)
-
     stream_callback = None
     if stream and not output_json:
 
