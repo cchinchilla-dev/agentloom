@@ -82,11 +82,7 @@ def _contains(text: str, *needles: str) -> bool:
     return all(n in text for n in needles)
 
 
-# ────────────────────────────────────────────────────────────
 # Phase 1: Source contracts
-# ────────────────────────────────────────────────────────────
-
-
 def audit_step_type_enum() -> None:
     _header("StepType enum")
 
@@ -241,11 +237,7 @@ def audit_cli() -> None:
         _fail("Should use checkpoint.paused_step_id as decision key")
 
 
-# ────────────────────────────────────────────────────────────
 # Phase 2: Test coverage
-# ────────────────────────────────────────────────────────────
-
-
 def audit_unit_tests() -> None:
     _header("Unit tests (steps/test_approval_gate.py)")
 
@@ -339,11 +331,7 @@ def audit_cli_tests() -> None:
         _fail(f"{len(found)}/{len(cli_tests)} CLI tests found", detail)
 
 
-# ────────────────────────────────────────────────────────────
 # Phase 3: Integration artefacts
-# ────────────────────────────────────────────────────────────
-
-
 def audit_artefacts() -> None:
     _header("Integration artefacts")
 
@@ -413,11 +401,7 @@ def audit_artefacts() -> None:
         _fail("Example should demonstrate on_timeout")
 
 
-# ────────────────────────────────────────────────────────────
 # Phase 4: Runtime validation
-# ────────────────────────────────────────────────────────────
-
-
 def audit_runtime() -> None:
     _header("Runtime validation (live approval gate cycles)")
 
@@ -442,10 +426,10 @@ def audit_runtime() -> None:
     class _FakeProvider(BaseProvider):
         name = "fake"
 
-        async def complete(self, messages, model, **kwargs):  # noqa: ANN001,ANN003
+        async def complete(self, messages, model, **kwargs):
             return ProviderResponse(content="fake", model=model, provider="fake")
 
-        async def stream(self, *a, **kw):  # noqa: ANN002,ANN003
+        async def stream(self, *a, **kw):
             raise NotImplementedError
 
         def supports_model(self, model: str) -> bool:
@@ -487,7 +471,7 @@ def audit_runtime() -> None:
         with tempfile.TemporaryDirectory() as cp_dir:
             ckpt = FileCheckpointer(checkpoint_dir=Path(cp_dir))
 
-            # ── Pause at approval gate ─────────────────────────
+            # Pause at approval gate
             engine = WorkflowEngine(
                 workflow=workflow,
                 provider_gateway=_gw(),
@@ -514,7 +498,7 @@ def audit_runtime() -> None:
             else:
                 _fail("Runtime: approve should be PAUSED")
 
-            # ── Verify checkpoint ──────────────────────────────
+            # Verify checkpoint
             loaded = await ckpt.load("audit-approval")
             if loaded.status == "paused" and loaded.paused_step_id == "approve":
                 _pass("Runtime: checkpoint paused at approve")
@@ -524,7 +508,7 @@ def audit_runtime() -> None:
                     f" paused_step_id={loaded.paused_step_id}"
                 )
 
-            # ── Resume with approval ───────────────────────────
+            # Resume with approval
             data = await ckpt.load("audit-approval")
             resumed = await WorkflowEngine.from_checkpoint(
                 checkpoint_data=data,
@@ -552,7 +536,7 @@ def audit_runtime() -> None:
             else:
                 _fail("Runtime: send step missing from results")
 
-            # ── Resume with rejection ──────────────────────────
+            # Resume with rejection
             engine2 = WorkflowEngine(
                 workflow=workflow,
                 provider_gateway=_gw(),
@@ -580,7 +564,7 @@ def audit_runtime() -> None:
             else:
                 _fail(f"Runtime: decision={r3.final_state.get('decision')}")
 
-            # ── Final checkpoint status ────────────────────────
+            # Final checkpoint status
             final = await ckpt.load("audit-approval")
             if final.status == "success" and final.paused_step_id is None:
                 _pass("Runtime: final checkpoint is success, no paused_step_id")
@@ -590,11 +574,7 @@ def audit_runtime() -> None:
     anyio.run(_run_audit)
 
 
-# ────────────────────────────────────────────────────────────
 # Main
-# ────────────────────────────────────────────────────────────
-
-
 def main() -> int:
     global _verbose
 
