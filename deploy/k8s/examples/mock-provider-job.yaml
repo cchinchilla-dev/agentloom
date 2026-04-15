@@ -1,0 +1,137 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mock-provider-script
+  namespace: agentloom
+data:
+  validate_mock_provider.py: |
+    """Functional validation of MockProvider + RecordingProvider in Kubernetes."""
+
+    import json
+    import tempfile
+    from pathlib import Path
+
+    import anyio
+
+    from agentloom.core.engine import WorkflowEngine
+    from agentloom.core.models import (
+        StepDefinition,
+        StepType,
+        WorkflowConfig,
+        WorkflowDefinition,
+    )
+    from agentloom.core.results import TokenUsage, WorkflowStatus
+    from agentloom.providers.base import BaseProvider, ProviderResponse
+    from agentloom.providers.gateway import ProviderGateway
+    from agentloom.providers.mock import MockProvider
+    from agentloom.providers.recorder import RecordingProvider
+
+    class DeterministicProvider(BaseProvider):
+        name = "det"
+        async def complete(self, messages, model, **kwargs):
+            last = messages[-1].get("content", "")
+            return ProviderResponse(
+                content=f"det::{last}", model=model, provider="det",
+                usage=TokenUsage(prompt_tokens=5, completion_tokens=7, total_tokens=12),
+                cost_usd=0.0001, finish_reason="stop",
+            )
+        def supports_model(self, model):
+            return True
+
+    def _wf(provider_name):
+        return WorkflowDefinition(
+            name="mock-k8s",
+            config=WorkflowConfig(provider=provider_name, model="test-model"),
+            state={"question": "what is 2+2"},
+            steps=[
+                StepDefinition(id="draft", type=StepType.LLM_CALL,
+                               prompt="Draft: {state.question}", output="draft_text"),
+                StepDefinition(id="polish", type=StepType.LLM_CALL,
+                               depends_on=["draft"],
+                               prompt="Polish: {state.draft_text}", output="polished"),
+            ],
+        )
+
+    async def main():
+        with tempfile.TemporaryDirectory() as td:
+            recording = Path(td) / "recording.json"
+
+            print("[1/3] Recording from DeterministicProvider...")
+            gw = ProviderGateway()
+            gw.register(RecordingProvider(DeterministicProvider(), recording), priority=0)
+            r = await WorkflowEngine(workflow=_wf("det"), provider_gateway=gw).run()
+            await gw.close()
+            assert r.status == WorkflowStatus.SUCCESS, r.status
+            data = json.loads(recording.read_text())
+            assert len(data) == 2, data
+            draft_out = r.final_state["draft_text"]
+            polished_out = r.final_state["polished"]
+            print(f"  OK: recorded 2 entries ({r.total_tokens} tokens)")
+
+            print("[2/3] Replaying via MockProvider...")
+            gw2 = ProviderGateway()
+            gw2.register(MockProvider(responses_file=recording), priority=0)
+            r2 = await WorkflowEngine(workflow=_wf("mock"), provider_gateway=gw2).run()
+            await gw2.close()
+            assert r2.status == WorkflowStatus.SUCCESS, r2.status
+            assert r2.final_state["draft_text"] == draft_out
+            assert r2.final_state["polished"] == polished_out
+            assert r2.total_tokens == r.total_tokens
+            print(f"  OK: outputs + tokens match (tokens={r2.total_tokens})")
+
+            print("[3/3] Verifying default_response on miss...")
+            mock = MockProvider(responses_file=recording, default_response="FALLBACK")
+            resp = await mock.complete(
+                messages=[{"role": "user", "content": "unseen"}], model="test-model",
+            )
+            assert resp.content == "FALLBACK"
+            print("  OK: unknown prompt -> default_response")
+
+        print("\nAll K8s MockProvider validations passed!")
+
+    anyio.run(main)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mock-provider-smoke
+  namespace: agentloom
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  activeDeadlineSeconds: 120
+  template:
+    spec:
+      serviceAccountName: agentloom
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: runner
+          image: agentloom:dev
+          imagePullPolicy: Never
+          command: ["/build/.venv/bin/python3"]
+          args: ["/scripts/validate_mock_provider.py"]
+          env:
+            - name: UV_CACHE_DIR
+              value: /tmp/.uv-cache
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+          securityContext:
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: mock-provider-script

@@ -33,8 +33,6 @@ class WorkflowObserver:
         self._workflow_span: Any | None = None
         self._step_spans: dict[str, Any] = {}
 
-    # Workflow lifecycle
-
     def on_workflow_start(self, workflow_name: str) -> None:
         if self._tracing:
             self._workflow_span = self._tracing.start_span(
@@ -66,8 +64,6 @@ class WorkflowObserver:
             else:
                 span.end()
             self._workflow_span = None
-
-    # Step lifecycle
 
     def on_step_start(self, step_id: str, step_type: str, stream: bool = False) -> None:
         if self._tracing:
@@ -159,8 +155,6 @@ class WorkflowObserver:
         if self._metrics:
             self._metrics.set_circuit_state(provider, state_int)
 
-    # Human-in-the-loop events
-
     def on_approval_gate(self, step_id: str, workflow_name: str, decision: str) -> None:
         if self._metrics:
             self._metrics.record_approval_gate(workflow_name, decision)
@@ -178,13 +172,29 @@ class WorkflowObserver:
             span.set_attribute("webhook.status", status)
             span.set_attribute("webhook.latency_s", latency_s)
 
-    # Budget events
+    def on_mock_replay(self, workflow_name: str, step_id: str, matched_by: str) -> None:
+        if self._metrics:
+            self._metrics.record_mock_replay(workflow_name, matched_by)
+        span = self._step_spans.get(step_id)
+        if span:
+            span.set_attribute("mock.matched_by", matched_by)
+            if step_id:
+                span.set_attribute("mock.step_id", step_id)
+
+    def on_recording_capture(
+        self, step_id: str, provider: str, model: str, latency_s: float
+    ) -> None:
+        if self._metrics:
+            self._metrics.record_recording_capture(provider, model, latency_s)
+        span = self._step_spans.get(step_id)
+        if span:
+            span.set_attribute("recording.provider", provider)
+            span.set_attribute("recording.model", model)
+            span.set_attribute("recording.latency_s", latency_s)
 
     def on_budget_remaining(self, workflow: str, remaining: float) -> None:
         if self._metrics:
             self._metrics.set_budget_remaining(workflow, remaining)
-
-    # Shutdown
 
     def shutdown(self) -> None:
         if self._metrics:

@@ -41,6 +41,7 @@ nav:
   - Python DSL: python-dsl.md
   - Graph API: graph-api.md
   - Examples: examples.md
+  - Testing & Replay: testing-and-replay.md
   - Observability: observability.md
   - Deployment: deployment.md
   - Contributing: contributing.md

@@ -34,8 +34,17 @@ def run(
     checkpoint_dir: str = typer.Option(
         ".agentloom/checkpoints", "--checkpoint-dir", help="Checkpoint storage directory."
     ),
+    mock_responses: Path | None = typer.Option(
+        None, "--mock-responses", help="Replay responses from a JSON file via MockProvider."
+    ),
+    record: Path | None = typer.Option(
+        None, "--record", help="Record provider responses to a JSON file for later replay."
+    ),
 ) -> None:
     """Execute a workflow from a YAML definition file."""
+    if mock_responses is not None and record is not None:
+        typer.echo("Error: --mock-responses and --record are mutually exclusive.", err=True)
+        raise typer.Exit(2)
     anyio.run(
         _run_async,
         workflow_path,
@@ -48,6 +57,8 @@ def run(
         stream,
         checkpoint,
         checkpoint_dir,
+        mock_responses,
+        record,
     )
 
 
@@ -62,6 +73,8 @@ async def _run_async(
     stream: bool = False,
     checkpoint: bool = False,
     checkpoint_dir: str = ".agentloom/checkpoints",
+    mock_responses: Path | None = None,
+    record: Path | None = None,
 ) -> None:
     """Async implementation of the run command."""
     from agentloom.core.engine import WorkflowEngine
@@ -96,7 +109,27 @@ async def _run_async(
     state_manager = StateManager(initial_state=initial_state)
 
     gateway = ProviderGateway()
-    _setup_providers(gateway, workflow.config.provider)
+    # Setup observability (unless --lite) — done early so providers can hook into it
+    observer = _setup_observer(lite)
+
+    if mock_responses is not None:
+        from agentloom.providers.mock import MockProvider
+
+        workflow.config.provider = "mock"
+        gateway.register(
+            MockProvider(
+                responses_file=mock_responses,
+                observer=observer,
+                workflow_name=workflow.name,
+            ),
+            priority=0,
+        )
+    else:
+        _setup_providers(gateway, workflow.config.provider)
+        if record is not None:
+            from agentloom.providers.recorder import RecordingProvider
+
+            gateway.wrap_providers(lambda p: RecordingProvider(p, record, observer=observer))
 
     sandbox_cfg = workflow.config.sandbox
     sandbox = ToolSandbox(
@@ -111,8 +144,6 @@ async def _run_async(
     )
     tool_registry = ToolRegistry()
     register_builtins(tool_registry, sandbox=sandbox)
-
-    observer = _setup_observer(lite)
 
     stream_callback = None
     if stream and not output_json:

@@ -243,3 +243,105 @@ class TestPrintResult:
             final_state={"draft_output": "hello"},
         )
         _print_result(result)
+
+
+class TestRunRecordAndReplay:
+    def test_record_and_mock_mutually_exclusive(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(SIMPLE_YAML)
+            f.flush()
+            result = runner.invoke(
+                app,
+                [
+                    "run",
+                    f.name,
+                    "--record",
+                    "/tmp/rec.json",
+                    "--mock-responses",
+                    "/tmp/rec.json",
+                ],
+            )
+        assert result.exit_code != 0
+        combined = result.output + (result.stderr or "")
+        assert "mutually exclusive" in combined
+
+    def test_mock_responses_registers_mock_provider(self) -> None:
+        import json
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rec_path = Path(tmp) / "fix.json"
+            rec_path.write_text(
+                json.dumps(
+                    {
+                        "answer": {
+                            "content": "42",
+                            "model": "mock-model",
+                            "usage": {
+                                "prompt_tokens": 1,
+                                "completion_tokens": 1,
+                                "total_tokens": 2,
+                            },
+                            "cost_usd": 0.0,
+                            "latency_ms": 0.0,
+                            "finish_reason": "stop",
+                        }
+                    }
+                )
+            )
+            yaml_path = Path(tmp) / "wf.yaml"
+            yaml_path.write_text(SIMPLE_YAML)
+            with patch("agentloom.cli.run._setup_observer", return_value=None):
+                result = runner.invoke(
+                    app,
+                    [
+                        "run",
+                        str(yaml_path),
+                        "--mock-responses",
+                        str(rec_path),
+                        "--lite",
+                    ],
+                )
+        assert result.exit_code == 0, f"stdout: {result.output}"
+        assert "'answer'" in result.output
+
+    def test_record_wraps_registered_providers(self) -> None:
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rec_path = Path(tmp) / "out.json"
+            yaml_path = Path(tmp) / "wf.yaml"
+            yaml_path.write_text(SIMPLE_YAML)
+
+            from tests.conftest import MockProvider as TestMock
+
+            captured: dict[str, object] = {}
+
+            def _wire(gw: object, default: str) -> None:
+                from agentloom.providers.gateway import ProviderGateway
+
+                assert isinstance(gw, ProviderGateway)
+                inner = TestMock()
+                gw.register(inner, priority=0)
+                captured["inner"] = inner
+
+            with patch("agentloom.cli.run._setup_providers") as mock_setup:
+                mock_setup.side_effect = _wire
+                with patch("agentloom.cli.run._setup_observer", return_value=None):
+                    result = runner.invoke(
+                        app,
+                        [
+                            "run",
+                            str(yaml_path),
+                            "--record",
+                            str(rec_path),
+                            "--lite",
+                        ],
+                    )
+
+            assert result.exit_code == 0, f"stdout: {result.output}"
+            assert rec_path.exists()
+            import json as _json
+
+            data = _json.loads(rec_path.read_text())
+            assert len(data) == 1

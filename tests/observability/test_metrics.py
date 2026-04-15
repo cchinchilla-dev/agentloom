@@ -27,6 +27,8 @@ class TestMetricsDisabled:
         mm.record_attachments("llm_call", 2)
         mm.record_stream_response("openai", "gpt-4o-mini")
         mm.record_time_to_first_token("openai", "gpt-4o-mini", 0.1)
+        mm.record_mock_replay("wf", "step_id")
+        mm.record_recording_capture("anthropic", "m", 0.5)
         mm.set_budget_remaining("wf", 0.5)
         mm.set_circuit_state("openai", 1)
         mm.shutdown()
@@ -122,6 +124,20 @@ class TestMetricsEnabled:
     def test_record_time_to_first_token(self) -> None:
         mm = MetricsManager(enabled=True)
         mm.record_time_to_first_token("openai", "gpt-4o-mini", 0.25)
+        if mm._backend == "otel":
+            mm.shutdown()
+
+    def test_record_mock_replay(self) -> None:
+        mm = MetricsManager(enabled=True)
+        mm.record_mock_replay("wf", "step_id")
+        mm.record_mock_replay("wf", "prompt_hash")
+        mm.record_mock_replay("wf", "default")
+        if mm._backend == "otel":
+            mm.shutdown()
+
+    def test_record_recording_capture(self) -> None:
+        mm = MetricsManager(enabled=True)
+        mm.record_recording_capture("anthropic", "claude-haiku-4-5-20251001", 0.88)
         if mm._backend == "otel":
             mm.shutdown()
 

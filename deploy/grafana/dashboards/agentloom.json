@@ -2401,6 +2401,101 @@
     },
     {
       "type": "row",
+      "title": "Mock & Replay",
+      "collapsed": true,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 94},
+      "id": 80,
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Mock Replays",
+          "description": "MockProvider lookups, by how the response was matched",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "id": 81,
+          "gridPos": {"h": 8, "w": 6, "x": 0, "y": 95},
+          "targets": [
+            {
+              "expr": "sum by (matched_by)(agentloom_mock_replays_total)",
+              "legendFormat": "{{matched_by}}",
+              "refId": "A",
+              "instant": true
+            }
+          ],
+          "options": {
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "value_and_name",
+            "colorMode": "value"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Replay Hit Ratio",
+          "description": "Fraction of mock lookups that found a recorded response (not the default)",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "id": 82,
+          "gridPos": {"h": 8, "w": 6, "x": 6, "y": 95},
+          "fieldConfig": {
+            "defaults": {"unit": "percentunit", "min": 0, "max": 1},
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "(sum(agentloom_mock_replays_total{matched_by!=\"default\"}) or vector(0)) / (sum(agentloom_mock_replays_total) or vector(1))",
+              "legendFormat": "hit ratio",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Recording Captures by Provider",
+          "description": "Real provider responses captured by RecordingProvider",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "id": 83,
+          "gridPos": {"h": 8, "w": 6, "x": 12, "y": 95},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "custom": {"drawStyle": "line", "fillOpacity": 10}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum by (provider)(rate(agentloom_recording_captures_total[5m]))",
+              "legendFormat": "{{provider}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Captured Real-Provider Latency (p50 / p95)",
+          "description": "Latency of the real provider calls that RecordingProvider captured — what replay will simulate with latency_model=replay",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "id": 84,
+          "gridPos": {"h": 8, "w": 6, "x": 18, "y": 95},
+          "fieldConfig": {
+            "defaults": {"unit": "s"},
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.5, sum(rate(agentloom_recording_latency_seconds_bucket[5m])) by (le, provider))",
+              "legendFormat": "p50 {{provider}}",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(agentloom_recording_latency_seconds_bucket[5m])) by (le, provider))",
+              "legendFormat": "p95 {{provider}}",
+              "refId": "B"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "row",
       "title": "Streaming",
       "collapsed": true,
       "gridPos": {

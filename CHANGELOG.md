@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Production `MockProvider` and `RecordingProvider` for deterministic replay and offline evaluation (#76)
+  - `MockProvider` loads responses from a JSON file, keyed by `step_id` or SHA-256 prompt hash
+  - Latency models: `constant`, `normal` (gaussian with seed), `replay` (uses recorded `latency_ms`)
+  - `RecordingProvider` wraps any provider, captures completions to JSON, flushes per-call
+  - `agentloom run --mock-responses <file>` replays; `--record <file>` captures
 - Webhook notifications for approval gates — outbound HTTP on pause (#42)
   - `WebhookConfig` on `StepDefinition.notify` with URL, custom headers, and body template
   - Async webhook sender with 3-retry exponential backoff (best-effort, never blocks pause)

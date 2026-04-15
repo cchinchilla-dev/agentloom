@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from agentloom.exceptions import CircuitOpenError, ProviderError
@@ -91,6 +91,17 @@ class ProviderGateway:
             self._model_mapping.setdefault(model, []).append(entry)
             self._model_mapping[model].sort(key=lambda e: e.priority)
 
+        self._candidate_cache.clear()
+
+    def wrap_providers(self, factory: Callable[[BaseProvider], BaseProvider]) -> None:
+        """Replace each registered provider with ``factory(provider)``.
+
+        Useful for cross-cutting wrappers (e.g. ``RecordingProvider``) that
+        need to intercept every registered provider without the caller
+        knowing their concrete types or internal entry layout.
+        """
+        for entry in self._providers:
+            entry.provider = factory(entry.provider)
         self._candidate_cache.clear()
 
     def _wire_circuit_callback(self, entry: ProviderEntry) -> None:
