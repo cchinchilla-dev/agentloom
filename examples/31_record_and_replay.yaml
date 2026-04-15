@@ -2,9 +2,10 @@ name: record-and-replay
 version: "1.0"
 description: |
   Demonstrates deterministic replay. Run once with --record against a real
-  provider to capture responses, then replay offline forever with
-  --mock-responses. Great for CI, tests, and statistical evaluation without
-  paying per-run.
+  provider to capture responses, then replay offline forever — either via
+  `agentloom replay <file> --recording rec.json` or `agentloom run <file>
+  --mock-responses rec.json`. For a YAML-only path, see 32_yaml_mock.yaml.
+  Great for CI, tests, and statistical evaluation without paying per-run.
 
 config:
   provider: anthropic

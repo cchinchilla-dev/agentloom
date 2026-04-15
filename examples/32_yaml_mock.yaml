@@ -1,0 +1,37 @@
+name: yaml-mock
+version: "1.0"
+description: |
+  Shows how to configure MockProvider entirely from YAML, with no CLI flags.
+  Drop a recording file next to this workflow and run it with plain
+  `agentloom run`. Useful for committed fixtures and CI pipelines that
+  shouldn't know about record/replay plumbing.
+
+  Produce the recording once with:
+    agentloom run examples/31_record_and_replay.yaml --record recordings/byzantine.json
+
+config:
+  provider: mock
+  model: claude-sonnet-4-20250514
+  responses_file: recordings/byzantine.json
+  latency_model: replay   # constant | normal | replay
+  latency_ms: 0
+
+state:
+  topic: "the Byzantine Generals Problem"
+
+steps:
+  - id: explain
+    type: llm_call
+    prompt: "Explain {state.topic} in exactly two sentences."
+    output: explanation
+
+  - id: critique
+    type: llm_call
+    depends_on: [explain]
+    prompt: |
+      Here is an explanation of {state.topic}:
+
+      {state.explanation}
+
+      List one thing this explanation gets wrong or oversimplifies.
+    output: critique

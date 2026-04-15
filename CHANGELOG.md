@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agentloom replay <workflow.yaml> --recording <file.json>` subcommand — re-executes a workflow against recorded responses with no API calls (#61)
 - YAML-configured MockProvider — `provider: mock` with `responses_file`, `latency_model`, `latency_ms` fields on `WorkflowConfig` (#76)
 - Production `MockProvider` and `RecordingProvider` for deterministic replay and offline evaluation (#76)
   - `MockProvider` loads responses from a JSON file, keyed by `step_id` or SHA-256 prompt hash

@@ -7,6 +7,7 @@
 - `uv run ruff format src/ tests/` — format
 - `uv run mypy src/` — strict type check
 - `uv run agentloom run examples/01_simple_qa.yaml` — run a workflow
+- `uv run agentloom replay workflow.yaml --recording rec.json` — replay from recorded responses (offline, no API key)
 - `uv run agentloom validate examples/03_router_workflow.yaml` — validate YAML
 
 ## Rules
