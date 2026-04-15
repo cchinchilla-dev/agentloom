@@ -43,9 +43,7 @@ def run(
 ) -> None:
     """Execute a workflow from a YAML definition file."""
     if mock_responses is not None and record is not None:
-        typer.echo(
-            "Error: --mock-responses and --record are mutually exclusive.", err=True
-        )
+        typer.echo("Error: --mock-responses and --record are mutually exclusive.", err=True)
         raise typer.Exit(2)
     anyio.run(
         _run_async,
@@ -131,9 +129,7 @@ async def _run_async(
         if record is not None:
             from agentloom.providers.recorder import RecordingProvider
 
-            gateway.wrap_providers(
-                lambda p: RecordingProvider(p, record, observer=observer)
-            )
+            gateway.wrap_providers(lambda p: RecordingProvider(p, record, observer=observer))
 
     sandbox_cfg = workflow.config.sandbox
     sandbox = ToolSandbox(
