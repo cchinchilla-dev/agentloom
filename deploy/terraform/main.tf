@@ -95,7 +95,6 @@ resource "kubernetes_secret" "provider_keys" {
 #   - kube-prometheus-stack (Prometheus + Grafana with dashboards)
 #
 # When false, the OTel SDK in agentloom degrades gracefully to no-ops.
-# -----------------------------------------------------------
 
 resource "kubernetes_namespace" "observability" {
   count = var.enable_observability ? 1 : 0
