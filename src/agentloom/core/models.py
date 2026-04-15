@@ -135,6 +135,11 @@ class WorkflowConfig(BaseModel):
     stream: bool = False
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
+    # MockProvider configuration (used only when provider == "mock")
+    responses_file: str | None = None
+    latency_model: Literal["constant", "normal", "replay"] = "constant"
+    latency_ms: float = 0.0
+
 
 class WorkflowDefinition(BaseModel):
     """Complete workflow definition — the top-level schema for YAML files."""
