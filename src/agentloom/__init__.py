@@ -1,6 +1,6 @@
 """AgentLoom: Production-ready agentic workflow orchestrator."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from agentloom.core.graph import GraphEdge, GraphNode, WorkflowGraph
 

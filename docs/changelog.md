@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-04-15
+
 ### Added
 
 - **`agentloom replay` subcommand** — re-executes a workflow against a recorded JSON file with no API calls (#61)

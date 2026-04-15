@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-15
+
 ### Added
 
 - `agentloom replay <workflow.yaml> --recording <file.json>` subcommand — re-executes a workflow against recorded responses with no API calls (#61)
@@ -181,7 +183,8 @@ First public release.
 - **Pydantic v2** — validation and serialization worth the Rust compilation
   trade-off. Could revisit for truly minimal environments.
 
-[Unreleased]: https://github.com/cchinchilla-dev/agentloom/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/cchinchilla-dev/agentloom/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/cchinchilla-dev/agentloom/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cchinchilla-dev/agentloom/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cchinchilla-dev/agentloom/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/cchinchilla-dev/agentloom/compare/v0.1.1...v0.1.2
