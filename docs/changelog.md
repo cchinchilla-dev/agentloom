@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- **`agentloom replay` subcommand** — re-executes a workflow against a recorded JSON file with no API calls (#61)
+    - Thin alias over `run --mock-responses` with `--lite` on by default; `--state` override supported
+    - Works end-to-end with recordings captured via `agentloom run --record`
+- **YAML-configured MockProvider** — set `provider: mock` in `WorkflowConfig` with `responses_file`, `latency_model`, and `latency_ms` fields (#76)
+    - Lets committed fixtures run via plain `agentloom run` without CLI flags
 - **Deterministic replay with `MockProvider` and `RecordingProvider`** — offline evaluation and reproducible tests (#76)
     - `MockProvider` loads pre-recorded responses from a JSON file, keyed by `step_id` or SHA-256 hash of the messages
     - Latency models: `constant`, `normal` (seeded gaussian), `replay` (uses the recorded `latency_ms`)

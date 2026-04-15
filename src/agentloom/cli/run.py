@@ -124,6 +124,19 @@ async def _run_async(
             ),
             priority=0,
         )
+    elif workflow.config.provider == "mock" and record is None:
+        from agentloom.providers.mock import MockProvider
+
+        gateway.register(
+            MockProvider(
+                responses_file=workflow.config.responses_file,
+                latency_model=workflow.config.latency_model,
+                latency_ms=workflow.config.latency_ms,
+                observer=observer,
+                workflow_name=workflow.name,
+            ),
+            priority=0,
+        )
     else:
         _setup_providers(gateway, workflow.config.provider)
         if record is not None:

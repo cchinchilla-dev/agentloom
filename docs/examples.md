@@ -263,3 +263,35 @@ agentloom runs
 # Resume a failed or interrupted run
 agentloom resume <run_id> --lite
 ```
+
+## Testing & Replay
+
+### 31 — Record and Replay
+
+Two-step workflow used to capture real LLM responses and replay them offline.
+Run once with `--record` against a real provider, then replay any number of
+times without network or API keys.
+
+**Demonstrates:** `--record`, `--mock-responses`, `agentloom replay`.
+
+```bash
+# Capture real Anthropic responses (per-call flush; partial recordings survive crashes)
+agentloom run examples/31_record_and_replay.yaml --record recordings/byzantine.json
+
+# Replay offline — pick either form
+agentloom replay examples/31_record_and_replay.yaml --recording recordings/byzantine.json
+agentloom run examples/31_record_and_replay.yaml --mock-responses recordings/byzantine.json
+```
+
+### 32 — YAML-configured MockProvider
+
+Same workflow as 31, but with `provider: mock` and `responses_file` declared in
+YAML. Runs via plain `agentloom run` with no CLI flags — useful for committed
+fixtures and CI.
+
+**Demonstrates:** `provider: mock`, `responses_file`, `latency_model: replay`.
+
+```bash
+# Depends on the recording captured from example 31
+agentloom run examples/32_yaml_mock.yaml --lite
+```

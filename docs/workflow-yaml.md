@@ -41,6 +41,9 @@ steps:                                      # at least one step required
 | `max_concurrent_steps` | `int` | `10` | Max parallel steps per layer |
 | `stream` | `bool` | `false` | Enable streaming by default |
 | `sandbox` | `object` | disabled | Security sandbox config |
+| `responses_file` | `string` | `null` | Mock provider recording path (when `provider: mock`) |
+| `latency_model` | `string` | `constant` | Mock latency mode: `constant` / `normal` / `replay` |
+| `latency_ms` | `float` | `0` | Mock provider simulated latency per call |
 
 ## Checkpointing
 

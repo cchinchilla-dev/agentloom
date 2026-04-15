@@ -372,8 +372,10 @@ Record real LLM responses once, replay them offline forever — reproducible tes
 agentloom run workflow.yaml --record recordings/run1.json
 
 # Replay offline — no network, no key, no cost, byte-identical output
-agentloom run workflow.yaml --mock-responses recordings/run1.json
+agentloom replay workflow.yaml --recording recordings/run1.json
 ```
+
+Or configure the mock directly in YAML (`provider: mock` + `responses_file`) and run it with plain `agentloom run` — see [`examples/32_yaml_mock.yaml`](examples/32_yaml_mock.yaml) and [docs/testing-and-replay](https://cchinchilla-dev.github.io/agentloom/testing-and-replay/#yaml-configured-mockprovider).
 
 Responses are keyed by `step_id` or a SHA-256 hash of the messages. `MockProvider` supports three latency models (`constant`, `normal`, `replay`) for faithful performance reproduction. Replays emit Prometheus metrics (`agentloom_mock_replays_total`, `agentloom_recording_captures_total`) and a dedicated "Mock & Replay" row in the stock Grafana dashboard. See [docs/testing-and-replay](https://cchinchilla-dev.github.io/agentloom/testing-and-replay/) and [`examples/31_record_and_replay.yaml`](examples/31_record_and_replay.yaml).
 

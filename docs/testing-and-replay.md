@@ -41,13 +41,32 @@ Keys are the step's `step_id` when available, or the SHA-256 hash of the seriali
 
 ## Replaying a run
 
-Point the CLI at a recorded file:
+Two equivalent ways:
 
 ```bash
+# Dedicated subcommand — observability off by default, no stream/checkpoint flags
+agentloom replay workflow.yaml --recording recordings/run1.json
+
+# Or via run --mock-responses (same effect)
 agentloom run workflow.yaml --mock-responses recordings/run1.json
 ```
 
 Every `llm_call` step resolves from the JSON. No network, no API key, no cost. Latency is simulated according to `latency_model`.
+
+### YAML-configured MockProvider
+
+You can also declare the mock provider directly in the workflow config, avoiding CLI flags entirely:
+
+```yaml
+config:
+  provider: mock
+  model: mock-model
+  responses_file: fixtures/responses.json
+  latency_model: constant   # constant | normal | replay
+  latency_ms: 0
+```
+
+Run it like any normal workflow — `agentloom run workflow.yaml`. Useful for committed fixtures and CI without plumbing flags through shell scripts.
 
 ## Latency models
 
