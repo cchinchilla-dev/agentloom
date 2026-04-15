@@ -7,7 +7,9 @@ Prepare a release. `$ARGUMENTS` is the bump type: `patch` (default), `minor`, `m
 
 ## How this repo ships
 
-CI does the tagging and publishing. The human-side job is just: bump version + update changelog + commit to `main` with the magic message.
+Releases go through a **pull request**, same as any other change. No direct pushes to `main`, no admin bypass — even for version bumps. This keeps the audit trail clean and matches the historical pattern (see PRs #18, #32, #36, #92).
+
+CI does the tagging and publishing once the PR merges:
 
 - `.github/workflows/auto-tag.yml` watches `main` for commits whose message starts with `bump version to` → reads the version from `pyproject.toml` and pushes `v<X.Y.Z>`.
 - `.github/workflows/release.yml` triggers on the tag push → builds the wheel, creates a GitHub Release with auto-generated notes, publishes to PyPI via OIDC.
@@ -33,10 +35,12 @@ So the commit message prefix (`bump version to`) is load-bearing. Don't paraphra
    - `version` in `pyproject.toml`
    - `__version__` in `src/agentloom/__init__.py`
 
-5. **Commit** — message **must** start with `bump version to <X.Y.Z>`. Follow `/commit` rules otherwise (no scopes, no Co-Authored-By). Do **not** run `git tag` locally — the workflow creates it.
+5. **Branch + commit** — create `release/<X.Y.Z>` from an up-to-date `main`. Commit message **must** start with `bump version to <X.Y.Z>`. Follow `/commit` rules otherwise (no scopes, no Co-Authored-By). Do **not** run `git tag` locally — the workflow creates it on merge.
 
-6. **Push to main** — ask authorization first. Once pushed:
+6. **Open PR** — ask authorization first. Title matches the commit (`bump version to <X.Y.Z>`). Body: link the `## [X.Y.Z]` section of CHANGELOG.md and summarize highlights. Never push directly to `main`, never use admin bypass.
+
+7. **Wait for checks + merge** — all required status checks must pass. Merge with a merge commit or squash (whichever the repo uses). Once the bump commit lands on `main`:
    - Auto Tag creates `v<X.Y.Z>`.
-   - Release builds + publishes. Watch: `gh run list --limit 3`.
+   - Release builds + publishes. Watch: `gh run list --limit 5`.
 
-7. **Post-release** — report tag, GitHub Release URL, and PyPI job status. If auto-tag/release fails, inspect with `/ci-status` instead of trying to recover by hand.
+8. **Post-release** — report PR URL, tag, GitHub Release URL, and PyPI job status. If auto-tag/release fails, inspect with `/ci-status` instead of trying to recover by hand.
