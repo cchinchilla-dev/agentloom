@@ -178,6 +178,8 @@ class WorkflowObserver:
         span = self._step_spans.get(step_id)
         if span:
             span.set_attribute("mock.matched_by", matched_by)
+            if step_id:
+                span.set_attribute("mock.step_id", step_id)
 
     def on_recording_capture(
         self, step_id: str, provider: str, model: str, latency_s: float
@@ -187,6 +189,7 @@ class WorkflowObserver:
         span = self._step_spans.get(step_id)
         if span:
             span.set_attribute("recording.provider", provider)
+            span.set_attribute("recording.model", model)
             span.set_attribute("recording.latency_s", latency_s)
 
     def on_budget_remaining(self, workflow: str, remaining: float) -> None:

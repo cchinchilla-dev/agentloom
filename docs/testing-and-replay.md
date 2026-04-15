@@ -106,8 +106,8 @@ async def test_summarization_workflow():
     provider = MockProvider(responses_file="tests/fixtures/summary.json")
     gateway = ProviderGateway()
     gateway.register(provider)
-    engine = WorkflowEngine(gateway=gateway)
-    result = await engine.run(workflow)
+    engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway)
+    result = await engine.run()
     assert result.state["summary"] == "expected output"
 ```
 
@@ -140,7 +140,9 @@ The stock Grafana dashboard includes a **Mock & Replay** row with:
 
 ## Concurrency & merge semantics
 
-If a workflow registers multiple providers each wrapped with `RecordingProvider` pointing to the same file (e.g. primary + fallback via the gateway), `_flush()` **merges** on-disk content with the in-memory buffer before writing. No recorder wipes another's entries on `close()`.
+If a workflow registers multiple providers each wrapped with `RecordingProvider` pointing to the same file (e.g. primary + fallback via the gateway), `_flush()` reads existing on-disk content and merges it with the in-memory buffer before writing.
+
+This is **best-effort**, not concurrency-safe: the implementation is a read-merge-write cycle without locking, so true concurrent writers (multiple processes, or parallel flushes across tasks) can still lose updates. In practice it covers the common case — recorders inside the same run flushing sequentially per call — but if you need strict guarantees, use a single writer or serialize access externally.
 
 ## Limitations & gotchas
 
