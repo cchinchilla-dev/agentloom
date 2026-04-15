@@ -42,6 +42,11 @@ def run(
     ),
 ) -> None:
     """Execute a workflow from a YAML definition file."""
+    if mock_responses is not None and record is not None:
+        typer.echo(
+            "Error: --mock-responses and --record are mutually exclusive.", err=True
+        )
+        raise typer.Exit(2)
     anyio.run(
         _run_async,
         workflow_path,
