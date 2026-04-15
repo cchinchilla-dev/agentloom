@@ -39,7 +39,7 @@ So the commit message prefix (`bump version to`) is load-bearing. Don't paraphra
 
 6. **Open PR** — ask authorization first. Title matches the commit (`bump version to <X.Y.Z>`). Body: link the `## [X.Y.Z]` section of CHANGELOG.md and summarize highlights. Never push directly to `main`, never use admin bypass.
 
-7. **Wait for checks + merge** — all required status checks must pass. Merge with a merge commit or squash (whichever the repo uses). Once the bump commit lands on `main`:
+7. **Wait for checks + squash-merge** — all required status checks must pass. **Squash-merge only** (this repo's convention). When completing the squash merge, override the default `Merge pull request ...` title so the resulting commit on `main` starts with exactly `bump version to <X.Y.Z>` — the `auto-tag.yml` workflow greps that prefix and will skip tagging otherwise. Once that squash commit lands on `main`:
    - Auto Tag creates `v<X.Y.Z>`.
    - Release builds + publishes. Watch: `gh run list --limit 5`.
 
