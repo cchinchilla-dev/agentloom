@@ -31,7 +31,7 @@ state:
   response: ""
 
 steps:
-  # --- Layer 0: parallel data fetching ---
+  # Layer 0: parallel data fetching
 
   - id: fetch_order
     type: tool
@@ -49,7 +49,7 @@ steps:
       method: "GET"
     output: customer_history
 
-  # --- Layer 1: 4 parallel fraud signal checks ---
+  # Layer 1: 4 parallel fraud signal checks
 
   - id: check_velocity
     type: llm_call
@@ -136,7 +136,7 @@ steps:
       Customer: {state.customer_history}
     output: device_check
 
-  # --- Layer 2: aggregate all signals ---
+  # Layer 2: aggregate all signals
 
   - id: aggregate_signals
     type: llm_call
@@ -159,7 +159,7 @@ steps:
       Device: {state.device_check}
     output: risk_score
 
-  # --- Layer 3: route by risk level ---
+  # Layer 3: route by risk level
 
   - id: route_risk
     type: router
@@ -171,7 +171,7 @@ steps:
         target: enhanced_review
     default: approve_order
 
-  # --- Layer 4: actions ---
+  # Layer 4: actions
 
   - id: approve_order
     type: llm_call

@@ -12,9 +12,8 @@ from agentloom.providers.base import BaseProvider, ProviderResponse, StreamRespo
 from agentloom.providers.gateway import ProviderGateway
 from tests.conftest import MockProvider
 
-# -- StreamResponse unit tests --
 
-
+# StreamResponse unit tests
 class TestStreamResponse:
     async def test_max_accumulated_bytes_exceeded(self) -> None:
         sr = StreamResponse(model="m", provider="p")
@@ -61,9 +60,7 @@ class TestStreamResponse:
         assert resp.finish_reason == "stop"
 
 
-# -- ProviderGateway tests --
-
-
+# ProviderGateway tests
 class MidStreamFailProvider(BaseProvider):
     """A provider that yields some chunks then fails mid-stream."""
 
@@ -135,7 +132,7 @@ class FailingProvider(BaseProvider):
 
         async def _generate() -> AsyncIterator[str]:
             raise ProviderError("failing", self._error_msg)
-            yield ""  # noqa: RET504 — unreachable but needed for async generator
+            yield ""
 
         sr._set_iterator(_generate())
         return sr

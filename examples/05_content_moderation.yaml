@@ -24,7 +24,7 @@ state:
   response: ""
 
 steps:
-  # --- Layer 0: three checks run in parallel (no dependencies) ---
+  # Layer 0: three checks run in parallel (no dependencies)
 
   - id: check_toxicity
     type: llm_call
@@ -63,7 +63,7 @@ steps:
     prompt: "Check this content against platform policies:\n\n{state.content}"
     output: policy_result
 
-  # --- Layer 1: aggregate parallel results ---
+  # Layer 1: aggregate parallel results
 
   - id: aggregate
     type: llm_call
@@ -85,7 +85,7 @@ steps:
       Policy: {state.policy_result}
     output: decision
 
-  # --- Layer 2: route based on decision ---
+  # Layer 2: route based on decision
 
   - id: route
     type: router
@@ -97,7 +97,7 @@ steps:
         target: auto_reject
     default: send_to_review
 
-  # --- Layer 3: execute the chosen action ---
+  # Layer 3: execute the chosen action
 
   - id: publish
     type: llm_call

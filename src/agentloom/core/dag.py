@@ -46,7 +46,6 @@ class DAG:
         """Validate the DAG. Returns a list of error messages (empty if valid)."""
         errors: list[str] = []
 
-        # Check for cycles via DFS
         WHITE, GRAY, BLACK = 0, 1, 2
         color: dict[str, int] = {n: WHITE for n in self._nodes}
         cycle_path: list[str] = []
@@ -70,7 +69,6 @@ class DAG:
             if color[node] == WHITE:
                 dfs(node)
 
-        # Check for edges to non-existent nodes
         for node, succs in self._edges.items():
             for succ in succs:
                 if succ not in self._nodes:
@@ -121,7 +119,6 @@ class DAG:
         remaining = set(self._nodes)
 
         while remaining:
-            # Current layer: nodes with no unresolved dependencies
             layer = sorted(n for n in remaining if in_degree[n] == 0)
             if not layer:
                 raise ValidationError("Workflow DAG contains a cycle")

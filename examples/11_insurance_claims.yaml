@@ -50,7 +50,7 @@ state:
   response: ""
 
 steps:
-  # --- Layer 0: fetch additional claim context ---
+  # Layer 0: fetch additional claim context
 
   - id: fetch_claim_context
     type: tool
@@ -60,7 +60,7 @@ steps:
       method: "GET"
     output: claim_data
 
-  # --- Layer 1: extract structured fields ---
+  # Layer 1: extract structured fields
 
   - id: extract_fields
     type: llm_call
@@ -82,7 +82,7 @@ steps:
     prompt: "Extract structured fields from this claim:\n\n{state.claim_details}"
     output: extracted_fields
 
-  # --- Layer 2: three parallel validation tracks ---
+  # Layer 2: three parallel validation tracks
 
   - id: verify_coverage
     type: subworkflow
@@ -242,7 +242,7 @@ steps:
       Extracted: {state.extracted_fields}
     output: medical_review
 
-  # --- Layer 3: aggregate all validations ---
+  # Layer 3: aggregate all validations
 
   - id: aggregate_validations
     type: llm_call
@@ -265,7 +265,7 @@ steps:
       Medical: {state.medical_review}
     output: decision
 
-  # --- Layer 4: route ---
+  # Layer 4: route
 
   - id: route_decision
     type: router
@@ -277,7 +277,7 @@ steps:
         target: deny_claim
     default: assign_adjuster
 
-  # --- Layer 5: execute decision ---
+  # Layer 5: execute decision
 
   - id: auto_approve
     type: subworkflow

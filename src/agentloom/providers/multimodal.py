@@ -22,10 +22,6 @@ logger = logging.getLogger("agentloom.multimodal")
 # Maximum attachment size after download/read (20 MB).
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 
-# ---------------------------------------------------------------------------
-# Content block types — the internal format that flows through the gateway
-# ---------------------------------------------------------------------------
-
 
 class TextBlock(BaseModel):
     """A text content block."""
@@ -68,10 +64,6 @@ class AudioBlock(BaseModel):
 
 ContentBlock = TextBlock | ImageBlock | ImageURLBlock | DocumentBlock | AudioBlock
 
-
-# ---------------------------------------------------------------------------
-# Media type detection
-# ---------------------------------------------------------------------------
 
 _EXTENSION_MEDIA_TYPES: dict[str, str] = {
     # Images
@@ -116,11 +108,6 @@ def detect_media_type(source: str, attachment_type: str = "image") -> str:
     return _MEDIA_TYPE_DEFAULTS.get(attachment_type, "application/octet-stream")
 
 
-# ---------------------------------------------------------------------------
-# Source classification
-# ---------------------------------------------------------------------------
-
-
 def _is_url(source: str) -> bool:
     """Return True if *source* looks like an HTTP(S) URL (case-insensitive)."""
     return source.lower().startswith(("http://", "https://"))
@@ -145,10 +132,6 @@ def _is_base64(source: str) -> bool:
             return False
     return False
 
-
-# ---------------------------------------------------------------------------
-# Security: SSRF protection + sandbox validation
-# ---------------------------------------------------------------------------
 
 _BLOCKED_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),
@@ -275,11 +258,6 @@ def _check_size(data: bytes, source: str) -> None:
         raise ValueError(msg)
 
 
-# ---------------------------------------------------------------------------
-# Fetching / reading
-# ---------------------------------------------------------------------------
-
-
 async def _validate_redirect_target(response: httpx.Response) -> None:
     """Event hook: validate each redirect target against SSRF rules.
 
@@ -324,11 +302,6 @@ async def _fetch_url(url: str) -> tuple[bytes, str | None]:
         return data, content_type
 
 
-# ---------------------------------------------------------------------------
-# Block builders per attachment type
-# ---------------------------------------------------------------------------
-
-
 def _make_block(
     attachment_type: str,
     data: str,
@@ -357,11 +330,6 @@ def _make_url_block(
     raise ValueError(msg)
 
 
-# ---------------------------------------------------------------------------
-# Single-attachment resolver
-# ---------------------------------------------------------------------------
-
-
 async def _resolve_single(
     attachment: Attachment,
     sandbox: SandboxConfig,
@@ -378,7 +346,6 @@ async def _resolve_single(
             _validate_provider_url(source, sandbox)
             return _make_url_block(attachment.type, source, media_type)
 
-        # fetch: local (default) — download and base64-encode
         await _validate_url_sandbox(source, sandbox)
         raw_bytes, content_type = await _fetch_url(source)
         if not attachment.media_type and content_type:
@@ -389,7 +356,6 @@ async def _resolve_single(
     if _is_base64(source):
         return _make_block(attachment.type, source, media_type)
 
-    # Treat as local file path — resolve symlinks first, then validate and read
     resolved = str(Path(source).resolve())
     _validate_file_sandbox(source, sandbox)
     path = anyio.Path(resolved)
@@ -426,11 +392,6 @@ async def resolve_attachments(
         block = await _resolve_single(att, cfg)
         blocks.append(block)
     return blocks
-
-
-# ---------------------------------------------------------------------------
-# Message building
-# ---------------------------------------------------------------------------
 
 
 def build_multimodal_content(

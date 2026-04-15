@@ -27,21 +27,17 @@ class ApprovalGateStep(BaseStep):
         step = context.step_definition
         start = time.monotonic()
 
-        # Check whether a decision was injected into state on resume
         decision = await context.state_manager.get(f"_approval.{step.id}")
 
         if decision is None:
-            # Send webhook notification before pausing
             if step.notify:
                 await self._send_notification(context)
 
-            # Record pending approval metric
             if context.observer:
                 hook = getattr(context.observer, "on_approval_gate", None)
                 if hook:
                     hook(step.id, context.workflow_name, "pending")
 
-            # First execution — print instructions and pause
             print(
                 f"\n[APPROVAL REQUIRED] Step '{step.id}' is waiting for approval.\n"
                 f"  Resume with: agentloom resume <run_id> --approve\n"
@@ -50,14 +46,12 @@ class ApprovalGateStep(BaseStep):
             )
             raise PauseRequestedError(step.id, f"Approval required at step '{step.id}'")
 
-        # Validate the decision value
         if decision not in ("approved", "rejected"):
             raise StepError(
                 step.id,
                 f"Invalid approval decision '{decision}'. Expected 'approved' or 'rejected'.",
             )
 
-        # Record decision metric
         if context.observer:
             hook = getattr(context.observer, "on_approval_gate", None)
             if hook:
@@ -65,7 +59,6 @@ class ApprovalGateStep(BaseStep):
 
         duration = (time.monotonic() - start) * 1000
 
-        # Store the decision in the output state variable
         if step.output:
             await context.state_manager.set(step.output, decision)
 

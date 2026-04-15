@@ -24,17 +24,14 @@ class ToolStep(BaseStep):
         if not step.tool_name:
             raise StepError(step.id, "Tool step requires a 'tool_name' field")
 
-        # Get the tool
         try:
             tool = context.tool_registry.get(step.tool_name)
         except KeyError as e:
             raise StepError(step.id, str(e)) from e
 
-        # Resolve tool arguments from state
         state_snapshot = await context.state_manager.get_state_snapshot()
         resolved_args = self._resolve_args(step.tool_args, state_snapshot)
 
-        # Execute the tool
         try:
             result = await tool.execute(**resolved_args)
         except Exception as e:
@@ -48,7 +45,6 @@ class ToolStep(BaseStep):
 
         duration = (time.monotonic() - start) * 1000
 
-        # Store output
         if step.output:
             await context.state_manager.set(step.output, result)
 

@@ -84,7 +84,6 @@ def _print_mermaid(workflow: object, dag: object) -> None:
     typer.echo("```mermaid")
     typer.echo("graph TD")
 
-    # Define nodes
     for step in w.steps:
         stype = step_types.get(step.id, StepType.LLM_CALL)
         if stype == StepType.ROUTER:
@@ -96,12 +95,10 @@ def _print_mermaid(workflow: object, dag: object) -> None:
         else:
             typer.echo(f"    {step.id}[{step.id}]")
 
-    # Define edges
     for step in w.steps:
         for dep in step.depends_on:
             dep_step = w.get_step(dep)
             if dep_step and dep_step.type == StepType.ROUTER:
-                # Show router conditions as edge labels
                 for cond in dep_step.conditions:
                     if cond.target == step.id:
                         label = cond.expression[:20]

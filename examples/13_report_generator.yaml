@@ -20,7 +20,7 @@ state:
   report_output: ""
 
 steps:
-  # --- Layer 0: set up demo data files ---
+  # Layer 0: set up demo data files
 
   - id: setup_pipeline_data
     type: tool
@@ -129,7 +129,7 @@ steps:
         }
     output: setup_result_2
 
-  # --- Layer 1: read both files in parallel ---
+  # Layer 1: read both files in parallel
 
   - id: read_pipeline_results
     type: tool
@@ -147,7 +147,7 @@ steps:
       path: "state.sla_config_path"
     output: sla_data
 
-  # --- Layer 2: analyze SLA compliance ---
+  # Layer 2: analyze SLA compliance
 
   - id: analyze_sla
     type: llm_call
@@ -172,7 +172,7 @@ steps:
       SLA config: {state.sla_data}
     output: sla_analysis
 
-  # --- Layer 3: executive summary ---
+  # Layer 3: executive summary
 
   - id: executive_summary
     type: llm_call
@@ -194,7 +194,7 @@ steps:
       Raw data: {state.pipeline_data}
     output: executive_summary
 
-  # --- Layer 4: write report to file ---
+  # Layer 4: write report to file
 
   - id: write_report
     type: tool

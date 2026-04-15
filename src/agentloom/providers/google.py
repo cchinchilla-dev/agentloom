@@ -121,14 +121,12 @@ class GoogleProvider(BaseProvider):
 
         data = response.json()
 
-        # Extract content
         candidates = data.get("candidates", [])
         content = ""
         if candidates:
             parts = candidates[0].get("content", {}).get("parts", [])
             content = "".join(p.get("text", "") for p in parts)
 
-        # Extract usage
         usage_data = data.get("usageMetadata", {})
         usage = TokenUsage(
             prompt_tokens=usage_data.get("promptTokenCount", 0),

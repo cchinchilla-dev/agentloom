@@ -48,7 +48,6 @@ def load_pricing(custom_path: str | None = None) -> dict[str, ModelPricing]:
     return _load_pricing_yaml(_BUNDLED_PRICING_PATH)
 
 
-# Module-level table — populated on first import.
 DEFAULT_PRICING: dict[str, ModelPricing] = load_pricing()
 
 

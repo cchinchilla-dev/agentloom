@@ -65,7 +65,6 @@ async def _resume_async(
     from agentloom.tools.registry import ToolRegistry
     from agentloom.tools.sandbox import ToolSandbox
 
-    # Load checkpoint
     checkpointer = FileCheckpointer(checkpoint_dir=checkpoint_dir)
     try:
         checkpoint_data = await checkpointer.load(run_id)
@@ -73,7 +72,6 @@ async def _resume_async(
         typer.echo(f"No checkpoint found for run '{run_id}'.", err=True)
         raise typer.Exit(1)
 
-    # Build approval decisions map for the paused step
     approval_decisions: dict[str, str] = {}
     if decision:
         if checkpoint_data.status != "paused" or not checkpoint_data.paused_step_id:
@@ -95,14 +93,12 @@ async def _resume_async(
             f"(run {run_id}, status={checkpoint_data.status})"
         )
 
-    # Reconstruct engine
     engine = await WorkflowEngine.from_checkpoint(
         checkpoint_data=checkpoint_data,
         checkpointer=checkpointer,
         approval_decisions=approval_decisions or None,
     )
 
-    # Apply overrides
     if provider_override:
         engine.workflow.config.provider = provider_override
     if model_override:
@@ -110,12 +106,10 @@ async def _resume_async(
     if stream:
         engine.workflow.config.stream = True
 
-    # Setup providers
     gateway = ProviderGateway()
     _setup_providers(gateway, engine.workflow.config.provider)
     engine.provider_gateway = gateway
 
-    # Setup tools
     sandbox_cfg = engine.workflow.config.sandbox
     sandbox = ToolSandbox(
         enabled=sandbox_cfg.enabled,
@@ -131,7 +125,6 @@ async def _resume_async(
     register_builtins(tool_registry, sandbox=sandbox)
     engine.tool_registry = tool_registry
 
-    # Observability
     observer = _setup_observer(lite)
     engine.observer = observer
     if observer and gateway:  # pragma: no cover — requires OTel extra
@@ -139,7 +132,6 @@ async def _resume_async(
         if set_obs:
             set_obs(observer)
 
-    # Stream callback
     if stream and not output_json:
 
         def _on_chunk(step_id: str, text: str) -> None:
@@ -147,7 +139,6 @@ async def _resume_async(
 
         engine._stream_callback = _on_chunk
 
-    # Run
     result = await engine.run()
 
     if stream and not output_json:

@@ -30,11 +30,8 @@ from agentloom.providers.gateway import ProviderGateway
 from agentloom.tools import BaseTool, ToolRegistry
 from agentloom.tools.builtins import register_builtins
 
-# ---------------------------------------------------------------------------
+
 # Custom tools — defined by subclassing BaseTool
-# ---------------------------------------------------------------------------
-
-
 class GeocodingTool(BaseTool):
     """Geocodes an address into coordinates and enriched location data."""
 
@@ -56,7 +53,6 @@ class GeocodingTool(BaseTool):
         "required": ["address"],
     }
 
-    # Simulated geocoding results
     _MOCK_RESULTS = {
         "default": {
             "lat": 37.7749,
@@ -192,17 +188,14 @@ class RiskScoreTool(BaseTool):
     }
 
     async def execute(self, **kwargs: Any) -> Any:
-        # Deterministic scoring algorithm (not ML, but production-realistic)
         health = kwargs.get("health_score", 50)
         nps = kwargs.get("nps_score", 5)
         trend = kwargs.get("ticket_volume_trend", "stable")
         days_renewal = kwargs.get("days_to_renewal", 365)
         champion_left = kwargs.get("champion_departed", False)
 
-        # Base risk from health score (inverted)
         risk = 100 - health
 
-        # NPS adjustment (-20 to +10)
         if nps <= 3:
             risk += 20
         elif nps <= 6:
@@ -210,21 +203,17 @@ class RiskScoreTool(BaseTool):
         elif nps >= 9:
             risk -= 10
 
-        # Ticket trend
         if trend == "increasing":
             risk += 15
         elif trend == "decreasing":
             risk -= 5
 
-        # Renewal proximity amplifier
         if days_renewal < 90:
             risk = int(risk * 1.3)
 
-        # Champion departure
         if champion_left:
             risk += 20
 
-        # Clamp and add slight variance
         risk = max(0, min(100, risk + random.randint(-3, 3)))
 
         result = {
@@ -241,10 +230,6 @@ class RiskScoreTool(BaseTool):
 
         return json.dumps(result, indent=2)
 
-
-# ---------------------------------------------------------------------------
-# Main — parse args, set up tools + gateway, run workflow
-# ---------------------------------------------------------------------------
 
 WORKFLOW_PATH = Path(__file__).parent / "15_custom_tools_subclass.yaml"
 
@@ -291,11 +276,9 @@ def _setup_gateway(provider: str) -> ProviderGateway:
 
 
 async def _main(provider: str, model: str | None) -> None:
-    # 1. Set up tool registry with custom tools
     tool_registry = ToolRegistry()
     register_builtins(tool_registry)
 
-    # Register custom tools (subclass instances)
     tool_registry.register(GeocodingTool())
     tool_registry.register(CRMLookupTool())
     tool_registry.register(RiskScoreTool())
@@ -307,7 +290,6 @@ async def _main(provider: str, model: str | None) -> None:
         print(f"    params: {schema_fields}")
     print()
 
-    # 2. Load workflow from YAML
     workflow = WorkflowParser.from_yaml(WORKFLOW_PATH)
 
     if provider:
@@ -320,7 +302,6 @@ async def _main(provider: str, model: str | None) -> None:
     print(f"Provider: {workflow.config.provider} / {workflow.config.model}")
     print("=" * 60)
 
-    # 3. Run
     gateway = _setup_gateway(workflow.config.provider)
     state = StateManager(initial_state=dict(workflow.state))
     engine = WorkflowEngine(

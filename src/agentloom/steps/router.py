@@ -46,7 +46,6 @@ _ALLOWED_NODES = (
     ast.IfExp,
 )
 
-# Functions allowed in expressions
 _SAFE_BUILTINS = {
     "len": len,
     "str": str,
@@ -60,7 +59,6 @@ _SAFE_BUILTINS = {
     "type": type,
 }
 
-# Allowed function names for AST validation
 _ALLOWED_FUNCTIONS = set(_SAFE_BUILTINS.keys())
 
 
@@ -81,7 +79,6 @@ def _validate_expression(expr_str: str) -> ast.Expression:
                 f"Disallowed expression construct: {type(node).__name__}. "
                 f"Only comparisons, boolean ops, and safe builtins are allowed."
             )
-        # Check function calls are to allowed names only
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
                 if node.func.id not in _ALLOWED_FUNCTIONS:
@@ -110,7 +107,7 @@ def evaluate_expression(expr_str: str, namespace: dict[str, Any]) -> Any:
     safe_globals: dict[str, Any] = {"__builtins__": {}}
     safe_globals.update(_SAFE_BUILTINS)
     safe_globals.update(namespace)
-    return eval(code, safe_globals)  # noqa: S307
+    return eval(code, safe_globals)
 
 
 class RouterStep(BaseStep):
@@ -125,7 +122,6 @@ class RouterStep(BaseStep):
 
         state_snapshot = await context.state_manager.get_state_snapshot()
 
-        # Build namespace with state access
         namespace: dict[str, Any] = {}
         namespace.update(state_snapshot)
 
@@ -135,7 +131,6 @@ class RouterStep(BaseStep):
 
         namespace["state"] = _StateProxy()
 
-        # Also expose step results
         steps_data = state_snapshot.get("steps", {})
 
         class _StepsProxy:
@@ -152,7 +147,6 @@ class RouterStep(BaseStep):
 
         namespace["steps"] = _StepsProxy()
 
-        # Evaluate conditions in order
         # NOTE: first matching condition wins. no priority system yet
         target: str | None = None
         for condition in step.conditions:
@@ -167,7 +161,6 @@ class RouterStep(BaseStep):
                     f"Error evaluating condition '{condition.expression}': {e}",
                 ) from e
 
-        # Fallback to default
         if target is None:
             target = step.default
 
@@ -176,7 +169,6 @@ class RouterStep(BaseStep):
 
         duration = (time.monotonic() - start) * 1000
 
-        # Store the routing decision in state
         if step.output:
             await context.state_manager.set(step.output, target)
 

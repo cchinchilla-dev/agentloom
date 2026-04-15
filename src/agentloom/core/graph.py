@@ -85,7 +85,6 @@ class WorkflowGraph:
 
         dag = WorkflowParser.build_dag(workflow)
 
-        # Build node map: step_id -> GraphNode
         nodes: list[GraphNode] = [
             GraphNode(
                 id=step.id,
@@ -96,7 +95,6 @@ class WorkflowGraph:
             for step in workflow.steps
         ]
 
-        # Build edges with labels derived from router conditions
         edges: list[GraphEdge] = []
         router_targets: dict[str, dict[str, str]] = {}  # step_id -> {target -> label}
 
@@ -220,10 +218,8 @@ class WorkflowGraph:
 
         The result is deterministically sorted.
         """
-        # Start with all single-node paths.
         paths: list[list[str]] = [[node_id] for node_id in sorted(self._dag.nodes)]
 
-        # Iteratively extend each path.
         changed = True
         while changed:
             changed = False
@@ -246,7 +242,6 @@ class WorkflowGraph:
                     f"Graph is too complex; pass a higher max_paths to override."
                 )
 
-        # De-duplicate.
         seen: set[tuple[str, ...]] = set()
         unique: list[list[str]] = []
         for path in paths:
@@ -255,7 +250,6 @@ class WorkflowGraph:
                 seen.add(key)
                 unique.append(path)
 
-        # Filter: remove any path that is a contiguous sub-sequence of another.
         def is_subpath(candidate: list[str], other: list[str]) -> bool:
             if len(candidate) >= len(other):
                 return False

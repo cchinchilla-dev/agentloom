@@ -70,14 +70,12 @@ async def _run_async(
     from agentloom.tools.registry import ToolRegistry
     from agentloom.tools.sandbox import ToolSandbox
 
-    # Parse workflow
     try:
         workflow = WorkflowParser.from_yaml(workflow_path)
     except Exception as e:
         typer.echo(f"Error loading workflow: {e}", err=True)
         raise typer.Exit(1)
 
-    # Apply overrides
     if provider_override:
         workflow.config.provider = provider_override
     if model_override:
@@ -87,7 +85,6 @@ async def _run_async(
     if stream:
         workflow.config.stream = True
 
-    # Parse state overrides
     initial_state = dict(workflow.state)
     for item in state_args:
         if "=" not in item:
@@ -98,11 +95,9 @@ async def _run_async(
 
     state_manager = StateManager(initial_state=initial_state)
 
-    # Setup provider gateway
     gateway = ProviderGateway()
     _setup_providers(gateway, workflow.config.provider)
 
-    # Setup tools with sandbox from workflow config
     sandbox_cfg = workflow.config.sandbox
     sandbox = ToolSandbox(
         enabled=sandbox_cfg.enabled,
@@ -117,10 +112,8 @@ async def _run_async(
     tool_registry = ToolRegistry()
     register_builtins(tool_registry, sandbox=sandbox)
 
-    # Setup observability (unless --lite)
     observer = _setup_observer(lite)
 
-    # Setup stream callback
     stream_callback = None
     if stream and not output_json:
 
@@ -129,14 +122,12 @@ async def _run_async(
 
         stream_callback = _on_chunk
 
-    # Setup checkpointer
     checkpointer = None
     if checkpoint:
         from agentloom.checkpointing.file import FileCheckpointer
 
         checkpointer = FileCheckpointer(checkpoint_dir=checkpoint_dir)
 
-    # Run engine
     engine = WorkflowEngine(
         workflow=workflow,
         state_manager=state_manager,
@@ -155,7 +146,6 @@ async def _run_async(
     if stream and not output_json:
         typer.echo()  # Newline after streamed output
 
-    # Output results
     if output_json:
         typer.echo(result.model_dump_json(indent=2))
     else:
@@ -279,7 +269,6 @@ def _print_result(result: object) -> None:
             line += f" [{sr.attachment_count} attachment{'s' if sr.attachment_count > 1 else ''}]"
         typer.echo(line)
 
-    # Show final output
     final_state = r.final_state
     typer.echo(f"\nFinal State Keys: {list(final_state.keys())}")
     typer.echo(f"{'=' * 60}")

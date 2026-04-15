@@ -14,9 +14,8 @@ from agentloom.providers.gateway import ProviderGateway
 from agentloom.steps.base import StepContext
 from agentloom.steps.llm_call import LLMCallStep
 
-# -- DotAccessDict --
 
-
+# DotAccessDict
 class TestDotAccessDict:
     def test_simple_access(self) -> None:
         d = DotAccessDict({"name": "Alice"})
@@ -58,9 +57,7 @@ class TestDotAccessDict:
         assert result == "alpha"
 
 
-# -- DotAccessList --
-
-
+# DotAccessList
 class TestDotAccessList:
     def test_int_index(self) -> None:
         dl = DotAccessList(["a", "b", "c"])
@@ -98,9 +95,7 @@ class TestDotAccessList:
         assert dl["abc"] == ""
 
 
-# -- SafeFormatDict --
-
-
+# SafeFormatDict
 class TestSafeFormatDict:
     def test_existing_key(self) -> None:
         d = SafeFormatDict(name="Alice")
@@ -116,9 +111,7 @@ class TestSafeFormatDict:
         assert result == "1 and {b}"
 
 
-# -- LLMCallStep --
-
-
+# LLMCallStep
 class TestLLMCallStep:
     @pytest.fixture
     def step(self) -> LLMCallStep:
