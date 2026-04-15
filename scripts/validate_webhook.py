@@ -76,7 +76,7 @@ def _wf(webhook_url: str | None = None) -> WorkflowDefinition:
 async def main() -> None:
     import anyio
 
-    # --- Phase 1: Webhook capture server ---
+    # Phase 1: Webhook capture server
     received_webhooks: list[dict] = []
 
     async def _capture_webhook(stream: anyio.abc.SocketStream) -> None:
@@ -101,7 +101,7 @@ async def main() -> None:
     with tempfile.TemporaryDirectory() as cp_dir:
         ckpt = FileCheckpointer(checkpoint_dir=Path(cp_dir))
 
-        # --- Phase 2: Run workflow (should pause and send webhook) ---
+        # Phase 2: Run workflow (should pause and send webhook)
         print("[1/5] Running workflow with webhook (should pause)...")
 
         async with anyio.create_task_group() as tg:
@@ -123,7 +123,7 @@ async def main() -> None:
             tg.start_soon(listener.serve, _capture_webhook)
             tg.start_soon(_run_and_cancel)
 
-        # --- Phase 3: Verify webhook received ---
+        # Phase 3: Verify webhook received
         print("[2/5] Verifying webhook payload...")
         assert len(received_webhooks) > 0, "No webhook received"
         wh = received_webhooks[0]
@@ -133,7 +133,7 @@ async def main() -> None:
         assert wh.get("status") == "awaiting_approval", f"Wrong status: {wh}"
         print(f"  OK: webhook payload valid — {wh}")
 
-        # --- Phase 4: Verify checkpoint ---
+        # Phase 4: Verify checkpoint
         print("[3/5] Verifying checkpoint...")
         loaded = await ckpt.load("wh-test")
         assert loaded.status == "paused"
@@ -141,7 +141,7 @@ async def main() -> None:
         assert "step_a" in loaded.completed_steps
         print("  OK: checkpoint valid")
 
-        # --- Phase 5: Resume with approval ---
+        # Phase 5: Resume with approval
         print("[4/5] Resuming with approval...")
         data = await ckpt.load("wh-test")
         resumed = await WorkflowEngine.from_checkpoint(
@@ -155,7 +155,7 @@ async def main() -> None:
         assert r2.final_state.get("decision") == "approved"
         print("  OK: resumed with approval")
 
-        # --- Phase 6: No webhook without config ---
+        # Phase 6: No webhook without config
         print("[5/5] Verifying no webhook when notify=None...")
         received_webhooks.clear()
         eng2 = WorkflowEngine(

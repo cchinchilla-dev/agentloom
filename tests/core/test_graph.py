@@ -18,9 +18,8 @@ from agentloom.core.models import (
     WorkflowDefinition,
 )
 
+
 # Shared helpers
-
-
 def _linear_dag() -> DAG:
     """a -> b -> c"""
     return DAG.from_steps([("a", []), ("b", ["a"]), ("c", ["b"])])
@@ -96,8 +95,6 @@ def _mixed_type_workflow() -> WorkflowDefinition:
 
 
 # TestGraphNode
-
-
 class TestGraphNode:
     def test_construction_all_fields(self) -> None:
         node = GraphNode(
@@ -130,8 +127,6 @@ class TestGraphNode:
 
 
 # TestGraphEdge
-
-
 class TestGraphEdge:
     def test_construction_all_fields(self) -> None:
         edge = GraphEdge(source="a", target="b", label="condition")
@@ -150,8 +145,6 @@ class TestGraphEdge:
 
 
 # TestFromWorkflow
-
-
 class TestFromWorkflow:
     def test_build_from_simple_workflow(self) -> None:
         wf = _router_workflow()
@@ -195,8 +188,6 @@ class TestFromWorkflow:
 
 
 # TestFromDAG
-
-
 class TestFromDAG:
     def test_build_from_bare_dag(self) -> None:
         dag = _linear_dag()
@@ -222,8 +213,6 @@ class TestFromDAG:
 
 
 # TestProperties
-
-
 class TestProperties:
     def test_nodes_in_topological_order(self) -> None:
         dag = _linear_dag()
@@ -275,8 +264,6 @@ class TestProperties:
 
 
 # TestGetStepDefinition
-
-
 class TestGetStepDefinition:
     def test_returns_step_definition_from_workflow(self) -> None:
         wf = _router_workflow()
@@ -296,8 +283,6 @@ class TestGetStepDefinition:
 
 
 # TestAllPaths
-
-
 class TestAllPaths:
     def test_linear_chain_single_path(self) -> None:
         g = WorkflowGraph.from_dag(_linear_dag())
@@ -337,8 +322,6 @@ class TestAllPaths:
 
 
 # TestPrimePaths
-
-
 class TestPrimePaths:
     def test_linear_chain_single_prime_path(self) -> None:
         g = WorkflowGraph.from_dag(_linear_dag())
@@ -378,8 +361,6 @@ class TestPrimePaths:
 
 
 # TestCriticalPath
-
-
 class TestCriticalPath:
     def test_linear_chain_full_chain(self) -> None:
         g = WorkflowGraph.from_dag(_linear_dag())
@@ -413,8 +394,6 @@ class TestCriticalPath:
 
 
 # TestToDict
-
-
 class TestToDict:
     def test_keys_present(self) -> None:
         g = WorkflowGraph.from_dag(_linear_dag())
@@ -456,8 +435,6 @@ class TestToDict:
 
 
 # TestToDot
-
-
 class TestToDot:
     def test_contains_digraph_workflow(self) -> None:
         g = WorkflowGraph.from_dag(_linear_dag())
@@ -501,8 +478,6 @@ class TestToDot:
 
 
 # TestToPnml
-
-
 class TestToPnml:
     def test_valid_xml(self) -> None:
         g = WorkflowGraph.from_dag(_linear_dag())
@@ -544,8 +519,6 @@ class TestToPnml:
 
 
 # TestToMermaid
-
-
 class TestToMermaid:
     def test_starts_with_graph_td(self) -> None:
         g = WorkflowGraph.from_dag(_linear_dag())
@@ -591,8 +564,6 @@ class TestToMermaid:
 
 
 # TestToNetworkx
-
-
 class TestToNetworkx:
     def test_builds_digraph_when_networkx_available(self) -> None:
         nx = pytest.importorskip("networkx")
@@ -628,8 +599,6 @@ class TestToNetworkx:
 
 
 # Audit-driven edge-case tests
-
-
 class TestPrimePathsEdgeCases:
     def test_empty_graph(self) -> None:
         g = WorkflowGraph.from_dag(DAG())

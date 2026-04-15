@@ -23,7 +23,7 @@ state:
   response: ""
 
 steps:
-  # --- Layer 0: fetch deployment context ---
+  # Layer 0: fetch deployment context
 
   - id: fetch_deploys
     type: tool
@@ -33,7 +33,7 @@ steps:
       method: "GET"
     output: recent_deploys
 
-  # --- Layer 1: root cause analysis ---
+  # Layer 1: root cause analysis
 
   - id: analyze
     type: llm_call
@@ -56,7 +56,7 @@ steps:
       Recent deployments: {state.recent_deploys}
     output: analysis
 
-  # --- Layer 2: classify severity ---
+  # Layer 2: classify severity
 
   - id: classify_severity
     type: llm_call
@@ -77,7 +77,7 @@ steps:
       Analysis: {state.analysis}
     output: severity
 
-  # --- Layer 3: route by severity ---
+  # Layer 3: route by severity
 
   - id: route
     type: router
@@ -89,7 +89,7 @@ steps:
         target: create_ticket
     default: add_to_backlog
 
-  # --- Layer 4: generate appropriate response ---
+  # Layer 4: generate appropriate response
 
   - id: incident_response
     type: llm_call

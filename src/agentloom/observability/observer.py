@@ -50,13 +50,11 @@ class WorkflowObserver:
         total_tokens: int,
         total_cost: float,
     ) -> None:
-        # Metrics
         if self._metrics:
             self._metrics.record_workflow_run(
                 workflow_name, status, duration_ms / 1000.0, total_cost
             )
 
-        # Span
         span = self._workflow_span
         if span:
             span.set_attribute("workflow.status", status)
@@ -96,7 +94,6 @@ class WorkflowObserver:
         time_to_first_token_ms: float | None = None,
         stream: bool = False,
     ) -> None:
-        # Metrics
         if self._metrics:
             self._metrics.record_step_execution(
                 step_type, status, duration_ms / 1000.0, stream=stream
@@ -104,7 +101,6 @@ class WorkflowObserver:
             if attachment_count > 0:
                 self._metrics.record_attachments(step_type, attachment_count)
 
-        # Span
         span = self._step_spans.pop(step_id, None)
         if span:
             span.set_attribute("step.status", status)

@@ -61,7 +61,6 @@ class WorkflowParser:
 
         WorkflowParser._validate_references(workflow)
 
-        # Validate DAG (cycle detection) during parsing
         steps = [(s.id, s.depends_on) for s in workflow.steps]
         dag = DAG.from_steps(steps)
         errors = dag.validate()

@@ -29,9 +29,7 @@ from agentloom.providers.gateway import ProviderGateway
 from agentloom.tools import ToolRegistry, tool
 from agentloom.tools.builtins import register_builtins
 
-# ---------------------------------------------------------------------------
 # Custom tools — defined with the @tool decorator
-# ---------------------------------------------------------------------------
 
 
 @tool(name="query_database", description="Query customer feedback from database")
@@ -118,10 +116,6 @@ async def create_ticket(title: str, body: str, priority: str = "medium") -> str:
     return json.dumps(ticket)
 
 
-# ---------------------------------------------------------------------------
-# Main — parse args, set up tools + gateway, run workflow
-# ---------------------------------------------------------------------------
-
 WORKFLOW_PATH = Path(__file__).parent / "14_custom_tools_decorator.yaml"
 
 
@@ -168,11 +162,9 @@ def _setup_gateway(provider: str) -> ProviderGateway:
 
 
 async def _main(provider: str, model: str | None) -> None:
-    # 1. Set up custom tool registry
     tool_registry = ToolRegistry()
     register_builtins(tool_registry)  # keep builtins available
 
-    # Register our custom tools
     tool_registry.register(query_database)
     tool_registry.register(send_slack_message)
     tool_registry.register(create_ticket)
@@ -182,7 +174,6 @@ async def _main(provider: str, model: str | None) -> None:
         print(f"  - {t.name}: {t.description}")
     print()
 
-    # 2. Load workflow from YAML
     workflow = WorkflowParser.from_yaml(WORKFLOW_PATH)
 
     if provider:
@@ -190,10 +181,8 @@ async def _main(provider: str, model: str | None) -> None:
     if model:
         workflow.config.model = model
 
-    # 3. Set up provider gateway
     gateway = _setup_gateway(workflow.config.provider)
 
-    # 4. Run
     state = StateManager(initial_state=dict(workflow.state))
     engine = WorkflowEngine(
         workflow=workflow,

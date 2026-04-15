@@ -37,10 +37,10 @@ class FakeProvider(BaseProvider):
 
     name = "fake"
 
-    async def complete(self, messages, model, **kwargs):  # noqa: ANN001,ANN003
+    async def complete(self, messages, model, **kwargs):
         return ProviderResponse(content="fake-output", model=model, provider="fake")
 
-    async def stream(self, *a, **kw):  # noqa: ANN002,ANN003
+    async def stream(self, *a, **kw):
         raise NotImplementedError
 
     def supports_model(self, model: str) -> bool:
@@ -95,7 +95,7 @@ async def main() -> None:
     with tempfile.TemporaryDirectory() as cp_dir:
         checkpointer = FileCheckpointer(checkpoint_dir=Path(cp_dir))
 
-        # ── Test 1: Run → should pause at approval gate ────────────
+        # Test 1: Run → should pause at approval gate
         print("\n[1/5] Running workflow (should pause at approval gate)...")
         engine = WorkflowEngine(
             workflow=_workflow(),
@@ -120,7 +120,7 @@ async def main() -> None:
         else:
             _fail(f"approve step should be PAUSED, got {result.step_results['approve'].status}")
 
-        # ── Test 2: Verify checkpoint ──────────────────────────────
+        # Test 2: Verify checkpoint
         print("\n[2/5] Verifying checkpoint...")
         loaded = await checkpointer.load("approval-validate")
 
@@ -134,7 +134,7 @@ async def main() -> None:
         else:
             _fail(f"Completed steps: {loaded.completed_steps}")
 
-        # ── Test 3: Resume with --approve ──────────────────────────
+        # Test 3: Resume with --approve
         print("\n[3/5] Resuming with decision=approved...")
         data = await checkpointer.load("approval-validate")
         resumed = await WorkflowEngine.from_checkpoint(
@@ -160,7 +160,7 @@ async def main() -> None:
         else:
             _fail("send step should be SUCCESS")
 
-        # ── Test 4: Run again → pause → resume with --reject ──────
+        # Test 4: Run again → pause → resume with --reject
         print("\n[4/5] Running again and resuming with decision=rejected...")
         engine2 = WorkflowEngine(
             workflow=_workflow(),
@@ -189,7 +189,7 @@ async def main() -> None:
         else:
             _fail(f"Decision in state: {result3.final_state.get('decision')}")
 
-        # ── Test 5: Final checkpoint status ────────────────────────
+        # Test 5: Final checkpoint status
         print("\n[5/5] Verifying final checkpoints...")
         final1 = await checkpointer.load("approval-validate")
         final2 = await checkpointer.load("approval-reject")

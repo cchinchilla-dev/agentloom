@@ -35,18 +35,17 @@ from agentloom.providers.gateway import ProviderGateway
 from agentloom.steps.base import BaseStep, StepContext
 from agentloom.steps.registry import StepRegistry, create_default_registry
 
-# --- Helpers ----------------------------------------------------------------
 
-
+# Helpers
 class FakeProvider(BaseProvider):
     """Minimal provider that returns a fixed response."""
 
     name = "fake"
 
-    async def complete(self, messages, model, **kwargs):  # noqa: ANN001,ANN003
+    async def complete(self, messages, model, **kwargs):
         return ProviderResponse(content="fake-output", model=model, provider="fake")
 
-    async def stream(self, *a, **kw):  # noqa: ANN002,ANN003
+    async def stream(self, *a, **kw):
         raise NotImplementedError
 
     def supports_model(self, model: str) -> bool:
@@ -106,9 +105,7 @@ def _workflow() -> WorkflowDefinition:
     )
 
 
-# --- Validation -------------------------------------------------------------
-
-
+# Validation
 def _ok(msg: str) -> None:
     print(f"  ✓ {msg}")
 
@@ -122,7 +119,7 @@ async def main() -> None:
     with tempfile.TemporaryDirectory() as cp_dir:
         checkpointer = FileCheckpointer(checkpoint_dir=Path(cp_dir))
 
-        # ── Step 1: Run → should pause ──────────────────────────────
+        # Step 1: Run → should pause
         print("\n[1/4] Running workflow (should pause at step_b)...")
         engine = WorkflowEngine(
             workflow=_workflow(),
@@ -148,7 +145,7 @@ async def main() -> None:
         else:
             _fail(f"step_b should be PAUSED, got {result.step_results['step_b'].status}")
 
-        # ── Step 2: Verify checkpoint on disk ───────────────────────
+        # Step 2: Verify checkpoint on disk
         print("\n[2/4] Verifying checkpoint file...")
         cp_files = list(Path(cp_dir).glob("*.json"))
         if len(cp_files) == 1:
@@ -177,7 +174,7 @@ async def main() -> None:
         else:
             _fail("step_b should not be in completed_steps")
 
-        # ── Step 3: List runs ───────────────────────────────────────
+        # Step 3: List runs
         print("\n[3/4] Listing checkpoint runs...")
         runs = await checkpointer.list_runs()
         if len(runs) == 1 and runs[0].run_id == "validate-pause":
@@ -185,7 +182,7 @@ async def main() -> None:
         else:
             _fail(f"Expected 1 run, found {len(runs)}")
 
-        # ── Step 4: Resume → should complete ────────────────────────
+        # Step 4: Resume → should complete
         print("\n[4/4] Resuming workflow...")
         checkpoint_data = await checkpointer.load("validate-pause")
         resumed = await WorkflowEngine.from_checkpoint(

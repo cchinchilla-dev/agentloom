@@ -77,8 +77,6 @@ class MetricsManager:
         elif _HAS_PROM:  # pragma: no cover — prom fallback, only active when OTel unavailable
             self._setup_prom()
 
-    # Setup
-
     def _setup_otel(self, endpoint: str) -> None:
         exporter = otel_metric_exporter.OTLPMetricExporter(endpoint=endpoint, insecure=True)
         reader = otel_metrics.export.PeriodicExportingMetricReader(
@@ -157,7 +155,7 @@ class MetricsManager:
         # Circuit breaker gauge (callback-based, reads from _circuit_states)
         states = self._circuit_states
 
-        def _cb_circuit(options: Any) -> Any:  # noqa: ANN401
+        def _cb_circuit(options: Any) -> Any:
             Observation = otel_api_metrics.Observation
             for prov, val in list(states.items()):  # pragma: no cover — fires on OTel export
                 yield Observation(val, {"provider": prov})
@@ -171,7 +169,7 @@ class MetricsManager:
         # Budget remaining gauge (callback-based, reads from _budget_remaining)
         budget = self._budget_remaining
 
-        def _cb_budget(options: Any) -> Any:  # noqa: ANN401  # pragma: no cover
+        def _cb_budget(options: Any) -> Any:  # pragma: no cover
             Observation = otel_api_metrics.Observation
             for wf, val in list(budget.items()):
                 yield Observation(val, {"workflow": wf})
@@ -269,8 +267,6 @@ class MetricsManager:
         )
         self._backend = "prom"
         logger.debug("Metrics: prometheus_client (pull)")
-
-    # Recording
 
     def record_workflow_run(
         self, workflow: str, status: str, duration_s: float = 0.0, cost_usd: float = 0.0

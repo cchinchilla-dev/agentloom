@@ -19,7 +19,7 @@ state:
   response: ""
 
 steps:
-  # --- Layer 0: collect data via shell commands (parallel) ---
+  # Layer 0: collect data via shell commands (parallel)
 
   - id: collect_errors
     type: tool
@@ -37,7 +37,7 @@ steps:
       timeout: 10
     output: system_metrics
 
-  # --- Layer 1: correlate and analyze ---
+  # Layer 1: correlate and analyze
 
   - id: analyze
     type: llm_call
@@ -61,7 +61,7 @@ steps:
       {state.system_metrics}
     output: analysis
 
-  # --- Layer 2: classify ---
+  # Layer 2: classify
 
   - id: classify
     type: llm_call
@@ -76,7 +76,7 @@ steps:
     prompt: "Classify severity based on:\n\n{state.analysis}"
     output: severity
 
-  # --- Layer 3: route ---
+  # Layer 3: route
 
   - id: route
     type: router
@@ -88,7 +88,7 @@ steps:
         target: create_ticket
     default: log_silently
 
-  # --- Layer 4: respond ---
+  # Layer 4: respond
 
   - id: fire_alert
     type: llm_call

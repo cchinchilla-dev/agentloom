@@ -50,7 +50,7 @@ state:
   summary: ""
 
 steps:
-  # --- Layer 0: extract and categorize clauses ---
+  # Layer 0: extract and categorize clauses
 
   - id: extract_clauses
     type: llm_call
@@ -66,7 +66,7 @@ steps:
     prompt: "Extract and categorize all clauses:\n\n{state.contract_text}"
     output: clauses
 
-  # --- Layer 1: risk assessment ---
+  # Layer 1: risk assessment
 
   - id: assess_risk
     type: llm_call
@@ -88,7 +88,7 @@ steps:
       {state.clauses}
     output: risk_assessment
 
-  # --- Layer 2: compare to market standards ---
+  # Layer 2: compare to market standards
 
   - id: compare_to_standards
     type: llm_call
@@ -112,7 +112,7 @@ steps:
       {state.risk_assessment}
     output: comparison
 
-  # --- Layer 3: executive summary ---
+  # Layer 3: executive summary
 
   - id: executive_summary
     type: llm_call
