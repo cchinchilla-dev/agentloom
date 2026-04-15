@@ -120,3 +120,62 @@ async def test_merges_with_existing_file(tmp_path):
     data = json.loads(recording_path.read_text())
     assert "prior" in data
     assert "new_step" in data
+
+
+async def test_ignores_corrupted_existing_file_on_init(tmp_path):
+    recording_path = tmp_path / "corrupt.json"
+    recording_path.write_text("{ not valid json")
+
+    source = MockProvider(default_response="ok")
+    recorder = RecordingProvider(source, recording_path)
+    await recorder.complete(messages=[{"role": "user", "content": "hi"}], model="m", step_id="s1")
+
+    data = json.loads(recording_path.read_text())
+    assert "s1" in data
+
+
+async def test_flush_recovers_from_corrupted_file(tmp_path):
+    recording_path = tmp_path / "corrupt.json"
+    source = MockProvider(default_response="ok")
+    recorder = RecordingProvider(source, recording_path)
+    # Corrupt the file after init but before flush
+    recording_path.write_text("{ still bad")
+
+    await recorder.complete(messages=[{"role": "user", "content": "hi"}], model="m", step_id="s1")
+    data = json.loads(recording_path.read_text())
+    assert "s1" in data
+
+
+async def test_stream_delegates_to_wrapped(tmp_path):
+    called = {}
+
+    class FakeStream:
+        def __init__(self):
+            self.name = "fake"
+            self.api_key = None
+            self.base_url = None
+
+        async def stream(self, **kwargs):
+            called.update(kwargs)
+            return "stream-result"
+
+        async def complete(self, **kwargs):
+            raise NotImplementedError
+
+        def supports_model(self, model):
+            return model == "fake-model"
+
+        async def close(self):
+            pass
+
+    recorder = RecordingProvider(FakeStream(), tmp_path / "r.json")  # type: ignore[arg-type]
+    result = await recorder.stream(messages=[{"role": "user", "content": "hi"}], model="fake-model")
+    assert result == "stream-result"
+    assert called["model"] == "fake-model"
+
+
+async def test_supports_model_delegates_to_wrapped(tmp_path):
+    source = MockProvider(default_response="ok")
+    source.name = "src"
+    recorder = RecordingProvider(source, tmp_path / "r.json")
+    assert recorder.supports_model("any-model") is True
