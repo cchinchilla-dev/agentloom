@@ -16,12 +16,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shutil
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
 try:
@@ -29,9 +27,7 @@ try:
 except ImportError:
     yaml = None  # type: ignore[assignment]
 
-# ────────────────────────────────────────────────────────────
 # Helpers
-# ────────────────────────────────────────────────────────────
 
 ROOT = Path(__file__).resolve().parent.parent
 DEPLOY = ROOT / "deploy"
@@ -116,10 +112,7 @@ def _run(cmd: list[str], cwd: Path | None = None, timeout: int = 60) -> tuple[in
     return r.returncode, r.stdout, r.stderr
 
 
-# ────────────────────────────────────────────────────────────
 # 1. Dockerfile
-# ────────────────────────────────────────────────────────────
-
 def audit_dockerfile() -> None:
     _header("Dockerfile")
     path = ROOT / "Dockerfile"
@@ -182,10 +175,7 @@ def audit_dockerfile() -> None:
         _pass("Base image is not alpine")
 
 
-# ────────────────────────────────────────────────────────────
 # 2. Docker Compose
-# ────────────────────────────────────────────────────────────
-
 def audit_docker_compose() -> None:
     _header("Docker Compose")
     path = DEPLOY / "docker-compose.yml"
@@ -241,10 +231,7 @@ def audit_docker_compose() -> None:
         _fail("agentloom missing OTEL_EXPORTER_OTLP_ENDPOINT")
 
 
-# ────────────────────────────────────────────────────────────
 # 3. K8s Base Manifests
-# ────────────────────────────────────────────────────────────
-
 def _check_pod_security(spec: dict, context: str) -> None:
     """Validate security context on a pod spec."""
     sc = spec.get("securityContext", {})
@@ -297,7 +284,10 @@ def _check_pod_security(spec: dict, context: str) -> None:
         if "cpu" not in limits:
             _pass(f"{context}/{c.get('name')}: no CPU limit (CFS throttling prevention)")
         else:
-            _fail(f"{context}/{c.get('name')}: CPU limit set — causes CFS throttling on I/O-bound LLM calls")
+            _fail(
+                f"{context}/{c.get('name')}: CPU limit set — "
+                "causes CFS throttling on I/O-bound LLM calls"
+            )
 
     # /tmp emptyDir volume
     volumes = spec.get("volumes", [])
@@ -402,7 +392,7 @@ def audit_k8s_base() -> None:
                 egress_ports.add(p.get("port"))
         required_ports = {53, 443, 4317}
         if required_ports.issubset(egress_ports):
-            _pass(f"NetworkPolicy allows required egress ports: DNS(53), HTTPS(443), OTel(4317)")
+            _pass("NetworkPolicy allows required egress ports: DNS(53), HTTPS(443), OTel(4317)")
         else:
             _fail(f"NetworkPolicy missing ports: {required_ports - egress_ports}")
 
@@ -417,10 +407,7 @@ def audit_k8s_base() -> None:
                 _fail(f"kustomization.yaml references {r} but file not found")
 
 
-# ────────────────────────────────────────────────────────────
 # 4. Kustomize Overlays
-# ────────────────────────────────────────────────────────────
-
 def audit_kustomize_overlays() -> None:
     _header("Kustomize Overlays")
     overlays_dir = DEPLOY / "k8s" / "overlays"
@@ -466,7 +453,8 @@ def audit_kustomize_overlays() -> None:
     if dev_kust:
         patches = dev_kust.get("patches", [])
         np_deleted = any(
-            isinstance(p, dict) and "$patch: delete" in str(p.get("patch", ""))
+            isinstance(p, dict)
+            and "$patch: delete" in str(p.get("patch", ""))
             and "NetworkPolicy" in str(p.get("target", ""))
             for p in patches
         )
@@ -487,10 +475,7 @@ def audit_kustomize_overlays() -> None:
                 _fail("production: should not use 'latest' tag")
 
 
-# ────────────────────────────────────────────────────────────
 # 5. Helm Chart
-# ────────────────────────────────────────────────────────────
-
 def audit_helm_chart() -> None:
     _header("Helm Chart")
     chart_dir = DEPLOY / "helm" / "agentloom"
@@ -556,7 +541,9 @@ def audit_helm_chart() -> None:
         if sa.get("automountServiceAccountToken") is False:
             _pass("values.yaml: serviceAccount.automountServiceAccountToken=false")
         else:
-            _fail("values.yaml: serviceAccount.automountServiceAccountToken should default to false")
+            _fail(
+                "values.yaml: serviceAccount.automountServiceAccountToken should default to false"
+            )
 
         # NetworkPolicy enabled by default
         np = values.get("networkPolicy", {})
@@ -582,9 +569,17 @@ def audit_helm_chart() -> None:
     # Required templates exist
     templates_dir = chart_dir / "templates"
     required_templates = [
-        "_helpers.tpl", "validate.yaml", "job.yaml", "cronjob.yaml",
-        "configmap.yaml", "secret.yaml", "serviceaccount.yaml",
-        "namespace.yaml", "networkpolicy.yaml", "resourcequota.yaml", "NOTES.txt",
+        "_helpers.tpl",
+        "validate.yaml",
+        "job.yaml",
+        "cronjob.yaml",
+        "configmap.yaml",
+        "secret.yaml",
+        "serviceaccount.yaml",
+        "namespace.yaml",
+        "networkpolicy.yaml",
+        "resourcequota.yaml",
+        "NOTES.txt",
     ]
     for t in required_templates:
         if _file_exists(templates_dir / t):
@@ -593,22 +588,36 @@ def audit_helm_chart() -> None:
             _fail(f"Template {t} missing")
 
     # Validate template uses fail function
-    validate = (templates_dir / "validate.yaml").read_text() if _file_exists(templates_dir / "validate.yaml") else ""
+    validate = (
+        (templates_dir / "validate.yaml").read_text()
+        if _file_exists(templates_dir / "validate.yaml")
+        else ""
+    )
     if "fail" in validate:
         _pass("validate.yaml uses fail function for input validation")
     else:
         _fail("validate.yaml should use fail for render-time validation")
 
     # _helpers.tpl has podSpec helper
-    helpers = (templates_dir / "_helpers.tpl").read_text() if _file_exists(templates_dir / "_helpers.tpl") else ""
+    helpers = (
+        (templates_dir / "_helpers.tpl").read_text()
+        if _file_exists(templates_dir / "_helpers.tpl")
+        else ""
+    )
     if "agentloom.podSpec" in helpers:
         _pass("_helpers.tpl defines shared podSpec (DRY between Job and CronJob)")
     else:
         _fail("_helpers.tpl should define agentloom.podSpec helper")
 
     # Job template uses podSpec
-    job_tpl = (templates_dir / "job.yaml").read_text() if _file_exists(templates_dir / "job.yaml") else ""
-    cj_tpl = (templates_dir / "cronjob.yaml").read_text() if _file_exists(templates_dir / "cronjob.yaml") else ""
+    job_tpl = (
+        (templates_dir / "job.yaml").read_text() if _file_exists(templates_dir / "job.yaml") else ""
+    )
+    cj_tpl = (
+        (templates_dir / "cronjob.yaml").read_text()
+        if _file_exists(templates_dir / "cronjob.yaml")
+        else ""
+    )
     if "agentloom.podSpec" in job_tpl:
         _pass("job.yaml uses shared podSpec helper")
     else:
@@ -625,10 +634,7 @@ def audit_helm_chart() -> None:
         _fail("ci/test-values.yaml missing — Helm CI validation will fail")
 
 
-# ────────────────────────────────────────────────────────────
 # 6. Terraform
-# ────────────────────────────────────────────────────────────
-
 def audit_terraform() -> None:
     _header("Terraform")
     tf_dir = DEPLOY / "terraform"
@@ -636,8 +642,13 @@ def audit_terraform() -> None:
         _fail("deploy/terraform/ not found")
         return
 
-    required_files = ["versions.tf", "variables.tf", "main.tf", "outputs.tf",
-                      "terraform.tfvars.example"]
+    required_files = [
+        "versions.tf",
+        "variables.tf",
+        "main.tf",
+        "outputs.tf",
+        "terraform.tfvars.example",
+    ]
     for f in required_files:
         if _file_exists(tf_dir / f):
             _pass(f"{f} exists")
@@ -660,7 +671,7 @@ def audit_terraform() -> None:
     main_tf = (tf_dir / "main.tf").read_text() if _file_exists(tf_dir / "main.tf") else ""
 
     # Conditional observability resources
-    if 'var.enable_observability' in main_tf:
+    if "var.enable_observability" in main_tf:
         _pass("Observability is conditional on enable_observability variable")
     else:
         _fail("main.tf should use var.enable_observability for conditional deployment")
@@ -669,7 +680,8 @@ def audit_terraform() -> None:
         "Jaeger": "helm_release" in main_tf and "jaeger" in main_tf,
         "OTel Collector": "otel_collector" in main_tf or "otel-collector" in main_tf,
         "kube-prometheus-stack": "kube_prometheus" in main_tf or "kube-prometheus-stack" in main_tf,
-        "Grafana dashboard ConfigMap": "grafana_dashboard" in main_tf or "agentloom-grafana-dashboard" in main_tf,
+        "Grafana dashboard ConfigMap": "grafana_dashboard" in main_tf
+        or "agentloom-grafana-dashboard" in main_tf,
     }
     for component, present in obs_components.items():
         if present:
@@ -725,10 +737,7 @@ def audit_terraform() -> None:
         _fail(f"Residual files in terraform/: {[f.name for f in residual]}")
 
 
-# ────────────────────────────────────────────────────────────
 # 7. ArgoCD
-# ────────────────────────────────────────────────────────────
-
 def audit_argocd() -> None:
     _header("ArgoCD")
     path = DEPLOY / "argocd" / "application.yaml"
@@ -785,10 +794,7 @@ def audit_argocd() -> None:
         _fail("Source path should be deploy/helm/agentloom")
 
 
-# ────────────────────────────────────────────────────────────
 # 8. CI/CD Workflows
-# ────────────────────────────────────────────────────────────
-
 def audit_ci_workflows() -> None:
     _header("CI/CD Workflows")
     workflows = ROOT / ".github" / "workflows"
@@ -844,7 +850,9 @@ def audit_ci_workflows() -> None:
         _fail("ci.yml should validate Helm chart")
 
     # Docker workflow
-    docker_content = (workflows / "docker.yml").read_text() if _file_exists(workflows / "docker.yml") else ""
+    docker_content = (
+        (workflows / "docker.yml").read_text() if _file_exists(workflows / "docker.yml") else ""
+    )
     if "ghcr.io" in docker_content:
         _pass("docker.yml pushes to GHCR")
     else:
@@ -856,14 +864,15 @@ def audit_ci_workflows() -> None:
         _fail("docker.yml should include smoke test")
 
 
-# ────────────────────────────────────────────────────────────
 # 9. Documentation Consistency
-# ────────────────────────────────────────────────────────────
-
 def audit_docs() -> None:
     _header("Documentation Consistency")
     readme = (ROOT / "README.md").read_text() if _file_exists(ROOT / "README.md") else ""
-    infra = (DEPLOY / "INFRASTRUCTURE.md").read_text() if _file_exists(DEPLOY / "INFRASTRUCTURE.md") else ""
+    infra = (
+        (DEPLOY / "INFRASTRUCTURE.md").read_text()
+        if _file_exists(DEPLOY / "INFRASTRUCTURE.md")
+        else ""
+    )
 
     if not readme:
         _fail("README.md not found")
@@ -901,18 +910,20 @@ def audit_docs() -> None:
             _fail(f"INFRASTRUCTURE.md should document {component}")
 
     # INFRASTRUCTURE.md documents security
-    for concept in ["runAsNonRoot", "readOnlyRootFilesystem", "seccompProfile",
-                     "NetworkPolicy", "automountServiceAccountToken"]:
+    for concept in [
+        "runAsNonRoot",
+        "readOnlyRootFilesystem",
+        "seccompProfile",
+        "NetworkPolicy",
+        "automountServiceAccountToken",
+    ]:
         if concept in infra:
             _pass(f"INFRASTRUCTURE.md documents {concept}")
         else:
             _fail(f"INFRASTRUCTURE.md should document {concept}")
 
 
-# ────────────────────────────────────────────────────────────
 # 10. Cross-Reference Integrity
-# ────────────────────────────────────────────────────────────
-
 def audit_cross_references() -> None:
     _header("Cross-Reference Integrity")
 
@@ -926,8 +937,13 @@ def audit_cross_references() -> None:
 
     if values and job_yaml:
         helm_repo = values.get("image", {}).get("repository", "")
-        k8s_image = job_yaml.get("spec", {}).get("template", {}).get("spec", {}).get(
-            "containers", [{}])[0].get("image", "")
+        k8s_image = (
+            job_yaml.get("spec", {})
+            .get("template", {})
+            .get("spec", {})
+            .get("containers", [{}])[0]
+            .get("image", "")
+        )
         if helm_repo and helm_repo in k8s_image:
             _pass(f"Image repository consistent: {helm_repo}")
         else:
@@ -938,12 +954,16 @@ def audit_cross_references() -> None:
     if values and compose:
         helm_otel = values.get("observability", {}).get("otelEndpoint", "")
         if "4317" in helm_otel:
-            _pass(f"Helm OTel endpoint uses port 4317")
+            _pass("Helm OTel endpoint uses port 4317")
         else:
-            _fail(f"Helm OTel endpoint should use port 4317")
+            _fail("Helm OTel endpoint should use port 4317")
 
     # Terraform references Helm chart
-    main_tf = (DEPLOY / "terraform" / "main.tf").read_text() if _file_exists(DEPLOY / "terraform" / "main.tf") else ""
+    main_tf = (
+        (DEPLOY / "terraform" / "main.tf").read_text()
+        if _file_exists(DEPLOY / "terraform" / "main.tf")
+        else ""
+    )
     if "helm/agentloom" in main_tf:
         _pass("Terraform references local Helm chart")
     else:
@@ -977,10 +997,7 @@ def audit_cross_references() -> None:
             _fail(f"ArgoCD source path '{path}' should be 'deploy/helm/agentloom'")
 
 
-# ────────────────────────────────────────────────────────────
 # 11. Tool-Based Validation (requires kustomize, helm, terraform)
-# ────────────────────────────────────────────────────────────
-
 def audit_kustomize_build() -> None:
     _header("Kustomize Build (tool)")
     if not _has_tool("kustomize"):
@@ -997,7 +1014,10 @@ def audit_kustomize_build() -> None:
                 # kubeconform reads from stdin — pipe kustomize output
                 r = subprocess.run(
                     ["kubeconform", "-strict", "-summary"],
-                    input=out, capture_output=True, text=True, timeout=30,
+                    input=out,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 if r.returncode == 0:
                     _pass(f"kubeconform {overlay} — valid")
@@ -1024,10 +1044,18 @@ def audit_helm_render() -> None:
         _fail("helm lint — failed", err or out)
 
     # Template render
-    rc, out, err = _run([
-        "helm", "template", "test", str(chart),
-        "-f", str(ci_values), "-n", "agentloom",
-    ])
+    rc, out, err = _run(
+        [
+            "helm",
+            "template",
+            "test",
+            str(chart),
+            "-f",
+            str(ci_values),
+            "-n",
+            "agentloom",
+        ]
+    )
     if rc == 0:
         _pass("helm template — renders successfully")
 
@@ -1035,7 +1063,10 @@ def audit_helm_render() -> None:
         if _has_tool("kubeconform"):
             r = subprocess.run(
                 ["kubeconform", "-strict", "-summary"],
-                input=out, capture_output=True, text=True, timeout=30,
+                input=out,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if r.returncode == 0:
                 _pass("kubeconform on Helm output — valid")
@@ -1045,9 +1076,16 @@ def audit_helm_render() -> None:
         _fail("helm template — failed", err)
 
     # Validation: missing workflow definition should fail
-    rc, out, err = _run([
-        "helm", "template", "test", str(chart), "-n", "agentloom",
-    ])
+    rc, out, err = _run(
+        [
+            "helm",
+            "template",
+            "test",
+            str(chart),
+            "-n",
+            "agentloom",
+        ]
+    )
     if rc != 0 and "workflow" in (err + out).lower():
         _pass("helm template without workflow.definition — fails with clear message")
     elif rc != 0:
@@ -1089,10 +1127,7 @@ def audit_terraform_validate() -> None:
         _fail("terraform fmt — formatting issues", out)
 
 
-# ────────────────────────────────────────────────────────────
 # Main
-# ────────────────────────────────────────────────────────────
-
 def main() -> int:
     global _verbose
 
@@ -1126,10 +1161,12 @@ def main() -> int:
     # Summary
     total = _pass_count + _fail_count + _skip_count
     print(f"\n{'=' * 60}")
-    print(f"  {_bold('Results')}: {_green(f'{_pass_count} passed')}  "
-          f"{_red(f'{_fail_count} failed') if _fail_count else f'{_fail_count} failed'}  "
-          f"{_yellow(f'{_skip_count} skipped') if _skip_count else f'{_skip_count} skipped'}  "
-          f"({total} total)")
+    print(
+        f"  {_bold('Results')}: {_green(f'{_pass_count} passed')}  "
+        f"{_red(f'{_fail_count} failed') if _fail_count else f'{_fail_count} failed'}  "
+        f"{_yellow(f'{_skip_count} skipped') if _skip_count else f'{_skip_count} skipped'}  "
+        f"({total} total)"
+    )
     print(f"{'=' * 60}\n")
 
     return 1 if _fail_count > 0 else 0

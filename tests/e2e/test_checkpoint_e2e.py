@@ -69,7 +69,7 @@ class TestCheckpointLifecycle:
             workflow_file = f.name
 
         with tempfile.TemporaryDirectory() as cp_dir:
-            # ── Step 1: run with checkpoint ──────────────────────────
+            # Step 1: run with checkpoint
             result = _run_cli(
                 "run",
                 workflow_file,
@@ -102,7 +102,7 @@ class TestCheckpointLifecycle:
             assert "thought" in checkpoint["state"]
             assert "answer" in checkpoint["state"]
 
-            # ── Step 2: list runs ────────────────────────────────────
+            # Step 2: list runs
             list_result = _run_cli("runs", "--checkpoint-dir", cp_dir)
             assert list_result.returncode == 0, f"runs failed: {list_result.stderr}"
             assert run_id in list_result.stdout
@@ -116,7 +116,7 @@ class TestCheckpointLifecycle:
             assert runs_data[0]["run_id"] == run_id
             assert runs_data[0]["status"] == "success"
 
-            # ── Step 3: resume (all steps done → no-op success) ──────
+            # Step 3: resume (all steps done → no-op success)
             resume_result = _run_cli(
                 "resume",
                 run_id,

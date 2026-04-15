@@ -33,11 +33,9 @@ class LLMCallStep(BaseStep):
         if not step.prompt:
             raise StepError(step.id, "LLM call step requires a 'prompt' field")
 
-        # Resolve model: step-level override > workflow config
         model = step.model or context.workflow_model
         state_snapshot = await context.state_manager.get_state_snapshot()
 
-        # Build a flat namespace for template rendering
         template_vars = build_template_vars(state_snapshot)
 
         try:
@@ -48,7 +46,6 @@ class LLMCallStep(BaseStep):
         except (KeyError, ValueError) as e:
             raise StepError(step.id, f"Prompt template error: {e}") from e
 
-        # Resolve multimodal attachments
         content_blocks: list[ContentBlock] = []
         if step.attachments:
             try:
@@ -70,14 +67,12 @@ class LLMCallStep(BaseStep):
             except Exception as e:
                 raise StepError(step.id, f"Attachment resolution error: {e}") from e
 
-        # Build messages
         messages: list[dict[str, Any]] = []
         if rendered_system:
             messages.append({"role": "system", "content": rendered_system})
         user_content = build_multimodal_content(rendered_prompt, content_blocks)
         messages.append({"role": "user", "content": user_content})
 
-        # Call provider (streaming or batch)
         if context.stream:
             return await self._execute_stream(
                 context, messages, model, step, start, len(content_blocks)
@@ -101,7 +96,6 @@ class LLMCallStep(BaseStep):
 
         duration = (time.monotonic() - start) * 1000
 
-        # Store output in state if output mapping is defined
         if step.output:
             await context.state_manager.set(step.output, response.content)
 

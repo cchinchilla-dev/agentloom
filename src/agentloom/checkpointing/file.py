@@ -33,8 +33,6 @@ class FileCheckpointer(BaseCheckpointer):
     def __init__(self, checkpoint_dir: str | Path = ".agentloom/checkpoints") -> None:
         self._dir = Path(checkpoint_dir)
 
-    # -- path helpers ---------------------------------------------------------
-
     def _checkpoint_path(self, run_id: str) -> Path:
         """Resolve a safe checkpoint file path, rejecting traversal attempts."""
         if not run_id or not _RUN_ID_RE.fullmatch(run_id):
@@ -55,7 +53,7 @@ class FileCheckpointer(BaseCheckpointer):
         except (ValueError, KeyError) as exc:
             raise ValueError(f"Checkpoint '{source}' is unreadable or corrupted") from exc
 
-    # -- public API -----------------------------------------------------------
+    # public API
 
     async def save(self, data: CheckpointData) -> None:
         payload = data.model_dump_json(indent=2)
@@ -86,8 +84,6 @@ class FileCheckpointer(BaseCheckpointer):
             await anyio.to_thread.run_sync(partial(self._unlink, path))
         except FileNotFoundError as exc:
             raise KeyError(f"No checkpoint found for run '{run_id}'") from exc
-
-    # -- sync helpers (run in worker thread) ----------------------------------
 
     def _write(self, run_id: str, payload: str) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)

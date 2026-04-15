@@ -20,7 +20,6 @@ class ProviderConfig(BaseModel):
     timeout: float = 30.0
 
 
-# Provider defaults used when auto-discovering from API-key env vars.
 _PROVIDER_DEFAULTS: dict[str, dict[str, object]] = {
     "openai": {
         "env_key": "OPENAI_API_KEY",
@@ -56,7 +55,6 @@ class AgentLoomConfig(BaseModel):
     providers: list[ProviderConfig] = Field(default_factory=list)
 
 
-# Mapping from AGENTLOOM_* env var suffix → (field_name, type_converter).
 _ENV_MAP: dict[str, tuple[str, type]] = {
     "LOG_LEVEL": ("log_level", str),
     "LOG_FORMAT": ("log_format", str),

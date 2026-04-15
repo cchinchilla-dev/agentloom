@@ -44,7 +44,6 @@ def tool(
     return decorator
 
 
-# Mapping from Python types to JSON Schema types
 # doesn't handle Union, Optional[T], or List[T] — just basic types for now
 _TYPE_MAP: dict[type, str] = {
     str: "string",

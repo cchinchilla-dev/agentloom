@@ -146,7 +146,6 @@ class AnthropicProvider(BaseProvider):
 
         data = response.json()
 
-        # Extract content from content blocks
         content_blocks = data.get("content", [])
         content = ""
         for block in content_blocks:

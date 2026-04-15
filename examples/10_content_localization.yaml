@@ -39,7 +39,7 @@ state:
   deployment_manifest: ""
 
 steps:
-  # --- Layer 0: fetch latest content version from CMS ---
+  # Layer 0: fetch latest content version from CMS
 
   - id: fetch_content
     type: tool
@@ -49,7 +49,7 @@ steps:
       method: "GET"
     output: cms_metadata
 
-  # --- Layer 1: 3 parallel localization subworkflows ---
+  # Layer 1: 3 parallel localization subworkflows
 
   - id: localize_es
     type: subworkflow
@@ -302,7 +302,7 @@ steps:
           output: final_content
     output: localize_ja
 
-  # --- Layer 2: cross-market quality review ---
+  # Layer 2: cross-market quality review
 
   - id: quality_review
     type: llm_call
@@ -325,7 +325,7 @@ steps:
       Japanese: {state.localize_ja}
     output: quality_report
 
-  # --- Layer 3: deployment manifest ---
+  # Layer 3: deployment manifest
 
   - id: generate_manifest
     type: llm_call

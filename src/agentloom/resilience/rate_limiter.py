@@ -21,11 +21,9 @@ class RateLimiter:
         self.max_rpm = max_requests_per_minute
         self.max_tpm = max_tokens_per_minute
 
-        # Request bucket
         self._request_tokens = float(max_requests_per_minute)
         self._request_last_refill = time.monotonic()
 
-        # Token bucket
         self._token_tokens = float(max_tokens_per_minute)
         self._token_last_refill = time.monotonic()
 
@@ -55,15 +53,12 @@ class RateLimiter:
             async with self._lock:
                 self._refill()
 
-                # Check request bucket
                 if self._request_tokens < 1.0:
                     wait_time = (1.0 - self._request_tokens) / (self.max_rpm / 60.0)
                 else:
-                    # Check token bucket (if applicable)
                     if token_count > 0 and self._token_tokens < token_count:
                         wait_time = (token_count - self._token_tokens) / (self.max_tpm / 60.0)
                     else:
-                        # Consume tokens
                         self._request_tokens -= 1.0
                         if token_count > 0:
                             self._token_tokens -= token_count
@@ -76,7 +71,6 @@ class RateLimiter:
         """Refill token buckets based on elapsed time."""
         now = time.monotonic()
 
-        # Refill request bucket
         elapsed = now - self._request_last_refill
         self._request_tokens = min(
             float(self.max_rpm),
@@ -84,7 +78,6 @@ class RateLimiter:
         )
         self._request_last_refill = now
 
-        # Refill token bucket
         elapsed_t = now - self._token_last_refill
         self._token_tokens = min(
             float(self.max_tpm),

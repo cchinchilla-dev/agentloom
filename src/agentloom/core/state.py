@@ -113,8 +113,6 @@ class StateManager:
         """Direct access to state dict (use in sync contexts only)."""
         return self._state
 
-    # -- Checkpointing --
-
     async def save_checkpoint(self, path: str | Path) -> None:
         """Save current state to a JSON file."""
         async with self._lock:
@@ -142,8 +140,6 @@ class StateManager:
             manager._step_results[step_id] = StepResult.model_validate(result_data)
             manager._step_status[step_id] = manager._step_results[step_id].status
         return manager
-
-    # -- Internal helpers --
 
     @staticmethod
     def _resolve_key(data: dict[str, Any], key: str, default: Any = None) -> Any:

@@ -40,35 +40,42 @@ _verbose = False
 _phase_results: dict[str, tuple[int, int, int]] = {}
 
 
-# ── Output helpers ──────────────────────────────────────────
-
+# Output helpers
 def _green(t: str) -> str:
     return f"\033[92m{t}\033[0m"
+
 
 def _red(t: str) -> str:
     return f"\033[91m{t}\033[0m"
 
+
 def _yellow(t: str) -> str:
     return f"\033[93m{t}\033[0m"
+
 
 def _cyan(t: str) -> str:
     return f"\033[96m{t}\033[0m"
 
+
 def _bold(t: str) -> str:
     return f"\033[1m{t}\033[0m"
+
 
 def _header(title: str) -> None:
     print(f"\n{'━' * 64}")
     print(f"  {_bold(title)}")
     print(f"{'━' * 64}")
 
+
 def _step(msg: str) -> None:
     print(f"\n  {_cyan('▶')} {msg}")
+
 
 def _pass(msg: str) -> None:
     global _pass_count
     _pass_count += 1
     print(f"  {_green('✓')} {msg}")
+
 
 def _fail(msg: str, detail: str = "") -> None:
     global _fail_count
@@ -78,18 +85,19 @@ def _fail(msg: str, detail: str = "") -> None:
         for line in detail.strip().splitlines()[:15]:
             print(f"      {line}")
 
+
 def _skip(msg: str) -> None:
     global _skip_count
     _skip_count += 1
     print(f"  {_yellow('○')} {msg}")
+
 
 def _info(msg: str) -> None:
     if _verbose:
         print(f"    {msg}")
 
 
-# ── Subprocess helpers ──────────────────────────────────────
-
+# Subprocess helpers
 def _run(
     cmd: list[str],
     cwd: Path | None = None,
@@ -102,8 +110,12 @@ def _run(
     if _verbose:
         print(f"    $ {' '.join(cmd)}")
     r = subprocess.run(
-        cmd, capture_output=capture, text=True,
-        cwd=cwd, timeout=timeout, env=run_env,
+        cmd,
+        capture_output=capture,
+        text=True,
+        cwd=cwd,
+        timeout=timeout,
+        env=run_env,
     )
     return r.returncode, r.stdout, r.stderr
 
@@ -138,19 +150,16 @@ def _save_phase(name: str) -> None:
     _phase_results[name] = (_pass_count, _fail_count, _skip_count)
 
 
-# ────────────────────────────────────────────────────────────
 # Phase 1: Docker
-# ────────────────────────────────────────────────────────────
-
 def phase_docker() -> None:
     _header("Phase 1: Docker Build & Smoke Test")
-    p0, f0, s0 = _pass_count, _fail_count, _skip_count
 
     # Build image
     _step("Building Docker image (agentloom:audit-int)")
     rc, out, err = _run(
         ["docker", "build", "-t", "agentloom:audit-int", "."],
-        cwd=ROOT, timeout=300,
+        cwd=ROOT,
+        timeout=300,
     )
     if rc == 0:
         _pass("Docker build succeeded")
@@ -162,9 +171,17 @@ def phase_docker() -> None:
     # Build with observability
     _step("Building Docker image with observability extras")
     rc, out, err = _run(
-        ["docker", "build", "--build-arg", "BUILD_OBSERVABILITY=true",
-         "-t", "agentloom:audit-int-obs", "."],
-        cwd=ROOT, timeout=300,
+        [
+            "docker",
+            "build",
+            "--build-arg",
+            "BUILD_OBSERVABILITY=true",
+            "-t",
+            "agentloom:audit-int-obs",
+            ".",
+        ],
+        cwd=ROOT,
+        timeout=300,
     )
     if rc == 0:
         _pass("Docker build (observability) succeeded")
@@ -181,11 +198,18 @@ def phase_docker() -> None:
 
     # Smoke test: validate workflow
     _step("Validating example workflow inside container")
-    rc, out, err = _run([
-        "docker", "run", "--rm",
-        "-v", f"{ROOT}/examples:/workflows:ro",
-        "agentloom:audit-int", "validate", "/workflows/01_simple_qa.yaml",
-    ])
+    rc, out, err = _run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{ROOT}/examples:/workflows:ro",
+            "agentloom:audit-int",
+            "validate",
+            "/workflows/01_simple_qa.yaml",
+        ]
+    )
     if rc == 0:
         _pass("Workflow validation passed inside container")
     else:
@@ -193,10 +217,16 @@ def phase_docker() -> None:
 
     # Verify non-root
     _step("Checking container runs as non-root")
-    rc, out, err = _run([
-        "docker", "run", "--rm", "--entrypoint", "id",
-        "agentloom:audit-int",
-    ])
+    rc, out, err = _run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "id",
+            "agentloom:audit-int",
+        ]
+    )
     if rc == 0 and "1000" in out:
         _pass(f"Container runs as UID 1000: {out.strip()}")
     else:
@@ -204,13 +234,21 @@ def phase_docker() -> None:
 
     # Verify read-only filesystem
     _step("Checking read-only root filesystem")
-    rc, out, err = _run([
-        "docker", "run", "--rm", "--read-only",
-        "--tmpfs", "/tmp",
-        "--entrypoint", "sh",
-        "agentloom:audit-int", "-c",
-        "touch /test-readonly 2>&1 || echo READONLY_OK",
-    ])
+    rc, out, err = _run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--read-only",
+            "--tmpfs",
+            "/tmp",
+            "--entrypoint",
+            "sh",
+            "agentloom:audit-int",
+            "-c",
+            "touch /test-readonly 2>&1 || echo READONLY_OK",
+        ]
+    )
     if "READONLY_OK" in out or "Read-only" in out or "read-only" in err:
         _pass("Read-only root filesystem works")
     else:
@@ -218,10 +256,16 @@ def phase_docker() -> None:
 
     # Image size
     _step("Checking image size")
-    rc, out, err = _run([
-        "docker", "image", "inspect", "agentloom:audit-int",
-        "--format", "{{.Size}}",
-    ])
+    rc, out, err = _run(
+        [
+            "docker",
+            "image",
+            "inspect",
+            "agentloom:audit-int",
+            "--format",
+            "{{.Size}}",
+        ]
+    )
     if rc == 0:
         size_mb = int(out.strip()) / (1024 * 1024)
         if size_mb < 350:
@@ -232,18 +276,15 @@ def phase_docker() -> None:
     _save_phase("Docker")
 
 
-# ────────────────────────────────────────────────────────────
 # Phase 2: Docker Compose
-# ────────────────────────────────────────────────────────────
-
 def phase_docker_compose() -> None:
     _header("Phase 2: Docker Compose — Observability Stack")
-    p0, f0, s0 = _pass_count, _fail_count, _skip_count
 
     _step("Starting observability stack (docker compose up -d)")
     rc, out, err = _run(
         ["docker", "compose", "up", "-d"],
-        cwd=DEPLOY, timeout=120,
+        cwd=DEPLOY,
+        timeout=120,
     )
     if rc != 0:
         _fail("docker compose up failed", err[-500:])
@@ -270,16 +311,40 @@ def phase_docker_compose() -> None:
         _step("Checking service endpoints")
 
         # Jaeger
-        rc, out, err = _run(["docker", "compose", "exec", "-T", "jaeger",
-                             "wget", "--spider", "-q", "http://localhost:16686/"], cwd=DEPLOY)
+        rc, out, err = _run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "jaeger",
+                "wget",
+                "--spider",
+                "-q",
+                "http://localhost:16686/",
+            ],
+            cwd=DEPLOY,
+        )
         if rc == 0:
             _pass("Jaeger UI is accessible (port 16686)")
         else:
             _fail("Jaeger UI not accessible")
 
         # Prometheus
-        rc, out, err = _run(["docker", "compose", "exec", "-T", "prometheus",
-                             "wget", "--spider", "-q", "http://localhost:9090/-/healthy"], cwd=DEPLOY)
+        rc, out, err = _run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "prometheus",
+                "wget",
+                "--spider",
+                "-q",
+                "http://localhost:9090/-/healthy",
+            ],
+            cwd=DEPLOY,
+        )
         if rc == 0:
             _pass("Prometheus is healthy (port 9090)")
         else:
@@ -287,9 +352,21 @@ def phase_docker_compose() -> None:
 
         # Grafana — depends on renderer + prometheus, may need extra time
         grafana_ok = False
-        for attempt in range(6):
-            rc, out, err = _run(["docker", "compose", "exec", "-T", "grafana",
-                                 "wget", "--spider", "-q", "http://localhost:3000/api/health"], cwd=DEPLOY)
+        for _attempt in range(6):
+            rc, out, err = _run(
+                [
+                    "docker",
+                    "compose",
+                    "exec",
+                    "-T",
+                    "grafana",
+                    "wget",
+                    "--spider",
+                    "-q",
+                    "http://localhost:3000/api/health",
+                ],
+                cwd=DEPLOY,
+            )
             if rc == 0:
                 grafana_ok = True
                 break
@@ -308,10 +385,19 @@ def phase_docker_compose() -> None:
 
         # Validate workflow inside compose network
         _step("Running agentloom validate inside compose network")
-        rc, out, err = _run([
-            "docker", "compose", "run", "--rm", "agentloom",
-            "validate", "/workflows/01_simple_qa.yaml",
-        ], cwd=DEPLOY, timeout=60)
+        rc, out, err = _run(
+            [
+                "docker",
+                "compose",
+                "run",
+                "--rm",
+                "agentloom",
+                "validate",
+                "/workflows/01_simple_qa.yaml",
+            ],
+            cwd=DEPLOY,
+            timeout=60,
+        )
         if rc == 0:
             _pass("agentloom validate works in compose environment")
         else:
@@ -326,10 +412,7 @@ def phase_docker_compose() -> None:
     _save_phase("Docker Compose")
 
 
-# ────────────────────────────────────────────────────────────
 # Phase 3: Kustomize + Kind
-# ────────────────────────────────────────────────────────────
-
 def phase_kustomize() -> None:
     _header("Phase 3: Kustomize — Kind Cluster + Dev Overlay")
     cluster_name = "audit-kustomize"
@@ -345,10 +428,17 @@ def phase_kustomize() -> None:
     try:
         # Load local image
         _step("Loading agentloom:audit-int into kind cluster")
-        rc, out, err = _run([
-            "kind", "load", "docker-image", "agentloom:audit-int",
-            "--name", cluster_name,
-        ], timeout=120)
+        rc, out, err = _run(
+            [
+                "kind",
+                "load",
+                "docker-image",
+                "agentloom:audit-int",
+                "--name",
+                cluster_name,
+            ],
+            timeout=120,
+        )
         if rc == 0:
             _pass("Image loaded into kind cluster")
         else:
@@ -357,10 +447,13 @@ def phase_kustomize() -> None:
         # Build kustomize for all overlays
         for overlay in ["dev", "staging", "production"]:
             _step(f"Building kustomize overlay: {overlay}")
-            rc, out, err = _run([
-                "kustomize", "build",
-                str(DEPLOY / "k8s" / "overlays" / overlay),
-            ])
+            rc, out, err = _run(
+                [
+                    "kustomize",
+                    "build",
+                    str(DEPLOY / "k8s" / "overlays" / overlay),
+                ]
+            )
             if rc == 0:
                 _pass(f"kustomize build {overlay} — OK")
             else:
@@ -368,10 +461,13 @@ def phase_kustomize() -> None:
 
         # Apply dev overlay (with image override)
         _step("Applying dev overlay to cluster")
-        rc, kust_out, err = _run([
-            "kustomize", "build",
-            str(DEPLOY / "k8s" / "overlays" / "dev"),
-        ])
+        rc, kust_out, err = _run(
+            [
+                "kustomize",
+                "build",
+                str(DEPLOY / "k8s" / "overlays" / "dev"),
+            ]
+        )
         if rc != 0:
             _fail("kustomize build dev failed", err)
             return
@@ -385,7 +481,10 @@ def phase_kustomize() -> None:
         # Apply
         r = subprocess.run(
             ["kubectl", "apply", "-f", "-"],
-            input=kust_out, capture_output=True, text=True, timeout=30,
+            input=kust_out,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if r.returncode == 0:
             _pass("Dev overlay applied to cluster")
@@ -395,88 +494,116 @@ def phase_kustomize() -> None:
 
         # Patch configmap with a validate-only workflow
         _step("Patching configmap with validate workflow")
-        rc, out, err = _run([
-            "kubectl", "patch", "configmap", "agentloom-workflows",
-            "-n", "agentloom", "--type", "merge",
-            "-p", json.dumps({"data": {"workflow.yaml": (
-                "name: audit-test\n"
-                "version: '1.0'\n"
-                "config:\n"
-                "  provider: ollama\n"
-                "  model: phi4\n"
-                "state:\n"
-                "  question: test\n"
-                "steps:\n"
-                "  - id: hello\n"
-                "    type: llm_call\n"
-                "    prompt: 'say hello'\n"
-                "    output: answer\n"
-            )}}),
-        ])
+        rc, out, err = _run(
+            [
+                "kubectl",
+                "patch",
+                "configmap",
+                "agentloom-workflows",
+                "-n",
+                "agentloom",
+                "--type",
+                "merge",
+                "-p",
+                json.dumps(
+                    {
+                        "data": {
+                            "workflow.yaml": (
+                                "name: audit-test\n"
+                                "version: '1.0'\n"
+                                "config:\n"
+                                "  provider: ollama\n"
+                                "  model: phi4\n"
+                                "state:\n"
+                                "  question: test\n"
+                                "steps:\n"
+                                "  - id: hello\n"
+                                "    type: llm_call\n"
+                                "    prompt: 'say hello'\n"
+                                "    output: answer\n"
+                            )
+                        }
+                    }
+                ),
+            ]
+        )
         if rc == 0:
             _pass("ConfigMap patched")
 
         # Delete original job and recreate with validate args (Jobs are immutable)
         _step("Recreating job with 'validate' args (Jobs are immutable)")
-        _run(["kubectl", "delete", "job", "agentloom-workflow", "-n", "agentloom",
-              "--wait=true"], timeout=30)
+        _run(
+            ["kubectl", "delete", "job", "agentloom-workflow", "-n", "agentloom", "--wait=true"],
+            timeout=30,
+        )
         time.sleep(3)
 
         # Create a minimal validate-only job directly
-        validate_job = json.dumps({
-            "apiVersion": "batch/v1",
-            "kind": "Job",
-            "metadata": {
-                "name": "agentloom-workflow",
-                "namespace": "agentloom",
-                "labels": {"app.kubernetes.io/name": "agentloom"},
-            },
-            "spec": {
-                "backoffLimit": 0,
-                "ttlSecondsAfterFinished": 60,
-                "template": {
-                    "metadata": {"labels": {"app.kubernetes.io/name": "agentloom"}},
-                    "spec": {
-                        "restartPolicy": "Never",
-                        "serviceAccountName": "agentloom",
-                        "automountServiceAccountToken": False,
-                        "securityContext": {
-                            "runAsNonRoot": True,
-                            "runAsUser": 1000,
-                            "runAsGroup": 1000,
-                            "fsGroup": 1000,
-                            "seccompProfile": {"type": "RuntimeDefault"},
-                        },
-                        "containers": [{
-                            "name": "agentloom",
-                            "image": "agentloom:audit-int",
-                            "imagePullPolicy": "IfNotPresent",
-                            "args": ["validate", "/workflows/workflow.yaml"],
+        validate_job = json.dumps(
+            {
+                "apiVersion": "batch/v1",
+                "kind": "Job",
+                "metadata": {
+                    "name": "agentloom-workflow",
+                    "namespace": "agentloom",
+                    "labels": {"app.kubernetes.io/name": "agentloom"},
+                },
+                "spec": {
+                    "backoffLimit": 0,
+                    "ttlSecondsAfterFinished": 60,
+                    "template": {
+                        "metadata": {"labels": {"app.kubernetes.io/name": "agentloom"}},
+                        "spec": {
+                            "restartPolicy": "Never",
+                            "serviceAccountName": "agentloom",
+                            "automountServiceAccountToken": False,
                             "securityContext": {
-                                "allowPrivilegeEscalation": False,
-                                "readOnlyRootFilesystem": True,
-                                "capabilities": {"drop": ["ALL"]},
+                                "runAsNonRoot": True,
+                                "runAsUser": 1000,
+                                "runAsGroup": 1000,
+                                "fsGroup": 1000,
+                                "seccompProfile": {"type": "RuntimeDefault"},
                             },
-                            "resources": {
-                                "requests": {"memory": "64Mi", "cpu": "50m"},
-                                "limits": {"memory": "128Mi"},
-                            },
-                            "volumeMounts": [
-                                {"name": "workflows", "mountPath": "/workflows", "readOnly": True},
-                                {"name": "tmp", "mountPath": "/tmp"},
+                            "containers": [
+                                {
+                                    "name": "agentloom",
+                                    "image": "agentloom:audit-int",
+                                    "imagePullPolicy": "IfNotPresent",
+                                    "args": ["validate", "/workflows/workflow.yaml"],
+                                    "securityContext": {
+                                        "allowPrivilegeEscalation": False,
+                                        "readOnlyRootFilesystem": True,
+                                        "capabilities": {"drop": ["ALL"]},
+                                    },
+                                    "resources": {
+                                        "requests": {"memory": "64Mi", "cpu": "50m"},
+                                        "limits": {"memory": "128Mi"},
+                                    },
+                                    "volumeMounts": [
+                                        {
+                                            "name": "workflows",
+                                            "mountPath": "/workflows",
+                                            "readOnly": True,
+                                        },
+                                        {"name": "tmp", "mountPath": "/tmp"},
+                                    ],
+                                }
                             ],
-                        }],
-                        "volumes": [
-                            {"name": "workflows", "configMap": {"name": "agentloom-workflows"}},
-                            {"name": "tmp", "emptyDir": {}},
-                        ],
+                            "volumes": [
+                                {"name": "workflows", "configMap": {"name": "agentloom-workflows"}},
+                                {"name": "tmp", "emptyDir": {}},
+                            ],
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
         r = subprocess.run(
             ["kubectl", "apply", "-f", "-"],
-            input=validate_job, capture_output=True, text=True, timeout=30,
+            input=validate_job,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if r.returncode == 0:
             _pass("Job recreated with validate args")
@@ -486,9 +613,17 @@ def phase_kustomize() -> None:
 
         # Wait for pod to be created first
         pod_created = _wait_for(
-            ["kubectl", "get", "pods", "-n", "agentloom",
-             "-l", "app.kubernetes.io/name=agentloom",
-             "-o", "jsonpath={.items[0].status.phase}"],
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "-n",
+                "agentloom",
+                "-l",
+                "app.kubernetes.io/name=agentloom",
+                "-o",
+                "jsonpath={.items[0].status.phase}",
+            ],
             lambda out, err: out.strip() != "",
             "pod to be created",
             timeout=60,
@@ -496,31 +631,60 @@ def phase_kustomize() -> None:
         )
         if not pod_created:
             _info("Pod not created — checking events for diagnosis")
-            rc, events, _ = _run([
-                "kubectl", "get", "events", "-n", "agentloom",
-                "--sort-by=.lastTimestamp",
-            ])
+            rc, events, _ = _run(
+                [
+                    "kubectl",
+                    "get",
+                    "events",
+                    "-n",
+                    "agentloom",
+                    "--sort-by=.lastTimestamp",
+                ]
+            )
             _info(f"Events:\n{events[-800:]}")
-            rc, desc, _ = _run([
-                "kubectl", "describe", "job", "agentloom-workflow", "-n", "agentloom",
-            ])
+            rc, desc, _ = _run(
+                [
+                    "kubectl",
+                    "describe",
+                    "job",
+                    "agentloom-workflow",
+                    "-n",
+                    "agentloom",
+                ]
+            )
             _info(f"Job describe:\n{desc[-800:]}")
 
         # Verify security context is enforced (check before job finishes)
         _step("Verifying pod security context")
-        rc, out, err = _run([
-            "kubectl", "get", "pod", "-n", "agentloom",
-            "-l", "app.kubernetes.io/name=agentloom",
-            "-o", "jsonpath={.items[0].spec.securityContext.runAsNonRoot}",
-        ])
+        rc, out, err = _run(
+            [
+                "kubectl",
+                "get",
+                "pod",
+                "-n",
+                "agentloom",
+                "-l",
+                "app.kubernetes.io/name=agentloom",
+                "-o",
+                "jsonpath={.items[0].spec.securityContext.runAsNonRoot}",
+            ]
+        )
         if "true" in out:
             _pass("Pod runs as non-root (enforced by PSS)")
         else:
             # Pod might not exist yet — check directly from job spec
-            rc2, out2, _ = _run([
-                "kubectl", "get", "job", "agentloom-workflow", "-n", "agentloom",
-                "-o", "jsonpath={.spec.template.spec.securityContext.runAsNonRoot}",
-            ])
+            rc2, out2, _ = _run(
+                [
+                    "kubectl",
+                    "get",
+                    "job",
+                    "agentloom-workflow",
+                    "-n",
+                    "agentloom",
+                    "-o",
+                    "jsonpath={.spec.template.spec.securityContext.runAsNonRoot}",
+                ]
+            )
             if "true" in out2:
                 _pass("Job spec has runAsNonRoot=true (pod may not be scheduled yet)")
             else:
@@ -528,44 +692,86 @@ def phase_kustomize() -> None:
 
         # Wait for job completion (check succeeded/failed counts, not conditions)
         job_done = _wait_for(
-            ["kubectl", "get", "job", "agentloom-workflow", "-n", "agentloom",
-             "-o", "jsonpath={.status.succeeded},{.status.failed}"],
+            [
+                "kubectl",
+                "get",
+                "job",
+                "agentloom-workflow",
+                "-n",
+                "agentloom",
+                "-o",
+                "jsonpath={.status.succeeded},{.status.failed}",
+            ],
             lambda out, err: "1" in out,
             "job to complete",
             timeout=120,
             interval=5,
         )
         if job_done:
-            rc, status, err = _run([
-                "kubectl", "get", "job", "agentloom-workflow", "-n", "agentloom",
-                "-o", "jsonpath=succeeded={.status.succeeded} failed={.status.failed}",
-            ])
+            rc, status, err = _run(
+                [
+                    "kubectl",
+                    "get",
+                    "job",
+                    "agentloom-workflow",
+                    "-n",
+                    "agentloom",
+                    "-o",
+                    "jsonpath=succeeded={.status.succeeded} failed={.status.failed}",
+                ]
+            )
             if "succeeded=1" in status:
                 _pass(f"Job completed successfully ({status.strip()})")
             elif "failed=" in status and "failed=<" not in status:
                 _fail(f"Job failed: {status}")
-                rc2, logs, _ = _run([
-                    "kubectl", "logs", "job/agentloom-workflow", "-n", "agentloom",
-                ])
+                rc2, logs, _ = _run(
+                    [
+                        "kubectl",
+                        "logs",
+                        "job/agentloom-workflow",
+                        "-n",
+                        "agentloom",
+                    ]
+                )
                 _info(f"Job logs:\n{logs[:500]}")
             else:
                 _pass(f"Job finished ({status.strip()})")
         else:
             _fail("Job did not complete within timeout")
-            rc2, pods, _ = _run([
-                "kubectl", "get", "pods", "-n", "agentloom", "--no-headers",
-            ])
+            rc2, pods, _ = _run(
+                [
+                    "kubectl",
+                    "get",
+                    "pods",
+                    "-n",
+                    "agentloom",
+                    "--no-headers",
+                ]
+            )
             _info(f"Pods:\n{pods}")
-            rc3, desc, _ = _run([
-                "kubectl", "describe", "job", "agentloom-workflow", "-n", "agentloom",
-            ])
+            rc3, desc, _ = _run(
+                [
+                    "kubectl",
+                    "describe",
+                    "job",
+                    "agentloom-workflow",
+                    "-n",
+                    "agentloom",
+                ]
+            )
             _info(f"Job describe (tail):\n{desc[-500:]}")
 
         # Verify namespace PSS labels
-        rc, out, err = _run([
-            "kubectl", "get", "ns", "agentloom",
-            "-o", "jsonpath={.metadata.labels.pod-security\\.kubernetes\\.io/enforce}",
-        ])
+        rc, out, err = _run(
+            [
+                "kubectl",
+                "get",
+                "ns",
+                "agentloom",
+                "-o",
+                "jsonpath={.metadata.labels.pod-security\\.kubernetes\\.io/enforce}",
+            ]
+        )
         if "restricted" in out:
             _pass("Namespace has PSS enforce=restricted label")
         else:
@@ -580,10 +786,7 @@ def phase_kustomize() -> None:
     _save_phase("Kustomize")
 
 
-# ────────────────────────────────────────────────────────────
 # Phase 4: Terraform — Full Stack with Observability
-# ────────────────────────────────────────────────────────────
-
 def phase_terraform() -> None:
     _header("Phase 4: Terraform — Full Stack (Kind + Observability + AgentLoom)")
     tf_dir = DEPLOY / "terraform"
@@ -601,12 +804,18 @@ def phase_terraform() -> None:
 
     # Plan
     _step("terraform plan")
-    rc, out, err = _run([
-        "terraform", "plan", "-input=false",
-        f"-var=cluster_name={cluster_name}",
-        "-var=enable_observability=true",
-        "-var=agentloom_image_tag=audit-int",
-    ], cwd=tf_dir, timeout=120)
+    rc, out, err = _run(
+        [
+            "terraform",
+            "plan",
+            "-input=false",
+            f"-var=cluster_name={cluster_name}",
+            "-var=enable_observability=true",
+            "-var=agentloom_image_tag=audit-int",
+        ],
+        cwd=tf_dir,
+        timeout=120,
+    )
     if rc == 0:
         _pass("terraform plan succeeded")
         # Check plan includes observability resources
@@ -623,22 +832,36 @@ def phase_terraform() -> None:
 
     # Apply
     _step("terraform apply (this may take 3-5 minutes)")
-    rc, out, err = _run([
-        "terraform", "apply", "-auto-approve", "-input=false",
-        f"-var=cluster_name={cluster_name}",
-        "-var=enable_observability=true",
-        "-var=agentloom_image_tag=audit-int",
-    ], cwd=tf_dir, timeout=600)
+    rc, out, err = _run(
+        [
+            "terraform",
+            "apply",
+            "-auto-approve",
+            "-input=false",
+            f"-var=cluster_name={cluster_name}",
+            "-var=enable_observability=true",
+            "-var=agentloom_image_tag=audit-int",
+        ],
+        cwd=tf_dir,
+        timeout=600,
+    )
     if rc != 0:
         _fail("terraform apply failed", err[-800:] if err else out[-800:])
         # Try cleanup
         _step("Attempting terraform destroy after failure")
-        _run([
-            "terraform", "destroy", "-auto-approve", "-input=false",
-            f"-var=cluster_name={cluster_name}",
-            "-var=enable_observability=true",
-            "-var=agentloom_image_tag=audit-int",
-        ], cwd=tf_dir, timeout=300)
+        _run(
+            [
+                "terraform",
+                "destroy",
+                "-auto-approve",
+                "-input=false",
+                f"-var=cluster_name={cluster_name}",
+                "-var=enable_observability=true",
+                "-var=agentloom_image_tag=audit-int",
+            ],
+            cwd=tf_dir,
+            timeout=300,
+        )
         _run(["kind", "delete", "cluster", "--name", cluster_name], timeout=60)
         _save_phase("Terraform")
         return
@@ -656,7 +879,7 @@ def phase_terraform() -> None:
         kubeconfig = kubeconfig.strip()
         kenv = {"KUBECONFIG": kubeconfig}
 
-        # ── Verify Kind cluster ──
+        # Verify Kind cluster
         _step("Verifying kind cluster")
         rc, out, err = _run(["kubectl", "cluster-info"], env=kenv)
         if rc == 0 and "running" in out.lower():
@@ -665,7 +888,7 @@ def phase_terraform() -> None:
             _fail("Kind cluster not reachable", err or out)
             return
 
-        # ── Verify namespaces ──
+        # Verify namespaces
         _step("Verifying namespaces")
         rc, out, err = _run(["kubectl", "get", "ns", "-o", "name"], env=kenv)
         if "namespace/agentloom" in out:
@@ -677,27 +900,44 @@ def phase_terraform() -> None:
         else:
             _fail("Namespace 'observability' missing")
 
-        # ── Verify agentloom namespace PSS labels ──
-        rc, out, err = _run([
-            "kubectl", "get", "ns", "agentloom",
-            "-o", "jsonpath={.metadata.labels.pod-security\\.kubernetes\\.io/enforce}",
-        ], env=kenv)
+        # Verify agentloom namespace PSS labels
+        rc, out, err = _run(
+            [
+                "kubectl",
+                "get",
+                "ns",
+                "agentloom",
+                "-o",
+                "jsonpath={.metadata.labels.pod-security\\.kubernetes\\.io/enforce}",
+            ],
+            env=kenv,
+        )
         if "restricted" in out:
             _pass("agentloom namespace has PSS enforce=restricted")
         else:
             _fail(f"agentloom namespace PSS label: '{out}'")
 
-        # ── Verify observability pods ──
+        # Verify observability pods
         _step("Waiting for observability pods to be ready")
 
         # Jaeger
         jaeger_ready = _wait_for(
-            ["kubectl", "get", "pods", "-n", "observability",
-             "-l", "app.kubernetes.io/name=jaeger",
-             "-o", "jsonpath={.items[*].status.phase}"],
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "-n",
+                "observability",
+                "-l",
+                "app.kubernetes.io/name=jaeger",
+                "-o",
+                "jsonpath={.items[*].status.phase}",
+            ],
             lambda out, err: "Running" in out,
             "Jaeger pod",
-            timeout=180, interval=10, env=kenv,
+            timeout=180,
+            interval=10,
+            env=kenv,
         )
         if jaeger_ready:
             _pass("Jaeger pod is Running")
@@ -708,12 +948,22 @@ def phase_terraform() -> None:
 
         # OTel Collector
         otel_ready = _wait_for(
-            ["kubectl", "get", "pods", "-n", "observability",
-             "-l", "app.kubernetes.io/name=opentelemetry-collector",
-             "-o", "jsonpath={.items[*].status.phase}"],
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "-n",
+                "observability",
+                "-l",
+                "app.kubernetes.io/name=opentelemetry-collector",
+                "-o",
+                "jsonpath={.items[*].status.phase}",
+            ],
             lambda out, err: "Running" in out,
             "OTel Collector pod",
-            timeout=120, interval=10, env=kenv,
+            timeout=120,
+            interval=10,
+            env=kenv,
         )
         if otel_ready:
             _pass("OTel Collector pod is Running")
@@ -722,22 +972,42 @@ def phase_terraform() -> None:
 
         # Prometheus
         prom_ready = _wait_for(
-            ["kubectl", "get", "pods", "-n", "observability",
-             "-l", "app=kube-prometheus-stack-prometheus",
-             "-o", "jsonpath={.items[*].status.phase}"],
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "-n",
+                "observability",
+                "-l",
+                "app=kube-prometheus-stack-prometheus",
+                "-o",
+                "jsonpath={.items[*].status.phase}",
+            ],
             lambda out, err: "Running" in out,
             "Prometheus pod",
-            timeout=180, interval=10, env=kenv,
+            timeout=180,
+            interval=10,
+            env=kenv,
         )
         if not prom_ready:
             # Try alternative label
             prom_ready = _wait_for(
-                ["kubectl", "get", "pods", "-n", "observability",
-                 "-l", "app.kubernetes.io/name=prometheus",
-                 "-o", "jsonpath={.items[*].status.phase}"],
+                [
+                    "kubectl",
+                    "get",
+                    "pods",
+                    "-n",
+                    "observability",
+                    "-l",
+                    "app.kubernetes.io/name=prometheus",
+                    "-o",
+                    "jsonpath={.items[*].status.phase}",
+                ],
                 lambda out, err: "Running" in out,
                 "Prometheus pod (alt label)",
-                timeout=60, interval=10, env=kenv,
+                timeout=60,
+                interval=10,
+                env=kenv,
             )
         if prom_ready:
             _pass("Prometheus pod is Running")
@@ -748,49 +1018,83 @@ def phase_terraform() -> None:
 
         # Grafana
         grafana_ready = _wait_for(
-            ["kubectl", "get", "pods", "-n", "observability",
-             "-l", "app.kubernetes.io/name=grafana",
-             "-o", "jsonpath={.items[*].status.phase}"],
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "-n",
+                "observability",
+                "-l",
+                "app.kubernetes.io/name=grafana",
+                "-o",
+                "jsonpath={.items[*].status.phase}",
+            ],
             lambda out, err: "Running" in out,
             "Grafana pod",
-            timeout=180, interval=10, env=kenv,
+            timeout=180,
+            interval=10,
+            env=kenv,
         )
         if grafana_ready:
             _pass("Grafana pod is Running")
         else:
             _fail("Grafana pod not ready")
 
-        # ── Verify Grafana dashboard loaded ──
+        # Verify Grafana dashboard loaded
         _step("Verifying Grafana dashboard ConfigMap")
-        rc, out, err = _run([
-            "kubectl", "get", "configmap", "agentloom-grafana-dashboard",
-            "-n", "observability", "-o", "jsonpath={.data}",
-        ], env=kenv)
+        rc, out, err = _run(
+            [
+                "kubectl",
+                "get",
+                "configmap",
+                "agentloom-grafana-dashboard",
+                "-n",
+                "observability",
+                "-o",
+                "jsonpath={.data}",
+            ],
+            env=kenv,
+        )
         if rc == 0 and "agentloom.json" in out:
             _pass("Grafana dashboard ConfigMap contains agentloom.json")
         else:
             _fail("Grafana dashboard ConfigMap missing or empty")
 
-        # ── Verify OTel Collector service ──
+        # Verify OTel Collector service
         _step("Verifying OTel Collector service endpoint")
-        rc, out, err = _run([
-            "kubectl", "get", "svc", "-n", "observability",
-            "-o", "name",
-        ], env=kenv)
+        rc, out, err = _run(
+            [
+                "kubectl",
+                "get",
+                "svc",
+                "-n",
+                "observability",
+                "-o",
+                "name",
+            ],
+            env=kenv,
+        )
         if "otel-collector" in out:
             _pass("OTel Collector service exists in observability namespace")
         else:
             _fail("OTel Collector service not found")
 
-        # ── Verify all pods summary ──
+        # Verify all pods summary
         _step("Observability namespace pod summary")
-        rc, out, err = _run([
-            "kubectl", "get", "pods", "-n", "observability",
-            "--no-headers",
-        ], env=kenv)
+        rc, out, err = _run(
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "-n",
+                "observability",
+                "--no-headers",
+            ],
+            env=kenv,
+        )
         if rc == 0:
-            lines = [l for l in out.strip().splitlines() if l.strip()]
-            running = [l for l in lines if "Running" in l or "Completed" in l]
+            lines = [ln for ln in out.strip().splitlines() if ln.strip()]
+            running = [ln for ln in lines if "Running" in ln or "Completed" in ln]
             _info(f"Total pods: {len(lines)}, Running/Completed: {len(running)}")
             for line in lines:
                 _info(f"  {line.strip()}")
@@ -799,23 +1103,39 @@ def phase_terraform() -> None:
             else:
                 _fail(f"Only {len(running)}/{len(lines)} pods healthy")
 
-        # ── Verify agentloom Helm release ──
+        # Verify agentloom Helm release
         _step("Verifying agentloom Helm release")
-        rc, out, err = _run([
-            "kubectl", "get", "jobs", "-n", "agentloom", "--no-headers",
-        ], env=kenv)
+        rc, out, err = _run(
+            [
+                "kubectl",
+                "get",
+                "jobs",
+                "-n",
+                "agentloom",
+                "--no-headers",
+            ],
+            env=kenv,
+        )
         if rc == 0 and "agentloom" in out:
-            _pass(f"AgentLoom job exists in agentloom namespace")
+            _pass("AgentLoom job exists in agentloom namespace")
             _info(out.strip())
         else:
             _fail("AgentLoom job not found in agentloom namespace")
 
-        # ── Verify OTel endpoint in agentloom pod ──
+        # Verify OTel endpoint in agentloom pod
         _step("Verifying OTel endpoint configuration in agentloom pod")
-        rc, out, err = _run([
-            "kubectl", "get", "job", "-n", "agentloom",
-            "-o", "jsonpath={.items[0].spec.template.spec.containers[0].env[?(@.name=='OTEL_EXPORTER_OTLP_ENDPOINT')].value}",
-        ], env=kenv)
+        rc, out, err = _run(
+            [
+                "kubectl",
+                "get",
+                "job",
+                "-n",
+                "agentloom",
+                "-o",
+                "jsonpath={.items[0].spec.template.spec.containers[0].env[?(@.name=='OTEL_EXPORTER_OTLP_ENDPOINT')].value}",
+            ],
+            env=kenv,
+        )
         if "otel-collector" in out and "observability" in out and "4317" in out:
             _pass(f"OTel endpoint points to in-cluster collector: {out}")
         elif "4317" in out:
@@ -823,7 +1143,7 @@ def phase_terraform() -> None:
         else:
             _fail(f"OTel endpoint unexpected: '{out}'")
 
-        # ── Verify NodePort mappings (Terraform outputs) ──
+        # Verify NodePort mappings (Terraform outputs)
         _step("Verifying Terraform outputs")
         for output_name in ["grafana_url", "prometheus_url", "jaeger_url"]:
             rc, out, err = _run(
@@ -838,12 +1158,19 @@ def phase_terraform() -> None:
     finally:
         # Cleanup
         _step("terraform destroy")
-        rc, out, err = _run([
-            "terraform", "destroy", "-auto-approve", "-input=false",
-            f"-var=cluster_name={cluster_name}",
-            "-var=enable_observability=true",
-            "-var=agentloom_image_tag=audit-int",
-        ], cwd=tf_dir, timeout=300)
+        rc, out, err = _run(
+            [
+                "terraform",
+                "destroy",
+                "-auto-approve",
+                "-input=false",
+                f"-var=cluster_name={cluster_name}",
+                "-var=enable_observability=true",
+                "-var=agentloom_image_tag=audit-int",
+            ],
+            cwd=tf_dir,
+            timeout=300,
+        )
         if rc == 0:
             _pass("terraform destroy succeeded")
         else:
@@ -862,10 +1189,7 @@ def phase_terraform() -> None:
     _save_phase("Terraform")
 
 
-# ────────────────────────────────────────────────────────────
 # Phase 5: Helm Direct Install
-# ────────────────────────────────────────────────────────────
-
 def phase_helm() -> None:
     _header("Phase 5: Helm — Direct Install into Kind")
     cluster_name = "audit-helm"
@@ -881,14 +1205,22 @@ def phase_helm() -> None:
     try:
         # Load image
         _step("Loading image into kind cluster")
-        _run(["kind", "load", "docker-image", "agentloom:audit-int", "--name", cluster_name], timeout=120)
+        _run(
+            ["kind", "load", "docker-image", "agentloom:audit-int", "--name", cluster_name],
+            timeout=120,
+        )
 
         # Helm lint
         _step("helm lint")
-        rc, out, err = _run([
-            "helm", "lint", str(DEPLOY / "helm" / "agentloom"),
-            "-f", str(DEPLOY / "helm" / "agentloom" / "ci" / "test-values.yaml"),
-        ])
+        rc, out, err = _run(
+            [
+                "helm",
+                "lint",
+                str(DEPLOY / "helm" / "agentloom"),
+                "-f",
+                str(DEPLOY / "helm" / "agentloom" / "ci" / "test-values.yaml"),
+            ]
+        )
         if rc == 0:
             _pass("helm lint passed")
         else:
@@ -896,17 +1228,30 @@ def phase_helm() -> None:
 
         # Helm install with validate-only workflow
         _step("helm install (validate-only workflow)")
-        rc, out, err = _run([
-            "helm", "install", "agentloom",
-            str(DEPLOY / "helm" / "agentloom"),
-            "-n", "agentloom", "--create-namespace",
-            "--set", "image.repository=agentloom",
-            "--set", "image.tag=audit-int",
-            "--set", "provider.existingSecret=",
-            "--set", "networkPolicy.enabled=false",
-            "--set", "observability.enabled=false",
-            "-f", str(DEPLOY / "helm" / "agentloom" / "ci" / "test-values.yaml"),
-        ], timeout=60)
+        rc, out, err = _run(
+            [
+                "helm",
+                "install",
+                "agentloom",
+                str(DEPLOY / "helm" / "agentloom"),
+                "-n",
+                "agentloom",
+                "--create-namespace",
+                "--set",
+                "image.repository=agentloom",
+                "--set",
+                "image.tag=audit-int",
+                "--set",
+                "provider.existingSecret=",
+                "--set",
+                "networkPolicy.enabled=false",
+                "--set",
+                "observability.enabled=false",
+                "-f",
+                str(DEPLOY / "helm" / "agentloom" / "ci" / "test-values.yaml"),
+            ],
+            timeout=60,
+        )
         if rc == 0:
             _pass("helm install succeeded")
         else:
@@ -917,7 +1262,7 @@ def phase_helm() -> None:
         _step("Verifying Helm-deployed resources")
         rc, out, err = _run(["kubectl", "get", "job", "-n", "agentloom", "--no-headers"])
         if rc == 0 and "agentloom" in out:
-            _pass(f"Job deployed via Helm")
+            _pass("Job deployed via Helm")
         else:
             _fail("No job found after helm install")
 
@@ -937,11 +1282,16 @@ def phase_helm() -> None:
 
         # Test validation: missing workflow should fail
         _step("Testing Helm validation (missing workflow → fail)")
-        rc, out, err = _run([
-            "helm", "template", "test",
-            str(DEPLOY / "helm" / "agentloom"),
-            "-n", "agentloom",
-        ])
+        rc, out, err = _run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(DEPLOY / "helm" / "agentloom"),
+                "-n",
+                "agentloom",
+            ]
+        )
         if rc != 0:
             _pass("Helm correctly rejects missing workflow.definition")
         else:
@@ -963,38 +1313,39 @@ def phase_helm() -> None:
     _save_phase("Helm")
 
 
-# ────────────────────────────────────────────────────────────
 # Main
-# ────────────────────────────────────────────────────────────
-
 def main() -> int:
     global _verbose
 
     parser = argparse.ArgumentParser(description="AgentLoom Local Integration Audit")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
-    parser.add_argument("--phase", type=int, choices=[1, 2, 3, 4, 5],
-                        help="Run only a specific phase (1=Docker, 2=Compose, 3=Kustomize, 4=Terraform, 5=Helm)")
+    parser.add_argument(
+        "--phase",
+        type=int,
+        choices=[1, 2, 3, 4, 5],
+        help="Run only a specific phase (1=Docker, 2=Compose, 3=Kustomize, 4=Terraform, 5=Helm)",
+    )
     args = parser.parse_args()
     _verbose = args.verbose
 
     print(_bold("\n  AgentLoom — Local Integration Audit"))
     print(f"  {'━' * 44}")
-    print(f"  Phases: Docker → Compose → Kustomize → Terraform → Helm")
+    print("  Phases: Docker → Compose → Kustomize → Terraform → Helm")
     print()
 
     phases = {
-        1: ("Docker",         phase_docker),
+        1: ("Docker", phase_docker),
         2: ("Docker Compose", phase_docker_compose),
-        3: ("Kustomize",      phase_kustomize),
-        4: ("Terraform",      phase_terraform),
-        5: ("Helm",           phase_helm),
+        3: ("Kustomize", phase_kustomize),
+        4: ("Terraform", phase_terraform),
+        5: ("Helm", phase_helm),
     }
 
     if args.phase:
         name, fn = phases[args.phase]
         fn()
     else:
-        for _, (name, fn) in sorted(phases.items()):
+        for _, (_name, fn) in sorted(phases.items()):
             fn()
 
     # Summary
@@ -1003,16 +1354,20 @@ def main() -> int:
     print(f"{'━' * 64}")
     for name, (p, f, s) in _phase_results.items():
         status = _green("PASS") if f == 0 else _red("FAIL")
-        print(f"  {status}  {name}: {_green(f'{p} passed')}  "
-              f"{_red(f'{f} failed') if f else '0 failed'}  "
-              f"{_yellow(f'{s} skipped') if s else ''}")
+        print(
+            f"  {status}  {name}: {_green(f'{p} passed')}  "
+            f"{_red(f'{f} failed') if f else '0 failed'}  "
+            f"{_yellow(f'{s} skipped') if s else ''}"
+        )
 
     total = _pass_count + _fail_count + _skip_count
     print(f"\n{'━' * 64}")
-    print(f"  {_bold('Total')}: {_green(f'{_pass_count} passed')}  "
-          f"{_red(f'{_fail_count} failed') if _fail_count else '0 failed'}  "
-          f"{_yellow(f'{_skip_count} skipped') if _skip_count else '0 skipped'}  "
-          f"({total} checks)")
+    print(
+        f"  {_bold('Total')}: {_green(f'{_pass_count} passed')}  "
+        f"{_red(f'{_fail_count} failed') if _fail_count else '0 failed'}  "
+        f"{_yellow(f'{_skip_count} skipped') if _skip_count else '0 skipped'}  "
+        f"({total} checks)"
+    )
     print(f"{'━' * 64}\n")
 
     return 1 if _fail_count > 0 else 0

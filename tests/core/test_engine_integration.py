@@ -21,9 +21,8 @@ from agentloom.providers.gateway import ProviderGateway
 from agentloom.tools.registry import ToolRegistry
 from tests.conftest import MockProvider, MockTool
 
-# -- Helpers --
 
-
+# Helpers
 class FailingProvider(BaseProvider):
     """Provider that always fails."""
 
@@ -48,9 +47,7 @@ class CountingProvider(MockProvider):
         return await super().complete(**kwargs)
 
 
-# -- Basic flows --
-
-
+# Basic flows
 class TestSingleStep:
     async def test_completes_with_output(self) -> None:
         provider = MockProvider(responses={"Answer: test": "42"})
@@ -103,9 +100,7 @@ class TestSingleStep:
         assert provider.calls[0]["messages"][0]["content"] == "Hello Alice"
 
 
-# -- Parallel execution --
-
-
+# Parallel execution
 class TestParallelExecution:
     async def test_parallel_steps_all_complete(self) -> None:
         provider = MockProvider()
@@ -154,9 +149,7 @@ class TestParallelExecution:
         assert counter.call_count == 3
 
 
-# -- Router / conditional branching --
-
-
+# Router / conditional branching
 class TestRouterIntegration:
     async def test_router_activates_correct_branch(self) -> None:
         provider = MockProvider(responses={"Classify: billing issue": "billing"})
@@ -253,9 +246,7 @@ class TestRouterIntegration:
         assert result.step_results["billing"].status == StepStatus.SKIPPED
 
 
-# -- Tool integration --
-
-
+# Tool integration
 class TestToolIntegration:
     async def test_tool_step_executes(self) -> None:
         provider = MockProvider()
@@ -294,9 +285,7 @@ class TestToolIntegration:
         assert mock_tool.calls == [{"input": "test"}]
 
 
-# -- Resilience --
-
-
+# Resilience
 class TestProviderFallback:
     async def test_fallback_on_primary_failure(self) -> None:
         backup = MockProvider()
@@ -406,9 +395,7 @@ class TestRetryBehavior:
         assert result.status == WorkflowStatus.FAILED
 
 
-# -- Observer integration --
-
-
+# Observer integration
 class TestObserverIntegration:
     async def test_observer_receives_lifecycle_events(self) -> None:
         provider = MockProvider()
@@ -531,9 +518,7 @@ class TestObserverIntegration:
         assert sr.time_to_first_token_ms is None
 
 
-# -- Subworkflow integration --
-
-
+# Subworkflow integration
 class TestSubworkflowIntegration:
     async def test_inline_subworkflow(self) -> None:
         provider = MockProvider()
@@ -580,9 +565,7 @@ class TestSubworkflowIntegration:
         assert len(provider.calls) == 2
 
 
-# -- Multi-layer complex workflow --
-
-
+# Multi-layer complex workflow
 class TestComplexWorkflow:
     async def test_five_layer_workflow(self) -> None:
         """Simulates a realistic multi-layer workflow:

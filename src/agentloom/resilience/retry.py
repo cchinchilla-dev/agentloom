@@ -59,13 +59,11 @@ async def retry_with_policy(
             if attempt >= policy.max_retries:
                 break
 
-            # Calculate backoff
             backoff = min(
                 policy.backoff_base**attempt,
                 policy.backoff_max,
             )
 
-            # Add jitter (up to 25% variation)
             if policy.jitter:
                 backoff *= 1.0 + random.uniform(-0.25, 0.25)  # noqa: S311
 

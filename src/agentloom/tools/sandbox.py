@@ -65,8 +65,6 @@ class ToolSandbox:
         self._allowed_domains = {d.lower() for d in (allowed_domains or [])}
         self._max_write_bytes = max_write_bytes
 
-    # Internal helpers
-
     def _paths_for_read(self) -> list[Path]:
         return self._allowed_paths + self._readable_paths
 
@@ -87,8 +85,6 @@ class ToolSandbox:
                 continue
         return False
 
-    # Public validation API
-
     def validate_command(self, command: str) -> None:
         """Validate a shell command against the allowlist.
 
@@ -102,7 +98,6 @@ class ToolSandbox:
         if not self.enabled:
             return
 
-        # Reject shell operators before parsing — prevents chaining
         if _SHELL_OPERATOR_RE.search(command):
             raise SandboxViolationError(
                 "shell_command",
@@ -119,7 +114,6 @@ class ToolSandbox:
 
         executable = tokens[0]
 
-        # Strip path prefix: /usr/bin/echo -> echo
         executable = Path(executable).name
 
         if executable not in self._allowed_commands:
@@ -129,7 +123,6 @@ class ToolSandbox:
                 f"Allowed: {sorted(self._allowed_commands) or '(none)'}",
             )
 
-        # Validate absolute-path arguments against all allowed dirs
         all_paths = self._all_paths()
         if all_paths:
             for token in tokens[1:]:

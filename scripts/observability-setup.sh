@@ -13,9 +13,7 @@ DEPLOY_DIR="$(cd "$(dirname "$0")/../deploy" && pwd)"
 # Global: filled by _ensure_compose
 DC=""
 
-# ---------------------------------------------------------------------------
 # Detect or install docker-compose
-# ---------------------------------------------------------------------------
 _detect_compose() {
     if docker compose version &> /dev/null 2>&1; then
         echo "docker compose"
@@ -53,9 +51,7 @@ _ensure_compose() {
     fi
 }
 
-# ---------------------------------------------------------------------------
 # down
-# ---------------------------------------------------------------------------
 if [[ "${1:-}" == "down" ]]; then
     _ensure_compose
     echo "Stopping observability stack..."
@@ -67,9 +63,7 @@ fi
 echo "=== AgentLoom Observability Setup ==="
 echo ""
 
-# ---------------------------------------------------------------------------
 # Check Docker engine (install if missing on macOS)
-# ---------------------------------------------------------------------------
 if ! command -v docker &> /dev/null; then
     echo "Docker not found."
     if [[ "$OSTYPE" == "darwin"* ]] && command -v brew &> /dev/null; then
@@ -97,16 +91,12 @@ fi
 
 echo "Docker: $(docker --version)"
 
-# ---------------------------------------------------------------------------
 # Ensure docker-compose (install if missing)
-# ---------------------------------------------------------------------------
 _ensure_compose
 echo "Compose: $DC"
 echo ""
 
-# ---------------------------------------------------------------------------
 # Install Python observability extras
-# ---------------------------------------------------------------------------
 echo "Installing observability Python packages..."
 if command -v uv &> /dev/null; then
     uv sync --group dev --all-extras
@@ -114,9 +104,7 @@ else
     pip install -e ".[observability]"
 fi
 
-# ---------------------------------------------------------------------------
 # Start the stack
-# ---------------------------------------------------------------------------
 echo ""
 echo "Starting observability stack..."
 $DC -f "$DEPLOY_DIR/docker-compose.yml" up -d

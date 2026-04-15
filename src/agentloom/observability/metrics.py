@@ -171,7 +171,7 @@ class MetricsManager:
         # Circuit breaker gauge (callback-based, reads from _circuit_states)
         states = self._circuit_states
 
-        def _cb_circuit(options: Any) -> Any:  # noqa: ANN401
+        def _cb_circuit(options: Any) -> Any:
             Observation = otel_api_metrics.Observation
             for prov, val in list(states.items()):  # pragma: no cover — fires on OTel export
                 yield Observation(val, {"provider": prov})
@@ -185,7 +185,7 @@ class MetricsManager:
         # Budget remaining gauge (callback-based, reads from _budget_remaining)
         budget = self._budget_remaining
 
-        def _cb_budget(options: Any) -> Any:  # noqa: ANN401  # pragma: no cover
+        def _cb_budget(options: Any) -> Any:  # pragma: no cover
             Observation = otel_api_metrics.Observation
             for wf, val in list(budget.items()):
                 yield Observation(val, {"workflow": wf})

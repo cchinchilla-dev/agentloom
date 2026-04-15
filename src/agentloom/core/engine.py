@@ -78,7 +78,6 @@ class WorkflowEngine:
         self._stream_callback = on_stream_chunk
         self._budget_spent: float = 0.0
 
-        # Checkpointing
         self._checkpointer = checkpointer
         self.run_id = run_id or (uuid.uuid4().hex[:12] if checkpointer else "")
         self._completed_steps: set[str] = set()
@@ -197,7 +196,6 @@ class WorkflowEngine:
         if self.observer:
             self.observer.on_workflow_start(workflow_name)
 
-        # Build and validate DAG
         dag = WorkflowParser.build_dag(self.workflow)
         layers = dag.execution_layers()
 
@@ -265,7 +263,6 @@ class WorkflowEngine:
                 if not active_steps:
                     continue
 
-                # Execute steps in this layer concurrently
                 max_concurrent = self.workflow.config.max_concurrent_steps
                 limiter = anyio.CapacityLimiter(max_concurrent)
 
@@ -273,13 +270,11 @@ class WorkflowEngine:
                     for step_id in active_steps:
                         tg.start_soon(self._execute_step_with_limit, step_id, limiter)
 
-                # Track completed steps for checkpoint/resume
                 for step_id in active_steps:
                     step_result = await self.state.get_step_result(step_id)
                     if step_result and step_result.status == StepStatus.SUCCESS:
                         self._completed_steps.add(step_id)
 
-                # After layer execution, check for router results
                 activated_targets_for_next = set()
                 for step_id in active_steps:
                     step_def = self.workflow.get_step(step_id)
@@ -305,7 +300,6 @@ class WorkflowEngine:
                     if activated_targets is not None:
                         activated_targets = None
 
-            # Gather results
             duration = (time.monotonic() - start) * 1000
             step_results = await self.state.all_step_results()
             final_state = await self.state.get_state_snapshot()
@@ -313,7 +307,6 @@ class WorkflowEngine:
             total_tokens = sum(r.token_usage.total_tokens for r in step_results.values())
             total_cost = sum(r.cost_usd for r in step_results.values())
 
-            # Determine workflow status
             failed_steps = [r for r in step_results.values() if r.status == StepStatus.FAILED]
             status = WorkflowStatus.FAILED if failed_steps else WorkflowStatus.SUCCESS
 
@@ -445,11 +438,9 @@ class WorkflowEngine:
         if self.observer:
             self.observer.on_step_start(step_id, step_def.type.value, stream=should_stream)
 
-        # Get the executor
         executor_cls = self.step_registry.get(step_def.type)
         executor: BaseStep = executor_cls()
 
-        # Build context
         context = StepContext(
             step_definition=step_def,
             state_manager=self.state,
@@ -465,7 +456,6 @@ class WorkflowEngine:
             on_stream_chunk=self._stream_callback,
         )
 
-        # Execute with retry
         max_retries = step_def.retry.max_retries
         last_result: StepResult | None = None
 
@@ -542,7 +532,6 @@ class WorkflowEngine:
                     )
                     return
 
-                # Failed but might retry
                 if attempt < max_retries:
                     # FIXME: jitter not applied here, only in resilience/retry.py
                     backoff = min(
@@ -607,7 +596,6 @@ class WorkflowEngine:
                     continue
                 break
 
-        # All retries exhausted
         if last_result:
             await self.state.set_step_result(step_id, last_result)
 

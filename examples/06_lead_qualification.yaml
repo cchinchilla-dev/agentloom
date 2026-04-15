@@ -26,7 +26,7 @@ state:
   outreach: ""
 
 steps:
-  # --- Layer 0: enrich + analyze in parallel ---
+  # Layer 0: enrich + analyze in parallel
 
   - id: enrich_company
     type: tool
@@ -58,7 +58,7 @@ steps:
       Message: {state.lead_message}
     output: intent_analysis
 
-  # --- Layer 1: score using both enrichment + intent ---
+  # Layer 1: score using both enrichment + intent
 
   - id: score_lead
     type: llm_call
@@ -80,7 +80,7 @@ steps:
       Intent analysis: {state.intent_analysis}
     output: lead_score
 
-  # --- Layer 2: route by score ---
+  # Layer 2: route by score
 
   - id: route
     type: router
@@ -92,7 +92,7 @@ steps:
         target: nurture_sequence
     default: log_and_archive
 
-  # --- Layer 3: generate appropriate response ---
+  # Layer 3: generate appropriate response
 
   - id: draft_outreach
     type: llm_call

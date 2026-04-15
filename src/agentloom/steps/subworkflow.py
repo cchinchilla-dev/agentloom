@@ -16,12 +16,10 @@ class SubworkflowStep(BaseStep):
         step = context.step_definition
         start = time.monotonic()
 
-        # Import here to avoid circular imports
         from agentloom.core.engine import WorkflowEngine
         from agentloom.core.parser import WorkflowParser
         from agentloom.core.state import StateManager
 
-        # Load the sub-workflow definition
         if step.workflow_path:
             try:
                 sub_workflow = WorkflowParser.from_yaml(step.workflow_path)
@@ -38,11 +36,9 @@ class SubworkflowStep(BaseStep):
                 "Subworkflow step requires 'workflow_path' or 'workflow_inline'",
             )
 
-        # Create child state with parent state snapshot
         parent_state = await context.state_manager.get_state_snapshot()
         child_state = StateManager(initial_state=parent_state)
 
-        # Create and run nested engine
         engine = WorkflowEngine(
             workflow=sub_workflow,
             state_manager=child_state,
@@ -63,7 +59,6 @@ class SubworkflowStep(BaseStep):
 
         duration = (time.monotonic() - start) * 1000
 
-        # Merge child state back into parent
         # TODO: selective merge — right now dumps entire child state back
         child_final = result.final_state
         if step.output:
@@ -73,7 +68,6 @@ class SubworkflowStep(BaseStep):
             StepStatus.SUCCESS if result.status == WorkflowStatus.SUCCESS else StepStatus.FAILED
         )
 
-        # Aggregate token usage from all child steps
         from agentloom.core.results import TokenUsage
 
         total_prompt = sum(r.token_usage.prompt_tokens for r in result.step_results.values())

@@ -16,7 +16,6 @@ otel_exporter = try_import(
     "opentelemetry.exporter.otlp.proto.grpc.trace_exporter", extra="observability"
 )
 
-# good enough — if someone installs only otel-api without sdk, they get noops
 _HAS_OTEL = is_available(otel_api) and is_available(otel_sdk_trace)
 
 
