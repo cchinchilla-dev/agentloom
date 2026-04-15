@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+import anyio
+
 from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.mock import prompt_hash
 
@@ -56,7 +58,10 @@ class RecordingProvider(BaseProvider):
     def _key(self, step_id: str | None, messages: list[dict[str, Any]]) -> str:
         return step_id if step_id else prompt_hash(messages)
 
-    def _flush(self) -> None:
+    async def _flush(self) -> None:
+        await anyio.to_thread.run_sync(self._flush_sync)
+
+    def _flush_sync(self) -> None:
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         # Merge with any existing on-disk content so concurrent recorders
         # (e.g. wrapping multiple providers in a gateway) don't clobber
@@ -99,7 +104,7 @@ class RecordingProvider(BaseProvider):
             "latency_ms": latency_ms,
             "finish_reason": response.finish_reason,
         }
-        self._flush()
+        await self._flush()
         if self._observer is not None:
             # observer must never break capture
             with contextlib.suppress(Exception):  # pragma: no cover
@@ -128,5 +133,5 @@ class RecordingProvider(BaseProvider):
         return self._wrapped.supports_model(model)
 
     async def close(self) -> None:
-        self._flush()
+        await self._flush()
         await self._wrapped.close()
