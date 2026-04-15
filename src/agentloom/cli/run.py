@@ -131,8 +131,9 @@ async def _run_async(
         if record is not None:
             from agentloom.providers.recorder import RecordingProvider
 
-            for entry in list(gateway._providers):
-                entry.provider = RecordingProvider(entry.provider, record, observer=observer)
+            gateway.wrap_providers(
+                lambda p: RecordingProvider(p, record, observer=observer)
+            )
 
     sandbox_cfg = workflow.config.sandbox
     sandbox = ToolSandbox(
