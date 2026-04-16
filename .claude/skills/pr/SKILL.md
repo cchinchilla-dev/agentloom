@@ -7,7 +7,9 @@ Open a PR for the current branch.
 
 ## Process
 
-1. **Pre-flight** — run `/check`. Warn (don't block); the user may want a draft anyway.
+1. **Pre-flight**
+   - Run `/check`. Warn (don't block); the user may want a draft anyway.
+   - Verify the lockfile is in sync: `uv lock --check`. If it fails, the lock drifted from `pyproject.toml` (common after a `version` bump or a dependency edit without re-locking). Run `uv lock` to refresh, stage `uv.lock`, and include it — as its own commit when it's housekeeping, folded into the feature commit when it's a direct consequence of a dependency change in the same branch. A stale lock causes CI reproducibility failures downstream, so do not skip.
 
 2. **Gather context**
    - `git log main..HEAD --oneline`
