@@ -39,6 +39,7 @@ engineering task that Claude Code executes on demand:
 | [`pr`](.claude/skills/pr/) | Create pull requests with auto-generated description and label suggestions |
 | [`release`](.claude/skills/release/) | Version bump, changelog generation, tagging, and push |
 | [`review`](.claude/skills/review/) | Review staged/unstaged changes for bugs, style drift, and missing coverage |
+| [`roadmap`](.claude/skills/roadmap/) | Create a release-tracking issue that organises open issues into a phased roadmap |
 
 ### GitHub Copilot (GitHub / Microsoft)
 
@@ -124,7 +125,7 @@ Review findings appear in the git history as *"address review"* or
 All AI-generated code passes through multiple verification layers before
 reaching the main branch:
 
-- **Automated quality gates** — 740+ tests (including end-to-end tests with
+- **Automated quality gates** — 860+ tests (including end-to-end tests with
   Ollama running in CI), `ruff` linting, `mypy` type checking, executed on
   every commit via the `check` skill and CI pipeline (9 GitHub Actions
   workflows).
