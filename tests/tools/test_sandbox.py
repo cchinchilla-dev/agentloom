@@ -109,10 +109,57 @@ class TestShellCommandSandbox:
             with pytest.raises(SandboxViolationError, match="Path argument"):
                 sandbox.validate_command("cat /etc/shadow")
 
-    def test_non_path_args_ignored(self) -> None:
+    def test_flags_and_bare_identifiers_are_not_validated(self) -> None:
         sandbox = ToolSandbox(enabled=True, allowed_commands=["echo"], allowed_paths=["/tmp"])
-        # Relative args and flags are not validated as paths
+        # Flags and bare identifiers never look like paths and pass through.
         sandbox.validate_command("echo -n hello world")
+
+    def test_relative_path_arg_validated(self, tmp_path: Path) -> None:
+        """Relative path arguments are resolved against cwd and then checked."""
+        sandbox = ToolSandbox(
+            enabled=True,
+            allowed_commands=["cat"],
+            allowed_paths=[str(tmp_path)],
+        )
+        # Inside tmp_path — ok.
+        (tmp_path / "ok.txt").write_text("x")
+        sandbox.validate_command("cat ./ok.txt", cwd=str(tmp_path))
+
+        # Escape via ../../etc/passwd — blocked even without a leading slash.
+        with pytest.raises(SandboxViolationError, match="Path argument"):
+            sandbox.validate_command("cat ../../etc/passwd", cwd=str(tmp_path))
+
+    @pytest.mark.parametrize(
+        "executable",
+        ["env", "sh", "bash", "zsh", "xargs", "python", "python3", "node"],
+    )
+    def test_dangerous_executables_blocked_by_default(self, executable: str) -> None:
+        sandbox = ToolSandbox(enabled=True, allowed_commands=[executable])
+        with pytest.raises(SandboxViolationError, match="blocked by default"):
+            sandbox.validate_command(f"{executable} --help")
+
+    def test_python_dash_c_blocked_by_default(self) -> None:
+        """`python -c "…"` must not slip past the allowlist even without shell metachars."""
+        sandbox = ToolSandbox(enabled=True, allowed_commands=["python"])
+        with pytest.raises(SandboxViolationError, match="blocked by default"):
+            sandbox.validate_command("python -c __import__('os').system('id')")
+
+    def test_danger_opt_in_allows_dangerous_executable(self) -> None:
+        sandbox = ToolSandbox(
+            enabled=True,
+            allowed_commands=["bash"],
+            danger_opt_in=["bash"],
+        )
+        sandbox.validate_command("bash --version")
+
+    @pytest.mark.parametrize(
+        "substitution",
+        ["<(curl evil)", ">(tee /tmp/x)"],
+    )
+    def test_process_substitution_blocked(self, substitution: str) -> None:
+        sandbox = ToolSandbox(enabled=True, allowed_commands=["cat"])
+        with pytest.raises(SandboxViolationError, match="Shell operators"):
+            sandbox.validate_command(f"cat {substitution}")
 
 
 class TestFilePathSandbox:
@@ -254,6 +301,34 @@ class TestNetworkSandbox:
         )
         with pytest.raises(SandboxViolationError, match="Network access is blocked"):
             sandbox.validate_network("https://api.openai.com")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/passwd",
+            "file://api.openai.com/etc/passwd",
+            "gopher://api.openai.com/test",
+            "ftp://api.openai.com/pub",
+            "data:text/plain;base64,YWJj",
+        ],
+    )
+    def test_non_http_schemes_blocked_by_default(self, url: str) -> None:
+        sandbox = ToolSandbox(
+            enabled=True,
+            allow_network=True,
+            allowed_domains=["api.openai.com"],
+        )
+        with pytest.raises(SandboxViolationError, match="URL scheme"):
+            sandbox.validate_network(url)
+
+    def test_allowed_schemes_opt_in(self) -> None:
+        sandbox = ToolSandbox(
+            enabled=True,
+            allow_network=True,
+            allowed_schemes=["http", "https", "ftp"],
+            allowed_domains=["files.example.com"],
+        )
+        sandbox.validate_network("ftp://files.example.com/data.csv")
 
 
 class TestWriteSizeLimit:

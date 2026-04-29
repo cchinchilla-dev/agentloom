@@ -16,9 +16,63 @@ from agentloom.exceptions import SandboxViolationError
 
 # Shell metacharacters that can chain, redirect, or inject commands.
 # Checked BEFORE shlex parsing (raw string) to catch operators
-# that shlex treats as literal tokens.  Includes \n/\r which act
-# as command separators in sh -c.
-_SHELL_OPERATOR_RE = re.compile(r"[|;&`<>\n\r]|\$\(|>>")
+# that shlex treats as literal tokens. Includes \n/\r which act as command
+# separators in sh -c, and process substitutions ``<(...)`` / ``>(...)``.
+_SHELL_OPERATOR_RE = re.compile(r"[|;&`\n\r]|\$\(|<\(|>\(|[<>]")
+
+# Executables that can execute arbitrary code from their arguments and
+# therefore defeat the command allowlist if permitted. Rejected by default
+# even when listed in ``allowed_commands``; callers must opt in explicitly
+# via ``danger_opt_in``.
+_DANGEROUS_EXECUTABLES = frozenset(
+    {
+        "env",
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "ksh",
+        "dash",
+        "xargs",
+        "python",
+        "python3",
+        "node",
+        "perl",
+        "ruby",
+        "php",
+        "lua",
+        "awk",
+        "eval",
+        "source",
+        ".",
+        "exec",
+        "nc",
+        "ncat",
+        "socat",
+        "ssh",
+    }
+)
+
+# Network schemes permitted by default. Anything else (file://, gopher://,
+# ftp://, data://, dict://) must be explicitly opted in via
+# ``allowed_schemes``.
+_DEFAULT_ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+
+def _looks_like_path(token: str) -> bool:
+    """Heuristic: does *token* look like a path argument?
+
+    We treat any token containing ``/`` or matching ``.``/``..`` as a path.
+    Flag-style arguments (``-n``, ``--flag``) and bare identifiers
+    (``hello``) are not validated.
+    """
+    if not token:
+        return False
+    if token.startswith("-"):
+        return False
+    if token in (".", ".."):
+        return True
+    return "/" in token
 
 
 class ToolSandbox:
@@ -40,8 +94,18 @@ class ToolSandbox:
         allowed_domains: When *allow_network* is ``True``, restrict
             requests to these domains (e.g., ``["api.openai.com"]``).
             An empty list means all domains are permitted.
+        allowed_schemes: URL schemes permitted in ``validate_network``.
+            Defaults to ``{"http", "https"}``. Opt in to ``file``,
+            ``ftp``, etc. only when the workflow genuinely requires them.
         max_write_bytes: Maximum size in bytes for a single file write.
             ``None`` means unlimited.
+        danger_opt_in: Explicit list of otherwise-dangerous executables
+            (``bash``, ``python``, ``xargs`` …) that the workflow accepts
+            the risk of. Without this, placing such names in
+            ``allowed_commands`` has no effect.
+        command_cwd: Directory against which relative path arguments are
+            resolved during ``validate_command``. Defaults to the current
+            working directory at validation time.
     """
 
     def __init__(
@@ -54,7 +118,10 @@ class ToolSandbox:
         readable_paths: list[str] | None = None,
         writable_paths: list[str] | None = None,
         allowed_domains: list[str] | None = None,
+        allowed_schemes: list[str] | None = None,
         max_write_bytes: int | None = None,
+        danger_opt_in: list[str] | None = None,
+        command_cwd: str | None = None,
     ) -> None:
         self.enabled = enabled
         self._allowed_commands = set(allowed_commands or [])
@@ -63,7 +130,14 @@ class ToolSandbox:
         self._writable_paths = [Path(p).resolve() for p in (writable_paths or [])]
         self._allow_network = allow_network
         self._allowed_domains = {d.lower() for d in (allowed_domains or [])}
+        self._allowed_schemes = (
+            {s.lower() for s in allowed_schemes}
+            if allowed_schemes
+            else set(_DEFAULT_ALLOWED_SCHEMES)
+        )
         self._max_write_bytes = max_write_bytes
+        self._danger_opt_in = {e.lower() for e in (danger_opt_in or [])}
+        self._command_cwd = Path(command_cwd).resolve() if command_cwd else None
 
     def _paths_for_read(self) -> list[Path]:
         return self._allowed_paths + self._readable_paths
@@ -85,12 +159,15 @@ class ToolSandbox:
                 continue
         return False
 
-    def validate_command(self, command: str) -> None:
+    def validate_command(self, command: str, *, cwd: str | None = None) -> None:
         """Validate a shell command against the allowlist.
 
-        Blocks shell operators (``|``, ``;``, ``&``, `` ` ``, ``$()``),
-        checks the executable against the allowlist, and validates any
-        absolute-path arguments against allowed directories.
+        Blocks shell operators (``|``, ``;``, ``&``, `` ` ``, ``$()``,
+        redirections, process substitution), rejects dangerous meta-executables
+        (``env``, ``bash``, ``python -c`` …) unless explicitly opted in,
+        checks the executable against the allowlist, and resolves every
+        path-shaped argument (absolute or relative to *cwd*) against allowed
+        directories.
 
         Raises:
             SandboxViolationError: If the command is not allowed.
@@ -112,9 +189,7 @@ class ToolSandbox:
         if not tokens:
             return
 
-        executable = tokens[0]
-
-        executable = Path(executable).name
+        executable = Path(tokens[0]).name
 
         if executable not in self._allowed_commands:
             raise SandboxViolationError(
@@ -123,16 +198,31 @@ class ToolSandbox:
                 f"Allowed: {sorted(self._allowed_commands) or '(none)'}",
             )
 
+        if (
+            executable.lower() in _DANGEROUS_EXECUTABLES
+            and executable.lower() not in self._danger_opt_in
+        ):
+            raise SandboxViolationError(
+                "shell_command",
+                f"Executable {executable!r} can run arbitrary code from its "
+                f"arguments and is blocked by default. Opt in explicitly via "
+                f"ToolSandbox(danger_opt_in=[{executable!r}]) if the risk is "
+                f"acceptable.",
+            )
+
         all_paths = self._all_paths()
         if all_paths:
+            base = self._command_cwd or (Path(cwd).resolve() if cwd else Path.cwd())
             for token in tokens[1:]:
-                if token.startswith("/"):
-                    resolved = Path(token).resolve()
-                    if not self._is_within(resolved, all_paths):
-                        raise SandboxViolationError(
-                            "shell_command",
-                            f"Path argument {str(resolved)!r} not within allowed directories",
-                        )
+                if not _looks_like_path(token):
+                    continue
+                candidate = Path(token)
+                resolved = (candidate if candidate.is_absolute() else base / candidate).resolve()
+                if not self._is_within(resolved, all_paths):
+                    raise SandboxViolationError(
+                        "shell_command",
+                        f"Path argument {str(resolved)!r} not within allowed directories",
+                    )
 
     def validate_path(self, path: str, *, writable: bool = False, tool_name: str = "file") -> None:
         """Validate a file path is within allowed directories.
@@ -141,6 +231,10 @@ class ToolSandbox:
         *writable* is ``True`` the path is checked against
         ``allowed_paths + writable_paths``; otherwise against
         ``allowed_paths + readable_paths``.
+
+        Note: the check is best-effort with respect to TOCTOU. A tool that
+        opens the file long after ``validate_path`` returns should re-check
+        the opened file descriptor's real path before trusting it.
 
         Raises:
             SandboxViolationError: If the path is outside allowed directories.
@@ -162,8 +256,11 @@ class ToolSandbox:
     def validate_network(self, url: str) -> None:
         """Validate that network access is permitted.
 
-        When *allow_network* is ``True`` and *allowed_domains* is
-        non-empty, the request domain must be in the allowlist.
+        Rejects non-``http``/``https`` schemes by default (``file://``,
+        ``gopher://``, ``ftp://``, ``data:`` …) regardless of host, so
+        that an allowlisted hostname cannot be reused to fetch local
+        files. When *allow_network* is ``True`` and *allowed_domains*
+        is non-empty, the request domain must be in the allowlist.
 
         Raises:
             SandboxViolationError: If network access is blocked.
@@ -176,8 +273,16 @@ class ToolSandbox:
                 "http_request", "Network access is blocked by sandbox policy"
             )
 
+        parsed = urlparse(url)
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in self._allowed_schemes:
+            raise SandboxViolationError(
+                "http_request",
+                f"URL scheme {scheme!r} is not allowed. Allowed: {sorted(self._allowed_schemes)}",
+            )
+
         if self._allowed_domains:
-            hostname = (urlparse(url).hostname or "").lower()
+            hostname = (parsed.hostname or "").lower()
             if hostname not in self._allowed_domains:
                 raise SandboxViolationError(
                     "http_request",

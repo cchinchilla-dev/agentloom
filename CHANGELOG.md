@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Drop `type` from safe-builtins (was usable as `type(x).__mro__[1].__subclasses__()`)
   - New `SecurityError` exception raised by the AST validator
   - Regression tests in `tests/steps/test_router_security.py`
+- Harden tool sandbox against meta-executable, path, and url-scheme bypasses (#105)
+  - Denylist of meta-executables (`env`, `sh`, `bash`, `python`, `python3`, `xargs`, `eval`, `exec`, ...) gated behind explicit `danger_opt_in`
+  - Validate relative path arguments against the configured cwd (no `../` escapes)
+  - URL schemes restricted to `http` / `https` by default; `file://`, `gopher://`, `ftp://` rejected unless listed in `allowed_schemes`
+  - Shell-op regex now catches process substitution (`<(...)`, `>(...)`)
+  - New `SandboxConfig` fields: `allowed_schemes` (default `["http", "https"]`), `danger_opt_in` (default `false`)
+  - **Behavior change:** workflows that legitimately invoke `bash`, `python`, etc. must set `danger_opt_in: true` explicitly
+
 ## [0.4.0] - 2026-04-15
 
 ### Added
