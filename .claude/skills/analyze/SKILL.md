@@ -1,6 +1,6 @@
 ---
 name: analyze
-description: Deep analysis of current changes before committing. Goes beyond lint — catches logic bugs, missing error handling, and architectural issues.
+description: Deep analysis of current changes before committing. Goes beyond lint — catches logic bugs, architectural violations, security, and performance issues.
 ---
 
 Analyze the current working tree changes for issues that static tools miss.

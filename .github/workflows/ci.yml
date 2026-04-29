@@ -49,6 +49,16 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
+  version-linearity:
+    name: Version linearity (pyproject ↔ CHANGELOG)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+      - run: python scripts/check_version_linearity.py
+
   manifests:
     name: Validate K8s manifests
     runs-on: ubuntu-latest

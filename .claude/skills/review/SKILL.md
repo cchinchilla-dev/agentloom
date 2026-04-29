@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review staged or unstaged changes before committing. Catches bugs, style issues, and missing tests.
+description: Review staged or unstaged changes before committing. Catches bugs, style drift, and missing coverage.
 ---
 
 Review the current changes in the working tree:
