@@ -2,7 +2,7 @@
 
 ## Build & test
 - `uv sync --group dev` — install (add `--all-extras` for observability)
-- `uv run pytest` — tests (392, ~5s)
+- `uv run pytest` — tests (~5s)
 - `uv run ruff check src/ tests/` — lint
 - `uv run ruff format src/ tests/` — format
 - `uv run mypy src/` — strict type check
