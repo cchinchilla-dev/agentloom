@@ -29,7 +29,13 @@ def check(root: Path) -> tuple[int, str]:
     if not changelog_path.exists():
         return 1, f"CHANGELOG.md not found at {changelog_path}"
 
-    declared = tomllib.loads(pyproject_path.read_text())["project"]["version"]
+    try:
+        declared = tomllib.loads(pyproject_path.read_text())["project"]["version"]
+    except tomllib.TOMLDecodeError as exc:
+        return 1, f"invalid pyproject.toml: {exc}"
+    except (KeyError, TypeError):
+        return 1, "pyproject.toml must define [project].version"
+
     latest = latest_changelog_version(changelog_path.read_text())
 
     if latest is None:

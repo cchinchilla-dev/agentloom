@@ -1,7 +1,7 @@
 # AI-assisted development
 
 **Last updated:** 2026-04-28
-**Applies to:** agentloom up to 0.5.0
+**Applies to:** agentloom up to 0.4.0
 
 This project is built with AI-assisted tooling. This document describes which
 tools were used, how the work was split between human and AI, and what was

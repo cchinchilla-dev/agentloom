@@ -13,8 +13,8 @@ SCRIPT = Path(__file__).resolve().parent.parent.parent / "scripts" / "check_vers
 def _load_script():
     """Import the script as a module (it is under scripts/, outside the package tree)."""
     spec = importlib.util.spec_from_file_location("check_version_linearity", SCRIPT)
-    module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
     assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
@@ -77,6 +77,22 @@ def test_version_linearity_fails_when_changelog_missing(tmp_path: Path, script) 
     code, message = script.check(tmp_path)
     assert code == 1
     assert "CHANGELOG.md not found" in message
+
+
+def test_version_linearity_fails_on_malformed_pyproject(tmp_path: Path, script) -> None:
+    (tmp_path / "pyproject.toml").write_text('[project\nversion = "1.0.0"\n')
+    (tmp_path / "CHANGELOG.md").write_text("# Changelog\n\n## [1.0.0] - 2026-04-28\n")
+    code, message = script.check(tmp_path)
+    assert code == 1
+    assert "invalid pyproject.toml" in message
+
+
+def test_version_linearity_fails_when_pyproject_lacks_version(tmp_path: Path, script) -> None:
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n')
+    (tmp_path / "CHANGELOG.md").write_text("# Changelog\n\n## [1.0.0] - 2026-04-28\n")
+    code, message = script.check(tmp_path)
+    assert code == 1
+    assert "[project].version" in message
 
 
 def test_latest_changelog_version_picks_first_versioned_header(script) -> None:
