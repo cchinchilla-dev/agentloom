@@ -181,7 +181,14 @@ Evaluates conditions against state and activates a target step. Steps not activa
 **Allowed in expressions:** comparisons, boolean operators (`and`, `or`, `not`), builtins (`len`, `str`, `int`, `float`, `bool`, `abs`, `min`, `max`).
 
 !!! warning "Safety"
-    Router expressions are validated via AST. No imports, no `exec`, no attribute assignment. Only a safe subset of Python is allowed.
+    Router expressions are validated via AST and run inside a strict sandbox. The validator rejects:
+
+    - imports, `exec`, attribute assignment;
+    - any `_`-prefixed name (`__class__`, `_private`) — blocks dunder traversal and access to private attributes;
+    - `kwargs` and starred arguments in calls — closes `format_map` / `**vars()` exfiltration;
+    - the `type` builtin — was usable as `type(x).__mro__[1].__subclasses__()`.
+
+    Violations raise `SecurityError`. Only a small audited subset of Python is allowed.
 
 ### `tool`
 
@@ -279,19 +286,26 @@ config:
     writable_paths: [/tmp/output]
     allow_network: true
     allowed_domains: [api.example.com]
+    allowed_schemes: [https]                # restrict URL schemes (default: http, https)
     max_write_bytes: 1000000
+    danger_opt_in: false                    # required to invoke meta-executables
 ```
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `enabled` | `bool` | Enable sandbox restrictions |
-| `allowed_commands` | `list[str]` | Shell command whitelist |
-| `allowed_paths` | `list[str]` | General file access paths |
-| `readable_paths` | `list[str]` | Read-only paths |
-| `writable_paths` | `list[str]` | Write-allowed paths |
-| `allow_network` | `bool` | Allow HTTP/network calls |
-| `allowed_domains` | `list[str]` | Domain whitelist |
-| `max_write_bytes` | `int` | Maximum file write size |
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable sandbox restrictions |
+| `allowed_commands` | `list[str]` | `[]` | Shell command whitelist |
+| `allowed_paths` | `list[str]` | `[]` | General file access paths |
+| `readable_paths` | `list[str]` | `[]` | Read-only paths |
+| `writable_paths` | `list[str]` | `[]` | Write-allowed paths |
+| `allow_network` | `bool` | `false` | Allow HTTP/network calls |
+| `allowed_domains` | `list[str]` | `[]` | Domain whitelist |
+| `allowed_schemes` | `list[str]` | `["http", "https"]` | URL scheme whitelist (rejects `file://`, `gopher://`, etc.) |
+| `max_write_bytes` | `int` | `0` (unlimited) | Maximum file write size |
+| `danger_opt_in` | `bool` | `false` | Required to allowlist meta-executables (`bash`, `python`, `env`, `xargs`, ...). Off by default — meta-executables defeat the command allowlist by re-launching arbitrary binaries. |
+
+!!! warning "Meta-executables"
+    Even when `bash` is in `allowed_commands`, the sandbox **rejects** the call unless `danger_opt_in: true` is also set. This prevents `bash -c "<arbitrary>"` from bypassing the rest of the allowlist. Same applies to `sh`, `python`, `python3`, `env`, `xargs`, `eval`, `exec`. Relative path arguments are validated against the configured cwd; `../` escapes are rejected.
 
 ---
 
