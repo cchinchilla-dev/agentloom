@@ -57,6 +57,18 @@ class SandboxViolationError(AgentLoomError):
         super().__init__(f"Sandbox violation ({tool}): {message}")
 
 
+class SecurityError(AgentLoomError):
+    """An expression or input was rejected by a security policy.
+
+    Distinct from StepError so that logs and metrics can flag attempted
+    sandbox bypasses without conflating them with normal step failures.
+    """
+
+    def __init__(self, message: str, *, expression: str | None = None) -> None:
+        self.expression = expression
+        super().__init__(message)
+
+
 class ValidationError(AgentLoomError):
     """Workflow or step definition validation error."""
 

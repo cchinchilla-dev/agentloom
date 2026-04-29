@@ -25,9 +25,9 @@ steps:
     type: router
     depends_on: [classify]
     conditions:
-      - expression: "state.classification.strip().lower() == 'billing'"
+      - expression: "state.classification.lower() == 'billing'"
         target: handle_billing
-      - expression: "state.classification.strip().lower() == 'technical'"
+      - expression: "state.classification.lower() == 'technical'"
         target: handle_technical
     default: handle_general
 

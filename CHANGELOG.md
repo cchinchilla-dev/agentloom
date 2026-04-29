@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Harden router expression sandbox against dunder access and type bypass (#104)
+  - Reject `ast.Attribute` with `_`-prefix names; block `mro` / `format_map` / `__class__` traversal
+  - Reject `ast.Name` with `_`-prefix; reject `kwargs` and starred args in `Call`
+  - Drop `type` from safe-builtins (was usable as `type(x).__mro__[1].__subclasses__()`)
+  - New `SecurityError` exception raised by the AST validator
+  - Regression tests in `tests/steps/test_router_security.py`
 ## [0.4.0] - 2026-04-15
 
 ### Added

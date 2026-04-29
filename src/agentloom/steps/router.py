@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from agentloom.core.results import StepResult, StepStatus
-from agentloom.exceptions import StepError
+from agentloom.exceptions import SecurityError, StepError
 from agentloom.steps.base import BaseStep, StepContext
 
 # AST node types allowed in router expressions
@@ -56,17 +56,39 @@ _SAFE_BUILTINS = {
     "min": min,
     "max": max,
     "isinstance": isinstance,
-    "type": type,
 }
 
 _ALLOWED_FUNCTIONS = set(_SAFE_BUILTINS.keys())
+
+# Non-dunder attribute names that also reach into the Python object graph.
+# Dunder attributes (anything starting with "_") are already blocked wholesale.
+_BLOCKED_ATTR_NAMES = frozenset(
+    {
+        "mro",
+        "format_map",
+    }
+)
+
+
+def _reject_attribute(attr: str, expr_str: str) -> None:
+    if attr.startswith("_"):
+        raise SecurityError(
+            f"Access to dunder/private attribute '{attr}' is not allowed in router expressions.",
+            expression=expr_str,
+        )
+    if attr in _BLOCKED_ATTR_NAMES:
+        raise SecurityError(
+            f"Access to attribute '{attr}' is not allowed in router expressions.",
+            expression=expr_str,
+        )
 
 
 def _validate_expression(expr_str: str) -> ast.Expression:
     """Parse and validate that an expression only uses allowed constructs.
 
     Raises:
-        StepError-compatible ValueError if the expression is unsafe.
+        SecurityError if the expression contains a sandbox-bypass construct.
+        ValueError for plain syntax errors.
     """
     try:
         tree = ast.parse(expr_str, mode="eval")
@@ -75,19 +97,58 @@ def _validate_expression(expr_str: str) -> ast.Expression:
 
     for node in ast.walk(tree):
         if not isinstance(node, _ALLOWED_NODES):
-            raise ValueError(
+            raise SecurityError(
                 f"Disallowed expression construct: {type(node).__name__}. "
-                f"Only comparisons, boolean ops, and safe builtins are allowed."
+                f"Only comparisons, boolean ops, and safe builtins are allowed.",
+                expression=expr_str,
             )
+        if isinstance(node, ast.Name) and node.id.startswith("_"):
+            raise SecurityError(
+                f"Reference to dunder/private name '{node.id}' is not allowed "
+                f"in router expressions.",
+                expression=expr_str,
+            )
+        if isinstance(node, ast.Attribute):
+            _reject_attribute(node.attr, expr_str)
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
                 if node.func.id not in _ALLOWED_FUNCTIONS:
-                    raise ValueError(
+                    raise SecurityError(
                         f"Function '{node.func.id}' is not allowed in expressions. "
-                        f"Allowed: {sorted(_ALLOWED_FUNCTIONS)}"
+                        f"Allowed: {sorted(_ALLOWED_FUNCTIONS)}",
+                        expression=expr_str,
                     )
-            elif not isinstance(node.func, ast.Attribute):
-                raise ValueError("Only named function calls and attribute calls are allowed")
+            elif isinstance(node.func, ast.Attribute):
+                # Attribute calls are allowed only if the attribute name passed
+                # the dunder/blocklist check above (ast.walk visits children).
+                # Still, reject any call whose receiver is not a plain
+                # Name/Attribute/Subscript chain — e.g. calls on literals,
+                # calls on calls, etc. — since those are not idiomatic router
+                # predicates and widen the attack surface.
+                receiver = node.func.value
+                if not isinstance(receiver, ast.Name | ast.Attribute | ast.Subscript):
+                    raise SecurityError(
+                        "Attribute calls are only allowed on names, attributes, or subscripts.",
+                        expression=expr_str,
+                    )
+            else:
+                raise SecurityError(
+                    "Only named function calls and attribute calls are allowed.",
+                    expression=expr_str,
+                )
+            # Reject keyword arguments and starred unpacking — router
+            # predicates never need them and they broaden the grammar.
+            if node.keywords:
+                raise SecurityError(
+                    "Keyword arguments are not allowed in router expressions.",
+                    expression=expr_str,
+                )
+            for arg in node.args:
+                if isinstance(arg, ast.Starred):
+                    raise SecurityError(
+                        "Starred arguments are not allowed in router expressions.",
+                        expression=expr_str,
+                    )
 
     return tree
 
@@ -155,6 +216,10 @@ class RouterStep(BaseStep):
                 if result:
                     target = condition.target
                     break
+            except SecurityError:
+                # Sandbox bypass attempt — propagate unchanged so it surfaces
+                # distinctly from ordinary step evaluation failures.
+                raise
             except Exception as e:
                 raise StepError(
                     step.id,
