@@ -9,12 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Harden router expression sandbox against dunder access and type bypass (#104)
+- Harden router expression sandbox against dunder access and type bypass (GHSA-c37m-mv4j-972v, #104)
+  - Closes [GHSA-c37m-mv4j-972v](https://github.com/cchinchilla-dev/agentloom/security/advisories/GHSA-c37m-mv4j-972v): router conditions accepted arbitrary code via `type`/`__class__`/`__subclasses__()`/`__call__` chains. All three published payloads now raise `SecurityError` at parse time.
   - Reject `ast.Attribute` with `_`-prefix names; block `mro` / `format_map` / `__class__` traversal
   - Reject `ast.Name` with `_`-prefix; reject `kwargs` and starred args in `Call`
   - Drop `type` from safe-builtins (was usable as `type(x).__mro__[1].__subclasses__()`)
   - New `SecurityError` exception raised by the AST validator
-  - Regression tests in `tests/steps/test_router_security.py`
+  - Regression tests in `tests/steps/test_router_security.py`, including verbatim payloads from the advisory
 - Harden tool sandbox against meta-executable, path, and url-scheme bypasses (#105)
   - Denylist of meta-executables (`env`, `sh`, `bash`, `python`, `python3`, `xargs`, `eval`, `exec`, ...) gated behind explicit `danger_opt_in`
   - Validate relative path arguments against the configured cwd (no `../` escapes)

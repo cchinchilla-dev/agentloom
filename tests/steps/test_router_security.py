@@ -143,3 +143,35 @@ class TestAcceptsDocumentedGrammar:
 
     def test_subscript_access(self) -> None:
         assert evaluate_expression("x[0] == 1", {"x": [1, 2, 3]}) is True
+
+
+class TestGHSAcm37mMv4j972vPayloads:
+    """Explicit regression for GHSA-c37m-mv4j-972v.
+
+    Verbatim payloads from the advisory. They MUST raise SecurityError on
+    parse — never reach the eval stage.
+    """
+
+    def test_payload_1_type_call_via_type_builtin(self) -> None:
+        # `type` removed from safe-builtins + `__call__` / `__base__` dunder
+        # rejection close this chain at parse time.
+        expr = 'type.__call__(type(()).__base__.__subclasses__()[0], ["sh", "-c", "whoami"])'
+        with pytest.raises(SecurityError):
+            evaluate_expression(expr, {})
+
+    def test_payload_2_direct_class_call(self) -> None:
+        # `__class__` dunder rejection blocks this at the first attribute access.
+        expr = '().__class__.__base__.__subclasses__()[0].__call__(["sh", "-c", "echo pwned"])'
+        with pytest.raises(SecurityError):
+            evaluate_expression(expr, {})
+
+    def test_payload_3_catch_warnings_module_builtins_chain(self) -> None:
+        # `__class__` / `__mro__` / `__getitem__` / `__call__` / `__builtins__`
+        # — every step on the chain is rejected by the dunder filter.
+        expr = (
+            "''.__class__.__mro__.__getitem__(1).__subclasses__().__getitem__(0)"
+            ".__call__()._module.__builtins__.__getitem__('__import__')"
+            ".__call__('os').system('id')"
+        )
+        with pytest.raises(SecurityError):
+            evaluate_expression(expr, {})
