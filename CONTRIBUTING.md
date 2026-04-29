@@ -49,13 +49,33 @@ uv run pytest
 
 ## Commit messages
 
-Short, lowercase, imperative mood. Prefix with category when relevant:
+Conventional-Commits style with scope:
 
 ```
-add retry jitter configuration
-fix router expression parsing for nested attributes
-refactor gateway fallback logic
+feat(providers): add streaming usage extraction for Anthropic
+fix(steps): respect router skip closure across parallel branches
+chore(release): bump version to 0.5.0
+ci(version): add version-linearity gate
+docs(observability): document OTel span schema migration
+refactor(gateway): extract candidate cache into LRU helper
+test(providers): add 429 contract suite parametrised across adapters
+perf(state): swap dict-snapshot for copy-on-write read view
+build(deps): pin httpx to 0.28.x for connection-pool compatibility
+style(core): apply ruff format
 ```
+
+- Imperative mood, lowercase after the colon. Single-line subject under
+  ~72 chars; body only when justification adds value.
+- Types: `feat`, `fix`, `chore`, `ci`, `test`, `docs`, `refactor`,
+  `perf`, `build`, `style`.
+- Common scopes: `core`, `cli`, `providers`, `observability`, `steps`,
+  `resilience`, `tools`, `webhooks`, `checkpointing`, `record-replay`,
+  `release`, `deps`, `version`, `meta`, `examples`, `infrastructure`.
+- PR-merge commits append `(#NN)` and may include `(#issue)` references —
+  e.g. `feat(providers): add structured output (#117) (#42)`.
+
+The PR title becomes the squash-merge commit on `main`, so the same
+convention applies to PR titles. The `pr` skill enforces this.
 
 ## Pull requests
 

@@ -35,5 +35,20 @@ ci:
       - any-glob-to-any-file:
           - .github/workflows/**
 
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - pyproject.toml
+          - uv.lock
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/**
+          - README.md
+          - CHANGELOG.md
+          - CONTRIBUTING.md
+          - ATTRIBUTION.md
+
 release:
   - head-branch: ['^release\/']

@@ -15,10 +15,17 @@ Open a PR for the current branch.
    - `git diff main...HEAD` — read the actual diff
    - Look at the last 3–5 merged PRs for title/label conventions: `gh pr list --state merged --limit 5 --json number,title,labels`
 
-3. **Title**
-   - Brief lowercase imperative. No `feat:`/`fix:`/`chore:` scopes unless the existing log already uses them.
-   - If the PR closes an issue, append `(#<issue>)` — e.g. `add webhook notifications for approval gates (#42)`.
-   - <70 chars.
+3. **Title** — Conventional Commits with scope (matches the commit-message convention enforced in `CLAUDE.md` / `CONTRIBUTING.md`):
+
+   ```
+   <type>(<scope>): <imperative lowercase description>
+   ```
+
+   - Types: `feat`, `fix`, `chore`, `ci`, `test`, `docs`, `refactor`, `perf`, `build`, `style`.
+   - Common scopes: `core`, `cli`, `providers`, `observability`, `steps`, `resilience`, `tools`, `webhooks`, `checkpointing`, `record-replay`, `release`, `deps`, `version`, `meta`, `examples`, `infrastructure`. Pick the most representative scope of the PR — for cross-cutting work, `meta` (docs/skills) or the dominant area.
+   - The PR title becomes the squash-merge commit on `main`, so consistency with the commit-message style matters.
+   - If the PR closes an issue, append `(#<issue>)` — e.g. `feat(webhooks): add approval-gate notifications (#42)`.
+   - Under 72 chars.
 
 4. **Body** — pick the format by PR size:
 
@@ -62,7 +69,7 @@ Open a PR for the current branch.
 
    No emojis.
 
-5. **Labels** — suggest based on changed paths; mirror labels from recent similar PRs. Common: `core`, `cli`, `providers`, `observability`, `infrastructure`, `e2e`, `enhancement`.
+5. **Labels** — `pr-labeler` auto-applies labels from `.github/labeler.yml` based on changed paths (`core`, `cli`, `providers`, `observability`, `resilience`, `infrastructure`, `ci`, `dependencies`, `release`). Add general categories (`enhancement`, `bug`, `breaking`, `e2e`) explicitly via `--label` because the labeler does not infer them from paths.
 
 6. **Push** (ask authorization first)
    - New branch: `git push --set-upstream origin <branch>`

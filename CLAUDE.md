@@ -24,6 +24,10 @@
 
 **Tests**: `respx` for HTTP mocking, `pytest-asyncio` auto mode. Mocks over real API calls.
 
+**Commits**: Conventional-Commits with scope (`feat(providers): …`, `fix(core): …`, `chore(release): …`). Imperative, lowercase after the colon, single-line subject. Types and scopes documented in `CONTRIBUTING.md`. The PR title becomes the squash-merge commit on `main`, so the same rule applies to PR titles.
+
+**Versions**: when bumping the version, update **both** `pyproject.toml` and `CHANGELOG.md` in the same commit. The `version-linearity` CI job fails when they disagree.
+
 ## Architecture (read these first)
 - `core/engine.py` — workflow executor, layer-based parallel DAG traversal
 - `core/dag.py` — dependency graph, topological sort, cycle detection
