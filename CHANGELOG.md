@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Harden gateway resilience: stream cancellation no longer trips the circuit breaker, circuit-breaker check now precedes the rate limiter in `complete()`, retry backoff jitter is centralized in `_jittered_backoff`, `RateLimiter` validates `max_rpm >= 1` / `max_tpm >= 1` and fails fast when `token_count > max_tpm`, and `CircuitBreaker.state` is a pure read with the half-open transition isolated in `_maybe_transition_to_half_open()` (#106).
 - Record/replay correctness — `anyio.Lock` around `_recorded` writes plus per-call flush, streaming captures persist chunks under the same key as `complete()`, `prompt_hash` now includes model/temperature/max_tokens/extra and uses `model_dump()` for Pydantic-aware hashing (#107).
 - Normalize provider adapters — central `providers/_http.py` helper with `validate_extra_kwargs` + `raise_for_status`; each provider declares its own kwargs allowlist; HTTP 429 now becomes `RateLimitError` with `Retry-After` parsed; the gateway passes `RateLimitError` to `CircuitBreaker.call(exclude=...)` so rate-limit responses do not trip the breaker; pricing prefix-match runs longest-first; `OllamaProvider` honours `OLLAMA_BASE_URL`; the Google adapter warns when streaming responses lack `usageMetadata` (#109).
+- Bound the gateway candidate cache with LRU eviction so long-lived workflows do not accumulate stale provider/model entries — default 1024 entries, override via `AGENTLOOM_CANDIDATE_CACHE_MAX` env var (#109).
 
 ### Security
 

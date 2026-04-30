@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -44,10 +46,19 @@ class ProviderGateway:
     and fallbacks are configured, tries the next provider automatically.
     """
 
-    def __init__(self) -> None:
+    # Cap for the per-model candidate cache. Workflows that template the
+    # model name (``{state.tier}-gpt-{state.version}``) or run multi-tenant
+    # produce unbounded model strings; without an LRU bound the cache grows
+    # forever. Override with ``AGENTLOOM_CANDIDATE_CACHE_MAX`` if needed.
+    _DEFAULT_CANDIDATE_CACHE_MAX = 1024
+
+    def __init__(self, candidate_cache_max: int | None = None) -> None:
         self._providers: list[ProviderEntry] = []
         self._model_mapping: dict[str, list[ProviderEntry]] = {}
-        self._candidate_cache: dict[str, list[ProviderEntry]] = {}
+        self._candidate_cache: OrderedDict[str, list[ProviderEntry]] = OrderedDict()
+        self._candidate_cache_max = candidate_cache_max or int(
+            os.environ.get("AGENTLOOM_CANDIDATE_CACHE_MAX", self._DEFAULT_CANDIDATE_CACHE_MAX)
+        )
         self._observer: Any | None = None
 
     def set_observer(self, observer: Any) -> None:
@@ -337,17 +348,26 @@ class ProviderGateway:
         )
 
     def _get_candidates(self, model: str) -> list[ProviderEntry]:
-        """Get provider candidates for a model, sorted by priority."""
+        """Get provider candidates for a model, sorted by priority.
+
+        Cached lookup: explicit ``_model_mapping`` registrations bypass the
+        cache; everything else hits the LRU-capped ``_candidate_cache``. On
+        cache hit we move the entry to the MRU end; on miss we insert and
+        evict the LRU entry if we've exceeded ``_candidate_cache_max``.
+        """
         if model in self._model_mapping:
             return self._model_mapping[model]
 
         if model in self._candidate_cache:
+            self._candidate_cache.move_to_end(model)
             return self._candidate_cache[model]
 
         candidates = [e for e in self._providers if e.provider.supports_model(model)]
         fallbacks = [e for e in self._providers if e.is_fallback and e not in candidates]
         result = candidates + fallbacks
         self._candidate_cache[model] = result
+        if len(self._candidate_cache) > self._candidate_cache_max:
+            self._candidate_cache.popitem(last=False)  # evict LRU
         return result
 
     async def close(self) -> None:

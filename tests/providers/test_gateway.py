@@ -405,3 +405,60 @@ class TestCircuitBreakerOrderingInCompleteFlow:
         assert entry.rate_limiter._token_tokens == tpm_before
 
 
+class TestCandidateCacheLRU:
+    """The model→candidates cache must evict LRU entries past its bound.
+
+    Without this, dynamic model strings (templated names, multi-tenant
+    naming) accumulate entries forever — each lookup eventually walks
+    the full table.
+    """
+
+    def test_candidate_cache_evicts_lru(self) -> None:
+        gateway = ProviderGateway(candidate_cache_max=3)
+        provider = MockProvider()
+        gateway.register(provider, priority=0)
+
+        # Fill with 3 entries.
+        for i in range(3):
+            gateway._get_candidates(f"model-{i}")
+        assert list(gateway._candidate_cache.keys()) == [
+            "model-0",
+            "model-1",
+            "model-2",
+        ]
+
+        # Touch model-0 → it becomes MRU.
+        gateway._get_candidates("model-0")
+        assert list(gateway._candidate_cache.keys()) == [
+            "model-1",
+            "model-2",
+            "model-0",
+        ]
+
+        # Adding model-3 evicts model-1 (oldest).
+        gateway._get_candidates("model-3")
+        assert list(gateway._candidate_cache.keys()) == [
+            "model-2",
+            "model-0",
+            "model-3",
+        ]
+
+    def test_candidate_cache_max_from_env(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setenv("AGENTLOOM_CANDIDATE_CACHE_MAX", "5")
+        gateway = ProviderGateway()
+        assert gateway._candidate_cache_max == 5
+
+    def test_candidate_cache_default_bound(self) -> None:
+        gateway = ProviderGateway()
+        # Default tracks the class constant — change both together.
+        assert gateway._candidate_cache_max == ProviderGateway._DEFAULT_CANDIDATE_CACHE_MAX
+
+    def test_explicit_model_mapping_bypasses_cache(self) -> None:
+        gateway = ProviderGateway(candidate_cache_max=2)
+        provider = MockProvider()
+        gateway.register(provider, priority=0, models=["explicit-model"])
+
+        # Explicit mapping must not consume cache slots.
+        for _ in range(5):
+            gateway._get_candidates("explicit-model")
+        assert "explicit-model" not in gateway._candidate_cache
