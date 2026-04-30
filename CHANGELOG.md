@@ -21,8 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Validate relative path arguments against the configured cwd (no `../` escapes)
   - URL schemes restricted to `http` / `https` by default; `file://`, `gopher://`, `ftp://` rejected unless listed in `allowed_schemes`
   - Shell-op regex now catches process substitution (`<(...)`, `>(...)`)
-  - New `SandboxConfig` fields: `allowed_schemes` (default `["http", "https"]`), `danger_opt_in` (default `false`)
-  - **Behavior change:** workflows that legitimately invoke `bash`, `python`, etc. must set `danger_opt_in: true` explicitly
+  - New `SandboxConfig` fields: `allowed_schemes` (default `["http", "https"]`), `danger_opt_in` (`list[str]`, default `[]`)
+  - **Behavior change:** workflows that legitimately invoke `bash`, `python`, etc. must list each meta-executable explicitly in `danger_opt_in` — e.g. `danger_opt_in: ["bash", "python"]`. The opt-in is per-binary, not a global flag, so adding `bash` does not also enable `python`.
 
 ## [0.4.0] - 2026-04-15
 

@@ -288,7 +288,7 @@ config:
     allowed_domains: [api.example.com]
     allowed_schemes: [https]                # restrict URL schemes (default: http, https)
     max_write_bytes: 1000000
-    danger_opt_in: false                    # required to invoke meta-executables
+    danger_opt_in: [bash]                   # opt-in per meta-executable (empty by default)
 ```
 
 | Option | Type | Default | Description |
@@ -298,14 +298,14 @@ config:
 | `allowed_paths` | `list[str]` | `[]` | General file access paths |
 | `readable_paths` | `list[str]` | `[]` | Read-only paths |
 | `writable_paths` | `list[str]` | `[]` | Write-allowed paths |
-| `allow_network` | `bool` | `false` | Allow HTTP/network calls |
+| `allow_network` | `bool` | `true` | Allow HTTP/network calls |
 | `allowed_domains` | `list[str]` | `[]` | Domain whitelist |
 | `allowed_schemes` | `list[str]` | `["http", "https"]` | URL scheme whitelist (rejects `file://`, `gopher://`, etc.) |
-| `max_write_bytes` | `int` | `0` (unlimited) | Maximum file write size |
-| `danger_opt_in` | `bool` | `false` | Required to allowlist meta-executables (`bash`, `python`, `env`, `xargs`, ...). Off by default — meta-executables defeat the command allowlist by re-launching arbitrary binaries. |
+| `max_write_bytes` | `int \| null` | `null` (unlimited) | Maximum file write size |
+| `danger_opt_in` | `list[str]` | `[]` | Per-binary opt-in for meta-executables (`bash`, `python`, `env`, `xargs`, ...). Empty by default — meta-executables defeat the command allowlist by re-launching arbitrary binaries. Add only the names you actually need. |
 
 !!! warning "Meta-executables"
-    Even when `bash` is in `allowed_commands`, the sandbox **rejects** the call unless `danger_opt_in: true` is also set. This prevents `bash -c "<arbitrary>"` from bypassing the rest of the allowlist. Same applies to `sh`, `python`, `python3`, `env`, `xargs`, `eval`, `exec`. Relative path arguments are validated against the configured cwd; `../` escapes are rejected.
+    Even when `bash` is in `allowed_commands`, the sandbox **rejects** the call unless `bash` is also listed in `danger_opt_in`. The opt-in is per-binary, not a global flag — `danger_opt_in: ["bash"]` does not also enable `python`. The same gate applies to `sh`, `python`, `python3`, `env`, `xargs`, `eval`, `exec`. Relative path arguments are validated against the configured cwd; `../` escapes are rejected.
 
 ---
 
