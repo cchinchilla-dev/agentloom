@@ -226,6 +226,53 @@ class TestOllamaBaseURLResolution:
         assert p.base_url == "http://localhost:11434"
 
     @respx.mock
+    async def test_streaming_options_built_from_temperature_max_tokens_extras(self) -> None:
+        """Stream path must apply the same options/top-level layout as ``complete()``."""
+        captured: dict[str, object] = {}
+
+        def _capture(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured.update(json.loads(request.content))
+            ndjson = (
+                '{"model":"phi4","message":{"role":"assistant","content":"x"},"done":false}\n'
+                '{"model":"phi4","message":{"role":"assistant","content":""},"done":true,'
+                '"done_reason":"stop","prompt_eval_count":1,"eval_count":1}\n'
+            )
+            return httpx.Response(200, content=ndjson.encode())
+
+        respx.post("http://localhost:11434/api/chat").mock(side_effect=_capture)
+        provider = OllamaProvider()
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="phi4",
+            temperature=0.3,
+            max_tokens=32,
+            top_p=0.8,
+            seed=99,
+            format="json",
+        )
+        async for _ in sr:
+            pass
+        opts = captured["options"]
+        assert opts["temperature"] == 0.3
+        assert opts["num_predict"] == 32
+        assert opts["top_p"] == 0.8
+        assert opts["seed"] == 99
+        assert captured["format"] == "json"
+        await provider.close()
+
+    @respx.mock
+    async def test_complete_wraps_httpx_error_as_provider_error(self) -> None:
+        respx.post("http://localhost:11434/api/chat").mock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+        provider = OllamaProvider()
+        with pytest.raises(ProviderError, match="HTTP error"):
+            await provider.complete(messages=[{"role": "user", "content": "x"}], model="phi4")
+        await provider.close()
+
+    @respx.mock
     async def test_options_built_from_temperature_max_tokens_extras(self) -> None:
         """Verify temperature, max_tokens (→num_predict), and allowlisted
         extras (top_p, seed) all land in the request ``options`` block, while

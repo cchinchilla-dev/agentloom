@@ -499,3 +499,86 @@ class TestObserverWiring:
         provider_entry.circuit_breaker._set_state(
             provider_entry.circuit_breaker._state.__class__.OPEN
         )
+
+
+class TestGatewayStreamErrorPaths:
+    """Setup/error branches in ``ProviderGateway.stream()``."""
+
+    async def test_stream_rate_limit_releases_half_open_slot(self) -> None:
+        """When ``provider.stream()`` raises RateLimitError while the breaker
+        is HALF_OPEN, the gateway must release the slot it just claimed via
+        ``allow_request()`` so future calls can proceed."""
+        from agentloom.exceptions import RateLimitError
+        from agentloom.resilience.circuit_breaker import CircuitState
+
+        class ThrottledProvider(BaseProvider):
+            name = "throttled"
+
+            async def complete(self, *a, **kw):  # type: ignore[no-untyped-def]
+                raise NotImplementedError
+
+            async def stream(self, *a, **kw):  # type: ignore[no-untyped-def]
+                raise RateLimitError("throttled", retry_after_s=1.0)
+
+            def supports_model(self, model: str) -> bool:
+                return True
+
+        gateway = ProviderGateway()
+        gateway.register(
+            ThrottledProvider(),
+            priority=0,
+            circuit_fail_threshold=1,
+            circuit_reset_timeout=0.01,
+        )
+        cb = gateway._providers[0].circuit_breaker
+
+        # Force the breaker into HALF_OPEN so allow_request claims a slot.
+        import time as _time
+
+        cb._set_state(CircuitState.OPEN)
+        cb._last_failure_time = _time.monotonic() - 1.0  # past reset_timeout
+
+        with pytest.raises(ProviderError, match="All providers failed"):
+            await gateway.stream(messages=[{"role": "user", "content": "hi"}], model="any-model")
+
+        # Slot released — counter back to 0.
+        assert cb._half_open_calls == 0
+
+    async def test_stream_setup_failure_records_breaker_failure(self) -> None:
+        """Setup failures raised by ``provider.stream()`` itself (not the
+        iterator) must feed back to the circuit breaker."""
+
+        class SetupFailProvider(BaseProvider):
+            name = "setup_fail"
+
+            async def complete(self, *a, **kw):  # type: ignore[no-untyped-def]
+                raise NotImplementedError
+
+            async def stream(self, *a, **kw):  # type: ignore[no-untyped-def]
+                raise ProviderError("setup_fail", "connection refused")
+
+            def supports_model(self, model: str) -> bool:
+                return True
+
+        gateway = ProviderGateway()
+        gateway.register(SetupFailProvider(), priority=0, circuit_fail_threshold=3)
+
+        with pytest.raises(ProviderError, match="All providers failed"):
+            await gateway.stream(messages=[{"role": "user", "content": "hi"}], model="any-model")
+
+        cb = gateway._providers[0].circuit_breaker
+        assert cb._failure_count >= 1
+
+    async def test_stream_iterator_failure_records_breaker_failure(self) -> None:
+        """An exception raised by the iterator (after stream() returned)
+        must invoke ``record_failure()`` and surface to the caller."""
+        gateway = ProviderGateway()
+        gateway.register(MidStreamFailProvider(), priority=0, circuit_fail_threshold=2)
+
+        cb = gateway._providers[0].circuit_breaker
+        sr = await gateway.stream(messages=[{"role": "user", "content": "hi"}], model="any-model")
+        with pytest.raises(ConnectionError):
+            async for _ in sr:
+                pass
+
+        assert cb._failure_count == 1

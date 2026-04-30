@@ -216,6 +216,31 @@ class TestGoogleProvider:
                 pass
         await provider.close()
 
+    @respx.mock
+    async def test_streaming_warns_on_missing_usage_metadata(self, caplog) -> None:  # type: ignore[no-untyped-def]
+        """Stream completing without ``usageMetadata`` must log a warning so
+        zero-cost reports surface instead of being silently swallowed."""
+        import logging
+
+        sse = (
+            'data: {"candidates":[{"content":{"parts":[{"text":"hi"}],"role":"model"}}]}\n\n'
+            'data: {"candidates":[{"content":{"parts":[{"text":" there"}],"role":"model"},'
+            '"finishReason":"STOP"}]}\n\n'  # No usageMetadata anywhere.
+        )
+        respx.post(url__regex=r".*/models/gemini.*streamGenerateContent.*").mock(
+            return_value=httpx.Response(200, content=sse.encode())
+        )
+        provider = GoogleProvider(api_key="test-key")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}], model="gemini-2.5-flash"
+        )
+        with caplog.at_level(logging.WARNING, logger="agentloom.providers.google"):
+            _ = [c async for c in sr]
+
+        assert sr.usage.total_tokens == 0
+        assert any("usageMetadata" in r.message for r in caplog.records)
+        await provider.close()
+
     def test_supports_gemini_models(self) -> None:
         p = GoogleProvider(api_key="k")
         assert p.supports_model("gemini-2.5-flash")
