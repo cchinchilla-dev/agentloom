@@ -48,6 +48,8 @@ The gateway wraps each provider with a circuit breaker:
 | **Open** | Requests rejected immediately, fallback provider used | :material-arrow-right: Half-open after 60s |
 | **Half-open** | One test request allowed | :material-arrow-right: Closed on success, Open on failure |
 
+`RateLimitError` (HTTP 429) and stream cancellations (`GeneratorExit` / `anyio.CancelledError`) are excluded from the failure count — being throttled or aborted is not a provider outage. Only genuine errors count toward the 5-failure threshold.
+
 ## Rate limiter
 
 Dual token-bucket rate limiting per provider:
@@ -62,6 +64,20 @@ gateway.register(
     max_tpm=200_000,      # tokens/minute
 )
 ```
+
+`max_rpm` and `max_tpm` must be `>= 1`; the limiter rejects zero/negative bounds at registration with `ValueError`. A request whose estimated `token_count` exceeds `max_tpm` also raises `ValueError` instead of blocking forever on a bucket that can never refill that high — this is a local precondition violation, not a `RateLimitError` (which is reserved for HTTP 429 responses from the provider).
+
+## HTTP errors
+
+All provider adapters normalize remote errors to a common taxonomy:
+
+| HTTP status | Exception | Notes |
+|-------------|-----------|-------|
+| `429 Too Many Requests` | `RateLimitError` | Numeric `Retry-After` (seconds) is parsed and exposed on the exception. HTTP-date form is not supported — providers we talk to use integer seconds. |
+| `5xx` | `ProviderError` | Counts toward the circuit breaker |
+| network / timeout | `ProviderError` | Counts toward the circuit breaker |
+
+Provider adapters declare an explicit kwargs allowlist for `extra` parameters; unknown kwargs raise a `TypeError` at call time rather than silently reaching the vendor's API. Each adapter exposes its allowlist via a constant (`_OPENAI_EXTRA_PAYLOAD_KEYS`, `_ANTHROPIC_EXTRA_PAYLOAD_KEYS`, `_GOOGLE_GEN_CONFIG_KEYS` + `_GOOGLE_TOPLEVEL_KEYS`, `_OLLAMA_OPTION_KEYS` + `_OLLAMA_TOPLEVEL_KEYS`).
 
 ## Fallback chain
 

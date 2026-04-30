@@ -201,3 +201,106 @@ class TestOllamaProvider:
         result = await provider.complete(messages=[{"role": "user", "content": "hi"}], model="phi4")
         assert result.content == "Local response"
         await provider.close()
+
+
+class TestOllamaBaseURLResolution:
+    def test_base_url_from_env(self, monkeypatch) -> None:
+        from agentloom.providers.ollama import OllamaProvider
+
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.internal:9000")
+        p = OllamaProvider()
+        assert p.base_url == "http://ollama.internal:9000"
+
+    def test_base_url_explicit_wins_over_env(self, monkeypatch) -> None:
+        from agentloom.providers.ollama import OllamaProvider
+
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://env.example")
+        p = OllamaProvider(base_url="http://explicit.example")
+        assert p.base_url == "http://explicit.example"
+
+    def test_base_url_defaults_to_localhost(self, monkeypatch) -> None:
+        from agentloom.providers.ollama import OllamaProvider
+
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        p = OllamaProvider()
+        assert p.base_url == "http://localhost:11434"
+
+    @respx.mock
+    async def test_streaming_options_built_from_temperature_max_tokens_extras(self) -> None:
+        """Stream path must apply the same options/top-level layout as ``complete()``."""
+        captured: dict[str, object] = {}
+
+        def _capture(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured.update(json.loads(request.content))
+            ndjson = (
+                '{"model":"phi4","message":{"role":"assistant","content":"x"},"done":false}\n'
+                '{"model":"phi4","message":{"role":"assistant","content":""},"done":true,'
+                '"done_reason":"stop","prompt_eval_count":1,"eval_count":1}\n'
+            )
+            return httpx.Response(200, content=ndjson.encode())
+
+        respx.post("http://localhost:11434/api/chat").mock(side_effect=_capture)
+        provider = OllamaProvider()
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="phi4",
+            temperature=0.3,
+            max_tokens=32,
+            top_p=0.8,
+            seed=99,
+            format="json",
+        )
+        async for _ in sr:
+            pass
+        opts = captured["options"]
+        assert opts["temperature"] == 0.3
+        assert opts["num_predict"] == 32
+        assert opts["top_p"] == 0.8
+        assert opts["seed"] == 99
+        assert captured["format"] == "json"
+        await provider.close()
+
+    @respx.mock
+    async def test_complete_wraps_httpx_error_as_provider_error(self) -> None:
+        respx.post("http://localhost:11434/api/chat").mock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+        provider = OllamaProvider()
+        with pytest.raises(ProviderError, match="HTTP error"):
+            await provider.complete(messages=[{"role": "user", "content": "x"}], model="phi4")
+        await provider.close()
+
+    @respx.mock
+    async def test_options_built_from_temperature_max_tokens_extras(self) -> None:
+        """Verify temperature, max_tokens (→num_predict), and allowlisted
+        extras (top_p, seed) all land in the request ``options`` block, while
+        ``format`` and ``tools`` sit at the top level."""
+        captured: dict[str, object] = {}
+
+        def _capture(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json=MOCK_RESPONSE)
+
+        respx.post("http://localhost:11434/api/chat").mock(side_effect=_capture)
+        provider = OllamaProvider()
+        await provider.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="phi4",
+            temperature=0.5,
+            max_tokens=64,
+            top_p=0.9,
+            seed=7,
+            format="json",
+            tools=[{"name": "calc"}],
+        )
+        opts = captured["options"]
+        assert opts["temperature"] == 0.5
+        assert opts["num_predict"] == 64
+        assert opts["top_p"] == 0.9
+        assert opts["seed"] == 7
+        assert captured["format"] == "json"
+        assert captured["tools"] == [{"name": "calc"}]

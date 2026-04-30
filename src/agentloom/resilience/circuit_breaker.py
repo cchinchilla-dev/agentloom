@@ -56,7 +56,16 @@ class CircuitBreaker:
 
     @property
     def state(self) -> CircuitState:
-        """Current circuit state, with automatic OPEN -> HALF_OPEN transition."""
+        """Current circuit state — pure read, no side effects."""
+        return self._state
+
+    def _maybe_transition_to_half_open(self) -> CircuitState:
+        """Transition OPEN -> HALF_OPEN if the reset timeout has elapsed.
+
+        Returns the state after any transition. Called from the admission
+        helpers (``call``/``allow_request``) before deciding whether a new
+        request may proceed; reading ``self.state`` is side-effect-free.
+        """
         if self._state == CircuitState.OPEN:
             if time.monotonic() - self._last_failure_time >= self.reset_timeout:
                 self._set_state(CircuitState.HALF_OPEN)
@@ -76,11 +85,20 @@ class CircuitBreaker:
     def failure_count(self) -> int:
         return self._failure_count
 
-    async def call(self, coro_factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
+    async def call(
+        self,
+        coro_factory: Callable[[], Coroutine[Any, Any, T]],
+        *,
+        exclude: tuple[type[BaseException], ...] = (),
+    ) -> T:
         """Execute an async callable through the circuit breaker.
 
         Args:
             coro_factory: A zero-argument callable that returns a coroutine.
+            exclude: Exception types that propagate but do NOT count as a
+                failure for this breaker. Use for expected, non-fault
+                conditions like rate-limit responses — a throttled provider
+                is healthy, just overused, and must not trip the breaker.
 
         Returns:
             The result of the coroutine.
@@ -88,7 +106,7 @@ class CircuitBreaker:
         Raises:
             CircuitOpenError: If the circuit is open.
         """
-        current_state = self.state
+        current_state = self._maybe_transition_to_half_open()
 
         if current_state == CircuitState.OPEN:
             raise CircuitOpenError(self.name)
@@ -102,6 +120,12 @@ class CircuitBreaker:
             result = await coro_factory()
             self._on_success()
             return result
+        except exclude:
+            # Excluded exceptions: propagate without charging the breaker.
+            # Release any half-open slot we just claimed.
+            if current_state == CircuitState.HALF_OPEN and self._half_open_calls > 0:
+                self._half_open_calls -= 1
+            raise
         except Exception:
             self._on_failure()
             raise
@@ -137,7 +161,7 @@ class CircuitBreaker:
         (single-threaded) concurrency but would require a lock if
         moved to a threaded executor.
         """
-        current_state = self.state
+        current_state = self._maybe_transition_to_half_open()
         if current_state == CircuitState.OPEN:
             raise CircuitOpenError(self.name)
         if current_state == CircuitState.HALF_OPEN:

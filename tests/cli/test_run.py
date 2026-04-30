@@ -344,4 +344,7 @@ class TestRunRecordAndReplay:
             import json as _json
 
             data = _json.loads(rec_path.read_text())
-            assert len(data) == 1
+            # v2 recording file carries a _version envelope; there should be
+            # exactly one captured call entry alongside it.
+            entries = {k: v for k, v in data.items() if not k.startswith("_")}
+            assert len(entries) == 1

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -11,6 +12,7 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
+from agentloom.providers._http import raise_for_status, validate_extra_kwargs
 from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.multimodal import (
     AudioBlock,
@@ -21,6 +23,25 @@ from agentloom.providers.multimodal import (
 )
 
 logger = logging.getLogger("agentloom.providers.ollama")
+
+# Keys mapped into Ollama's ``options`` bag (model-level generation params).
+_OLLAMA_OPTION_KEYS = frozenset(
+    {
+        "top_p",
+        "top_k",
+        "stop",
+        "seed",
+        "mirostat",
+        "mirostat_tau",
+        "mirostat_eta",
+        "repeat_penalty",
+        "presence_penalty",
+        "frequency_penalty",
+    }
+)
+# Top-level Ollama request keys (outside ``options``).
+_OLLAMA_TOPLEVEL_KEYS = frozenset({"format", "tools", "keep_alive"})
+_OLLAMA_EXTRA_PAYLOAD_KEYS = _OLLAMA_OPTION_KEYS | _OLLAMA_TOPLEVEL_KEYS
 
 
 class OllamaProvider(BaseProvider):
@@ -34,10 +55,11 @@ class OllamaProvider(BaseProvider):
     def __init__(
         self,
         api_key: str = "",
-        base_url: str = "http://localhost:11434",
+        base_url: str = "",
         **kwargs: Any,
     ) -> None:
-        super().__init__(api_key=api_key, base_url=base_url, **kwargs)
+        resolved = base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        super().__init__(api_key=api_key, base_url=resolved, **kwargs)
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=120.0,  # Local models can be slow
@@ -87,6 +109,7 @@ class OllamaProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
+        extras = validate_extra_kwargs("ollama", "complete", kwargs, _OLLAMA_EXTRA_PAYLOAD_KEYS)
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
@@ -97,20 +120,19 @@ class OllamaProvider(BaseProvider):
             options["temperature"] = temperature
         if max_tokens is not None:
             options["num_predict"] = max_tokens
+        for k in _OLLAMA_OPTION_KEYS & extras.keys():
+            options[k] = extras[k]
         if options:
             payload["options"] = options
+        for k in _OLLAMA_TOPLEVEL_KEYS & extras.keys():
+            payload[k] = extras[k]
 
         try:
             response = await self._client.post("/api/chat", json=payload)
         except httpx.HTTPError as e:
             raise ProviderError("ollama", f"HTTP error: {e}") from e
 
-        if response.status_code != 200:
-            raise ProviderError(
-                "ollama",
-                f"API error {response.status_code}: {response.text}",
-                status_code=response.status_code,
-            )
+        raise_for_status("ollama", response)
 
         data = response.json()
         content = data.get("message", {}).get("content", "")
@@ -142,6 +164,7 @@ class OllamaProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
+        extras = validate_extra_kwargs("ollama", "stream", kwargs, _OLLAMA_EXTRA_PAYLOAD_KEYS)
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
@@ -152,8 +175,12 @@ class OllamaProvider(BaseProvider):
             options["temperature"] = temperature
         if max_tokens is not None:
             options["num_predict"] = max_tokens
+        for k in _OLLAMA_OPTION_KEYS & extras.keys():
+            options[k] = extras[k]
         if options:
             payload["options"] = options
+        for k in _OLLAMA_TOPLEVEL_KEYS & extras.keys():
+            payload[k] = extras[k]
 
         sr = StreamResponse(model=model, provider="ollama")
 
@@ -161,11 +188,7 @@ class OllamaProvider(BaseProvider):
             async with self._client.stream("POST", "/api/chat", json=payload) as resp:
                 if resp.status_code != 200:
                     await resp.aread()
-                    raise ProviderError(
-                        "ollama",
-                        f"API error {resp.status_code}: {resp.text}",
-                        status_code=resp.status_code,
-                    )
+                    raise_for_status("ollama", resp)
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line:

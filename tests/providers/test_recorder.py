@@ -55,7 +55,7 @@ async def test_records_by_prompt_hash_when_no_step_id(tmp_path):
     await recorder.complete(messages=messages, model="m")
 
     data = json.loads(recording_path.read_text())
-    assert prompt_hash(messages) in data
+    assert prompt_hash(messages, "m") in data
 
 
 async def test_close_flushes_and_closes_wrapped(tmp_path):
@@ -63,9 +63,12 @@ async def test_close_flushes_and_closes_wrapped(tmp_path):
     recording_path = tmp_path / "out.json"
     recorder = RecordingProvider(source, recording_path)
     await recorder.close()
-    # file exists (empty dict) after close
+    # File exists after close. Only the version envelope is present since no
+    # completions were recorded.
     assert recording_path.exists()
-    assert json.loads(recording_path.read_text()) == {}
+    data = json.loads(recording_path.read_text())
+    assert data.get("_version") == 2
+    assert [k for k in data if not k.startswith("_")] == []
 
 
 async def test_observer_notified_on_capture(tmp_path):
@@ -146,32 +149,65 @@ async def test_flush_recovers_from_corrupted_file(tmp_path):
     assert "s1" in data
 
 
-async def test_stream_delegates_to_wrapped(tmp_path):
-    called = {}
+async def test_stream_recording_produces_replayable_entry(tmp_path):
+    """Streamed completions must be captured under the same key format as
+    ``complete()`` so that the resulting file is fully replayable."""
 
-    class FakeStream:
-        def __init__(self):
-            self.name = "fake"
-            self.api_key = None
-            self.base_url = None
+    from collections.abc import AsyncIterator
 
-        async def stream(self, **kwargs):
-            called.update(kwargs)
-            return "stream-result"
+    from agentloom.core.results import TokenUsage
+    from agentloom.providers.base import StreamResponse
+
+    class FakeStreamingProvider:
+        name = "fake"
+        api_key = ""
+        base_url = ""
+
+        async def stream(self, **kwargs) -> StreamResponse:
+            sr = StreamResponse(model=kwargs["model"], provider="fake")
+
+            async def _gen() -> AsyncIterator[str]:
+                for chunk in ["hello", " ", "world"]:
+                    yield chunk
+                sr.usage = TokenUsage(prompt_tokens=1, completion_tokens=3, total_tokens=4)
+                sr.cost_usd = 0.01
+                sr.finish_reason = "stop"
+
+            sr._set_iterator(_gen())
+            return sr
 
         async def complete(self, **kwargs):
             raise NotImplementedError
 
         def supports_model(self, model):
-            return model == "fake-model"
+            return True
 
         async def close(self):
             pass
 
-    recorder = RecordingProvider(FakeStream(), tmp_path / "r.json")  # type: ignore[arg-type]
-    result = await recorder.stream(messages=[{"role": "user", "content": "hi"}], model="fake-model")
-    assert result == "stream-result"
-    assert called["model"] == "fake-model"
+    recorder = RecordingProvider(FakeStreamingProvider(), tmp_path / "r.json")  # type: ignore[arg-type]
+    sr = await recorder.stream(
+        messages=[{"role": "user", "content": "hi"}],
+        model="fake-model",
+        step_id="s_stream",
+    )
+    chunks = [c async for c in sr]
+    assert "".join(chunks) == "hello world"
+
+    data = json.loads((tmp_path / "r.json").read_text())
+    assert "s_stream" in data
+    assert data["s_stream"]["content"] == "hello world"
+    assert data["s_stream"]["usage"]["total_tokens"] == 4
+    assert data["s_stream"]["finish_reason"] == "stop"
+
+    # Replayable via MockProvider.
+    replay = MockProvider(responses_file=tmp_path / "r.json")
+    r = await replay.complete(
+        messages=[{"role": "user", "content": "hi"}],
+        model="fake-model",
+        step_id="s_stream",
+    )
+    assert r.content == "hello world"
 
 
 async def test_supports_model_delegates_to_wrapped(tmp_path):
@@ -179,3 +215,88 @@ async def test_supports_model_delegates_to_wrapped(tmp_path):
     source.name = "src"
     recorder = RecordingProvider(source, tmp_path / "r.json")
     assert recorder.supports_model("any-model") is True
+
+
+async def test_concurrent_recording_persists_all_entries(tmp_path):
+    """N parallel complete() calls on one RecordingProvider must all appear
+    in the output file — no last-writer-wins, no dict-iteration races."""
+
+    import anyio
+
+    source = MockProvider(default_response="r")
+    recording_path = tmp_path / "parallel.json"
+    recorder = RecordingProvider(source, recording_path)
+
+    async def _one(i: int) -> None:
+        await recorder.complete(
+            messages=[{"role": "user", "content": f"msg-{i}"}],
+            model="m",
+            step_id=f"step-{i}",
+        )
+
+    async with anyio.create_task_group() as tg:
+        for i in range(10):
+            tg.start_soon(_one, i)
+
+    data = json.loads(recording_path.read_text())
+    for i in range(10):
+        assert f"step-{i}" in data, f"missing step-{i} under concurrency"
+
+
+async def test_concurrent_recording_does_not_raise_dict_iteration_error(tmp_path):
+    """Merging recorded entries during flush must not iterate a dict that is
+    being mutated by another coroutine."""
+
+    import anyio
+
+    source = MockProvider(default_response="r")
+    recording_path = tmp_path / "parallel.json"
+    recorder = RecordingProvider(source, recording_path)
+
+    async def _loop(prefix: str) -> None:
+        for i in range(20):
+            await recorder.complete(
+                messages=[{"role": "user", "content": f"{prefix}-{i}"}],
+                model="m",
+                step_id=f"{prefix}-{i}",
+            )
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_loop, "a")
+        tg.start_soon(_loop, "b")
+        tg.start_soon(_loop, "c")
+
+    data = json.loads(recording_path.read_text())
+    for prefix in ("a", "b", "c"):
+        for i in range(20):
+            assert f"{prefix}-{i}" in data
+
+
+async def test_stream_with_none_iterator_returns_no_chunks(tmp_path):
+    """If the wrapped provider's StreamResponse has a ``None`` iterator,
+    the recorder's tap returns early without crashing."""
+    from agentloom.providers.base import BaseProvider, StreamResponse
+    from agentloom.providers.recorder import RecordingProvider
+
+    class NullStreamProvider(BaseProvider):
+        name = "null-stream"
+
+        async def complete(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise NotImplementedError
+
+        async def stream(self, messages, model, **kwargs):  # type: ignore[no-untyped-def]
+            sr = StreamResponse(model=model, provider=self.name)
+            # _iterator stays None — the recorder must handle it gracefully.
+            return sr
+
+        def supports_model(self, model: str) -> bool:
+            return True
+
+    recorder = RecordingProvider(NullStreamProvider(), tmp_path / "rec.json")
+    sr = await recorder.stream(
+        messages=[{"role": "user", "content": "x"}],
+        model="m",
+    )
+    chunks = [c async for c in sr]
+    assert chunks == []
+    await recorder.close()

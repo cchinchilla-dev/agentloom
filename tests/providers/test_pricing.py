@@ -120,3 +120,18 @@ env-model:
     def test_missing_file_raises(self) -> None:
         with pytest.raises(FileNotFoundError):
             load_pricing(custom_path="/nonexistent/pricing.yaml")
+
+
+class TestPrefixMatchingPrefersLongest:
+    def test_longest_prefix_wins_over_shorter_ancestor(self) -> None:
+        from agentloom.providers.pricing import ModelPricing, calculate_cost
+
+        table = {
+            "gpt-4": ModelPricing(input_cost_per_1k=1.0, output_cost_per_1k=2.0),
+            "gpt-4o-mini": ModelPricing(input_cost_per_1k=0.01, output_cost_per_1k=0.02),
+        }
+        # `gpt-4o-mini-2025-xx` must match the longer key, not be swallowed
+        # by the short `gpt-4` entry.
+        cost = calculate_cost("gpt-4o-mini-2025-xx", 1000, 1000, pricing_table=table)
+        # 1000 tokens * $0.01/1k + 1000 * $0.02/1k = $0.03
+        assert cost == pytest.approx(0.03)

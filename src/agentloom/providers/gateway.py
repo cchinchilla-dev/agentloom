@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import logging
+import os
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-from agentloom.exceptions import CircuitOpenError, ProviderError
+import anyio
+
+from agentloom.exceptions import CircuitOpenError, ProviderError, RateLimitError
 from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.multimodal import estimate_content_tokens
-from agentloom.resilience.circuit_breaker import CircuitBreaker
+from agentloom.resilience.circuit_breaker import CircuitBreaker, CircuitState
 from agentloom.resilience.rate_limiter import RateLimiter
 
 logger = logging.getLogger("agentloom.gateway")
@@ -42,10 +46,19 @@ class ProviderGateway:
     and fallbacks are configured, tries the next provider automatically.
     """
 
-    def __init__(self) -> None:
+    # Cap for the per-model candidate cache. Workflows that template the
+    # model name (``{state.tier}-gpt-{state.version}``) or run multi-tenant
+    # produce unbounded model strings; without an LRU bound the cache grows
+    # forever. Override with ``AGENTLOOM_CANDIDATE_CACHE_MAX`` if needed.
+    _DEFAULT_CANDIDATE_CACHE_MAX = 1024
+
+    def __init__(self, candidate_cache_max: int | None = None) -> None:
         self._providers: list[ProviderEntry] = []
         self._model_mapping: dict[str, list[ProviderEntry]] = {}
-        self._candidate_cache: dict[str, list[ProviderEntry]] = {}
+        self._candidate_cache: OrderedDict[str, list[ProviderEntry]] = OrderedDict()
+        self._candidate_cache_max = candidate_cache_max or int(
+            os.environ.get("AGENTLOOM_CANDIDATE_CACHE_MAX", self._DEFAULT_CANDIDATE_CACHE_MAX)
+        )
         self._observer: Any | None = None
 
     def set_observer(self, observer: Any) -> None:
@@ -135,6 +148,14 @@ class ProviderGateway:
         errors: list[str] = []
 
         for entry in candidates:
+            # Fast-fail when the circuit is open: do NOT consume the rate
+            # limiter budget for traffic that will never reach the provider.
+            if entry.circuit_breaker._maybe_transition_to_half_open() == CircuitState.OPEN:
+                msg = f"Provider '{entry.provider.name}' circuit is open"
+                errors.append(msg)
+                logger.warning(msg)
+                continue
+
             try:
                 if entry.rate_limiter:
                     # Estimate prompt tokens from message content
@@ -152,7 +173,7 @@ class ProviderGateway:
                         **kwargs,
                     )
 
-                response = await entry.circuit_breaker.call(_call)
+                response = await entry.circuit_breaker.call(_call, exclude=(RateLimitError,))
 
                 # Consume response tokens from rate limiter budget
                 if entry.rate_limiter and response.usage.completion_tokens:
@@ -245,35 +266,38 @@ class ProviderGateway:
                     _entry: ProviderEntry = entry,
                     _outer: StreamResponse = outer_sr,
                 ) -> AsyncIterator[str]:
-                    _cb_recorded = False
+                    cancelled_exc = anyio.get_cancelled_exc_class()
                     try:
-                        # Iterate the raw provider iterator directly to avoid
-                        # double chunk accumulation (inner + outer StreamResponse).
                         raw_iter = _inner._iterator
                         if raw_iter is None:
+                            _entry.circuit_breaker.record_success()
                             return
                         async for chunk in raw_iter:
                             yield chunk
+                    except GeneratorExit:
+                        # Caller aborted via aclose() — not a provider fault.
+                        # The connection was established and producing chunks,
+                        # so record a success to release the HALF_OPEN slot.
                         _entry.circuit_breaker.record_success()
-                        _cb_recorded = True
-                        if _entry.rate_limiter and _inner.usage.completion_tokens:
-                            await _entry.rate_limiter.consume_response_tokens(
-                                _inner.usage.completion_tokens
-                            )
+                        raise
+                    except cancelled_exc:
+                        # Task-group / outer cancel scope — not a provider fault.
+                        _entry.circuit_breaker.record_success()
+                        raise
                     except Exception as exc:
                         _entry.circuit_breaker.record_failure()
-                        _cb_recorded = True
                         if self._observer:
                             hook = getattr(self._observer, "on_provider_error", None)
                             if hook:
                                 hook(_entry.provider.name, type(exc).__name__)
                         raise
+                    else:
+                        _entry.circuit_breaker.record_success()
+                        if _entry.rate_limiter and _inner.usage.completion_tokens:
+                            await _entry.rate_limiter.consume_response_tokens(
+                                _inner.usage.completion_tokens
+                            )
                     finally:
-                        # Handle early termination (GeneratorExit from aclose(),
-                        # task cancellation) — treat as failure so HALF_OPEN
-                        # call counts stay consistent.
-                        if not _cb_recorded:
-                            _entry.circuit_breaker.record_failure()
                         _outer.usage = _inner.usage
                         _outer.cost_usd = _inner.cost_usd
                         _outer.finish_reason = _inner.finish_reason
@@ -289,6 +313,19 @@ class ProviderGateway:
 
             except CircuitOpenError:
                 msg = f"Provider '{entry.provider.name}' circuit is open"
+                errors.append(msg)
+                logger.warning(msg)
+                continue
+
+            except RateLimitError as e:
+                # Throttled, not faulty. Do NOT record a breaker failure; the
+                # provider is healthy. Release the half-open slot we claimed
+                # via ``allow_request()`` so the breaker doesn't get stuck
+                # one-test-call short forever, then try the next candidate.
+                cb = entry.circuit_breaker
+                if cb.state == CircuitState.HALF_OPEN and cb._half_open_calls > 0:
+                    cb._half_open_calls -= 1
+                msg = f"Provider '{entry.provider.name}' rate-limited: {e}"
                 errors.append(msg)
                 logger.warning(msg)
                 continue
@@ -316,17 +353,26 @@ class ProviderGateway:
         )
 
     def _get_candidates(self, model: str) -> list[ProviderEntry]:
-        """Get provider candidates for a model, sorted by priority."""
+        """Get provider candidates for a model, sorted by priority.
+
+        Cached lookup: explicit ``_model_mapping`` registrations bypass the
+        cache; everything else hits the LRU-capped ``_candidate_cache``. On
+        cache hit we move the entry to the MRU end; on miss we insert and
+        evict the LRU entry if we've exceeded ``_candidate_cache_max``.
+        """
         if model in self._model_mapping:
             return self._model_mapping[model]
 
         if model in self._candidate_cache:
+            self._candidate_cache.move_to_end(model)
             return self._candidate_cache[model]
 
         candidates = [e for e in self._providers if e.provider.supports_model(model)]
         fallbacks = [e for e in self._providers if e.is_fallback and e not in candidates]
         result = candidates + fallbacks
         self._candidate_cache[model] = result
+        if len(self._candidate_cache) > self._candidate_cache_max:
+            self._candidate_cache.popitem(last=False)  # evict LRU
         return result
 
     async def close(self) -> None:

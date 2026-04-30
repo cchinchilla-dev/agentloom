@@ -348,3 +348,237 @@ class TestGatewayStreaming:
         assert resp.content == "Mock response"
         assert resp.usage.total_tokens == 30
         assert resp.cost_usd > 0
+
+
+class TestStreamCancellationDoesNotFailCircuit:
+    """A caller cancelling a stream must not be counted as a provider fault."""
+
+    async def test_stream_aclose_does_not_record_failure(self) -> None:
+        gateway = ProviderGateway()
+        provider = MockProvider()
+        gateway.register(provider, priority=0)
+
+        sr = await gateway.stream(
+            messages=[{"role": "user", "content": "one two three four five"}],
+            model="test-model",
+        )
+        # Consume one chunk then abort the underlying generator explicitly.
+        iterator = sr.__aiter__()
+        await iterator.__anext__()
+        assert sr._iterator is not None
+        await sr._iterator.aclose()
+
+        from agentloom.resilience.circuit_breaker import CircuitState
+
+        cb = gateway._providers[0].circuit_breaker
+        assert cb.state == CircuitState.CLOSED
+        assert cb.failure_count == 0
+
+
+class TestCircuitBreakerOrderingInCompleteFlow:
+    """Gateway must not consume rate-limit tokens when the circuit is open."""
+
+    async def test_circuit_open_does_not_consume_rate_limit_tokens(self) -> None:
+        from agentloom.resilience.circuit_breaker import CircuitState
+
+        gateway = ProviderGateway()
+        provider = MockProvider()
+        gateway.register(provider, priority=0, max_rpm=5, max_tpm=1000)
+        entry = gateway._providers[0]
+
+        # Force the circuit OPEN.
+        for _ in range(entry.circuit_breaker.fail_threshold):
+            entry.circuit_breaker.record_failure()
+        assert entry.circuit_breaker.state == CircuitState.OPEN
+
+        rpm_before = entry.rate_limiter._request_tokens
+        tpm_before = entry.rate_limiter._token_tokens
+
+        with pytest.raises(ProviderError):
+            await gateway.complete(
+                messages=[{"role": "user", "content": "hello"}],
+                model="test-model",
+            )
+
+        # Rate limiter must be untouched.
+        assert entry.rate_limiter._request_tokens == rpm_before
+        assert entry.rate_limiter._token_tokens == tpm_before
+
+
+class TestCandidateCacheLRU:
+    """The model→candidates cache must evict LRU entries past its bound.
+
+    Without this, dynamic model strings (templated names, multi-tenant
+    naming) accumulate entries forever — each lookup eventually walks
+    the full table.
+    """
+
+    def test_candidate_cache_evicts_lru(self) -> None:
+        gateway = ProviderGateway(candidate_cache_max=3)
+        provider = MockProvider()
+        gateway.register(provider, priority=0)
+
+        # Fill with 3 entries.
+        for i in range(3):
+            gateway._get_candidates(f"model-{i}")
+        assert list(gateway._candidate_cache.keys()) == [
+            "model-0",
+            "model-1",
+            "model-2",
+        ]
+
+        # Touch model-0 → it becomes MRU.
+        gateway._get_candidates("model-0")
+        assert list(gateway._candidate_cache.keys()) == [
+            "model-1",
+            "model-2",
+            "model-0",
+        ]
+
+        # Adding model-3 evicts model-1 (oldest).
+        gateway._get_candidates("model-3")
+        assert list(gateway._candidate_cache.keys()) == [
+            "model-2",
+            "model-0",
+            "model-3",
+        ]
+
+    def test_candidate_cache_max_from_env(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setenv("AGENTLOOM_CANDIDATE_CACHE_MAX", "5")
+        gateway = ProviderGateway()
+        assert gateway._candidate_cache_max == 5
+
+    def test_candidate_cache_default_bound(self) -> None:
+        gateway = ProviderGateway()
+        # Default tracks the class constant — change both together.
+        assert gateway._candidate_cache_max == ProviderGateway._DEFAULT_CANDIDATE_CACHE_MAX
+
+    def test_explicit_model_mapping_bypasses_cache(self) -> None:
+        gateway = ProviderGateway(candidate_cache_max=2)
+        provider = MockProvider()
+        gateway.register(provider, priority=0, models=["explicit-model"])
+
+        # Explicit mapping must not consume cache slots.
+        for _ in range(5):
+            gateway._get_candidates("explicit-model")
+        assert "explicit-model" not in gateway._candidate_cache
+
+
+class TestObserverWiring:
+    """Observers attached to the gateway must receive circuit-breaker state changes."""
+
+    async def test_register_after_set_observer_wires_callback(self) -> None:
+        gateway = ProviderGateway()
+        events: list[tuple[str, str, str]] = []
+
+        class Observer:
+            def on_circuit_state_change(self, name: str, old: str, new: str) -> None:
+                events.append((name, old, new))
+
+        gateway.set_observer(Observer())
+
+        # Register provider AFTER set_observer — must wire callback at register time.
+        failing = FailingProvider(error_msg="x")
+        gateway.register(failing, priority=0, circuit_fail_threshold=1)
+
+        with pytest.raises(ProviderError):
+            await gateway.complete(messages=[{"role": "user", "content": "hi"}], model="m")
+
+        # The single failure with threshold=1 trips the breaker → state change emitted.
+        assert any(new == "open" for _, _, new in events)
+
+    def test_observer_without_callback_attribute_does_not_crash(self) -> None:
+        """A bare object lacking ``on_circuit_state_change`` must not break wiring."""
+        gateway = ProviderGateway()
+        gateway.set_observer(object())  # no hook attribute
+        provider = MockProvider()
+        gateway.register(provider, priority=0)
+
+        # Trigger _set_state by transitioning manually — must not raise.
+        provider_entry = gateway._providers[0]
+        provider_entry.circuit_breaker._set_state(
+            provider_entry.circuit_breaker._state.__class__.OPEN
+        )
+
+
+class TestGatewayStreamErrorPaths:
+    """Setup/error branches in ``ProviderGateway.stream()``."""
+
+    async def test_stream_rate_limit_releases_half_open_slot(self) -> None:
+        """When ``provider.stream()`` raises RateLimitError while the breaker
+        is HALF_OPEN, the gateway must release the slot it just claimed via
+        ``allow_request()`` so future calls can proceed."""
+        from agentloom.exceptions import RateLimitError
+        from agentloom.resilience.circuit_breaker import CircuitState
+
+        class ThrottledProvider(BaseProvider):
+            name = "throttled"
+
+            async def complete(self, *a, **kw):  # type: ignore[no-untyped-def]
+                raise NotImplementedError
+
+            async def stream(self, *a, **kw):  # type: ignore[no-untyped-def]
+                raise RateLimitError("throttled", retry_after_s=1.0)
+
+            def supports_model(self, model: str) -> bool:
+                return True
+
+        gateway = ProviderGateway()
+        gateway.register(
+            ThrottledProvider(),
+            priority=0,
+            circuit_fail_threshold=1,
+            circuit_reset_timeout=0.01,
+        )
+        cb = gateway._providers[0].circuit_breaker
+
+        # Force the breaker into HALF_OPEN so allow_request claims a slot.
+        import time as _time
+
+        cb._set_state(CircuitState.OPEN)
+        cb._last_failure_time = _time.monotonic() - 1.0  # past reset_timeout
+
+        with pytest.raises(ProviderError, match="All providers failed"):
+            await gateway.stream(messages=[{"role": "user", "content": "hi"}], model="any-model")
+
+        # Slot released — counter back to 0.
+        assert cb._half_open_calls == 0
+
+    async def test_stream_setup_failure_records_breaker_failure(self) -> None:
+        """Setup failures raised by ``provider.stream()`` itself (not the
+        iterator) must feed back to the circuit breaker."""
+
+        class SetupFailProvider(BaseProvider):
+            name = "setup_fail"
+
+            async def complete(self, *a, **kw):  # type: ignore[no-untyped-def]
+                raise NotImplementedError
+
+            async def stream(self, *a, **kw):  # type: ignore[no-untyped-def]
+                raise ProviderError("setup_fail", "connection refused")
+
+            def supports_model(self, model: str) -> bool:
+                return True
+
+        gateway = ProviderGateway()
+        gateway.register(SetupFailProvider(), priority=0, circuit_fail_threshold=3)
+
+        with pytest.raises(ProviderError, match="All providers failed"):
+            await gateway.stream(messages=[{"role": "user", "content": "hi"}], model="any-model")
+
+        cb = gateway._providers[0].circuit_breaker
+        assert cb._failure_count >= 1
+
+    async def test_stream_iterator_failure_records_breaker_failure(self) -> None:
+        """An exception raised by the iterator (after stream() returned)
+        must invoke ``record_failure()`` and surface to the caller."""
+        gateway = ProviderGateway()
+        gateway.register(MidStreamFailProvider(), priority=0, circuit_fail_threshold=2)
+
+        cb = gateway._providers[0].circuit_breaker
+        sr = await gateway.stream(messages=[{"role": "user", "content": "hi"}], model="any-model")
+        with pytest.raises(ConnectionError):
+            async for _ in sr:
+                pass
+
+        assert cb._failure_count == 1

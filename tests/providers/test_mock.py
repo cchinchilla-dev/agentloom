@@ -22,7 +22,7 @@ def responses_file(tmp_path):
             "latency_ms": 20.0,
             "finish_reason": "stop",
         },
-        prompt_hash([{"role": "user", "content": "hash me"}]): {
+        prompt_hash([{"role": "user", "content": "hash me"}], "gpt-4o-mini"): {
             "content": "by hash",
             "model": "gpt-4o-mini",
             "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
@@ -54,6 +54,31 @@ async def test_matches_by_prompt_hash(responses_file):
         messages=[{"role": "user", "content": "hash me"}], model="gpt-4o-mini"
     )
     assert r.content == "by hash"
+
+
+async def test_prompt_hash_differentiates_model():
+    # Same messages, different model — must produce different keys so that
+    # recordings cannot collide across models.
+    msgs = [{"role": "user", "content": "hello"}]
+    assert prompt_hash(msgs, "gpt-4o-mini") != prompt_hash(msgs, "gpt-4o")
+
+
+async def test_prompt_hash_differentiates_temperature():
+    msgs = [{"role": "user", "content": "hello"}]
+    assert prompt_hash(msgs, "m", temperature=0.1) != prompt_hash(msgs, "m", temperature=0.9)
+
+
+async def test_prompt_hash_differentiates_max_tokens():
+    msgs = [{"role": "user", "content": "hello"}]
+    assert prompt_hash(msgs, "m", max_tokens=100) != prompt_hash(msgs, "m", max_tokens=500)
+
+
+async def test_prompt_hash_stable_across_invocations():
+    # Pydantic-aware serialization: equal inputs hash equal regardless of
+    # instance identity or dict ordering.
+    msgs_1 = [{"role": "user", "content": "hello"}]
+    msgs_2 = [{"content": "hello", "role": "user"}]
+    assert prompt_hash(msgs_1, "m", 0.5, 100) == prompt_hash(msgs_2, "m", 0.5, 100)
 
 
 async def test_default_response_when_no_match(tmp_path):
@@ -109,7 +134,8 @@ async def test_observer_receives_prompt_hash_and_default(responses_file):
             calls.append((workflow_name, step_id, matched_by))
 
     provider = MockProvider(responses_file=responses_file, observer=Obs(), workflow_name="wf")
-    await provider.complete(messages=[{"role": "user", "content": "hash me"}], model="m")
+    # Matches by prompt_hash — the fixture keys on (messages, "gpt-4o-mini").
+    await provider.complete(messages=[{"role": "user", "content": "hash me"}], model="gpt-4o-mini")
     await provider.complete(messages=[{"role": "user", "content": "nothing-matches"}], model="m")
     assert [c[2] for c in calls] == ["prompt_hash", "default"]
 
@@ -119,3 +145,28 @@ def test_rejects_non_object_responses_file(tmp_path):
     path.write_text("[1, 2, 3]")
     with pytest.raises(ValueError, match="must contain a JSON object"):
         MockProvider(responses_file=path)
+
+
+def test_canonical_default_uses_model_dump_for_pydantic_objects() -> None:
+    """`_canonical_default` should call ``model_dump()`` on Pydantic instances
+    so the prompt hash depends on the public field shape, not the repr."""
+    from pydantic import BaseModel
+
+    from agentloom.providers.mock import _canonical_default
+
+    class Cfg(BaseModel):
+        x: int
+        y: str
+
+    out = _canonical_default(Cfg(x=1, y="hello"))
+    assert out == {"x": 1, "y": "hello"}
+
+
+def test_canonical_default_falls_back_to_str_for_plain_objects() -> None:
+    from agentloom.providers.mock import _canonical_default
+
+    class Plain:
+        def __repr__(self) -> str:
+            return "Plain(123)"
+
+    assert _canonical_default(Plain()) == "Plain(123)"

@@ -12,6 +12,7 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
+from agentloom.providers._http import raise_for_status, validate_extra_kwargs
 from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.multimodal import (
     AudioBlock,
@@ -23,6 +24,18 @@ from agentloom.providers.multimodal import (
 from agentloom.providers.pricing import calculate_cost
 
 logger = logging.getLogger("agentloom.providers.anthropic")
+
+_ANTHROPIC_EXTRA_PAYLOAD_KEYS = frozenset(
+    {
+        "top_p",
+        "top_k",
+        "stop_sequences",
+        "metadata",
+        "tools",
+        "tool_choice",
+        "thinking",
+    }
+)
 
 
 class AnthropicProvider(BaseProvider):
@@ -120,12 +133,16 @@ class AnthropicProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
+        extras = validate_extra_kwargs(
+            "anthropic", "complete", kwargs, _ANTHROPIC_EXTRA_PAYLOAD_KEYS
+        )
         system_prompt, filtered_messages = self._format_messages(messages)
 
         payload: dict[str, Any] = {
             "model": model,
             "messages": filtered_messages,
             "max_tokens": max_tokens or 4096,
+            **extras,
         }
         if system_prompt:
             payload["system"] = system_prompt
@@ -137,12 +154,7 @@ class AnthropicProvider(BaseProvider):
         except httpx.HTTPError as e:
             raise ProviderError("anthropic", f"HTTP error: {e}") from e
 
-        if response.status_code != 200:
-            raise ProviderError(
-                "anthropic",
-                f"API error {response.status_code}: {response.text}",
-                status_code=response.status_code,
-            )
+        raise_for_status("anthropic", response)
 
         data = response.json()
 
@@ -178,6 +190,7 @@ class AnthropicProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
+        extras = validate_extra_kwargs("anthropic", "stream", kwargs, _ANTHROPIC_EXTRA_PAYLOAD_KEYS)
         system_prompt, filtered_messages = self._format_messages(messages)
 
         payload: dict[str, Any] = {
@@ -185,6 +198,7 @@ class AnthropicProvider(BaseProvider):
             "messages": filtered_messages,
             "max_tokens": max_tokens or 4096,
             "stream": True,
+            **extras,
         }
         if system_prompt:
             payload["system"] = system_prompt
@@ -200,11 +214,7 @@ class AnthropicProvider(BaseProvider):
             async with self._client.stream("POST", "/messages", json=payload) as resp:
                 if resp.status_code != 200:
                     await resp.aread()
-                    raise ProviderError(
-                        "anthropic",
-                        f"API error {resp.status_code}: {resp.text}",
-                        status_code=resp.status_code,
-                    )
+                    raise_for_status("anthropic", resp)
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data: "):

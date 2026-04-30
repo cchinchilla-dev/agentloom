@@ -12,6 +12,7 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
+from agentloom.providers._http import raise_for_status, validate_extra_kwargs
 from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.multimodal import (
     AudioBlock,
@@ -23,6 +24,26 @@ from agentloom.providers.multimodal import (
 from agentloom.providers.pricing import calculate_cost
 
 logger = logging.getLogger("agentloom.providers.openai")
+
+# Keys forwarded to the OpenAI HTTP payload in addition to model/messages/
+# temperature/max_tokens. Unknown kwargs raise TypeError so silent parameter
+# drops become loud failures.
+_OPENAI_EXTRA_PAYLOAD_KEYS = frozenset(
+    {
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty",
+        "stop",
+        "seed",
+        "response_format",
+        "logit_bias",
+        "n",
+        "user",
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
+    }
+)
 
 
 class OpenAIProvider(BaseProvider):
@@ -101,9 +122,11 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
+        extras = validate_extra_kwargs("openai", "complete", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
+            **extras,
         }
         if temperature is not None:
             payload["temperature"] = temperature
@@ -115,12 +138,7 @@ class OpenAIProvider(BaseProvider):
         except httpx.HTTPError as e:
             raise ProviderError("openai", f"HTTP error: {e}") from e
 
-        if response.status_code != 200:
-            raise ProviderError(
-                "openai",
-                f"API error {response.status_code}: {response.text}",
-                status_code=response.status_code,
-            )
+        raise_for_status("openai", response)
 
         data = response.json()
         content = data["choices"][0]["message"]["content"]
@@ -150,11 +168,13 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
+        extras = validate_extra_kwargs("openai", "stream", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
             "stream": True,
             "stream_options": {"include_usage": True},
+            **extras,
         }
         if temperature is not None:
             payload["temperature"] = temperature
@@ -167,11 +187,7 @@ class OpenAIProvider(BaseProvider):
             async with self._client.stream("POST", "/chat/completions", json=payload) as resp:
                 if resp.status_code != 200:
                     await resp.aread()
-                    raise ProviderError(
-                        "openai",
-                        f"API error {resp.status_code}: {resp.text}",
-                        status_code=resp.status_code,
-                    )
+                    raise_for_status("openai", resp)
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data: "):
@@ -207,9 +223,25 @@ class OpenAIProvider(BaseProvider):
         sr._set_iterator(_generate())
         return sr
 
+    # Prefixes this adapter is known to handle. Checked longest-first so a
+    # more specific prefix wins over a generic one — avoids the old ``o3``
+    # prefix also claiming ``o3-mini`` when both are registered upstream.
+    _SUPPORTED_PREFIXES: tuple[str, ...] = (
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-4",
+        "gpt-3.5",
+        "o4-",
+        "o3-",
+        "o1-",
+        "gpt-",
+        "o4",
+        "o3",
+        "o1",
+    )
+
     def supports_model(self, model: str) -> bool:
-        # HACK: prefix matching means "o3" matches "o3-mini" too — good enough for now
-        return model.startswith(("gpt-", "o3", "o4"))
+        return any(model.startswith(p) for p in self._SUPPORTED_PREFIXES)
 
     async def close(self) -> None:
         await self._client.aclose()

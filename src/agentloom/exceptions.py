@@ -34,10 +34,17 @@ class CircuitOpenError(ProviderError):
 
 
 class RateLimitError(ProviderError):
-    """Rate limit exceeded for this provider."""
+    """Rate limit exceeded for this provider.
 
-    def __init__(self, provider: str) -> None:
-        super().__init__(provider, "Rate limit exceeded")
+    Distinct from generic ``ProviderError`` so the gateway can back off the
+    rate-limiter bucket instead of charging the failure against the circuit
+    breaker (a throttled provider is healthy, just overused).
+    """
+
+    def __init__(self, provider: str, retry_after_s: float | None = None) -> None:
+        self.retry_after_s = retry_after_s
+        suffix = f" (retry_after={retry_after_s}s)" if retry_after_s is not None else ""
+        super().__init__(provider, f"Rate limit exceeded{suffix}", status_code=429)
 
 
 class BudgetExceededError(AgentLoomError):
