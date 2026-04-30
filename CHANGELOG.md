@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- Recording file format bumped to v2 with a versioned envelope (#107). JSON files written by `RecordingProvider` (and consumed by `MockProvider` / `agentloom replay`) now carry a top-level `_version: 2` key alongside the captured entries (which sit at the top level themselves, keyed by `step_id` or request hash). The reader treats any top-level key starting with `_` as metadata and ignores it, so v1 recordings (no underscore-prefixed keys) continue to replay unchanged. Streaming responses are now keyed under the same hash as `complete()` calls and persist the joined chunk content in the same entry shape (`content`, `usage`, `cost_usd`, `latency_ms`, `finish_reason`), so a recording captures both modes uniformly.
+
 ### Fixed
 
 - Harden gateway resilience: stream cancellation no longer trips the circuit breaker, circuit-breaker check now precedes the rate limiter in `complete()`, retry backoff jitter is centralized in `_jittered_backoff`, `RateLimiter` validates `max_rpm >= 1` / `max_tpm >= 1` and fails fast when `token_count > max_tpm`, and `CircuitBreaker.state` is a pure read with the half-open transition isolated in `_maybe_transition_to_half_open()` (#106).
+- Record/replay correctness — `anyio.Lock` around `_recorded` writes plus per-call flush, streaming captures persist chunks under the same key as `complete()`, `prompt_hash` now includes model/temperature/max_tokens/extra and uses `model_dump()` for Pydantic-aware hashing (#107).
 
 ### Security
 

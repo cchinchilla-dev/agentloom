@@ -26,6 +26,7 @@ The captured format is directly loadable by `MockProvider`:
 
 ```json
 {
+  "_version": 2,
   "summarize": {
     "content": "The article argues that...",
     "model": "claude-sonnet-4-20250514",
@@ -37,7 +38,10 @@ The captured format is directly loadable by `MockProvider`:
 }
 ```
 
-Keys are the step's `step_id` when available, or the SHA-256 hash of the serialized messages otherwise.
+Entries sit at the top level alongside the `_version` metadata key, keyed by the step's `step_id` when available, or by the request hash (SHA-256 of model + temperature + max_tokens + extra + serialized messages) otherwise. Streaming responses are keyed under the same hash as the equivalent `complete()` call and persist the joined chunk content in the same entry shape, so a recording captures both modes uniformly.
+
+!!! info "v1 ↔ v2 compatibility"
+    The reader treats any top-level key starting with `_` as metadata. Recordings written by 0.4.x (no underscore-prefixed keys) continue to replay against 0.5.0+ unchanged. New recordings are always written with `_version: 2`.
 
 ## Replaying a run
 

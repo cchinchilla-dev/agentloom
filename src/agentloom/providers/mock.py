@@ -27,10 +27,42 @@ class MockObserver(Protocol):
     def on_mock_replay(self, workflow_name: str, step_id: str, matched_by: str) -> None: ...
 
 
-def prompt_hash(messages: list[dict[str, Any]]) -> str:
-    """Stable SHA-256 hash of a messages list for response keying."""
-    payload = json.dumps(messages, sort_keys=True, default=str).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+def _canonical_default(obj: Any) -> Any:
+    """JSON ``default`` that handles Pydantic models stably across versions.
+
+    ``json.dumps(..., default=str)`` serialized Pydantic instances via ``repr``
+    which changes across minor versions and breaks recorded fixtures on upgrade.
+    Prefer ``model_dump()`` when available so the canonical payload depends on
+    the model's public field shape only.
+    """
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    return str(obj)
+
+
+def prompt_hash(
+    messages: list[dict[str, Any]],
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    extra: dict[str, Any] | None = None,
+) -> str:
+    """Stable SHA-256 hash of a completion request for response keying.
+
+    The hash covers every field that can change the model's response:
+    messages, model, temperature, max_tokens, and an optional ``extra`` bag
+    for forwarded kwargs (e.g. ``response_format``). Previous versions keyed
+    on messages only, which caused cross-model collisions.
+    """
+    payload = {
+        "messages": messages,
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "extra": extra or {},
+    }
+    serialized = json.dumps(payload, sort_keys=True, default=_canonical_default).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
 
 
 class MockProvider(BaseProvider):
@@ -84,10 +116,18 @@ class MockProvider(BaseProvider):
                 raise ValueError(f"responses_file {self.responses_file} must contain a JSON object")
             self._responses = raw
 
-    def _lookup(self, step_id: str | None, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _lookup(
+        self,
+        step_id: str | None,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float | None,
+        max_tokens: int | None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         if step_id and step_id in self._responses:
             return self._responses[step_id]
-        key = prompt_hash(messages)
+        key = prompt_hash(messages, model, temperature, max_tokens, extra)
         return self._responses.get(key)
 
     async def _sleep(self, recorded_ms: float | None) -> None:
@@ -110,7 +150,8 @@ class MockProvider(BaseProvider):
         **kwargs: Any,
     ) -> ProviderResponse:
         step_id = kwargs.get("step_id")
-        entry = self._lookup(step_id, messages)
+        extra_kwargs = {k: v for k, v in kwargs.items() if k not in ("step_id",)}
+        entry = self._lookup(step_id, messages, model, temperature, max_tokens, extra_kwargs)
         if entry is None:
             matched_by = "default"
         elif step_id and step_id in self._responses:
