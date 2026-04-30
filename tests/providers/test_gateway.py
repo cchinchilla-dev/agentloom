@@ -462,3 +462,40 @@ class TestCandidateCacheLRU:
         for _ in range(5):
             gateway._get_candidates("explicit-model")
         assert "explicit-model" not in gateway._candidate_cache
+
+
+class TestObserverWiring:
+    """Observers attached to the gateway must receive circuit-breaker state changes."""
+
+    async def test_register_after_set_observer_wires_callback(self) -> None:
+        gateway = ProviderGateway()
+        events: list[tuple[str, str, str]] = []
+
+        class Observer:
+            def on_circuit_state_change(self, name: str, old: str, new: str) -> None:
+                events.append((name, old, new))
+
+        gateway.set_observer(Observer())
+
+        # Register provider AFTER set_observer — must wire callback at register time.
+        failing = FailingProvider(error_msg="x")
+        gateway.register(failing, priority=0, circuit_fail_threshold=1)
+
+        with pytest.raises(ProviderError):
+            await gateway.complete(messages=[{"role": "user", "content": "hi"}], model="m")
+
+        # The single failure with threshold=1 trips the breaker → state change emitted.
+        assert any(new == "open" for _, _, new in events)
+
+    def test_observer_without_callback_attribute_does_not_crash(self) -> None:
+        """A bare object lacking ``on_circuit_state_change`` must not break wiring."""
+        gateway = ProviderGateway()
+        gateway.set_observer(object())  # no hook attribute
+        provider = MockProvider()
+        gateway.register(provider, priority=0)
+
+        # Trigger _set_state by transitioning manually — must not raise.
+        provider_entry = gateway._providers[0]
+        provider_entry.circuit_breaker._set_state(
+            provider_entry.circuit_breaker._state.__class__.OPEN
+        )

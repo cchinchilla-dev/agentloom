@@ -270,3 +270,33 @@ async def test_concurrent_recording_does_not_raise_dict_iteration_error(tmp_path
     for prefix in ("a", "b", "c"):
         for i in range(20):
             assert f"{prefix}-{i}" in data
+
+
+async def test_stream_with_none_iterator_returns_no_chunks(tmp_path):
+    """If the wrapped provider's StreamResponse has a ``None`` iterator,
+    the recorder's tap returns early without crashing."""
+    from agentloom.providers.base import BaseProvider, StreamResponse
+    from agentloom.providers.recorder import RecordingProvider
+
+    class NullStreamProvider(BaseProvider):
+        name = "null-stream"
+
+        async def complete(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise NotImplementedError
+
+        async def stream(self, messages, model, **kwargs):  # type: ignore[no-untyped-def]
+            sr = StreamResponse(model=model, provider=self.name)
+            # _iterator stays None — the recorder must handle it gracefully.
+            return sr
+
+        def supports_model(self, model: str) -> bool:
+            return True
+
+    recorder = RecordingProvider(NullStreamProvider(), tmp_path / "rec.json")
+    sr = await recorder.stream(
+        messages=[{"role": "user", "content": "x"}],
+        model="m",
+    )
+    chunks = [c async for c in sr]
+    assert chunks == []
+    await recorder.close()

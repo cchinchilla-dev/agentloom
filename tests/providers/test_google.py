@@ -221,3 +221,38 @@ class TestGoogleProvider:
         assert p.supports_model("gemini-2.5-flash")
         assert p.supports_model("gemini-3.1-pro")
         assert not p.supports_model("gpt-4o-mini")
+
+    @respx.mock
+    async def test_generation_config_built_from_temperature_max_tokens_extras(self) -> None:
+        """Verify temperature, maxOutputTokens, and allowlisted extras (top_p,
+        seed, response_mime_type) all land in `generationConfig`, and tools
+        plus safety_settings sit at the top level."""
+        captured: dict[str, object] = {}
+
+        def _capture(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json=MOCK_RESPONSE)
+
+        respx.post(url__regex=r".*/models/gemini.*").mock(side_effect=_capture)
+        provider = GoogleProvider(api_key="k")
+        await provider.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gemini-2.5-flash",
+            temperature=0.7,
+            max_tokens=128,
+            top_p=0.9,
+            seed=42,
+            response_mime_type="application/json",
+            tools=[{"function_declarations": []}],
+            safety_settings=[{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}],
+        )
+        gc = captured["generationConfig"]
+        assert gc["temperature"] == 0.7
+        assert gc["maxOutputTokens"] == 128
+        assert gc["top_p"] == 0.9
+        assert gc["seed"] == 42
+        assert gc["response_mime_type"] == "application/json"
+        assert "tools" in captured
+        assert "safety_settings" in captured

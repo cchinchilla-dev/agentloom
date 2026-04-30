@@ -224,3 +224,36 @@ class TestOllamaBaseURLResolution:
         monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
         p = OllamaProvider()
         assert p.base_url == "http://localhost:11434"
+
+    @respx.mock
+    async def test_options_built_from_temperature_max_tokens_extras(self) -> None:
+        """Verify temperature, max_tokens (→num_predict), and allowlisted
+        extras (top_p, seed) all land in the request ``options`` block, while
+        ``format`` and ``tools`` sit at the top level."""
+        captured: dict[str, object] = {}
+
+        def _capture(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json=MOCK_RESPONSE)
+
+        respx.post("http://localhost:11434/api/chat").mock(side_effect=_capture)
+        provider = OllamaProvider()
+        await provider.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="phi4",
+            temperature=0.5,
+            max_tokens=64,
+            top_p=0.9,
+            seed=7,
+            format="json",
+            tools=[{"name": "calc"}],
+        )
+        opts = captured["options"]
+        assert opts["temperature"] == 0.5
+        assert opts["num_predict"] == 64
+        assert opts["top_p"] == 0.9
+        assert opts["seed"] == 7
+        assert captured["format"] == "json"
+        assert captured["tools"] == [{"name": "calc"}]

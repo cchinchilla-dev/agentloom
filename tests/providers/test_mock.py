@@ -145,3 +145,28 @@ def test_rejects_non_object_responses_file(tmp_path):
     path.write_text("[1, 2, 3]")
     with pytest.raises(ValueError, match="must contain a JSON object"):
         MockProvider(responses_file=path)
+
+
+def test_canonical_default_uses_model_dump_for_pydantic_objects() -> None:
+    """`_canonical_default` should call ``model_dump()`` on Pydantic instances
+    so the prompt hash depends on the public field shape, not the repr."""
+    from pydantic import BaseModel
+
+    from agentloom.providers.mock import _canonical_default
+
+    class Cfg(BaseModel):
+        x: int
+        y: str
+
+    out = _canonical_default(Cfg(x=1, y="hello"))
+    assert out == {"x": 1, "y": "hello"}
+
+
+def test_canonical_default_falls_back_to_str_for_plain_objects() -> None:
+    from agentloom.providers.mock import _canonical_default
+
+    class Plain:
+        def __repr__(self) -> str:
+            return "Plain(123)"
+
+    assert _canonical_default(Plain()) == "Plain(123)"
