@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import pytest
 
+from agentloom.core.models import Condition, StepDefinition, StepType
+from agentloom.core.state import StateManager
 from agentloom.exceptions import SecurityError
-from agentloom.steps.router import evaluate_expression
+from agentloom.steps.base import StepContext
+from agentloom.steps.router import RouterStep, evaluate_expression
 
 
 class TestRejectsDunderAttributeAccess:
@@ -94,6 +97,11 @@ class TestRejectsClassInstantiationViaAttributeCall:
         with pytest.raises(SecurityError):
             evaluate_expression("isinstance(x, cls=int)", {"x": 1})
 
+    def test_rejects_starred_arguments(self) -> None:
+        # `*args` unpacking widens the grammar with no legitimate router use.
+        with pytest.raises(SecurityError):
+            evaluate_expression("max(*x)", {"x": [1, 2]})
+
 
 class TestAcceptsDocumentedGrammar:
     """Positive cases that must keep working after the sandbox tightening."""
@@ -175,3 +183,28 @@ class TestGHSAcm37mMv4j972vPayloads:
         )
         with pytest.raises(SecurityError):
             evaluate_expression(expr, {})
+
+
+class TestRouterStepPropagatesSecurityError:
+    """`RouterStep.execute()` must surface SecurityError unchanged.
+
+    Wrapping it in a generic `StepError` would hide that the input itself
+    was an attack — the caller (engine, observer, audit log) needs to see
+    the exact exception type.
+    """
+
+    async def test_propagates_security_error_from_condition(self) -> None:
+        step = RouterStep()
+        context = StepContext(
+            step_definition=StepDefinition(
+                id="route",
+                type=StepType.ROUTER,
+                conditions=[
+                    Condition(expression="x.__class__", target="ignored"),
+                ],
+                default="fallback",
+            ),
+            state_manager=StateManager(initial_state={"x": "hello"}),
+        )
+        with pytest.raises(SecurityError):
+            await step.execute(context)

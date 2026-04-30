@@ -16,7 +16,7 @@ from agentloom.tools.builtins import (
     HttpRequestTool,
     ShellCommandTool,
 )
-from agentloom.tools.sandbox import ToolSandbox
+from agentloom.tools.sandbox import ToolSandbox, _looks_like_path
 
 
 class TestToolSandboxDisabled:
@@ -546,3 +546,26 @@ steps:
         sandbox.validate_write_size(512)
         with pytest.raises(SandboxViolationError):
             sandbox.validate_write_size(2048)
+
+
+class TestLooksLikePath:
+    """Edge cases of the path-shape heuristic used by argument validation."""
+
+    def test_empty_token_is_not_a_path(self) -> None:
+        assert _looks_like_path("") is False
+
+    def test_flag_token_is_not_a_path(self) -> None:
+        assert _looks_like_path("-n") is False
+        assert _looks_like_path("--flag") is False
+
+    def test_bare_identifier_is_not_a_path(self) -> None:
+        assert _looks_like_path("hello") is False
+
+    def test_dot_and_dotdot_are_paths(self) -> None:
+        assert _looks_like_path(".") is True
+        assert _looks_like_path("..") is True
+
+    def test_tokens_with_slash_are_paths(self) -> None:
+        assert _looks_like_path("foo/bar") is True
+        assert _looks_like_path("/abs/path") is True
+        assert _looks_like_path("./rel") is True
