@@ -82,7 +82,7 @@ class ShellCommandTool(BaseTool):
         cwd = kwargs.get("cwd", ".")
 
         self._sandbox.validate_path(cwd, tool_name="shell_command")
-        self._sandbox.validate_command(command)
+        self._sandbox.validate_command(command, cwd=cwd)
 
         try:
             result = await anyio.run_process(

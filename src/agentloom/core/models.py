@@ -120,7 +120,9 @@ class SandboxConfig(BaseModel):
     writable_paths: list[str] = Field(default_factory=list)
     allow_network: bool = True
     allowed_domains: list[str] = Field(default_factory=list)
+    allowed_schemes: list[str] = Field(default_factory=lambda: ["http", "https"])
     max_write_bytes: int | None = None
+    danger_opt_in: list[str] = Field(default_factory=list)
 
 
 class WorkflowConfig(BaseModel):

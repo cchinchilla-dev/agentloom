@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from agentloom.exceptions import SecurityError
 from agentloom.steps.router import evaluate_expression
 
 
@@ -119,36 +120,35 @@ class TestSafeEvalRestrictions:
     """Test that unsafe operations are rejected."""
 
     def test_import_not_allowed(self) -> None:
-        with pytest.raises(ValueError, match="not allowed"):
+        with pytest.raises(SecurityError, match="not allowed"):
             evaluate_expression("__import__('os')", {})
 
     def test_exec_not_allowed(self) -> None:
-        with pytest.raises(ValueError, match="not allowed"):
+        with pytest.raises(SecurityError, match="not allowed"):
             evaluate_expression("exec('print(1)')", {})
 
     def test_eval_not_allowed(self) -> None:
-        with pytest.raises(ValueError, match="not allowed"):
+        with pytest.raises(SecurityError, match="not allowed"):
             evaluate_expression("eval('1+1')", {})
 
     def test_open_not_allowed(self) -> None:
-        with pytest.raises(ValueError, match="not allowed"):
+        with pytest.raises(SecurityError, match="not allowed"):
             evaluate_expression("open('/etc/passwd')", {})
 
     def test_lambda_not_allowed(self) -> None:
-        with pytest.raises(ValueError, match="Only named function calls"):
+        with pytest.raises(SecurityError):
             evaluate_expression("(lambda: 1)()", {})
 
     def test_comprehension_not_allowed(self) -> None:
-        with pytest.raises(ValueError, match="Disallowed"):
+        with pytest.raises(SecurityError, match="Disallowed"):
             evaluate_expression("[x for x in range(10)]", {})
 
     def test_syntax_error_raises(self) -> None:
         with pytest.raises(ValueError, match="Invalid expression syntax"):
             evaluate_expression("if True: pass", {})
 
-    def test_dunder_access_builtins_blocked(self) -> None:
-        """Ensure that __builtins__ is overridden to an empty dict."""
-        # __builtins__ is set to {} in safe_globals, so accessing it returns
-        # an empty dict rather than the real builtins module.
-        result = evaluate_expression("__builtins__", {})
-        assert result == {}
+    def test_dunder_builtins_reference_blocked(self) -> None:
+        # Any reference to a dunder identifier is rejected at validation
+        # time, even before evaluation would hit the empty __builtins__.
+        with pytest.raises(SecurityError):
+            evaluate_expression("__builtins__", {})
