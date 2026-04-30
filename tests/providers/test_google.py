@@ -251,8 +251,10 @@ class TestGoogleProvider:
         gc = captured["generationConfig"]
         assert gc["temperature"] == 0.7
         assert gc["maxOutputTokens"] == 128
-        assert gc["top_p"] == 0.9
+        # Gemini wire format is camelCase; the adapter translates from the
+        # snake_case public API to the right field names.
+        assert gc["topP"] == 0.9
         assert gc["seed"] == 42
-        assert gc["response_mime_type"] == "application/json"
+        assert gc["responseMimeType"] == "application/json"
         assert "tools" in captured
-        assert "safety_settings" in captured
+        assert "safetySettings" in captured

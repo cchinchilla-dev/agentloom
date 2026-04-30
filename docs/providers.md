@@ -65,7 +65,7 @@ gateway.register(
 )
 ```
 
-`max_rpm` and `max_tpm` must be `>= 1`; the limiter rejects zero/negative bounds at registration. A request whose estimated `token_count` exceeds `max_tpm` fails fast with `RateLimitError` instead of blocking forever on a bucket that can never refill that high.
+`max_rpm` and `max_tpm` must be `>= 1`; the limiter rejects zero/negative bounds at registration with `ValueError`. A request whose estimated `token_count` exceeds `max_tpm` also raises `ValueError` instead of blocking forever on a bucket that can never refill that high — this is a local precondition violation, not a `RateLimitError` (which is reserved for HTTP 429 responses from the provider).
 
 ## HTTP errors
 
@@ -73,7 +73,7 @@ All provider adapters normalize remote errors to a common taxonomy:
 
 | HTTP status | Exception | Notes |
 |-------------|-----------|-------|
-| `429 Too Many Requests` | `RateLimitError` | `Retry-After` header (seconds or HTTP-date) is parsed and exposed on the exception |
+| `429 Too Many Requests` | `RateLimitError` | Numeric `Retry-After` (seconds) is parsed and exposed on the exception. HTTP-date form is not supported — providers we talk to use integer seconds. |
 | `5xx` | `ProviderError` | Counts toward the circuit breaker |
 | network / timeout | `ProviderError` | Counts toward the circuit breaker |
 

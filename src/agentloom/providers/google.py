@@ -29,6 +29,10 @@ logger = logging.getLogger("agentloom.providers.google")
 # rejected so silent drops surface early. ``tools`` is top-level on Google's
 # Generative Language API, not inside generationConfig — keep the two sets
 # separate.
+#
+# We accept snake_case at the public API surface (consistent with the other
+# adapters) and translate to the camelCase shape Gemini's REST endpoint
+# expects when serializing into the request body.
 _GOOGLE_GEN_CONFIG_KEYS = frozenset(
     {
         "top_p",
@@ -44,6 +48,25 @@ _GOOGLE_GEN_CONFIG_KEYS = frozenset(
 )
 _GOOGLE_TOPLEVEL_KEYS = frozenset({"tools", "tool_config", "safety_settings"})
 _GOOGLE_EXTRA_PAYLOAD_KEYS = _GOOGLE_GEN_CONFIG_KEYS | _GOOGLE_TOPLEVEL_KEYS
+
+# snake_case (public) → camelCase (Gemini wire format).
+_GOOGLE_KEY_REMAP = {
+    "top_p": "topP",
+    "top_k": "topK",
+    "stop_sequences": "stopSequences",
+    "response_mime_type": "responseMimeType",
+    "response_schema": "responseSchema",
+    "candidate_count": "candidateCount",
+    "presence_penalty": "presencePenalty",
+    "frequency_penalty": "frequencyPenalty",
+    "tool_config": "toolConfig",
+    "safety_settings": "safetySettings",
+    # ``seed`` and ``tools`` are already valid Gemini field names.
+}
+
+
+def _to_gemini_key(key: str) -> str:
+    return _GOOGLE_KEY_REMAP.get(key, key)
 
 
 class GoogleProvider(BaseProvider):
@@ -125,11 +148,11 @@ class GoogleProvider(BaseProvider):
         if max_tokens is not None:
             generation_config["maxOutputTokens"] = max_tokens
         for k in _GOOGLE_GEN_CONFIG_KEYS & extras.keys():
-            generation_config[k] = extras[k]
+            generation_config[_to_gemini_key(k)] = extras[k]
         if generation_config:
             payload["generationConfig"] = generation_config
         for k in _GOOGLE_TOPLEVEL_KEYS & extras.keys():
-            payload[k] = extras[k]
+            payload[_to_gemini_key(k)] = extras[k]
 
         url = f"/models/{model}:generateContent?key={self.api_key}"
 
@@ -190,11 +213,11 @@ class GoogleProvider(BaseProvider):
         if max_tokens is not None:
             generation_config["maxOutputTokens"] = max_tokens
         for k in _GOOGLE_GEN_CONFIG_KEYS & extras.keys():
-            generation_config[k] = extras[k]
+            generation_config[_to_gemini_key(k)] = extras[k]
         if generation_config:
             payload["generationConfig"] = generation_config
         for k in _GOOGLE_TOPLEVEL_KEYS & extras.keys():
-            payload[k] = extras[k]
+            payload[_to_gemini_key(k)] = extras[k]
 
         url = f"/models/{model}:streamGenerateContent?alt=sse&key={self.api_key}"
         sr = StreamResponse(model=model, provider="google")

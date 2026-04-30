@@ -319,7 +319,12 @@ class ProviderGateway:
 
             except RateLimitError as e:
                 # Throttled, not faulty. Do NOT record a breaker failure; the
-                # provider is healthy. Try the next candidate (if any).
+                # provider is healthy. Release the half-open slot we claimed
+                # via ``allow_request()`` so the breaker doesn't get stuck
+                # one-test-call short forever, then try the next candidate.
+                cb = entry.circuit_breaker
+                if cb.state == CircuitState.HALF_OPEN and cb._half_open_calls > 0:
+                    cb._half_open_calls -= 1
                 msg = f"Provider '{entry.provider.name}' rate-limited: {e}"
                 errors.append(msg)
                 logger.warning(msg)
