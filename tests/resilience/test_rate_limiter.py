@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from agentloom.resilience.rate_limiter import RateLimiter
 
 
@@ -21,6 +23,25 @@ class TestRateLimiterInit:
     def test_initial_bucket_is_full(self) -> None:
         rl = RateLimiter(max_requests_per_minute=30)
         assert rl._request_tokens == 30.0
+
+    def test_max_rpm_zero_raises_at_construction(self) -> None:
+        with pytest.raises(ValueError, match="max_requests_per_minute"):
+            RateLimiter(max_requests_per_minute=0)
+
+    def test_max_rpm_negative_raises_at_construction(self) -> None:
+        with pytest.raises(ValueError, match="max_requests_per_minute"):
+            RateLimiter(max_requests_per_minute=-1)
+
+    def test_max_tpm_zero_raises_at_construction(self) -> None:
+        with pytest.raises(ValueError, match="max_tokens_per_minute"):
+            RateLimiter(max_tokens_per_minute=0)
+
+
+class TestAcquireValidation:
+    async def test_token_count_exceeds_max_tpm_raises(self) -> None:
+        rl = RateLimiter(max_requests_per_minute=60, max_tokens_per_minute=1000)
+        with pytest.raises(ValueError, match="exceeds max_tokens_per_minute"):
+            await rl.acquire(token_count=5000)
 
 
 class TestAcquireRPM:

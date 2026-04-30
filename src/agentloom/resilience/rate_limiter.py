@@ -18,6 +18,10 @@ class RateLimiter:
         max_requests_per_minute: int = 60,
         max_tokens_per_minute: int = 100_000,
     ) -> None:
+        if max_requests_per_minute < 1:
+            raise ValueError(f"max_requests_per_minute must be >= 1, got {max_requests_per_minute}")
+        if max_tokens_per_minute < 1:
+            raise ValueError(f"max_tokens_per_minute must be >= 1, got {max_tokens_per_minute}")
         self.max_rpm = max_requests_per_minute
         self.max_tpm = max_tokens_per_minute
 
@@ -48,7 +52,17 @@ class RateLimiter:
 
         Args:
             token_count: Estimated token count for this request (0 = request-only limiting).
+
+        Raises:
+            ValueError: If *token_count* exceeds *max_tokens_per_minute* — the
+                bucket could never fill this request, so we fail fast rather
+                than looping forever.
         """
+        if token_count > self.max_tpm:
+            raise ValueError(
+                f"token_count={token_count} exceeds max_tokens_per_minute="
+                f"{self.max_tpm}; request can never be satisfied"
+            )
         while True:
             async with self._lock:
                 self._refill()

@@ -115,6 +115,7 @@ class TestHalfOpenState:
         # Simulate time advancing past the reset timeout by manipulating
         # the internal _last_failure_time so the elapsed time exceeds reset_timeout
         cb._last_failure_time = time.monotonic() - 1.0
+        assert cb._maybe_transition_to_half_open() == CircuitState.HALF_OPEN
         assert cb.state == CircuitState.HALF_OPEN
 
     async def test_half_open_success_closes_circuit(self) -> None:
@@ -138,7 +139,6 @@ class TestHalfOpenState:
 
         # Simulate time passing by shifting last failure time into the past
         cb._last_failure_time = time.monotonic() - 1.0
-        assert cb.state == CircuitState.HALF_OPEN
 
         # Successful call in half-open should close the circuit
         result = await cb.call(flaky)
@@ -160,7 +160,6 @@ class TestHalfOpenState:
 
         # Simulate time passing by shifting last failure time into the past
         cb._last_failure_time = time.monotonic() - 1.0
-        assert cb.state == CircuitState.HALF_OPEN
 
         # Failure in half-open should reopen the circuit
         with pytest.raises(RuntimeError):
@@ -223,3 +222,37 @@ class TestCircuitBreakerConfig:
         await cb.call(success)
         assert cb.failure_count == 0
         assert cb.state == CircuitState.CLOSED
+
+
+class TestStatePropertyIsPureRead:
+    """Reading `.state` must not mutate the breaker or fire callbacks."""
+
+    def test_state_property_is_pure_read(self) -> None:
+        events: list[tuple[str, str, str]] = []
+
+        def on_change(name: str, old: str, new: str) -> None:
+            events.append((name, old, new))
+
+        cb = CircuitBreaker(
+            name="test", fail_threshold=1, reset_timeout=0.1, on_state_change=on_change
+        )
+
+        # Force OPEN.
+        cb.record_failure()
+        assert cb.state == CircuitState.OPEN
+        events.clear()
+
+        # Pretend reset_timeout elapsed — reading state must NOT fire the
+        # callback or mutate internal counters.
+        cb._last_failure_time = time.monotonic() - 1.0
+        snapshot_calls = cb._half_open_calls
+        _ = cb.state  # pure read
+        _ = cb.state
+        _ = cb.state
+        assert events == []
+        assert cb._half_open_calls == snapshot_calls
+        assert cb.state == CircuitState.OPEN
+
+        # The explicit admission path does transition.
+        assert cb._maybe_transition_to_half_open() == CircuitState.HALF_OPEN
+        assert events == [("test", "open", "half_open")]

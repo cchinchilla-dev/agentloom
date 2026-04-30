@@ -43,6 +43,7 @@ class RetryConfig(BaseModel):
     max_retries: int = 3
     backoff_base: float = 2.0
     backoff_max: float = 60.0
+    jitter: bool = True
 
 
 class Condition(BaseModel):

@@ -348,3 +348,60 @@ class TestGatewayStreaming:
         assert resp.content == "Mock response"
         assert resp.usage.total_tokens == 30
         assert resp.cost_usd > 0
+
+
+class TestStreamCancellationDoesNotFailCircuit:
+    """A caller cancelling a stream must not be counted as a provider fault."""
+
+    async def test_stream_aclose_does_not_record_failure(self) -> None:
+        gateway = ProviderGateway()
+        provider = MockProvider()
+        gateway.register(provider, priority=0)
+
+        sr = await gateway.stream(
+            messages=[{"role": "user", "content": "one two three four five"}],
+            model="test-model",
+        )
+        # Consume one chunk then abort the underlying generator explicitly.
+        iterator = sr.__aiter__()
+        await iterator.__anext__()
+        assert sr._iterator is not None
+        await sr._iterator.aclose()
+
+        from agentloom.resilience.circuit_breaker import CircuitState
+
+        cb = gateway._providers[0].circuit_breaker
+        assert cb.state == CircuitState.CLOSED
+        assert cb.failure_count == 0
+
+
+class TestCircuitBreakerOrderingInCompleteFlow:
+    """Gateway must not consume rate-limit tokens when the circuit is open."""
+
+    async def test_circuit_open_does_not_consume_rate_limit_tokens(self) -> None:
+        from agentloom.resilience.circuit_breaker import CircuitState
+
+        gateway = ProviderGateway()
+        provider = MockProvider()
+        gateway.register(provider, priority=0, max_rpm=5, max_tpm=1000)
+        entry = gateway._providers[0]
+
+        # Force the circuit OPEN.
+        for _ in range(entry.circuit_breaker.fail_threshold):
+            entry.circuit_breaker.record_failure()
+        assert entry.circuit_breaker.state == CircuitState.OPEN
+
+        rpm_before = entry.rate_limiter._request_tokens
+        tpm_before = entry.rate_limiter._token_tokens
+
+        with pytest.raises(ProviderError):
+            await gateway.complete(
+                messages=[{"role": "user", "content": "hello"}],
+                model="test-model",
+            )
+
+        # Rate limiter must be untouched.
+        assert entry.rate_limiter._request_tokens == rpm_before
+        assert entry.rate_limiter._token_tokens == tpm_before
+
+

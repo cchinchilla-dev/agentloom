@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Harden gateway resilience: stream cancellation no longer trips the circuit breaker, circuit-breaker check now precedes the rate limiter in `complete()`, retry backoff jitter is centralized in `_jittered_backoff`, `RateLimiter` validates `max_rpm >= 1` / `max_tpm >= 1` and fails fast when `token_count > max_tpm`, and `CircuitBreaker.state` is a pure read with the half-open transition isolated in `_maybe_transition_to_half_open()` (#106).
+
 ### Security
 
 - Harden router expression sandbox against dunder access and type bypass (GHSA-c37m-mv4j-972v, #104)

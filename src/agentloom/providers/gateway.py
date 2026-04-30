@@ -6,10 +6,12 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+import anyio
+
 from agentloom.exceptions import CircuitOpenError, ProviderError
 from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.multimodal import estimate_content_tokens
-from agentloom.resilience.circuit_breaker import CircuitBreaker
+from agentloom.resilience.circuit_breaker import CircuitBreaker, CircuitState
 from agentloom.resilience.rate_limiter import RateLimiter
 
 logger = logging.getLogger("agentloom.gateway")
@@ -135,6 +137,14 @@ class ProviderGateway:
         errors: list[str] = []
 
         for entry in candidates:
+            # Fast-fail when the circuit is open: do NOT consume the rate
+            # limiter budget for traffic that will never reach the provider.
+            if entry.circuit_breaker._maybe_transition_to_half_open() == CircuitState.OPEN:
+                msg = f"Provider '{entry.provider.name}' circuit is open"
+                errors.append(msg)
+                logger.warning(msg)
+                continue
+
             try:
                 if entry.rate_limiter:
                     # Estimate prompt tokens from message content
@@ -245,35 +255,38 @@ class ProviderGateway:
                     _entry: ProviderEntry = entry,
                     _outer: StreamResponse = outer_sr,
                 ) -> AsyncIterator[str]:
-                    _cb_recorded = False
+                    cancelled_exc = anyio.get_cancelled_exc_class()
                     try:
-                        # Iterate the raw provider iterator directly to avoid
-                        # double chunk accumulation (inner + outer StreamResponse).
                         raw_iter = _inner._iterator
                         if raw_iter is None:
+                            _entry.circuit_breaker.record_success()
                             return
                         async for chunk in raw_iter:
                             yield chunk
+                    except GeneratorExit:
+                        # Caller aborted via aclose() — not a provider fault.
+                        # The connection was established and producing chunks,
+                        # so record a success to release the HALF_OPEN slot.
                         _entry.circuit_breaker.record_success()
-                        _cb_recorded = True
-                        if _entry.rate_limiter and _inner.usage.completion_tokens:
-                            await _entry.rate_limiter.consume_response_tokens(
-                                _inner.usage.completion_tokens
-                            )
+                        raise
+                    except cancelled_exc:
+                        # Task-group / outer cancel scope — not a provider fault.
+                        _entry.circuit_breaker.record_success()
+                        raise
                     except Exception as exc:
                         _entry.circuit_breaker.record_failure()
-                        _cb_recorded = True
                         if self._observer:
                             hook = getattr(self._observer, "on_provider_error", None)
                             if hook:
                                 hook(_entry.provider.name, type(exc).__name__)
                         raise
+                    else:
+                        _entry.circuit_breaker.record_success()
+                        if _entry.rate_limiter and _inner.usage.completion_tokens:
+                            await _entry.rate_limiter.consume_response_tokens(
+                                _inner.usage.completion_tokens
+                            )
                     finally:
-                        # Handle early termination (GeneratorExit from aclose(),
-                        # task cancellation) — treat as failure so HALF_OPEN
-                        # call counts stay consistent.
-                        if not _cb_recorded:
-                            _entry.circuit_breaker.record_failure()
                         _outer.usage = _inner.usage
                         _outer.cost_usd = _inner.cost_usd
                         _outer.finish_reason = _inner.finish_reason
@@ -289,6 +302,14 @@ class ProviderGateway:
 
             except CircuitOpenError:
                 msg = f"Provider '{entry.provider.name}' circuit is open"
+                errors.append(msg)
+                logger.warning(msg)
+                continue
+
+            except RateLimitError as e:
+                # Throttled, not faulty. Do NOT record a breaker failure; the
+                # provider is healthy. Try the next candidate (if any).
+                msg = f"Provider '{entry.provider.name}' rate-limited: {e}"
                 errors.append(msg)
                 logger.warning(msg)
                 continue

@@ -201,3 +201,34 @@ class TestRouterWorkflow:
         executed = [s for s in statuses if s is not None and s.status == StepStatus.SUCCESS]
         assert len(skipped) >= 1, "At least one branch should be skipped"
         assert len(executed) >= 1, "At least one branch should execute"
+
+
+class TestJitteredBackoff:
+    """Verify the retry backoff helper applies jitter."""
+
+    def test_jitter_varies_across_calls(self) -> None:
+        from agentloom.core.engine import _jittered_backoff
+
+        values = {_jittered_backoff(2.0, 3, 60.0, jitter=True) for _ in range(50)}
+        # 50 samples over a +/-25% window must yield more than one unique value.
+        assert len(values) > 1
+
+    def test_jitter_bounded_within_range(self) -> None:
+        from agentloom.core.engine import _jittered_backoff
+
+        # base=2.0, attempt=3 => raw=8.0, jitter window = [6.0, 10.0]
+        for _ in range(100):
+            d = _jittered_backoff(2.0, 3, 60.0, jitter=True)
+            assert 6.0 <= d <= 10.0
+
+    def test_no_jitter_is_deterministic(self) -> None:
+        from agentloom.core.engine import _jittered_backoff
+
+        assert _jittered_backoff(2.0, 3, 60.0, jitter=False) == 8.0
+
+    def test_backoff_capped_at_maximum(self) -> None:
+        from agentloom.core.engine import _jittered_backoff
+
+        # raw = 2**10 = 1024, capped at 10.
+        d = _jittered_backoff(2.0, 10, 10.0, jitter=False)
+        assert d == 10.0

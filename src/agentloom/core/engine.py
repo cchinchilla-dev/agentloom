@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import time
 import uuid
 from collections.abc import Callable
@@ -31,6 +32,18 @@ from agentloom.steps.base import BaseStep, StepContext
 from agentloom.steps.registry import StepRegistry, create_default_registry
 
 logger = logging.getLogger("agentloom.engine")
+
+
+def _jittered_backoff(base: float, attempt: int, maximum: float, jitter: bool) -> float:
+    """Exponential backoff with optional +/-25% jitter.
+
+    Centralized so step retry, timeout, and generic-exception paths share a
+    single implementation — matches ``resilience/retry.py``.
+    """
+    delay = min(base**attempt, maximum)
+    if jitter:
+        delay *= 1.0 + random.uniform(-0.25, 0.25)  # noqa: S311 — non-crypto jitter
+    return max(0.0, delay)
 
 
 def _extract_pause_error(exc: BaseException) -> PauseRequestedError | None:
@@ -533,10 +546,11 @@ class WorkflowEngine:
                     return
 
                 if attempt < max_retries:
-                    # FIXME: jitter not applied here, only in resilience/retry.py
-                    backoff = min(
-                        step_def.retry.backoff_base**attempt,
+                    backoff = _jittered_backoff(
+                        step_def.retry.backoff_base,
+                        attempt,
                         step_def.retry.backoff_max,
+                        step_def.retry.jitter,
                     )
                     logger.warning(
                         "Step '%s' failed (attempt %d/%d), retrying in %.1fs: %s",
@@ -555,9 +569,11 @@ class WorkflowEngine:
                     error=f"Step timed out after {step_def.timeout}s",
                 )
                 if attempt < max_retries:
-                    backoff = min(
-                        step_def.retry.backoff_base**attempt,
+                    backoff = _jittered_backoff(
+                        step_def.retry.backoff_base,
+                        attempt,
                         step_def.retry.backoff_max,
+                        step_def.retry.jitter,
                     )
                     await anyio.sleep(backoff)
                     continue
@@ -588,9 +604,11 @@ class WorkflowEngine:
                     error=str(e),
                 )
                 if attempt < max_retries:
-                    backoff = min(
-                        step_def.retry.backoff_base**attempt,
+                    backoff = _jittered_backoff(
+                        step_def.retry.backoff_base,
+                        attempt,
                         step_def.retry.backoff_max,
+                        step_def.retry.jitter,
                     )
                     await anyio.sleep(backoff)
                     continue
