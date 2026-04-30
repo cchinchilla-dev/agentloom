@@ -8,7 +8,7 @@ from typing import Any
 
 import anyio
 
-from agentloom.exceptions import CircuitOpenError, ProviderError
+from agentloom.exceptions import CircuitOpenError, ProviderError, RateLimitError
 from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.multimodal import estimate_content_tokens
 from agentloom.resilience.circuit_breaker import CircuitBreaker, CircuitState
@@ -162,7 +162,7 @@ class ProviderGateway:
                         **kwargs,
                     )
 
-                response = await entry.circuit_breaker.call(_call)
+                response = await entry.circuit_breaker.call(_call, exclude=(RateLimitError,))
 
                 # Consume response tokens from rate limiter budget
                 if entry.rate_limiter and response.usage.completion_tokens:

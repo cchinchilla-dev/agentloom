@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -34,14 +36,32 @@ class TestOpenAIProvider:
 
     @respx.mock
     async def test_api_error_raises(self) -> None:
+        # 500 — generic server error stays a plain ProviderError with the
+        # status code encoded in the message. 429 gets its own dedicated
+        # test below that asserts RateLimitError.
         respx.post("https://api.openai.com/v1/chat/completions").mock(
-            return_value=httpx.Response(429, text="rate limited")
+            return_value=httpx.Response(500, text="server error")
         )
         provider = OpenAIProvider(api_key="test-key")
-        with pytest.raises(ProviderError, match="429"):
+        with pytest.raises(ProviderError, match="500"):
             await provider.complete(
                 messages=[{"role": "user", "content": "hi"}], model="gpt-4o-mini"
             )
+        await provider.close()
+
+    @respx.mock
+    async def test_429_raises_rate_limit_error(self) -> None:
+        from agentloom.exceptions import RateLimitError
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(429, headers={"Retry-After": "2"}, text="slow down")
+        )
+        provider = OpenAIProvider(api_key="test-key")
+        with pytest.raises(RateLimitError) as excinfo:
+            await provider.complete(
+                messages=[{"role": "user", "content": "hi"}], model="gpt-4o-mini"
+            )
+        assert excinfo.value.retry_after_s == 2.0
         await provider.close()
 
     @respx.mock
@@ -194,6 +214,8 @@ class TestOpenAIProvider:
 
     @respx.mock
     async def test_streaming_api_error(self) -> None:
+        from agentloom.exceptions import RateLimitError
+
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(429, text="rate limited")
         )
@@ -201,7 +223,7 @@ class TestOpenAIProvider:
         sr = await provider.stream(
             messages=[{"role": "user", "content": "hi"}], model="gpt-4o-mini"
         )
-        with pytest.raises(ProviderError, match="429"):
+        with pytest.raises(RateLimitError):
             async for _ in sr:
                 pass
         await provider.close()
@@ -214,3 +236,34 @@ class TestOpenAIProvider:
         assert p.supports_model("o4-mini")
         assert not p.supports_model("claude-opus-4-6")
         assert not p.supports_model("gemini-2.5-flash")
+
+
+class TestOpenAIKwargsAllowlist:
+    """Extra kwargs must flow into the HTTP payload or raise TypeError."""
+
+    @respx.mock
+    async def test_complete_forwards_top_p(self) -> None:
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = OpenAIProvider(api_key="k")
+        await provider.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-4o-mini",
+            top_p=0.7,
+            stop=["END"],
+        )
+        body = json.loads(route.calls[0].request.content)
+        assert body["top_p"] == 0.7
+        assert body["stop"] == ["END"]
+        await provider.close()
+
+    async def test_complete_rejects_unknown_kwarg(self) -> None:
+        provider = OpenAIProvider(api_key="k")
+        with pytest.raises(TypeError, match="Unsupported parameters"):
+            await provider.complete(
+                messages=[{"role": "user", "content": "hi"}],
+                model="gpt-4o-mini",
+                not_a_real_param=True,
+            )
+        await provider.close()

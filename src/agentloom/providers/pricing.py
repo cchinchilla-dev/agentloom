@@ -70,12 +70,14 @@ def calculate_cost(
     """
     table = pricing_table or DEFAULT_PRICING
 
-    # Try exact match first, then prefix matching
+    # Try exact match first, then prefix matching. Check longer keys before
+    # shorter ones so ``gpt-4o-mini`` is never claimed by a plain ``gpt-4``
+    # entry when both are present.
     pricing = table.get(model)
     if pricing is None:
-        for key, p in table.items():
+        for key in sorted(table, key=len, reverse=True):
             if model.startswith(key):
-                pricing = p
+                pricing = table[key]
                 break
 
     if pricing is None:

@@ -12,6 +12,7 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
+from agentloom.providers._http import raise_for_status, validate_extra_kwargs
 from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.multimodal import (
     AudioBlock,
@@ -23,6 +24,26 @@ from agentloom.providers.multimodal import (
 from agentloom.providers.pricing import calculate_cost
 
 logger = logging.getLogger("agentloom.providers.google")
+
+# Keys that become entries under ``generationConfig``. Everything else is
+# rejected so silent drops surface early. ``tools`` is top-level on Google's
+# Generative Language API, not inside generationConfig — keep the two sets
+# separate.
+_GOOGLE_GEN_CONFIG_KEYS = frozenset(
+    {
+        "top_p",
+        "top_k",
+        "stop_sequences",
+        "response_mime_type",
+        "response_schema",
+        "candidate_count",
+        "presence_penalty",
+        "frequency_penalty",
+        "seed",
+    }
+)
+_GOOGLE_TOPLEVEL_KEYS = frozenset({"tools", "tool_config", "safety_settings"})
+_GOOGLE_EXTRA_PAYLOAD_KEYS = _GOOGLE_GEN_CONFIG_KEYS | _GOOGLE_TOPLEVEL_KEYS
 
 
 class GoogleProvider(BaseProvider):
@@ -90,6 +111,7 @@ class GoogleProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
+        extras = validate_extra_kwargs("google", "complete", kwargs, _GOOGLE_EXTRA_PAYLOAD_KEYS)
         system_instruction, contents = self._format_messages(messages)
 
         payload: dict[str, Any] = {"contents": contents}
@@ -102,8 +124,12 @@ class GoogleProvider(BaseProvider):
             generation_config["temperature"] = temperature
         if max_tokens is not None:
             generation_config["maxOutputTokens"] = max_tokens
+        for k in _GOOGLE_GEN_CONFIG_KEYS & extras.keys():
+            generation_config[k] = extras[k]
         if generation_config:
             payload["generationConfig"] = generation_config
+        for k in _GOOGLE_TOPLEVEL_KEYS & extras.keys():
+            payload[k] = extras[k]
 
         url = f"/models/{model}:generateContent?key={self.api_key}"
 
@@ -112,12 +138,7 @@ class GoogleProvider(BaseProvider):
         except httpx.HTTPError as e:
             raise ProviderError("google", f"HTTP error: {e}") from e
 
-        if response.status_code != 200:
-            raise ProviderError(
-                "google",
-                f"API error {response.status_code}: {response.text}",
-                status_code=response.status_code,
-            )
+        raise_for_status("google", response)
 
         data = response.json()
 
@@ -157,6 +178,7 @@ class GoogleProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
+        extras = validate_extra_kwargs("google", "stream", kwargs, _GOOGLE_EXTRA_PAYLOAD_KEYS)
         system_instruction, contents = self._format_messages(messages)
 
         payload: dict[str, Any] = {"contents": contents}
@@ -167,8 +189,12 @@ class GoogleProvider(BaseProvider):
             generation_config["temperature"] = temperature
         if max_tokens is not None:
             generation_config["maxOutputTokens"] = max_tokens
+        for k in _GOOGLE_GEN_CONFIG_KEYS & extras.keys():
+            generation_config[k] = extras[k]
         if generation_config:
             payload["generationConfig"] = generation_config
+        for k in _GOOGLE_TOPLEVEL_KEYS & extras.keys():
+            payload[k] = extras[k]
 
         url = f"/models/{model}:streamGenerateContent?alt=sse&key={self.api_key}"
         sr = StreamResponse(model=model, provider="google")
@@ -177,11 +203,7 @@ class GoogleProvider(BaseProvider):
             async with self._client.stream("POST", url, json=payload) as resp:
                 if resp.status_code != 200:
                     await resp.aread()
-                    raise ProviderError(
-                        "google",
-                        f"API error {resp.status_code}: {resp.text}",
-                        status_code=resp.status_code,
-                    )
+                    raise_for_status("google", resp)
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data: "):
@@ -210,6 +232,16 @@ class GoogleProvider(BaseProvider):
                         sr.cost_usd = calculate_cost(
                             model, sr.usage.prompt_tokens, sr.usage.completion_tokens
                         )
+
+            if sr.usage.total_tokens == 0:
+                # Gemini has historically streamed usage per-chunk, but a
+                # regression or model variant could drop it. Surface the gap
+                # so cost reporting doesn't silently read zero.
+                logger.warning(
+                    "Google stream for model '%s' completed without usageMetadata; "
+                    "cost will be reported as 0.",
+                    model,
+                )
 
         sr._set_iterator(_generate())
         return sr

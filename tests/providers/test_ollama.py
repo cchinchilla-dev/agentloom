@@ -201,3 +201,26 @@ class TestOllamaProvider:
         result = await provider.complete(messages=[{"role": "user", "content": "hi"}], model="phi4")
         assert result.content == "Local response"
         await provider.close()
+
+
+class TestOllamaBaseURLResolution:
+    def test_base_url_from_env(self, monkeypatch) -> None:
+        from agentloom.providers.ollama import OllamaProvider
+
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.internal:9000")
+        p = OllamaProvider()
+        assert p.base_url == "http://ollama.internal:9000"
+
+    def test_base_url_explicit_wins_over_env(self, monkeypatch) -> None:
+        from agentloom.providers.ollama import OllamaProvider
+
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://env.example")
+        p = OllamaProvider(base_url="http://explicit.example")
+        assert p.base_url == "http://explicit.example"
+
+    def test_base_url_defaults_to_localhost(self, monkeypatch) -> None:
+        from agentloom.providers.ollama import OllamaProvider
+
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        p = OllamaProvider()
+        assert p.base_url == "http://localhost:11434"
