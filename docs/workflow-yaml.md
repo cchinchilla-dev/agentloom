@@ -109,6 +109,8 @@ state:
 
 Steps with `output: key` update `state[key]` after execution.
 
+Templates render `tool` step args through the same renderer as `prompt` fields, so `{state.url}` substitutions work uniformly across step types. By default a missing key (`{state.does_not_exist}`) is logged and rendered as an empty string; to raise `TemplateError` on missing keys instead, build the namespace with `build_template_vars(state, strict=True)` (so nested `{state.*}` lookups also raise) and render with `SafeFormatDict(template_vars, strict=True)`.
+
 ---
 
 ## Step types

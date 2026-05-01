@@ -70,13 +70,23 @@ class TestApprovalGateStep:
         value = await ctx.state_manager.get("my_decision")
         assert value is None
 
-    async def test_pause_message_on_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_pause_does_not_write_to_stdio(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Step body must stay silent — UX is rendered by the CLI after
+        # `engine.run()` returns. Two gates pausing concurrently used to
+        # interleave their prompts on stderr; this regression guards it.
         ctx = _context(step_id="review")
-        with pytest.raises(PauseRequestedError):
+        with pytest.raises(PauseRequestedError, match="review"):
             await ApprovalGateStep().execute(ctx)
 
         captured = capsys.readouterr()
-        assert "APPROVAL REQUIRED" in captured.err
-        assert "review" in captured.err
-        assert "--approve" in captured.err
-        assert "--reject" in captured.err
+        assert captured.out == ""
+        assert captured.err == ""
+
+    async def test_pause_error_carries_step_id_and_message(self) -> None:
+        ctx = _context(step_id="review")
+        with pytest.raises(PauseRequestedError) as excinfo:
+            await ApprovalGateStep().execute(ctx)
+
+        # The CLI relies on these fields to render the resume instructions.
+        assert excinfo.value.step_id == "review"
+        assert "review" in str(excinfo.value)

@@ -100,17 +100,33 @@ class StateManager:
         async with self._lock:
             return dict(self._step_results)
 
-    def get_sync(self, key: str, default: Any = None) -> Any:
-        """Synchronous get for use in non-async contexts (e.g., template rendering)."""
+    # ---- internal-only synchronous helpers --------------------------------
+    #
+    # These bypass ``self._lock`` and must not be called from async code
+    # that runs concurrently with ``set``/``get``. They exist so tests and
+    # internal non-async paths (checkpoint hydration, resume bootstrap) can
+    # poke at state without spinning an event loop. Callers in async step
+    # handlers must use the awaitable ``get`` / ``set`` / ``get_state_snapshot``
+    # variants instead — using these under concurrency produces subtle
+    # last-writer-wins bugs because the updates race with in-flight locked
+    # writes.
+
+    def _get_sync_unsafe(self, key: str, default: Any = None) -> Any:
         return self._resolve_key(self._state, key, default)
 
-    def set_sync(self, key: str, value: Any) -> None:
-        """Synchronous set for non-async contexts."""
+    def _set_sync_unsafe(self, key: str, value: Any) -> None:
         self._set_nested(self._state, key, value)
 
     @property
     def state(self) -> dict[str, Any]:
-        """Direct access to state dict (use in sync contexts only)."""
+        """Raw state dict — **unsafe live reference for internal use only**.
+
+        This returns the internal state dict directly, not a snapshot.
+        Mutating it bypasses ``self._lock`` and can race with concurrent
+        readers/writers. Do not mutate it and do not rely on it remaining
+        stable across ``await`` points. Prefer
+        ``await self.get_state_snapshot()`` for a defensive copy.
+        """
         return self._state
 
     async def save_checkpoint(self, path: str | Path) -> None:
@@ -173,7 +189,12 @@ class StateManager:
                 if isinstance(current, list) and -len(current) <= part < len(current):
                     current = current[part]
                 else:
-                    raise IndexError(f"List index {part} out of range in path '{key}'")
+                    raise IndexError(
+                        f"List index {part} out of range in path '{key}'. "
+                        f"Lists are not auto-expanded by set(); pre-allocate the list "
+                        f"(e.g. via an initial value containing {part + 1} elements) "
+                        f"before writing to indexed paths."
+                    )
             else:
                 if part not in current or not isinstance(current[part], (dict, list)):
                     current[part] = {}
@@ -188,7 +209,11 @@ class StateManager:
             if isinstance(current, list) and -len(current) <= last < len(current):
                 current[last] = value
             else:
-                raise IndexError(f"List index {last} out of range in path '{key}'")
+                raise IndexError(
+                    f"List index {last} out of range in path '{key}'. "
+                    f"Lists are not auto-expanded by set(); pre-allocate the list "
+                    f"before writing to indexed paths."
+                )
         else:
             if not isinstance(current, dict):
                 raise TypeError(

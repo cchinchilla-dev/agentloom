@@ -44,6 +44,10 @@ class SubworkflowStep(BaseStep):
             state_manager=child_state,
             provider_gateway=context.provider_gateway,
             tool_registry=context.tool_registry,
+            observer=context.observer,
+            on_stream_chunk=context.on_stream_chunk,
+            checkpointer=context.checkpointer,
+            run_id=f"{context.run_id}.{step.id}" if context.run_id else step.id,
         )
 
         try:

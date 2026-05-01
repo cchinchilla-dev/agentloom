@@ -63,6 +63,23 @@ def _extract_pause_error(exc: BaseException) -> PauseRequestedError | None:
     return None
 
 
+def _extract_budget_error(exc: BaseException) -> BudgetExceededError | None:
+    """Unwrap a ``BudgetExceededError`` from an ``ExceptionGroup``.
+
+    Mirrors ``_extract_pause_error``; used so pre-dispatch budget gates
+    raised inside a task group surface as ``WorkflowStatus.BUDGET_EXCEEDED``
+    rather than a generic ``FAILED``.
+    """
+    if isinstance(exc, BudgetExceededError):
+        return exc
+    if isinstance(exc, ExceptionGroup):
+        for inner in exc.exceptions:
+            found = _extract_budget_error(inner)
+            if found is not None:
+                return found
+    return None
+
+
 class WorkflowEngine:
     """Executes a workflow by traversing its DAG and running steps.
 
@@ -283,10 +300,20 @@ class WorkflowEngine:
                     for step_id in active_steps:
                         tg.start_soon(self._execute_step_with_limit, step_id, limiter)
 
+                # After the layer finishes, check whether any step paused.
+                # Pauses are NOT re-raised inside _execute_step so siblings
+                # can complete their in-flight provider calls without being
+                # cancelled. We halt the outer layer loop here instead.
+                paused_step_id: str | None = None
                 for step_id in active_steps:
                     step_result = await self.state.get_step_result(step_id)
                     if step_result and step_result.status == StepStatus.SUCCESS:
                         self._completed_steps.add(step_id)
+                    elif step_result and step_result.status == StepStatus.PAUSED:
+                        paused_step_id = paused_step_id or step_id
+
+                if paused_step_id is not None:
+                    raise PauseRequestedError(paused_step_id)
 
                 activated_targets_for_next = set()
                 for step_id in active_steps:
@@ -298,16 +325,20 @@ class WorkflowEngine:
 
                 if activated_targets_for_next:
                     activated_targets = activated_targets_for_next
-                    # Mark all non-activated downstream steps as skipped
-                    for step in self.workflow.steps:
-                        for dep in step.depends_on:
-                            dep_step = self.workflow.get_step(dep)
-                            if (
-                                dep_step
-                                and dep_step.type == StepType.ROUTER
-                                and step.id not in activated_targets
-                            ):
-                                skipped_steps.add(step.id)
+                    # Skip non-activated direct children of any router that
+                    # just fired, then propagate the skip forward through the
+                    # DAG's transitive closure. Any descendant of a skipped
+                    # branch is unreachable, including join-nodes whose other
+                    # predecessor is on an activated branch — they would
+                    # otherwise execute with one upstream output missing.
+                    non_activated_children: set[str] = set()
+                    for step_id in active_steps:
+                        step_def = self.workflow.get_step(step_id)
+                        if step_def and step_def.type == StepType.ROUTER:
+                            for child in dag.successors(step_id):
+                                if child not in activated_targets:
+                                    non_activated_children.add(child)
+                    skipped_steps.update(dag.transitive_successors(non_activated_children))
                 else:
                     # Reset activation for non-router layers
                     if activated_targets is not None:
@@ -385,6 +416,30 @@ class WorkflowEngine:
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
 
+            # Unwrap BudgetExceededError from the task group before pauses —
+            # a budget overrun supersedes any pause that may have been
+            # pending in the same layer.
+            budget_err = _extract_budget_error(e)
+            if budget_err is not None:
+                await self._save_checkpoint("budget_exceeded")
+                if self.observer:
+                    self.observer.on_workflow_end(
+                        workflow_name,
+                        "budget_exceeded",
+                        duration,
+                        0,
+                        self._budget_spent,
+                    )
+                return WorkflowResult(
+                    workflow_name=workflow_name,
+                    status=WorkflowStatus.BUDGET_EXCEEDED,
+                    step_results=await self.state.all_step_results(),
+                    final_state=await self.state.get_state_snapshot(),
+                    total_duration_ms=duration,
+                    total_cost_usd=self._budget_spent,
+                    error=str(budget_err),
+                )
+
             # Check for PauseRequestedError wrapped in ExceptionGroup
             # (anyio task groups always wrap step exceptions).
             pause_err = _extract_pause_error(e)
@@ -442,6 +497,15 @@ class WorkflowEngine:
         if step_def is None:
             raise WorkflowError(f"Step '{step_id}' not found in workflow")
 
+        # Pre-dispatch budget gate: if prior completions already exhausted
+        # the budget, refuse to start this step. Post-hoc enforcement lets
+        # in-flight sibling calls overshoot by their cost; a pre-check here
+        # at least bounds the overshoot to the worst-case single-layer
+        # in-flight set instead of compounding across layers.
+        budget = self.workflow.config.budget_usd
+        if budget is not None and self._budget_spent >= budget:
+            raise BudgetExceededError(budget, self._budget_spent)
+
         logger.debug("Executing step: %s (type=%s)", step_id, step_def.type.value)
 
         should_stream = (
@@ -467,6 +531,7 @@ class WorkflowEngine:
             observer=self.observer,
             stream=should_stream,
             on_stream_chunk=self._stream_callback,
+            checkpointer=self._checkpointer,
         )
 
         max_retries = step_def.retry.max_retries
@@ -583,6 +648,11 @@ class WorkflowEngine:
                 raise
 
             except PauseRequestedError:
+                # Record the pause and return normally instead of re-raising.
+                # Re-raising would cancel sibling tasks that are already
+                # mid-flight against their providers, leading to double-billing
+                # on resume. The engine's post-layer pass detects PAUSED results
+                # and halts further layers without cancelling in-flight work.
                 paused_result = StepResult(step_id=step_id, status=StepStatus.PAUSED)
                 await self.state.set_step_result(step_id, paused_result)
                 if self.observer:
@@ -595,7 +665,7 @@ class WorkflowEngine:
                         paused_result.token_usage.total_tokens,
                         stream=should_stream,
                     )
-                raise
+                return
 
             except Exception as e:
                 last_result = StepResult(

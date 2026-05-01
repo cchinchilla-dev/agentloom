@@ -195,7 +195,7 @@ async def _run_async(
     if output_json:
         typer.echo(result.model_dump_json(indent=2))
     else:
-        _print_result(result)
+        _print_result(result, run_id=engine.run_id)
 
     if observer:
         observer.shutdown()
@@ -276,7 +276,7 @@ def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
         )
 
 
-def _print_result(result: object) -> None:
+def _print_result(result: object, *, run_id: str | None = None) -> None:
     """Pretty-print a workflow result."""
     from agentloom.core.results import StepStatus, WorkflowResult
 
@@ -317,4 +317,19 @@ def _print_result(result: object) -> None:
 
     final_state = r.final_state
     typer.echo(f"\nFinal State Keys: {list(final_state.keys())}")
+
+    # Render pending approvals after the result table so concurrent gates
+    # don't interleave on stdout. Each PAUSED step produces one block; the
+    # run_id is what the operator types into `agentloom resume`.
+    paused_steps = [
+        step_id for step_id, sr in r.step_results.items() if sr.status == StepStatus.PAUSED
+    ]
+    if paused_steps:
+        typer.echo("")
+        run_label = run_id or "<run_id>"
+        for step_id in paused_steps:
+            typer.echo(f"[APPROVAL REQUIRED] Step '{step_id}' is waiting for a decision.")
+            typer.echo(f"  Approve: agentloom resume {run_label} --step {step_id} --approve")
+            typer.echo(f"  Reject:  agentloom resume {run_label} --step {step_id} --reject")
+
     typer.echo(f"{'=' * 60}")

@@ -127,3 +127,56 @@ class TestNoopIntegration:
 
             histogram.record(150.0, attributes={"status": "success"})
             span.set_status("OK")
+
+
+class TestNoopObserver:
+    """NoopObserver must implement every hook of WorkflowObserver so a
+    caller can pass it in as a safe default with no AttributeError risk."""
+
+    def test_has_all_hooks_of_workflow_observer(self) -> None:
+        from agentloom.observability.noop import NoopObserver
+        from agentloom.observability.observer import WorkflowObserver
+
+        required = {
+            name
+            for name in dir(WorkflowObserver)
+            if not name.startswith("_") and callable(getattr(WorkflowObserver, name))
+        }
+        provided = {
+            name
+            for name in dir(NoopObserver)
+            if not name.startswith("_") and callable(getattr(NoopObserver, name))
+        }
+        missing = required - provided
+        assert missing == set(), f"NoopObserver missing hooks: {missing}"
+
+    def test_every_hook_tolerates_extra_kwargs(self) -> None:
+        from agentloom.observability.noop import NoopObserver
+
+        obs = NoopObserver()
+        obs.on_workflow_start("wf", new_future_arg=True)
+        obs.on_step_start("s1", "llm_call", future_extra=1)
+        obs.on_step_end("s1", "llm_call", "success", 1.0, future_extra=True, newer_arg="x")
+        obs.on_webhook_delivery("s1", "wf", "success", 0.1, future_extra=True)
+
+    def test_every_hook_executes_no_op_body(self) -> None:
+        """Calling every NoopObserver hook executes the ``pass`` body so the
+        full no-op surface stays exercised — guards against regressions where
+        a new hook accidentally raises."""
+        from agentloom.observability.noop import NoopObserver
+
+        obs = NoopObserver()
+        obs.on_workflow_start("wf")
+        obs.on_workflow_end("wf", "success", 100.0, 50, 0.001)
+        obs.on_step_start("s1", "llm_call")
+        obs.on_step_end("s1", "llm_call", "success", 5.0, 10, 0.0001)
+        obs.on_provider_call("openai", "gpt-4o-mini", 1.5)
+        obs.on_provider_error("openai", "RateLimitError")
+        obs.on_stream_response("openai", "gpt-4o-mini", 0.3)
+        obs.on_tokens("openai", "gpt-4o-mini", 100, 50)
+        obs.on_mock_replay("wf", "s1", "step_id")
+        obs.on_recording_capture("s1", "openai", "gpt-4o-mini", 1.2)
+        obs.on_budget_remaining("wf", 0.5)
+        obs.on_circuit_state_change("openai", "closed", "open")
+        obs.on_approval_gate("s1", "wf", "approved")
+        obs.shutdown()

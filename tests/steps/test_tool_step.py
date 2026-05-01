@@ -166,3 +166,73 @@ class TestToolStep:
         assert result.status == StepStatus.SUCCESS
         stored = await state_mgr.get("my_output")
         assert stored == "stored_value"
+
+
+class TestToolArgsTemplating:
+    """Regression: tool_args with `{state.x}` placeholders must be rendered."""
+
+    async def test_tool_args_templated_like_llm_call(self) -> None:
+        from agentloom.core.models import (
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+        from agentloom.core.state import StateManager
+        from agentloom.steps.base import StepContext
+        from agentloom.steps.tool_step import ToolStep
+        from agentloom.tools.base import BaseTool
+        from agentloom.tools.registry import ToolRegistry
+
+        captured: dict[str, object] = {}
+
+        class CaptureTool(BaseTool):
+            name = "capture"
+            description = "x"
+            parameters_schema = {"type": "object", "properties": {"path": {"type": "string"}}}
+
+            async def execute(self, **kwargs: object) -> object:
+                captured.update(kwargs)
+                return "ok"
+
+        reg = ToolRegistry()
+        reg.register(CaptureTool())
+
+        state = StateManager(initial_state={"user_file": "/data/input.txt"})
+        step_def = StepDefinition(
+            id="call_tool",
+            type=StepType.TOOL,
+            tool_name="capture",
+            tool_args={
+                "path": "{state.user_file}",
+                "direct": "state.user_file",
+                "passthrough": "literal",
+            },
+        )
+        workflow = WorkflowDefinition(
+            name="t",
+            config=WorkflowConfig(provider="mock", model="m"),
+            state={},
+            steps=[step_def],
+        )
+        ctx = StepContext(
+            step_definition=step_def,
+            state_manager=state,
+            provider_gateway=None,
+            tool_registry=reg,
+            run_id="r",
+            workflow_name=workflow.name,
+            workflow_model="m",
+            workflow_provider="mock",
+            sandbox_config=workflow.config.sandbox,
+            observer=None,
+            stream=False,
+            on_stream_chunk=None,
+        )
+        await ToolStep().execute(ctx)
+        # Template rendered, state.-prefix resolved, literal passed through.
+        assert captured == {
+            "path": "/data/input.txt",
+            "direct": "/data/input.txt",
+            "passthrough": "literal",
+        }

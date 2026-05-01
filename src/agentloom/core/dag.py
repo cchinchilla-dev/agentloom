@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from agentloom.exceptions import ValidationError
 
@@ -43,31 +43,53 @@ class DAG:
         return set(self._edges.get(node_id, set()))
 
     def validate(self) -> list[str]:
-        """Validate the DAG. Returns a list of error messages (empty if valid)."""
+        """Validate the DAG. Returns a list of error messages (empty if valid).
+
+        Uses an iterative DFS so deep chains do not blow the interpreter's
+        recursion limit. Each cycle is reported once against the colour
+        map; the traversal stack is fully reset between top-level entries
+        so messages never carry over from a sibling component.
+        """
         errors: list[str] = []
 
         WHITE, GRAY, BLACK = 0, 1, 2
         color: dict[str, int] = {n: WHITE for n in self._nodes}
-        cycle_path: list[str] = []
 
-        def dfs(node: str) -> bool:
-            color[node] = GRAY
-            cycle_path.append(node)
-            for succ in self._edges.get(node, set()):
+        def iterative_dfs(root: str) -> None:
+            # Stack frames carry the current node plus a queue of
+            # successors we still need to visit. When the queue is
+            # exhausted we pop, matching the recursive version's behaviour.
+            # Using ``deque`` keeps successor consumption O(1) per step
+            # — list.pop(0) would make the traversal quadratic on
+            # high out-degree nodes.
+            stack: list[tuple[str, deque[str]]] = []
+            path: list[str] = []
+
+            def push(node: str) -> None:
+                color[node] = GRAY
+                path.append(node)
+                stack.append((node, deque(sorted(self._edges.get(node, set())))))
+
+            push(root)
+            while stack:
+                node, pending = stack[-1]
+                if not pending:
+                    color[node] = BLACK
+                    path.pop()
+                    stack.pop()
+                    continue
+                succ = pending.popleft()
                 if color[succ] == GRAY:
-                    cycle_start = cycle_path.index(succ)
-                    cycle = cycle_path[cycle_start:] + [succ]
+                    cycle_start = path.index(succ)
+                    cycle = path[cycle_start:] + [succ]
                     errors.append(f"Cycle detected: {' -> '.join(cycle)}")
-                    return True
-                if color[succ] == WHITE and dfs(succ):
-                    return True
-            cycle_path.pop()
-            color[node] = BLACK
-            return False
+                    continue
+                if color[succ] == WHITE:
+                    push(succ)
 
         for node in self._nodes:
             if color[node] == WHITE:
-                dfs(node)
+                iterative_dfs(node)
 
         for node, succs in self._edges.items():
             for succ in succs:
@@ -75,6 +97,23 @@ class DAG:
                     errors.append(f"Edge to non-existent node: {node} -> {succ}")
 
         return errors
+
+    def transitive_successors(self, roots: set[str]) -> set[str]:
+        """Return every node reachable from *roots* via forward edges.
+
+        The returned set includes the roots themselves.
+        """
+        reachable: set[str] = set()
+        queue: deque[str] = deque(sorted(r for r in roots if r in self._nodes))
+        while queue:
+            node = queue.popleft()
+            if node in reachable:
+                continue
+            reachable.add(node)
+            for succ in self._edges.get(node, set()):
+                if succ not in reachable:
+                    queue.append(succ)
+        return reachable
 
     def topological_sort(self) -> list[str]:
         """Return nodes in topological order. Raises ValidationError if cyclic."""

@@ -56,8 +56,14 @@ class FileCheckpointer(BaseCheckpointer):
     # public API
 
     async def save(self, data: CheckpointData) -> None:
-        payload = data.model_dump_json(indent=2)
-        await anyio.to_thread.run_sync(partial(self._write, data.run_id, payload))
+        # Do the JSON serialization inside the thread too — for workflows
+        # carrying large accumulated state the ``model_dump_json`` call can
+        # block the event loop for tens of ms per layer.
+        def _dump_and_write() -> None:
+            payload = data.model_dump_json(indent=2)
+            self._write(data.run_id, payload)
+
+        await anyio.to_thread.run_sync(_dump_and_write)
 
     async def load(self, run_id: str) -> CheckpointData:
         path = self._checkpoint_path(run_id)

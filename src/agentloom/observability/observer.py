@@ -33,7 +33,7 @@ class WorkflowObserver:
         self._workflow_span: Any | None = None
         self._step_spans: dict[str, Any] = {}
 
-    def on_workflow_start(self, workflow_name: str) -> None:
+    def on_workflow_start(self, workflow_name: str, **kwargs: Any) -> None:
         if self._tracing:
             self._workflow_span = self._tracing.start_span(
                 f"workflow:{workflow_name}",
@@ -47,6 +47,7 @@ class WorkflowObserver:
         duration_ms: float,
         total_tokens: int,
         total_cost: float,
+        **kwargs: Any,
     ) -> None:
         if self._metrics:
             self._metrics.record_workflow_run(
@@ -65,7 +66,9 @@ class WorkflowObserver:
                 span.end()
             self._workflow_span = None
 
-    def on_step_start(self, step_id: str, step_type: str, stream: bool = False) -> None:
+    def on_step_start(
+        self, step_id: str, step_type: str, stream: bool = False, **kwargs: Any
+    ) -> None:
         if self._tracing:
             span = self._tracing.start_span(
                 f"step:{step_id}",
@@ -89,6 +92,7 @@ class WorkflowObserver:
         attachment_count: int = 0,
         time_to_first_token_ms: float | None = None,
         stream: bool = False,
+        **kwargs: Any,
     ) -> None:
         if self._metrics:
             self._metrics.record_step_execution(
@@ -117,16 +121,21 @@ class WorkflowObserver:
     # Provider-level events (called from gateway if observer is attached)
 
     def on_provider_call(
-        self, provider: str, model: str, latency_s: float, stream: bool = False
+        self,
+        provider: str,
+        model: str,
+        latency_s: float,
+        stream: bool = False,
+        **kwargs: Any,
     ) -> None:
         if self._metrics:
             self._metrics.record_provider_call(provider, model, latency_s, stream=stream)
 
-    def on_provider_error(self, provider: str, error_type: str) -> None:
+    def on_provider_error(self, provider: str, error_type: str, **kwargs: Any) -> None:
         if self._metrics:
             self._metrics.record_provider_error(provider, error_type)
 
-    def on_stream_response(self, provider: str, model: str, ttft_s: float) -> None:
+    def on_stream_response(self, provider: str, model: str, ttft_s: float, **kwargs: Any) -> None:
         if self._metrics:
             self._metrics.record_stream_response(provider, model)
             self._metrics.record_time_to_first_token(provider, model, ttft_s)
@@ -137,13 +146,16 @@ class WorkflowObserver:
         model: str,
         prompt_tokens: int,
         completion_tokens: int,
+        **kwargs: Any,
     ) -> None:
         if self._metrics:
             self._metrics.record_tokens(provider, model, prompt_tokens, completion_tokens)
 
     # Circuit breaker events (called from gateway via callback)
 
-    def on_circuit_state_change(self, provider: str, old_state: str, new_state: str) -> None:
+    def on_circuit_state_change(
+        self, provider: str, old_state: str, new_state: str, **kwargs: Any
+    ) -> None:
         state_map = {"closed": 0, "open": 1, "half_open": 2}
         state_int = state_map.get(str(new_state), 0)
         logger.info(
@@ -155,7 +167,9 @@ class WorkflowObserver:
         if self._metrics:
             self._metrics.set_circuit_state(provider, state_int)
 
-    def on_approval_gate(self, step_id: str, workflow_name: str, decision: str) -> None:
+    def on_approval_gate(
+        self, step_id: str, workflow_name: str, decision: str, **kwargs: Any
+    ) -> None:
         if self._metrics:
             self._metrics.record_approval_gate(workflow_name, decision)
         span = self._step_spans.get(step_id)
@@ -163,7 +177,12 @@ class WorkflowObserver:
             span.set_attribute("approval_gate.decision", decision)
 
     def on_webhook_delivery(
-        self, step_id: str, workflow_name: str, status: str, latency_s: float
+        self,
+        step_id: str,
+        workflow_name: str,
+        status: str,
+        latency_s: float,
+        **kwargs: Any,
     ) -> None:
         if self._metrics:
             self._metrics.record_webhook_delivery(workflow_name, status, latency_s)
@@ -172,7 +191,9 @@ class WorkflowObserver:
             span.set_attribute("webhook.status", status)
             span.set_attribute("webhook.latency_s", latency_s)
 
-    def on_mock_replay(self, workflow_name: str, step_id: str, matched_by: str) -> None:
+    def on_mock_replay(
+        self, workflow_name: str, step_id: str, matched_by: str, **kwargs: Any
+    ) -> None:
         if self._metrics:
             self._metrics.record_mock_replay(workflow_name, matched_by)
         span = self._step_spans.get(step_id)
@@ -182,7 +203,12 @@ class WorkflowObserver:
                 span.set_attribute("mock.step_id", step_id)
 
     def on_recording_capture(
-        self, step_id: str, provider: str, model: str, latency_s: float
+        self,
+        step_id: str,
+        provider: str,
+        model: str,
+        latency_s: float,
+        **kwargs: Any,
     ) -> None:
         if self._metrics:
             self._metrics.record_recording_capture(provider, model, latency_s)
@@ -192,7 +218,7 @@ class WorkflowObserver:
             span.set_attribute("recording.model", model)
             span.set_attribute("recording.latency_s", latency_s)
 
-    def on_budget_remaining(self, workflow: str, remaining: float) -> None:
+    def on_budget_remaining(self, workflow: str, remaining: float, **kwargs: Any) -> None:
         if self._metrics:
             self._metrics.set_budget_remaining(workflow, remaining)
 
