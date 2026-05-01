@@ -318,6 +318,56 @@ class TestRetryableStatusCodes:
             f"non-retryable status must not be retried, got {len(attempts)} attempts"
         )
 
+    async def test_engine_retries_timeout_error(self, mock_gateway: ProviderGateway) -> None:
+        """``TimeoutError`` from a step is treated as transient and retried
+        without consulting ``retryable_status_codes`` — timeouts have no
+        status code to inspect, so the engine retries until the budget
+        runs out (``engine.py:594-610``)."""
+        from agentloom.core.models import (
+            RetryConfig,
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+        from agentloom.steps.base import BaseStep
+
+        attempts: list[int] = []
+
+        class TimingOutStep(BaseStep):
+            async def execute(self, ctx) -> StepResult:  # type: ignore[no-untyped-def]
+                attempts.append(1)
+                raise TimeoutError("step took too long")
+
+        engine = WorkflowEngine(
+            workflow=WorkflowDefinition(
+                name="timeout-retry",
+                config=WorkflowConfig(provider="mock", model="mock-model"),
+                state={},
+                steps=[
+                    StepDefinition(
+                        id="s",
+                        type=StepType.LLM_CALL,
+                        prompt="hi",
+                        retry=RetryConfig(
+                            max_retries=2,
+                            backoff_base=1.0,
+                            backoff_max=0.0,
+                            jitter=False,
+                        ),
+                    ),
+                ],
+            ),
+            provider_gateway=mock_gateway,
+        )
+        engine.step_registry.register(StepType.LLM_CALL, TimingOutStep)
+        await engine.run()
+        # max_retries=2 means up to 3 attempts. The point of this test is the
+        # retry-count behaviour — the workflow-status mapping is exercised
+        # elsewhere; what matters here is that the timeout path consumed the
+        # full retry budget without consulting ``retryable_status_codes``.
+        assert len(attempts) == 3, f"TimeoutError should be retried, got {len(attempts)} attempts"
+
     async def test_engine_retries_retryable_status(self, mock_gateway: ProviderGateway) -> None:
         """When a step raises a 429, the engine retries up to max_retries."""
         from agentloom.core.models import (

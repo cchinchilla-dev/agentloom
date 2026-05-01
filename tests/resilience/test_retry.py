@@ -162,3 +162,45 @@ class TestRetryPolicyConfig:
         assert 429 in policy.retryable_status_codes
         assert 500 in policy.retryable_status_codes
         assert 503 in policy.retryable_status_codes
+
+
+class TestRetryWithPolicyNonRetryable:
+    """``retry_with_policy`` must short-circuit on exceptions whose status
+    code is not in ``policy.retryable_status_codes``. The break path at
+    ``retry.py:89-94`` is what enforces this — without it, a permanent
+    4xx would burn the full retry budget."""
+
+    async def test_non_retryable_status_breaks_immediately(self) -> None:
+        from agentloom.exceptions import ProviderError
+        from agentloom.resilience.retry import RetryPolicy, retry_with_policy
+
+        attempts: list[int] = []
+
+        async def always_400() -> str:
+            attempts.append(1)
+            raise ProviderError("mock", "permanent failure", status_code=400)
+
+        policy = RetryPolicy(max_retries=3, backoff_base=1.0, backoff_max=0.0, jitter=False)
+        with pytest.raises(ProviderError):
+            await retry_with_policy(always_400, policy, "smoke")
+
+        assert len(attempts) == 1, (
+            f"non-retryable status must not consume the retry budget, got {len(attempts)} attempts"
+        )
+
+    async def test_retryable_status_consumes_budget(self) -> None:
+        # Counterpart — a 429 must keep retrying until the budget runs out.
+        from agentloom.exceptions import RateLimitError
+        from agentloom.resilience.retry import RetryPolicy, retry_with_policy
+
+        attempts: list[int] = []
+
+        async def always_429() -> str:
+            attempts.append(1)
+            raise RateLimitError("mock", retry_after_s=0.0)
+
+        policy = RetryPolicy(max_retries=2, backoff_base=1.0, backoff_max=0.0, jitter=False)
+        with pytest.raises(RateLimitError):
+            await retry_with_policy(always_429, policy, "smoke")
+
+        assert len(attempts) == 3, "max_retries=2 means 3 total attempts"
