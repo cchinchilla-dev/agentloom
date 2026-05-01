@@ -336,3 +336,54 @@ class TestAnthropicReasoning:
             "budget_tokens": 4096,
         }
         await provider.close()
+
+    @respx.mock
+    async def test_stream_translates_thinking_config_to_payload(self) -> None:
+        # The stream path must exercise the same ``_translate_thinking_config``
+        # helper as ``complete``: ``ThinkingConfig`` arriving via
+        # ``thinking_config`` is rewritten to the wire-format ``thinking``
+        # payload before the request leaves the adapter.
+        from agentloom.core.models import ThinkingConfig
+
+        # Minimal SSE payload — message_start + message_delta with usage.
+        sse = (
+            'data: {"type":"message_start","message":{"model":"claude-opus-4",'
+            '"usage":{"input_tokens":3}}}\n\n'
+            'data: {"type":"content_block_delta","delta":{"text":"hi"}}\n\n'
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+            '"usage":{"output_tokens":1}}\n\n'
+        )
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, content=sse.encode())
+        )
+        provider = AnthropicProvider(api_key="k")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "solve"}],
+            model="claude-opus-4",
+            thinking_config=ThinkingConfig(enabled=True, budget_tokens=1024),
+        )
+        async for _ in sr:
+            pass
+        sent_payload = json.loads(route.calls[0].request.content)
+        assert sent_payload["thinking"] == {
+            "type": "enabled",
+            "budget_tokens": 1024,
+        }
+        # ``thinking_config`` must not survive into the wire payload.
+        assert "thinking_config" not in sent_payload
+        await provider.close()
+
+    def test_translate_thinking_config_respects_existing_thinking(self) -> None:
+        # When the caller already provided a raw ``thinking`` dict alongside
+        # ``thinking_config``, the raw form wins — the helper must not
+        # clobber it.
+        from agentloom.core.models import ThinkingConfig
+        from agentloom.providers.anthropic import _translate_thinking_config
+
+        extras: dict = {
+            "thinking": {"type": "enabled", "budget_tokens": 9999},
+            "thinking_config": ThinkingConfig(enabled=True, budget_tokens=128),
+        }
+        _translate_thinking_config(extras)
+        assert extras["thinking"] == {"type": "enabled", "budget_tokens": 9999}
+        assert "thinking_config" not in extras

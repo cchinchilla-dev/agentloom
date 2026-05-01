@@ -398,3 +398,4 @@ class TestGoogleProvider:
         assert gc["responseMimeType"] == "application/json"
         assert "tools" in captured
         assert "safetySettings" in captured
+
