@@ -11,6 +11,8 @@ AgentLoom ships with four providers. The gateway routes requests based on model 
 | Image input | :material-check: | :material-check: | :material-check: | :material-check: |
 | PDF input | :material-close: | :material-check: | :material-check: | :material-close: |
 | Audio input | :material-check: | :material-close: | :material-check: | :material-close: |
+| Reasoning token count | :material-check: (o-series, implicit) | :material-close: (rolled into `output_tokens`) | :material-check: (Gemini 2.5+, opt-in) | :material-close: (no `eval_count` split) |
+| Reasoning content (trace) | :material-close: (server-side only) | :material-check: (`type="thinking"` blocks) | :material-check: (`includeThoughts` opt-in) | :material-check: (Ollama 0.9+ `message.thinking`) |
 | Cost tracking | :material-check: | :material-check: | :material-check: | Free (local) |
 
 ## Configuration
@@ -116,6 +118,32 @@ steps:
 
 !!! warning "Provider support varies"
     Check the [capability matrix](#capability-matrix) above. Sending a PDF to OpenAI or audio to Anthropic will raise a `ProviderError`.
+
+## Reasoning models
+
+OpenAI o-series (`o1`, `o3`, `o4-mini`) and Anthropic Claude with extended thinking produce internal *reasoning tokens* before the final answer. Providers bill these at the output rate, so cost accounting must include them.
+
+`TokenUsage` exposes the count alongside the usual fields:
+
+```python
+usage.prompt_tokens          # input
+usage.completion_tokens      # visible output
+usage.reasoning_tokens       # provider-side chain-of-thought
+usage.billable_completion_tokens  # completion + reasoning
+```
+
+`calculate_cost()` charges `(prompt × input_rate) + ((completion + reasoning) × output_rate)` automatically, so workflow budgets and Prometheus cost metrics reflect the true spend.
+
+**OpenAI** — reasoning is implicit when an o-series model is selected. The adapter parses `completion_tokens_details.reasoning_tokens` from the response. The chain-of-thought trace is kept server-side and is never returned, so `ProviderResponse.reasoning_content` stays `None`.
+
+**Anthropic** — extended thinking is opt-in via the step-level `thinking` block (see [workflow YAML](workflow-yaml.md#llm_call)). `ThinkingConfig` translates to the `thinking: {type: "enabled", budget_tokens}` request payload, and `type="thinking"` content blocks are concatenated into `ProviderResponse.reasoning_content`. The Anthropic API does **not** surface a separate thinking-token count — extended-thinking volume is rolled into `usage.output_tokens` per the [Anthropic docs](https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking) — so `reasoning_tokens` stays `0` for this provider. Cost is automatically correct because the output rate is applied to `output_tokens` which already includes the thinking volume.
+
+**Google Gemini 2.5+** — opt-in via the same `thinking` block. `ThinkingConfig` translates to `generationConfig.thinkingConfig` with `thinkingBudget` (from `budget_tokens`), `thinkingLevel` (from `level`), and `includeThoughts` (from `capture_reasoning`). The adapter parses `usageMetadata.thoughtsTokenCount` (defaulting to `0` when the field is absent — Gemini omits it for non-thinking models and intermittently on `gemini-3-flash-preview`). When `includeThoughts=true`, parts marked `thought=true` are split into `reasoning_content` so the visible `content` stays clean.
+
+**Ollama 0.9+** — opt-in via `thinking`. `ThinkingConfig` translates to the top-level `think` request parameter (`<level>` when `level` is set, else `true`). The adapter surfaces `message.thinking` on `reasoning_content`. As a fallback for older models or calls without `think=true`, the adapter strips inline `<think>...</think>` tags from `content` and surfaces the captured trace the same way.
+
+!!! warning "Ollama caveat — no token split"
+    Ollama exposes a single `eval_count` for all output tokens regardless of whether thinking is active, so `reasoning_tokens` always reports `0` for this provider. Cost is unaffected (local models are free), but `billable_completion_tokens` will not reflect the true thinking volume.
 
 ## Security
 
