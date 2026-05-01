@@ -153,3 +153,23 @@ class TestFormatSpecOnContainers:
     def test_list_format_spec_with_data_supporting_spec(self) -> None:
         lst = DotAccessList([1, 2, 3])
         assert format(lst, "") == repr([1, 2, 3])
+
+    def test_dict_format_spec_non_empty_forwards_to_data(self) -> None:
+        # A non-empty spec hits the explicit ``return format(self._data, ...)``
+        # path. Use a string-formattable underlying scalar.
+        d = DotAccessDict({"x": "hi"})
+        # Spec ">5" right-aligns in 5 chars — repr-style strings don't accept
+        # this spec, so we wrap a list/dict body with a spec the underlying
+        # type accepts: empty string. Instead, exercise the branch via
+        # ``__format__`` directly with an empty-string sentinel that still
+        # passes the truthy guard? No — empty falls through to else. We need
+        # a non-empty spec that ``dict.__format__`` accepts: there is none.
+        # Cover the branch by stubbing ``self._data`` with a value that
+        # supports the spec.
+        d._data = "hi"  # type: ignore[assignment]
+        assert format(d, ">5") == "   hi"
+
+    def test_list_format_spec_non_empty_forwards_to_data(self) -> None:
+        lst = DotAccessList([1])
+        lst._data = "abc"  # type: ignore[assignment]
+        assert format(lst, ">5") == "  abc"

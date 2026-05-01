@@ -177,4 +177,6 @@ class TestNoopObserver:
         obs.on_mock_replay("wf", "s1", "step_id")
         obs.on_recording_capture("s1", "openai", "gpt-4o-mini", 1.2)
         obs.on_budget_remaining("wf", 0.5)
+        obs.on_circuit_state_change("openai", "closed", "open")
+        obs.on_approval_gate("s1", "wf", "approved")
         obs.shutdown()
