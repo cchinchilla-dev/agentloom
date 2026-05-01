@@ -42,6 +42,10 @@ _OPENAI_EXTRA_PAYLOAD_KEYS = frozenset(
         "tools",
         "tool_choice",
         "parallel_tool_calls",
+        # Accepted but ignored on the chat-completions endpoint — o-series
+        # reasoning is implicit in the model name. Allowing the kwarg keeps
+        # ``ThinkingConfig`` provider-uniform at the step layer.
+        "thinking_config",
     }
 )
 
@@ -123,6 +127,10 @@ class OpenAIProvider(BaseProvider):
         **kwargs: Any,
     ) -> ProviderResponse:
         extras = validate_extra_kwargs("openai", "complete", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
+        # ``thinking_config`` is accepted at the step layer for YAML
+        # uniformity but has no chat-completions equivalent — drop it
+        # before splatting extras into the request body.
+        extras.pop("thinking_config", None)
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
@@ -143,12 +151,22 @@ class OpenAIProvider(BaseProvider):
         data = response.json()
         content = data["choices"][0]["message"]["content"]
         usage_data = data.get("usage", {})
+        # o-series returns reasoning tokens under completion_tokens_details;
+        # ordinary gpt-* responses omit the field and resolve to 0.
+        details = usage_data.get("completion_tokens_details") or {}
+        reasoning_tokens = details.get("reasoning_tokens", 0) or 0
         usage = TokenUsage(
             prompt_tokens=usage_data.get("prompt_tokens", 0),
             completion_tokens=usage_data.get("completion_tokens", 0),
             total_tokens=usage_data.get("total_tokens", 0),
+            reasoning_tokens=reasoning_tokens,
         )
-        cost = calculate_cost(model, usage.prompt_tokens, usage.completion_tokens)
+        cost = calculate_cost(
+            model,
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+        )
 
         return ProviderResponse(
             content=content,
@@ -169,6 +187,7 @@ class OpenAIProvider(BaseProvider):
         **kwargs: Any,
     ) -> StreamResponse:
         extras = validate_extra_kwargs("openai", "stream", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
+        extras.pop("thinking_config", None)
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
@@ -211,13 +230,19 @@ class OpenAIProvider(BaseProvider):
                             sr.finish_reason = fr
                     usage_data = data.get("usage")
                     if usage_data:
+                        details = usage_data.get("completion_tokens_details") or {}
+                        reasoning_tokens = details.get("reasoning_tokens", 0) or 0
                         sr.usage = TokenUsage(
                             prompt_tokens=usage_data.get("prompt_tokens", 0),
                             completion_tokens=usage_data.get("completion_tokens", 0),
                             total_tokens=usage_data.get("total_tokens", 0),
+                            reasoning_tokens=reasoning_tokens,
                         )
                         sr.cost_usd = calculate_cost(
-                            model, sr.usage.prompt_tokens, sr.usage.completion_tokens
+                            model,
+                            sr.usage.prompt_tokens,
+                            sr.usage.completion_tokens,
+                            reasoning_tokens=sr.usage.reasoning_tokens,
                         )
 
         sr._set_iterator(_generate())

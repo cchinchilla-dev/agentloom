@@ -267,3 +267,44 @@ class TestOpenAIKwargsAllowlist:
                 not_a_real_param=True,
             )
         await provider.close()
+
+
+class TestReasoningTokens:
+    """o-series models report reasoning tokens under completion_tokens_details.
+    They must flow through TokenUsage and be billed at the output rate."""
+
+    @respx.mock
+    async def test_openai_o3_response_populates_reasoning_tokens(self) -> None:
+        response_body = {
+            "choices": [{"message": {"content": "42"}, "finish_reason": "stop"}],
+            "model": "o3-mini",
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 350,
+                "completion_tokens_details": {"reasoning_tokens": 200},
+            },
+        }
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=response_body)
+        )
+        provider = OpenAIProvider(api_key="k")
+        r = await provider.complete(
+            messages=[{"role": "user", "content": "think"}], model="o3-mini"
+        )
+        assert r.usage.reasoning_tokens == 200
+        assert r.usage.billable_completion_tokens == 250
+        await provider.close()
+
+    @respx.mock
+    async def test_reasoning_tokens_zero_when_provider_has_no_reasoning(self) -> None:
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = OpenAIProvider(api_key="k")
+        r = await provider.complete(
+            messages=[{"role": "user", "content": "hi"}], model="gpt-4o-mini"
+        )
+        assert r.usage.reasoning_tokens == 0
+        assert r.usage.billable_completion_tokens == r.usage.completion_tokens
+        await provider.close()
