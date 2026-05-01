@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import random
 import time
 import uuid
 from collections.abc import Callable
@@ -26,24 +25,16 @@ from agentloom.exceptions import (
     BudgetExceededError,
     PauseRequestedError,
     WorkflowError,
-    WorkflowTimeoutError,
+)
+from agentloom.resilience.retry import (
+    compute_backoff,
+    extract_status_code,
+    is_retryable_exception,
 )
 from agentloom.steps.base import BaseStep, StepContext
 from agentloom.steps.registry import StepRegistry, create_default_registry
 
 logger = logging.getLogger("agentloom.engine")
-
-
-def _jittered_backoff(base: float, attempt: int, maximum: float, jitter: bool) -> float:
-    """Exponential backoff with optional +/-25% jitter.
-
-    Centralized so step retry, timeout, and generic-exception paths share a
-    single implementation — matches ``resilience/retry.py``.
-    """
-    delay = min(base**attempt, maximum)
-    if jitter:
-        delay *= 1.0 + random.uniform(-0.25, 0.25)  # noqa: S311 — non-crypto jitter
-    return max(0.0, delay)
 
 
 def _extract_pause_error(exc: BaseException) -> PauseRequestedError | None:
@@ -382,37 +373,6 @@ class WorkflowEngine:
 
             return result
 
-        except BudgetExceededError as e:  # pragma: no cover — anyio wraps in ExceptionGroup
-            duration = (time.monotonic() - start) * 1000
-            await self._save_checkpoint("budget_exceeded")
-            if self.observer:
-                self.observer.on_workflow_end(
-                    workflow_name, "budget_exceeded", duration, 0, self._budget_spent
-                )
-            return WorkflowResult(
-                workflow_name=workflow_name,
-                status=WorkflowStatus.BUDGET_EXCEEDED,
-                step_results=await self.state.all_step_results(),
-                final_state=await self.state.get_state_snapshot(),
-                total_duration_ms=duration,
-                total_cost_usd=self._budget_spent,
-                error=str(e),
-            )
-
-        except WorkflowTimeoutError as e:  # pragma: no cover — anyio wraps in ExceptionGroup
-            duration = (time.monotonic() - start) * 1000
-            await self._save_checkpoint("timeout")
-            if self.observer:
-                self.observer.on_workflow_end(workflow_name, "timeout", duration, 0, 0.0)
-            return WorkflowResult(
-                workflow_name=workflow_name,
-                status=WorkflowStatus.TIMEOUT,
-                step_results=await self.state.all_step_results(),
-                final_state=await self.state.get_state_snapshot(),
-                total_duration_ms=duration,
-                error=str(e),
-            )
-
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
 
@@ -612,8 +572,13 @@ class WorkflowEngine:
                     )
                     return
 
+                # Soft-failure path: ``executor.execute`` returned a
+                # non-success result without raising. ``result.error`` is a
+                # string with no ``status_code`` to inspect, so the
+                # retryable-status-codes filter is intentionally skipped —
+                # treat the returned failure as transient and retry.
                 if attempt < max_retries:
-                    backoff = _jittered_backoff(
+                    backoff = compute_backoff(
                         step_def.retry.backoff_base,
                         attempt,
                         step_def.retry.backoff_max,
@@ -635,8 +600,10 @@ class WorkflowEngine:
                     status=StepStatus.TIMEOUT,
                     error=f"Step timed out after {step_def.timeout}s",
                 )
+                # Timeouts are transient by definition — always retry until
+                # the budget is exhausted, no status-code filter applies.
                 if attempt < max_retries:
-                    backoff = _jittered_backoff(
+                    backoff = compute_backoff(
                         step_def.retry.backoff_base,
                         attempt,
                         step_def.retry.backoff_max,
@@ -675,8 +642,20 @@ class WorkflowEngine:
                     status=StepStatus.FAILED,
                     error=str(e),
                 )
+                # Bail out on permanent failures (4xx that's not 429, etc.)
+                # before consuming the retry budget. Status-less exceptions
+                # are treated as transient and retried — see
+                # ``is_retryable_exception`` for the rule.
+                if not is_retryable_exception(e, step_def.retry.retryable_status_codes):
+                    logger.warning(
+                        "Step '%s' failed with non-retryable status %s; not retrying: %s",
+                        step_id,
+                        extract_status_code(e),
+                        e,
+                    )
+                    break
                 if attempt < max_retries:
-                    backoff = _jittered_backoff(
+                    backoff = compute_backoff(
                         step_def.retry.backoff_base,
                         attempt,
                         step_def.retry.backoff_max,

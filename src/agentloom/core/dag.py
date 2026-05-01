@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 from collections import defaultdict, deque
 
 from agentloom.exceptions import ValidationError
@@ -116,27 +117,29 @@ class DAG:
         return reachable
 
     def topological_sort(self) -> list[str]:
-        """Return nodes in topological order. Raises ValidationError if cyclic."""
+        """Return nodes in topological order. Raises ValidationError if cyclic.
+
+        Kahn's algorithm with a ``heapq`` min-heap ordered by node id — same
+        deterministic ordering as the previous list-sort implementation, but
+        O((V+E) log V) instead of O(V^2 log V) because we no longer re-sort
+        the queue inside the loop.
+        """
         in_degree: dict[str, int] = {n: 0 for n in self._nodes}
         for node in self._nodes:
             for succ in self._edges.get(node, set()):
                 in_degree[succ] = in_degree.get(succ, 0) + 1
 
-        # NOTE: using sorted list as a priority queue — O(n log n) per iteration.
-        # Fine for typical workflow sizes (<100 nodes). For large DAGs, replace
-        # with heapq or collections.deque.
-        queue = [n for n in self._nodes if in_degree[n] == 0]
-        queue.sort()  # Deterministic order for same-priority nodes
+        heap: list[str] = [n for n in self._nodes if in_degree[n] == 0]
+        heapq.heapify(heap)
         result: list[str] = []
 
-        while queue:
-            node = queue.pop(0)
+        while heap:
+            node = heapq.heappop(heap)
             result.append(node)
-            for succ in sorted(self._edges.get(node, set())):
+            for succ in self._edges.get(node, set()):
                 in_degree[succ] -= 1
                 if in_degree[succ] == 0:
-                    queue.append(succ)
-            queue.sort()
+                    heapq.heappush(heap, succ)
 
         if len(result) != len(self._nodes):
             raise ValidationError("Workflow DAG contains a cycle")

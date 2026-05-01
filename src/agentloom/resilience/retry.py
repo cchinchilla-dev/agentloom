@@ -1,9 +1,9 @@
 """Retry with exponential backoff and jitter.
 
-NOTE: retry_with_policy is not yet called by WorkflowEngine, which
-reimplements retry inline.  Planned refactor will wire the engine
-to use this function for consistent jitter and retryable-status-code
-handling.
+The backoff and retryability primitives (`compute_backoff`,
+`is_retryable_exception`) are imported by ``core.engine._execute_step``
+so the engine and ``retry_with_policy`` share a single source of truth
+for retry semantics — no parallel implementations to drift apart.
 """
 
 from __future__ import annotations
@@ -19,6 +19,59 @@ from pydantic import BaseModel
 T = TypeVar("T")
 logger = logging.getLogger("agentloom.resilience")
 
+DEFAULT_RETRYABLE_STATUS_CODES: list[int] = [429, 500, 502, 503, 504]
+
+
+def compute_backoff(base: float, attempt: int, maximum: float, jitter: bool) -> float:
+    """Exponential backoff capped at ``maximum`` with optional ±25% jitter.
+
+    Used by both ``retry_with_policy`` and ``WorkflowEngine._execute_step``
+    so step retries and gateway retries use the same waveform.
+    """
+    delay = min(base**attempt, maximum)
+    if jitter:
+        delay *= 1.0 + random.uniform(-0.25, 0.25)  # noqa: S311 — non-crypto jitter
+    return max(0.0, delay)
+
+
+def extract_status_code(exc: BaseException) -> int | None:
+    """Return the HTTP status carried by *exc*, or ``None`` if it has none.
+
+    Handles three common shapes:
+
+    - ``ProviderError`` / ``RateLimitError`` expose ``status_code`` directly.
+    - ``httpx.HTTPStatusError`` (and its subclasses) carry the status under
+      ``exc.response.status_code`` — the bare exception has no
+      ``status_code`` attribute, so a naive ``getattr`` would silently miss
+      it and treat the failure as transient.
+    - Everything else (network errors, generic provider failures, parser
+      hiccups) returns ``None`` and the caller can treat it as transient.
+    """
+    code = getattr(exc, "status_code", None)
+    if code is not None:
+        return int(code)
+    response = getattr(exc, "response", None)
+    if response is not None:
+        rcode = getattr(response, "status_code", None)
+        if rcode is not None:
+            return int(rcode)
+    return None
+
+
+def is_retryable_exception(exc: BaseException, codes: list[int]) -> bool:
+    """Return True if *exc* should trigger a retry under *codes*.
+
+    If *exc* exposes a status code via ``exc.status_code`` or
+    ``exc.response.status_code`` (covers ``ProviderError``,
+    ``RateLimitError``, and ``httpx.HTTPStatusError``), the code must be in
+    *codes*. Exceptions without a status code are retryable by default —
+    a network error or generic provider failure is treated as transient.
+    """
+    code = extract_status_code(exc)
+    if code is None:
+        return True
+    return code in codes
+
 
 class RetryPolicy(BaseModel):
     """Configuration for retry behavior."""
@@ -27,7 +80,7 @@ class RetryPolicy(BaseModel):
     backoff_base: float = 2.0
     backoff_max: float = 60.0
     jitter: bool = True
-    retryable_status_codes: list[int] = [429, 500, 502, 503, 504]
+    retryable_status_codes: list[int] = DEFAULT_RETRYABLE_STATUS_CODES
 
 
 async def retry_with_policy(
@@ -46,7 +99,8 @@ async def retry_with_policy(
         Result of the coroutine.
 
     Raises:
-        The last exception if all retries are exhausted.
+        The last exception if all retries are exhausted, or immediately
+        if the exception is not retryable under ``policy.retryable_status_codes``.
     """
     last_exception: Exception | None = None
 
@@ -56,17 +110,20 @@ async def retry_with_policy(
         except Exception as e:
             last_exception = e
 
+            if not is_retryable_exception(e, policy.retryable_status_codes):
+                logger.debug(
+                    "%s failed with non-retryable status %s; giving up",
+                    operation_name,
+                    extract_status_code(e),
+                )
+                break
+
             if attempt >= policy.max_retries:
                 break
 
-            backoff = min(
-                policy.backoff_base**attempt,
-                policy.backoff_max,
+            backoff = compute_backoff(
+                policy.backoff_base, attempt, policy.backoff_max, policy.jitter
             )
-
-            if policy.jitter:
-                backoff *= 1.0 + random.uniform(-0.25, 0.25)  # noqa: S311
-
             logger.warning(
                 "%s failed (attempt %d/%d), retrying in %.1fs: %s",
                 operation_name,

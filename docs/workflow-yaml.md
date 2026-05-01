@@ -197,6 +197,8 @@ Reasoning tokens are billed at the output rate. `TokenUsage.reasoning_tokens` an
 | `max_retries` | `int` | `3` | Number of retry attempts |
 | `backoff_base` | `float` | `2.0` | Exponential backoff base (wait = base^attempt) |
 | `backoff_max` | `float` | `60.0` | Maximum wait between retries in seconds |
+| `jitter` | `bool` | `true` | Apply ±25% jitter to each backoff so concurrent retries don't cluster |
+| `retryable_status_codes` | `list[int]` | `[429, 500, 502, 503, 504]` | Provider status codes that trigger a retry. Other 4xx (e.g. 400/401/403/404) bail out immediately so the retry budget isn't burned on permanent failures. Status-less exceptions (network errors, generic provider failures) are always treated as transient and retried. |
 
 ### `router`
 

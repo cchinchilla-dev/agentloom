@@ -98,6 +98,29 @@ class TestTopologicalSort:
         assert order.index("a") < order.index("c")
         assert order.index("b") < order.index("c")
 
+    def test_topological_sort_deterministic_order(self) -> None:
+        """Siblings (no edges between them) come out in alphabetical order.
+
+        Pins the deterministic tie-break that the heapq min-heap inherits
+        from the previous sorted-list implementation — workflows shouldn't
+        observe any execution-plan reshuffling after the perf rewrite.
+        """
+        dag = DAG.from_steps(
+            [
+                ("d", []),
+                ("a", []),
+                ("c", []),
+                ("b", []),
+                ("z", ["a", "b", "c", "d"]),
+                ("y", ["a", "b", "c", "d"]),
+            ]
+        )
+        order = dag.topological_sort()
+        # Independent roots come out alphabetically before any dependent.
+        assert order[:4] == ["a", "b", "c", "d"]
+        # Dependents (also siblings of each other) come out alphabetically.
+        assert order[4:] == ["y", "z"]
+
     def test_single_node(self) -> None:
         dag = DAG()
         dag.add_node("a")

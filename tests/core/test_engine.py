@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import WorkflowDefinition
-from agentloom.core.results import StepStatus, WorkflowStatus
+from agentloom.core.results import StepResult, StepStatus, WorkflowStatus
 from agentloom.providers.gateway import ProviderGateway
 from tests.conftest import MockProvider
 
@@ -204,34 +204,216 @@ class TestRouterWorkflow:
 
 
 class TestJitteredBackoff:
-    """Verify the retry backoff helper applies jitter."""
+    """Verify the retry backoff helper applies jitter.
+
+    Lives now in ``resilience.retry.compute_backoff`` and is consumed by
+    both ``WorkflowEngine._execute_step`` and ``retry_with_policy``.
+    """
 
     def test_jitter_varies_across_calls(self) -> None:
-        from agentloom.core.engine import _jittered_backoff
+        from agentloom.resilience.retry import compute_backoff
 
-        values = {_jittered_backoff(2.0, 3, 60.0, jitter=True) for _ in range(50)}
+        values = {compute_backoff(2.0, 3, 60.0, jitter=True) for _ in range(50)}
         # 50 samples over a +/-25% window must yield more than one unique value.
         assert len(values) > 1
 
     def test_jitter_bounded_within_range(self) -> None:
-        from agentloom.core.engine import _jittered_backoff
+        from agentloom.resilience.retry import compute_backoff
 
         # base=2.0, attempt=3 => raw=8.0, jitter window = [6.0, 10.0]
         for _ in range(100):
-            d = _jittered_backoff(2.0, 3, 60.0, jitter=True)
+            d = compute_backoff(2.0, 3, 60.0, jitter=True)
             assert 6.0 <= d <= 10.0
 
     def test_no_jitter_is_deterministic(self) -> None:
-        from agentloom.core.engine import _jittered_backoff
+        from agentloom.resilience.retry import compute_backoff
 
-        assert _jittered_backoff(2.0, 3, 60.0, jitter=False) == 8.0
+        assert compute_backoff(2.0, 3, 60.0, jitter=False) == 8.0
 
     def test_backoff_capped_at_maximum(self) -> None:
-        from agentloom.core.engine import _jittered_backoff
+        from agentloom.resilience.retry import compute_backoff
 
         # raw = 2**10 = 1024, capped at 10.
-        d = _jittered_backoff(2.0, 10, 10.0, jitter=False)
+        d = compute_backoff(2.0, 10, 10.0, jitter=False)
         assert d == 10.0
+
+
+class TestRetryableStatusCodes:
+    """Verify ``RetryConfig.retryable_status_codes`` is consulted on the
+    engine retry path. Status-less exceptions retry by default (transient
+    network errors); status-coded exceptions retry only when the code is
+    in the list."""
+
+    def test_is_retryable_with_status_in_list(self) -> None:
+        from agentloom.exceptions import RateLimitError
+        from agentloom.resilience.retry import is_retryable_exception
+
+        exc = RateLimitError("openai", retry_after_s=1.0)
+        assert exc.status_code == 429
+        assert is_retryable_exception(exc, [429, 500, 502, 503, 504]) is True
+
+    def test_is_retryable_with_status_not_in_list(self) -> None:
+        from agentloom.exceptions import ProviderError
+        from agentloom.resilience.retry import is_retryable_exception
+
+        exc = ProviderError("openai", "bad request", status_code=400)
+        assert is_retryable_exception(exc, [429, 500, 502, 503, 504]) is False
+
+    def test_is_retryable_without_status_defaults_true(self) -> None:
+        from agentloom.resilience.retry import is_retryable_exception
+
+        # Generic exception with no status_code attribute — treated as
+        # transient (network error, parser hiccup) and retried.
+        assert is_retryable_exception(RuntimeError("boom"), [429, 500]) is True
+
+    async def test_engine_does_not_retry_non_retryable_status(
+        self, mock_gateway: ProviderGateway
+    ) -> None:
+        """When a step raises a ProviderError with a status not in
+        retryable_status_codes, the engine must surface FAILED on the
+        first attempt — no retries consumed."""
+        from agentloom.core.models import (
+            RetryConfig,
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+        from agentloom.exceptions import ProviderError
+        from agentloom.steps.base import BaseStep
+
+        attempts: list[int] = []
+
+        class FailingStep(BaseStep):
+            async def execute(self, ctx) -> StepResult:  # type: ignore[no-untyped-def]
+                attempts.append(1)
+                raise ProviderError("mock", "permanent failure", status_code=400)
+
+        engine = WorkflowEngine(
+            workflow=WorkflowDefinition(
+                name="non-retryable",
+                config=WorkflowConfig(provider="mock", model="mock-model"),
+                state={},
+                steps=[
+                    StepDefinition(
+                        id="s",
+                        type=StepType.LLM_CALL,
+                        prompt="hi",
+                        retry=RetryConfig(
+                            max_retries=3,
+                            backoff_base=1.0,
+                            backoff_max=0.0,
+                            jitter=False,
+                            retryable_status_codes=[429, 500, 502, 503, 504],
+                        ),
+                    ),
+                ],
+            ),
+            provider_gateway=mock_gateway,
+        )
+        engine.step_registry.register(StepType.LLM_CALL, FailingStep)
+        result = await engine.run()
+        assert result.status == WorkflowStatus.FAILED
+        assert len(attempts) == 1, (
+            f"non-retryable status must not be retried, got {len(attempts)} attempts"
+        )
+
+    async def test_engine_retries_timeout_error(self, mock_gateway: ProviderGateway) -> None:
+        """``TimeoutError`` from a step is treated as transient and retried
+        without consulting ``retryable_status_codes`` — timeouts have no
+        status code to inspect, so the engine retries until the budget
+        runs out (``engine.py:594-610``)."""
+        from agentloom.core.models import (
+            RetryConfig,
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+        from agentloom.steps.base import BaseStep
+
+        attempts: list[int] = []
+
+        class TimingOutStep(BaseStep):
+            async def execute(self, ctx) -> StepResult:  # type: ignore[no-untyped-def]
+                attempts.append(1)
+                raise TimeoutError("step took too long")
+
+        engine = WorkflowEngine(
+            workflow=WorkflowDefinition(
+                name="timeout-retry",
+                config=WorkflowConfig(provider="mock", model="mock-model"),
+                state={},
+                steps=[
+                    StepDefinition(
+                        id="s",
+                        type=StepType.LLM_CALL,
+                        prompt="hi",
+                        retry=RetryConfig(
+                            max_retries=2,
+                            backoff_base=1.0,
+                            backoff_max=0.0,
+                            jitter=False,
+                        ),
+                    ),
+                ],
+            ),
+            provider_gateway=mock_gateway,
+        )
+        engine.step_registry.register(StepType.LLM_CALL, TimingOutStep)
+        await engine.run()
+        # max_retries=2 means up to 3 attempts. The point of this test is the
+        # retry-count behaviour — the workflow-status mapping is exercised
+        # elsewhere; what matters here is that the timeout path consumed the
+        # full retry budget without consulting ``retryable_status_codes``.
+        assert len(attempts) == 3, f"TimeoutError should be retried, got {len(attempts)} attempts"
+
+    async def test_engine_retries_retryable_status(self, mock_gateway: ProviderGateway) -> None:
+        """When a step raises a 429, the engine retries up to max_retries."""
+        from agentloom.core.models import (
+            RetryConfig,
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+        from agentloom.exceptions import RateLimitError
+        from agentloom.steps.base import BaseStep
+
+        attempts: list[int] = []
+
+        class FlakyStep(BaseStep):
+            async def execute(self, ctx) -> StepResult:  # type: ignore[no-untyped-def]
+                attempts.append(1)
+                raise RateLimitError("mock", retry_after_s=0.0)
+
+        engine = WorkflowEngine(
+            workflow=WorkflowDefinition(
+                name="retryable",
+                config=WorkflowConfig(provider="mock", model="mock-model"),
+                state={},
+                steps=[
+                    StepDefinition(
+                        id="s",
+                        type=StepType.LLM_CALL,
+                        prompt="hi",
+                        retry=RetryConfig(
+                            max_retries=2,
+                            backoff_base=1.0,
+                            backoff_max=0.0,
+                            jitter=False,
+                            retryable_status_codes=[429, 500],
+                        ),
+                    ),
+                ],
+            ),
+            provider_gateway=mock_gateway,
+        )
+        engine.step_registry.register(StepType.LLM_CALL, FlakyStep)
+        result = await engine.run()
+        assert result.status == WorkflowStatus.FAILED
+        # max_retries=2 means up to 3 attempts total (initial + 2 retries).
+        assert len(attempts) == 3, f"429 should be retried, got {len(attempts)} attempts"
 
 
 class TestRouterSkipCascade:
