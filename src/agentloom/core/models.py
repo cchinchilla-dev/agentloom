@@ -62,6 +62,33 @@ class WebhookConfig(BaseModel):
     timeout: float = 30.0
 
 
+class ThinkingConfig(BaseModel):
+    """Reasoning / thinking configuration for a step.
+
+    Activates provider-side reasoning from YAML so a workflow author doesn't
+    have to drop into Python kwargs. The same config is translated per
+    provider:
+
+    - **OpenAI o-series** — reasoning is implicit in the model name; this
+      config is currently ignored (kept here so the YAML stays uniform).
+    - **Anthropic** — sends ``thinking: {type: "enabled", budget_tokens}``.
+    - **Google Gemini 2.5+** — sends ``generationConfig.thinkingConfig``
+      with ``thinkingBudget`` (from ``budget_tokens``), ``thinkingLevel``
+      (from ``level``), ``includeThoughts`` (from ``capture_reasoning``).
+    - **Ollama 0.9+** — sends top-level ``think: <level>`` if ``level`` is
+      set, else ``think: true``.
+
+    ``capture_reasoning`` controls whether the chain-of-thought trace is
+    exposed via ``ProviderResponse.reasoning_content`` (Anthropic / Gemini /
+    Ollama). OpenAI keeps the trace server-side regardless.
+    """
+
+    enabled: bool = False
+    budget_tokens: int | None = None
+    level: Literal["low", "medium", "high"] | None = None
+    capture_reasoning: bool = True
+
+
 class StepDefinition(BaseModel):
     """Definition of a single workflow step."""
 
@@ -105,6 +132,9 @@ class StepDefinition(BaseModel):
     # Per-step config
     timeout: float | None = None
     retry: RetryConfig = Field(default_factory=RetryConfig)
+
+    # Reasoning / extended thinking
+    thinking: ThinkingConfig | None = None
 
 
 class SandboxConfig(BaseModel):
