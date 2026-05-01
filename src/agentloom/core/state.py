@@ -117,12 +117,6 @@ class StateManager:
     def _set_sync_unsafe(self, key: str, value: Any) -> None:
         self._set_nested(self._state, key, value)
 
-    # Backwards-compatible aliases. The public names stay for tooling that
-    # already imports them, but they route through the underscored helpers
-    # so the lock-bypass risk is documented at the real implementation.
-    get_sync = _get_sync_unsafe
-    set_sync = _set_sync_unsafe
-
     @property
     def state(self) -> dict[str, Any]:
         """Raw state dict — **read-only snapshot use only**.

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bound the gateway candidate cache with LRU eviction so long-lived workflows do not accumulate stale provider/model entries — default 1024 entries, override via `AGENTLOOM_CANDIDATE_CACHE_MAX` env var (#109).
 - DAG correctness — skip propagation closes over transitive successors via `dag.transitive_successors`; pause requests no longer raise inside `_execute_step` and instead surface after the layer finishes; pre-dispatch budget gate rejects steps before they consume more budget; cycle detection switched to an iterative algorithm so deeply chained DAGs no longer hit `RecursionError`; `_set_nested` now reports auto-expansion of intermediate lists with a clear message (#108).
 - Template hardening — opt-in strict mode for template rendering: `SafeFormatDict(strict=True)` and `DotAccessDict(strict=True)` raise `TemplateError` on missing keys; default behaviour (warn + render empty) is unchanged. `__format__` now honours `format_spec`. `ToolStep._resolve_args` renders `{state.x}` substitutions consistently with `llm_call` (#110).
+- State and approval-gate cleanup — the unsafe `state_manager.{set_sync,get_sync}` accessors are renamed to `_set_sync_unsafe` / `_get_sync_unsafe` (legacy names removed in this release); approval-gate UX moved out of the step body into the CLI rendering layer for consistency (#110).
 
 ### Security
 

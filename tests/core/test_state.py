@@ -53,14 +53,25 @@ class TestGetSet:
         assert await sm.get("a") == 1
 
     def test_sync_get_set(self) -> None:
+        # Internal-only sync accessors. See StateManager.{_get,_set}_sync_unsafe
+        # docstring — these bypass the async lock and must not be used from
+        # concurrent code paths.
         sm = StateManager(initial_state={"key": "val"})
-        assert sm.get_sync("key") == "val"
-        sm.set_sync("key", "new_val")
-        assert sm.get_sync("key") == "new_val"
+        assert sm._get_sync_unsafe("key") == "val"
+        sm._set_sync_unsafe("key", "new_val")
+        assert sm._get_sync_unsafe("key") == "new_val"
 
     def test_state_property(self) -> None:
         sm = StateManager(initial_state={"x": 42})
         assert sm.state["x"] == 42
+
+    def test_public_sync_aliases_removed(self) -> None:
+        # The unsafe sync accessors are intentionally underscored. Public
+        # `get_sync` / `set_sync` aliases were dropped in 0.5.0 to avoid
+        # advertising a lock-bypass API surface.
+        sm = StateManager()
+        assert not hasattr(sm, "get_sync")
+        assert not hasattr(sm, "set_sync")
 
 
 class TestDottedKeys:
@@ -90,8 +101,8 @@ class TestDottedKeys:
 
     def test_sync_dotted_keys(self) -> None:
         sm = StateManager()
-        sm.set_sync("config.debug", True)
-        assert sm.get_sync("config.debug") is True
+        sm._set_sync_unsafe("config.debug", True)
+        assert sm._get_sync_unsafe("config.debug") is True
 
 
 class TestStepResults:
@@ -218,12 +229,12 @@ class TestArrayIndexPaths:
 
     def test_sync_get_with_index(self) -> None:
         sm = StateManager(initial_state={"items": ["a", "b"]})
-        assert sm.get_sync("items[0]") == "a"
+        assert sm._get_sync_unsafe("items[0]") == "a"
 
     def test_sync_set_with_index(self) -> None:
         sm = StateManager(initial_state={"items": ["old"]})
-        sm.set_sync("items[0]", "new")
-        assert sm.get_sync("items[0]") == "new"
+        sm._set_sync_unsafe("items[0]", "new")
+        assert sm._get_sync_unsafe("items[0]") == "new"
 
     async def test_empty_path_raises(self) -> None:
         sm = StateManager()
@@ -281,7 +292,7 @@ class TestCheckpoint:
         await sm.save_checkpoint(checkpoint_path)
 
         restored = await StateManager.from_checkpoint(checkpoint_path)
-        assert restored.get_sync("key") == "value"
+        assert restored._get_sync_unsafe("key") == "value"
 
     async def test_load_checkpoint_restores_step_results(self, tmp_path: Path) -> None:
         sm = StateManager()

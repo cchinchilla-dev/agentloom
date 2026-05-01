@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 import time
 
 from agentloom.core.results import StepResult, StepStatus
@@ -21,6 +20,12 @@ class ApprovalGateStep(BaseStep):
     If a ``notify`` webhook is configured on the step definition, a
     POST request is sent before pausing so external systems (Slack, CI,
     dashboards) can act on the pending approval.
+
+    The step body intentionally does **not** write to stdout/stderr — UX
+    rendering is the CLI's job. Under parallel DAG execution two gates
+    pausing concurrently used to interleave their prompts; surfacing the
+    pause via ``PauseRequestedError`` and letting the CLI render after
+    `engine.run()` returns avoids the race entirely.
     """
 
     async def execute(self, context: StepContext) -> StepResult:
@@ -38,12 +43,6 @@ class ApprovalGateStep(BaseStep):
                 if hook:
                     hook(step.id, context.workflow_name, "pending")
 
-            print(
-                f"\n[APPROVAL REQUIRED] Step '{step.id}' is waiting for approval.\n"
-                f"  Resume with: agentloom resume <run_id> --approve\n"
-                f"  Or reject:   agentloom resume <run_id> --reject\n",
-                file=sys.stderr,
-            )
             raise PauseRequestedError(step.id, f"Approval required at step '{step.id}'")
 
         if decision not in ("approved", "rejected"):
