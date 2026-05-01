@@ -127,3 +127,34 @@ class TestNoopIntegration:
 
             histogram.record(150.0, attributes={"status": "success"})
             span.set_status("OK")
+
+
+class TestNoopObserver:
+    """NoopObserver must implement every hook of WorkflowObserver so a
+    caller can pass it in as a safe default with no AttributeError risk."""
+
+    def test_has_all_hooks_of_workflow_observer(self) -> None:
+        from agentloom.observability.noop import NoopObserver
+        from agentloom.observability.observer import WorkflowObserver
+
+        required = {
+            name
+            for name in dir(WorkflowObserver)
+            if not name.startswith("_") and callable(getattr(WorkflowObserver, name))
+        }
+        provided = {
+            name
+            for name in dir(NoopObserver)
+            if not name.startswith("_") and callable(getattr(NoopObserver, name))
+        }
+        missing = required - provided
+        assert missing == set(), f"NoopObserver missing hooks: {missing}"
+
+    def test_every_hook_tolerates_extra_kwargs(self) -> None:
+        from agentloom.observability.noop import NoopObserver
+
+        obs = NoopObserver()
+        obs.on_workflow_start("wf", new_future_arg=True)
+        obs.on_step_start("s1", "llm_call", future_extra=1)
+        obs.on_step_end("s1", "llm_call", "success", 1.0, future_extra=True, newer_arg="x")
+        obs.on_webhook_delivery("s1", "wf", "success", 0.1, future_extra=True)

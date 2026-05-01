@@ -142,3 +142,50 @@ class TestSubworkflowStep:
         )
         with pytest.raises(Exception, match="Invalid inline subworkflow"):
             await step.execute(ctx)
+
+
+class TestSubworkflowObservability:
+    """Parent observer must receive events from the child engine."""
+
+    async def test_child_observer_receives_events(self, mock_gateway) -> None:
+        gateway = mock_gateway
+        from agentloom.core.models import StepDefinition, StepType
+        from agentloom.core.state import StateManager
+        from agentloom.steps.base import StepContext
+        from agentloom.steps.subworkflow import SubworkflowStep
+
+        events: list[tuple[str, tuple]] = []
+
+        class Recorder:
+            def __getattr__(self, name):
+                def _hook(*args, **_kwargs):
+                    events.append((name, args))
+
+                return _hook
+
+        observer = Recorder()
+        inline = {
+            "name": "child",
+            "config": {"provider": "mock", "model": "mock-model"},
+            "steps": [
+                {"id": "c", "type": "llm_call", "prompt": "hi", "output": "out"},
+            ],
+        }
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="sub", type=StepType.SUBWORKFLOW, workflow_inline=inline
+            ),
+            state_manager=StateManager(),
+            provider_gateway=gateway,
+            workflow_model="mock-model",
+            observer=observer,
+            run_id="parent-run",
+        )
+        await SubworkflowStep().execute(ctx)
+
+        seen = {name for name, _ in events}
+        assert "on_workflow_start" in seen
+        assert "on_workflow_end" in seen
+        # Child step events surface to the parent observer.
+        assert "on_step_start" in seen
+        assert "on_step_end" in seen

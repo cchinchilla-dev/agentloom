@@ -105,7 +105,9 @@ class TestSendWebhook:
             ]
         )
         config = WebhookConfig(url="https://hooks.example.com/wh", timeout=1.0)
-        await send_webhook(config, wh_context)
+        # Exercise the full retry schedule (2s + 4s backoff) by lifting the
+        # deadline above the 5s default.
+        await send_webhook(config, wh_context, deadline_s=30.0)
         assert route.call_count == 3
 
     @respx.mock
@@ -113,7 +115,7 @@ class TestSendWebhook:
     async def test_all_retries_exhausted(self, wh_context: WebhookContext) -> None:
         route = respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(500))
         config = WebhookConfig(url="https://hooks.example.com/wh", timeout=1.0)
-        await send_webhook(config, wh_context)
+        await send_webhook(config, wh_context, deadline_s=30.0)
         assert route.call_count == 3
 
     @respx.mock
@@ -136,9 +138,22 @@ class TestSendWebhook:
         respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(500))
         config = WebhookConfig(url="https://hooks.example.com/wh", timeout=0.5)
         observer = MagicMock()
-        await send_webhook(config, wh_context, observer=observer)
+        await send_webhook(config, wh_context, observer=observer, deadline_s=30.0)
         observer.on_webhook_delivery.assert_called_once()
         args = observer.on_webhook_delivery.call_args[0]
         assert args[0] == "approve_draft"
         assert args[1] == "email-review"
         assert args[2] == "failed"
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_deadline_enforced(self, wh_context: WebhookContext) -> None:
+        """A slow endpoint must not block the caller past ``deadline_s``."""
+        respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(500))
+        config = WebhookConfig(url="https://hooks.example.com/wh", timeout=1.0)
+        observer = MagicMock()
+        # 1s deadline vs. 2s+4s retry schedule → should timeout fast.
+        await send_webhook(config, wh_context, observer=observer, deadline_s=1.0)
+        observer.on_webhook_delivery.assert_called_once()
+        args = observer.on_webhook_delivery.call_args[0]
+        assert args[2] == "timeout"

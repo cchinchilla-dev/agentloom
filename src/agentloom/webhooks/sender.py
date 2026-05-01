@@ -65,62 +65,88 @@ def _build_payload(config: WebhookConfig, context: WebhookContext) -> str:
     return json.dumps(payload)
 
 
-async def send_webhook(
-    config: WebhookConfig, context: WebhookContext, observer: WebhookObserver | None = None
-) -> None:
-    """POST a webhook notification with best-effort retry.
+_DEFAULT_DEADLINE_S = 5.0
 
-    Never raises — errors are logged so the calling step can still pause
-    without being blocked by webhook failures.
+
+async def send_webhook(
+    config: WebhookConfig,
+    context: WebhookContext,
+    observer: WebhookObserver | None = None,
+    *,
+    deadline_s: float = _DEFAULT_DEADLINE_S,
+) -> None:
+    """POST a webhook notification with best-effort retry, deadline-bounded.
+
+    The total retry window is capped by *deadline_s* (default 5 s) so a
+    webhook storm can never block a workflow for the 28 s of the raw retry
+    schedule. Never raises — timeouts and errors are logged so the calling
+    step can still pause even if the webhook endpoint is misbehaving.
     """
     import time
 
     import anyio
 
-    payload = _build_payload(config, context)
-    headers = {"Content-Type": "application/json", **config.headers}
-    t0 = time.monotonic()
+    async def _inner() -> None:
+        payload = _build_payload(config, context)
+        headers = {"Content-Type": "application/json", **config.headers}
+        t0 = time.monotonic()
 
-    for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            async with httpx.AsyncClient(timeout=config.timeout) as client:
-                resp = await client.post(config.url, content=payload, headers=headers)
-                resp.raise_for_status()
-            latency = time.monotonic() - t0
-            logger.info(
-                "Webhook delivered to %s (step=%s, run=%s)",
-                config.url,
-                context.step_id,
-                context.run_id,
-            )
-            if observer:
-                observer.on_webhook_delivery(
-                    context.step_id, context.workflow_name, "success", latency
-                )
-            return
-        except Exception as exc:
-            if attempt < _MAX_RETRIES:
-                backoff = _BACKOFF_BASE**attempt
-                logger.warning(
-                    "Webhook attempt %d/%d failed for %s: %s — retrying in %.1fs",
-                    attempt,
-                    _MAX_RETRIES,
-                    config.url,
-                    exc,
-                    backoff,
-                )
-                logger.debug("Webhook retry traceback", exc_info=True)
-                await anyio.sleep(backoff)
-            else:
+        for attempt in range(1, _MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=config.timeout) as client:
+                    resp = await client.post(config.url, content=payload, headers=headers)
+                    resp.raise_for_status()
                 latency = time.monotonic() - t0
-                logger.warning(
-                    "Webhook delivery failed after %d attempts for %s: %s",
-                    _MAX_RETRIES,
+                logger.info(
+                    "Webhook delivered to %s (step=%s, run=%s)",
                     config.url,
-                    exc,
+                    context.step_id,
+                    context.run_id,
                 )
-                logger.debug("Webhook final failure traceback", exc_info=True)
                 if observer:
                     observer.on_webhook_delivery(
-                        context.step_id, context.workflow_name, "failed", latency
+                        context.step_id, context.workflow_name, "success", latency
                     )
+                return
+            except Exception as exc:
+                if attempt < _MAX_RETRIES:
+                    backoff = _BACKOFF_BASE**attempt
+                    logger.warning(
+                        "Webhook attempt %d/%d failed for %s: %s — retrying in %.1fs",
+                        attempt,
+                        _MAX_RETRIES,
+                        config.url,
+                        exc,
+                        backoff,
+                    )
+                    logger.debug("Webhook retry traceback", exc_info=True)
+                    await anyio.sleep(backoff)
+                else:
+                    latency = time.monotonic() - t0
+                    logger.warning(
+                        "Webhook delivery failed after %d attempts for %s: %s",
+                        _MAX_RETRIES,
+                        config.url,
+                        exc,
+                    )
+                    logger.debug("Webhook final failure traceback", exc_info=True)
+                    if observer:
+                        observer.on_webhook_delivery(
+                            context.step_id, context.workflow_name, "failed", latency
+                        )
+
+    t_outer = time.monotonic()
+    try:
+        with anyio.fail_after(deadline_s):
+            await _inner()
+    except TimeoutError:
+        latency = time.monotonic() - t_outer
+        logger.warning(
+            "Webhook delivery to %s exceeded deadline of %.1fs (step=%s, run=%s)",
+            config.url,
+            deadline_s,
+            context.step_id,
+            context.run_id,
+        )
+        if observer:
+            observer.on_webhook_delivery(context.step_id, context.workflow_name, "timeout", latency)

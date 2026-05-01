@@ -29,6 +29,7 @@ class StepContext(BaseModel):
     observer: Any | None = None  # WorkflowObserver
     stream: bool = False
     on_stream_chunk: Callable[[str, str], None] | None = None
+    checkpointer: Any | None = None  # BaseCheckpointer — propagated to subworkflows
 
 
 class BaseStep(ABC):

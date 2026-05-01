@@ -542,6 +542,7 @@ class WorkflowEngine:
             observer=self.observer,
             stream=should_stream,
             on_stream_chunk=self._stream_callback,
+            checkpointer=self._checkpointer,
         )
 
         max_retries = step_def.retry.max_retries

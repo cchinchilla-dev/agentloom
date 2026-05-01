@@ -33,7 +33,7 @@ class WorkflowObserver:
         self._workflow_span: Any | None = None
         self._step_spans: dict[str, Any] = {}
 
-    def on_workflow_start(self, workflow_name: str) -> None:
+    def on_workflow_start(self, workflow_name: str, **kwargs: Any) -> None:
         if self._tracing:
             self._workflow_span = self._tracing.start_span(
                 f"workflow:{workflow_name}",
@@ -47,6 +47,7 @@ class WorkflowObserver:
         duration_ms: float,
         total_tokens: int,
         total_cost: float,
+        **kwargs: Any,
     ) -> None:
         if self._metrics:
             self._metrics.record_workflow_run(
@@ -65,7 +66,9 @@ class WorkflowObserver:
                 span.end()
             self._workflow_span = None
 
-    def on_step_start(self, step_id: str, step_type: str, stream: bool = False) -> None:
+    def on_step_start(
+        self, step_id: str, step_type: str, stream: bool = False, **kwargs: Any
+    ) -> None:
         if self._tracing:
             span = self._tracing.start_span(
                 f"step:{step_id}",
@@ -89,6 +92,7 @@ class WorkflowObserver:
         attachment_count: int = 0,
         time_to_first_token_ms: float | None = None,
         stream: bool = False,
+        **kwargs: Any,
     ) -> None:
         if self._metrics:
             self._metrics.record_step_execution(
