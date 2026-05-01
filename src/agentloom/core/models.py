@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from agentloom.resilience.retry import DEFAULT_RETRYABLE_STATUS_CODES
+
 
 class StepType(StrEnum):
     """Supported step types."""
@@ -38,12 +40,24 @@ class Attachment(BaseModel):
 
 
 class RetryConfig(BaseModel):
-    """Retry configuration for a step."""
+    """Retry configuration for a step.
+
+    ``retryable_status_codes`` controls whether a provider exception
+    (anything exposing a ``status_code`` attribute, including
+    ``ProviderError`` / ``RateLimitError`` / ``httpx.HTTPStatusError``)
+    triggers a retry. Exceptions without a status code are retried by
+    default — they're typically transient network errors. A 4xx client
+    error not in this list (400/401/403/404) is **not** retried, which
+    avoids burning the retry budget on permanent failures.
+    """
 
     max_retries: int = 3
     backoff_base: float = 2.0
     backoff_max: float = 60.0
     jitter: bool = True
+    retryable_status_codes: list[int] = Field(
+        default_factory=lambda: list(DEFAULT_RETRYABLE_STATUS_CODES)
+    )
 
 
 class Condition(BaseModel):
