@@ -100,17 +100,37 @@ class StateManager:
         async with self._lock:
             return dict(self._step_results)
 
-    def get_sync(self, key: str, default: Any = None) -> Any:
-        """Synchronous get for use in non-async contexts (e.g., template rendering)."""
+    # ---- internal-only synchronous helpers --------------------------------
+    #
+    # These bypass ``self._lock`` and must not be called from async code
+    # that runs concurrently with ``set``/``get``. They exist so tests and
+    # internal non-async paths (checkpoint hydration, resume bootstrap) can
+    # poke at state without spinning an event loop. Callers in async step
+    # handlers must use the awaitable ``get`` / ``set`` / ``get_state_snapshot``
+    # variants instead — using these under concurrency produces subtle
+    # last-writer-wins bugs because the updates race with in-flight locked
+    # writes.
+
+    def _get_sync_unsafe(self, key: str, default: Any = None) -> Any:
         return self._resolve_key(self._state, key, default)
 
-    def set_sync(self, key: str, value: Any) -> None:
-        """Synchronous set for non-async contexts."""
+    def _set_sync_unsafe(self, key: str, value: Any) -> None:
         self._set_nested(self._state, key, value)
+
+    # Backwards-compatible aliases. The public names stay for tooling that
+    # already imports them, but they route through the underscored helpers
+    # so the lock-bypass risk is documented at the real implementation.
+    get_sync = _get_sync_unsafe
+    set_sync = _set_sync_unsafe
 
     @property
     def state(self) -> dict[str, Any]:
-        """Direct access to state dict (use in sync contexts only)."""
+        """Raw state dict — **read-only snapshot use only**.
+
+        This is a live reference to the internal dict. Do not mutate it;
+        do not rely on it remaining stable across ``await`` points. Prefer
+        ``await self.get_state_snapshot()`` for a defensive copy.
+        """
         return self._state
 
     async def save_checkpoint(self, path: str | Path) -> None:

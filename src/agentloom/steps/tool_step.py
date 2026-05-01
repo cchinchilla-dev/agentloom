@@ -7,6 +7,7 @@ from typing import Any
 
 from agentloom.core.results import StepResult, StepStatus
 from agentloom.core.state import StateManager
+from agentloom.core.templates import SafeFormatDict, build_template_vars
 from agentloom.exceptions import StepError
 from agentloom.steps.base import BaseStep, StepContext
 
@@ -59,14 +60,25 @@ class ToolStep(BaseStep):
     def _resolve_args(args: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
         """Resolve argument values that reference state variables.
 
-        String values starting with 'state.' are resolved from the state dict.
-        Other values are passed through as-is.
+        * ``"state.<key>"`` — resolved by ``StateManager._resolve_key``
+          (preserves object identity, not string conversion).
+        * Strings with ``{...}`` placeholders — rendered with the same
+          ``SafeFormatDict`` / ``build_template_vars`` pipeline as
+          ``llm_call`` so ``tool_args: {path: "{state.user_file}"}`` works
+          the way authors expect.
+        * Everything else — passed through unchanged.
         """
+        template_vars = build_template_vars(state)
         resolved: dict[str, Any] = {}
         for key, value in args.items():
-            if isinstance(value, str) and value.startswith("state."):
-                path = value[len("state.") :]
-                resolved[key] = StateManager._resolve_key(state, path)
+            if isinstance(value, str):
+                if value.startswith("state."):
+                    path = value[len("state.") :]
+                    resolved[key] = StateManager._resolve_key(state, path)
+                elif "{" in value:
+                    resolved[key] = value.format_map(SafeFormatDict(template_vars))
+                else:
+                    resolved[key] = value
             else:
                 resolved[key] = value
         return resolved
