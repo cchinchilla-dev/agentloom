@@ -22,6 +22,14 @@ class ProviderResponse(BaseModel):
     cost_usd: float = 0.0
     raw_response: dict[str, Any] = Field(default_factory=dict)
     finish_reason: str | None = None
+    # Reasoning / chain-of-thought text. Populated when the provider
+    # exposes the trace and the caller did not opt out via
+    # ``ThinkingConfig.capture_reasoning``. OpenAI o-series keeps the
+    # trace server-side, so this stays ``None``; Anthropic concatenates
+    # ``type="thinking"`` blocks; Gemini surfaces ``thought=true`` parts;
+    # Ollama returns ``message.thinking`` (or strips inline
+    # ``<think>...</think>`` tags as a fallback).
+    reasoning_content: str | None = None
 
 
 class StreamResponse:
@@ -44,6 +52,10 @@ class StreamResponse:
         self.usage: TokenUsage = TokenUsage()
         self.cost_usd: float = 0.0
         self.finish_reason: str | None = None
+        # Populated by adapters that surface a chain-of-thought trace
+        # alongside the streamed answer (Gemini ``thought=true`` parts,
+        # Anthropic ``thinking`` deltas, Ollama ``message.thinking``).
+        self.reasoning_content: str | None = None
         self._chunks: list[str] = []
         self._accumulated_bytes: int = 0
         self._iterator: AsyncIterator[str] | None = None
@@ -81,6 +93,7 @@ class StreamResponse:
             usage=self.usage,
             cost_usd=self.cost_usd,
             finish_reason=self.finish_reason,
+            reasoning_content=self.reasoning_content,
         )
 
 

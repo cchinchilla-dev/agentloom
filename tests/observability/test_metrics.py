@@ -78,6 +78,51 @@ class TestMetricsEnabled:
         if mm._backend == "otel":
             mm.shutdown()
 
+    def test_reasoning_tokens_metric_emitted(self) -> None:
+        # When `reasoning_tokens` is non-zero, `record_tokens` must add a
+        # third observation with `direction="reasoning"` so dashboards can
+        # split chain-of-thought spend from regular completion spend. The
+        # OTel GenAI semantic-convention rename to `gen_ai.token.type` is
+        # tracked separately in #125.
+        from unittest.mock import MagicMock
+
+        mm = MetricsManager(enabled=True)
+        if mm._backend != "otel":
+            # prom fallback exercised via smoke; OTel path is what we audit.
+            return
+        spy = MagicMock()
+        mm._token_counter = spy
+        mm.record_tokens("anthropic", "claude-opus-4", 100, 50, reasoning_tokens=200)
+        # Expect 3 add() calls: input, output, reasoning.
+        assert spy.add.call_count == 3
+        directions = {call.args[1]["direction"] for call in spy.add.call_args_list}
+        assert directions == {"input", "output", "reasoning"}
+        # The reasoning observation must carry the right value and labels.
+        reasoning_calls = [
+            call for call in spy.add.call_args_list if call.args[1]["direction"] == "reasoning"
+        ]
+        assert len(reasoning_calls) == 1
+        assert reasoning_calls[0].args[0] == 200
+        assert reasoning_calls[0].args[1]["provider"] == "anthropic"
+        assert reasoning_calls[0].args[1]["model"] == "claude-opus-4"
+        mm.shutdown()
+
+    def test_reasoning_tokens_zero_does_not_emit_third_observation(self) -> None:
+        # Default path — no reasoning tokens — must not emit a reasoning
+        # observation. Dashboards counting `direction="reasoning"` should
+        # see zero events for non-thinking models.
+        from unittest.mock import MagicMock
+
+        mm = MetricsManager(enabled=True)
+        if mm._backend != "otel":
+            return
+        spy = MagicMock()
+        mm._token_counter = spy
+        mm.record_tokens("openai", "gpt-4o-mini", 100, 50)
+        directions = {call.args[1]["direction"] for call in spy.add.call_args_list}
+        assert "reasoning" not in directions
+        mm.shutdown()
+
     def test_set_circuit_state(self) -> None:
         mm = MetricsManager(enabled=True)
         mm.set_circuit_state("openai", 0)  # closed

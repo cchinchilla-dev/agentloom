@@ -135,3 +135,36 @@ class TestPrefixMatchingPrefersLongest:
         cost = calculate_cost("gpt-4o-mini-2025-xx", 1000, 1000, pricing_table=table)
         # 1000 tokens * $0.01/1k + 1000 * $0.02/1k = $0.03
         assert cost == pytest.approx(0.03)
+
+
+class TestReasoningTokensBilling:
+    def test_cost_calculation_includes_reasoning_at_output_rate(self) -> None:
+        from agentloom.providers.pricing import ModelPricing, calculate_cost
+
+        table = {
+            "o3-mini": ModelPricing(input_cost_per_1k=1.0, output_cost_per_1k=4.0),
+        }
+        # 1000 prompt @ $1/1k + (50 output + 200 reasoning) @ $4/1k
+        #   = 1.0 + 1.0 = $2.00
+        cost = calculate_cost(
+            "o3-mini",
+            prompt_tokens=1000,
+            completion_tokens=50,
+            reasoning_tokens=200,
+            pricing_table=table,
+        )
+        assert cost == pytest.approx(1.0 + (250 / 1000) * 4.0)
+
+    def test_cost_is_same_without_reasoning_tokens(self) -> None:
+        from agentloom.providers.pricing import ModelPricing, calculate_cost
+
+        table = {
+            "gpt-4o-mini": ModelPricing(input_cost_per_1k=0.15, output_cost_per_1k=0.6),
+        }
+        # Defaults to 0 — reasoning-aware API must not change pricing for
+        # non-reasoning models.
+        no_reasoning = calculate_cost("gpt-4o-mini", 1000, 500, pricing_table=table)
+        with_zero = calculate_cost(
+            "gpt-4o-mini", 1000, 500, reasoning_tokens=0, pricing_table=table
+        )
+        assert no_reasoning == with_zero

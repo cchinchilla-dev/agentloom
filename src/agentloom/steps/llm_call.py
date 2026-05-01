@@ -23,6 +23,21 @@ logger = logging.getLogger("agentloom.steps")
 class LLMCallStep(BaseStep):
     """Executes an LLM call with prompt template rendering from state."""
 
+    @staticmethod
+    def _build_thinking_kwargs(step: StepDefinition) -> dict[str, Any]:
+        """Forward ``StepDefinition.thinking`` to the gateway as a config object.
+
+        The ``ThinkingConfig`` is passed through under the ``thinking_config``
+        kwarg so each provider adapter can translate it to its own request
+        shape (Anthropic ``thinking``, Gemini ``thinkingConfig``, Ollama
+        ``think``). Disabled or absent configs return an empty dict so the
+        request is unchanged.
+        """
+        cfg = step.thinking
+        if cfg is None or not cfg.enabled:
+            return {}
+        return {"thinking_config": cfg}
+
     async def execute(self, context: StepContext) -> StepResult:
         step = context.step_definition
         start = time.monotonic()
@@ -78,12 +93,14 @@ class LLMCallStep(BaseStep):
                 context, messages, model, step, start, len(content_blocks)
             )
 
+        provider_kwargs = self._build_thinking_kwargs(step)
         try:
             response = await context.provider_gateway.complete(
                 messages=messages,
                 model=model,
                 temperature=step.temperature,
                 max_tokens=step.max_tokens,
+                **provider_kwargs,
             )
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
@@ -123,12 +140,14 @@ class LLMCallStep(BaseStep):
         """Execute the LLM call in streaming mode."""
         if context.provider_gateway is None:
             raise StepError(step.id, "No provider gateway configured")
+        provider_kwargs = self._build_thinking_kwargs(step)
         try:
             sr = await context.provider_gateway.stream(
                 messages=messages,
                 model=model,
                 temperature=step.temperature,
                 max_tokens=step.max_tokens,
+                **provider_kwargs,
             )
         except Exception as e:
             duration = (time.monotonic() - start) * 1000

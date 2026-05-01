@@ -47,7 +47,10 @@ _GOOGLE_GEN_CONFIG_KEYS = frozenset(
     }
 )
 _GOOGLE_TOPLEVEL_KEYS = frozenset({"tools", "tool_config", "safety_settings"})
-_GOOGLE_EXTRA_PAYLOAD_KEYS = _GOOGLE_GEN_CONFIG_KEYS | _GOOGLE_TOPLEVEL_KEYS
+# ``thinking_config`` is the provider-uniform reasoning kwarg from ``llm_call``;
+# it doesn't follow the GEN_CONFIG / TOPLEVEL split because we translate it to
+# ``generationConfig.thinkingConfig`` directly with a per-field rename.
+_GOOGLE_EXTRA_PAYLOAD_KEYS = _GOOGLE_GEN_CONFIG_KEYS | _GOOGLE_TOPLEVEL_KEYS | {"thinking_config"}
 
 # snake_case (public) → camelCase (Gemini wire format).
 _GOOGLE_KEY_REMAP = {
@@ -67,6 +70,49 @@ _GOOGLE_KEY_REMAP = {
 
 def _to_gemini_key(key: str) -> str:
     return _GOOGLE_KEY_REMAP.get(key, key)
+
+
+def _build_thinking_config_payload(cfg: Any) -> dict[str, Any] | None:
+    """Translate a ``ThinkingConfig`` into Gemini's ``thinkingConfig`` block.
+
+    Returns ``None`` when the config is missing or disabled so the caller
+    can skip insertion entirely. ``includeThoughts`` is taken from
+    ``capture_reasoning`` — Gemini has historically returned thought
+    summaries (not the full trace) and only when this flag is set.
+    """
+    if cfg is None or not getattr(cfg, "enabled", False):
+        return None
+    payload: dict[str, Any] = {}
+    budget = getattr(cfg, "budget_tokens", None)
+    if budget is not None:
+        payload["thinkingBudget"] = budget
+    level = getattr(cfg, "level", None)
+    if level is not None:
+        payload["thinkingLevel"] = level
+    if getattr(cfg, "capture_reasoning", False):
+        payload["includeThoughts"] = True
+    return payload
+
+
+def _parse_gemini_content_parts(parts: list[dict[str, Any]]) -> tuple[str, str]:
+    """Split Gemini content parts into (visible answer, reasoning trace).
+
+    Parts carrying ``thought=true`` are thought summaries surfaced when
+    ``includeThoughts`` is enabled — concatenate them into the reasoning
+    trace and keep them out of the visible answer. All other parts are
+    treated as final-answer text.
+    """
+    answer_chunks: list[str] = []
+    thought_chunks: list[str] = []
+    for part in parts:
+        text = part.get("text", "")
+        if not text:
+            continue
+        if part.get("thought"):
+            thought_chunks.append(text)
+        else:
+            answer_chunks.append(text)
+    return "".join(answer_chunks), "".join(thought_chunks)
 
 
 class GoogleProvider(BaseProvider):
@@ -135,6 +181,7 @@ class GoogleProvider(BaseProvider):
         **kwargs: Any,
     ) -> ProviderResponse:
         extras = validate_extra_kwargs("google", "complete", kwargs, _GOOGLE_EXTRA_PAYLOAD_KEYS)
+        thinking_payload = _build_thinking_config_payload(extras.pop("thinking_config", None))
         system_instruction, contents = self._format_messages(messages)
 
         payload: dict[str, Any] = {"contents": contents}
@@ -149,6 +196,8 @@ class GoogleProvider(BaseProvider):
             generation_config["maxOutputTokens"] = max_tokens
         for k in _GOOGLE_GEN_CONFIG_KEYS & extras.keys():
             generation_config[_to_gemini_key(k)] = extras[k]
+        if thinking_payload is not None:
+            generation_config["thinkingConfig"] = thinking_payload
         if generation_config:
             payload["generationConfig"] = generation_config
         for k in _GOOGLE_TOPLEVEL_KEYS & extras.keys():
@@ -167,17 +216,33 @@ class GoogleProvider(BaseProvider):
 
         candidates = data.get("candidates", [])
         content = ""
+        reasoning_content: str | None = None
         if candidates:
             parts = candidates[0].get("content", {}).get("parts", [])
-            content = "".join(p.get("text", "") for p in parts)
+            content, reasoning_trace = _parse_gemini_content_parts(parts)
+            if reasoning_trace:
+                reasoning_content = reasoning_trace
 
         usage_data = data.get("usageMetadata", {})
+        # ``thoughtsTokenCount`` was added with Gemini 2.5 thinking and is
+        # intermittently absent on ``gemini-3-flash-preview`` even when
+        # thinking is enabled — default to 0 instead of raising.
+        reasoning_tokens = usage_data.get("thoughtsTokenCount", 0) or 0
+        prompt_tokens = usage_data.get("promptTokenCount", 0)
+        candidates_tokens = usage_data.get("candidatesTokenCount", 0)
+        total_tokens = usage_data.get("totalTokenCount", 0)
         usage = TokenUsage(
-            prompt_tokens=usage_data.get("promptTokenCount", 0),
-            completion_tokens=usage_data.get("candidatesTokenCount", 0),
-            total_tokens=usage_data.get("totalTokenCount", 0),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=candidates_tokens,
+            total_tokens=total_tokens,
+            reasoning_tokens=reasoning_tokens,
         )
-        cost = calculate_cost(model, usage.prompt_tokens, usage.completion_tokens)
+        cost = calculate_cost(
+            model,
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+        )
 
         finish_reason = None
         if candidates:
@@ -189,6 +254,7 @@ class GoogleProvider(BaseProvider):
             provider="google",
             usage=usage,
             cost_usd=cost,
+            reasoning_content=reasoning_content,
             raw_response=data,
             finish_reason=finish_reason,
         )
@@ -202,6 +268,7 @@ class GoogleProvider(BaseProvider):
         **kwargs: Any,
     ) -> StreamResponse:
         extras = validate_extra_kwargs("google", "stream", kwargs, _GOOGLE_EXTRA_PAYLOAD_KEYS)
+        thinking_payload = _build_thinking_config_payload(extras.pop("thinking_config", None))
         system_instruction, contents = self._format_messages(messages)
 
         payload: dict[str, Any] = {"contents": contents}
@@ -214,6 +281,8 @@ class GoogleProvider(BaseProvider):
             generation_config["maxOutputTokens"] = max_tokens
         for k in _GOOGLE_GEN_CONFIG_KEYS & extras.keys():
             generation_config[_to_gemini_key(k)] = extras[k]
+        if thinking_payload is not None:
+            generation_config["thinkingConfig"] = thinking_payload
         if generation_config:
             payload["generationConfig"] = generation_config
         for k in _GOOGLE_TOPLEVEL_KEYS & extras.keys():
@@ -221,6 +290,7 @@ class GoogleProvider(BaseProvider):
 
         url = f"/models/{model}:streamGenerateContent?alt=sse&key={self.api_key}"
         sr = StreamResponse(model=model, provider="google")
+        reasoning_buffer: list[str] = []
 
         async def _generate() -> AsyncIterator[str]:
             async with self._client.stream("POST", url, json=payload) as resp:
@@ -239,22 +309,31 @@ class GoogleProvider(BaseProvider):
                     candidates = data.get("candidates", [])
                     if candidates:
                         parts = candidates[0].get("content", {}).get("parts", [])
-                        text = "".join(p.get("text", "") for p in parts)
-                        if text:
-                            yield text
+                        answer_chunk, thought_chunk = _parse_gemini_content_parts(parts)
+                        if thought_chunk:
+                            reasoning_buffer.append(thought_chunk)
+                        if answer_chunk:
+                            yield answer_chunk
                         fr = candidates[0].get("finishReason")
                         if fr:
                             sr.finish_reason = fr
                     usage_data = data.get("usageMetadata")
                     if usage_data:
+                        reasoning_tokens = usage_data.get("thoughtsTokenCount", 0) or 0
                         sr.usage = TokenUsage(
                             prompt_tokens=usage_data.get("promptTokenCount", 0),
                             completion_tokens=usage_data.get("candidatesTokenCount", 0),
                             total_tokens=usage_data.get("totalTokenCount", 0),
+                            reasoning_tokens=reasoning_tokens,
                         )
                         sr.cost_usd = calculate_cost(
-                            model, sr.usage.prompt_tokens, sr.usage.completion_tokens
+                            model,
+                            sr.usage.prompt_tokens,
+                            sr.usage.completion_tokens,
+                            reasoning_tokens=sr.usage.reasoning_tokens,
                         )
+            if reasoning_buffer:
+                sr.reasoning_content = "".join(reasoning_buffer)
 
             if sr.usage.total_tokens == 0:
                 # Gemini has historically streamed usage per-chunk, but a

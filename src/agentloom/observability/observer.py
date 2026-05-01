@@ -92,6 +92,7 @@ class WorkflowObserver:
         attachment_count: int = 0,
         time_to_first_token_ms: float | None = None,
         stream: bool = False,
+        reasoning_tokens: int = 0,
         **kwargs: Any,
     ) -> None:
         if self._metrics:
@@ -107,6 +108,12 @@ class WorkflowObserver:
             span.set_attribute("step.duration_ms", duration_ms)
             span.set_attribute("step.cost_usd", cost_usd)
             span.set_attribute("step.tokens", tokens)
+            if reasoning_tokens > 0:
+                # Tracked separately so dashboards can isolate
+                # chain-of-thought spend; #125 will rename this to
+                # ``gen_ai.usage.reasoning_tokens`` as part of the
+                # OTel GenAI semantic-convention migration.
+                span.set_attribute("step.reasoning_tokens", reasoning_tokens)
             if attachment_count > 0:
                 span.set_attribute("step.attachments", attachment_count)
             if time_to_first_token_ms is not None:
@@ -146,10 +153,18 @@ class WorkflowObserver:
         model: str,
         prompt_tokens: int,
         completion_tokens: int,
+        *,
+        reasoning_tokens: int = 0,
         **kwargs: Any,
     ) -> None:
         if self._metrics:
-            self._metrics.record_tokens(provider, model, prompt_tokens, completion_tokens)
+            self._metrics.record_tokens(
+                provider,
+                model,
+                prompt_tokens,
+                completion_tokens,
+                reasoning_tokens=reasoning_tokens,
+            )
 
     # Circuit breaker events (called from gateway via callback)
 

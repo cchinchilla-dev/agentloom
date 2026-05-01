@@ -580,6 +580,7 @@ class WorkflowEngine:
                             attachment_count=result.attachment_count,
                             time_to_first_token_ms=result.time_to_first_token_ms,
                             stream=should_stream,
+                            reasoning_tokens=result.token_usage.reasoning_tokens,
                         )
                         if result.provider and result.model:
                             self.observer.on_provider_call(
@@ -594,6 +595,7 @@ class WorkflowEngine:
                                     result.model,
                                     result.token_usage.prompt_tokens,
                                     result.token_usage.completion_tokens,
+                                    reasoning_tokens=result.token_usage.reasoning_tokens,
                                 )
                             if result.time_to_first_token_ms is not None:
                                 self.observer.on_stream_response(

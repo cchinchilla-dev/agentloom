@@ -152,9 +152,43 @@ Sends a prompt to an LLM and stores the response.
 | `max_tokens` | `int` | `null` | Output token limit |
 | `stream` | `bool` | `null` | Override workflow-level streaming setting |
 | `attachments` | `list[Attachment]` | `[]` | Multi-modal inputs (see [Providers](providers.md#multi-modal-attachments)) |
+| `thinking` | `ThinkingConfig` | `null` | Extended-thinking / reasoning config (see [Reasoning models](providers.md#reasoning-models)) |
 | `output` | `string` | `null` | State key to store result |
 | `timeout` | `float` | `null` | Per-step timeout in seconds |
 | `depends_on` | `list[string]` | `[]` | Step IDs that must complete first |
+
+**Thinking config:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Activate provider-side reasoning |
+| `budget_tokens` | `int` | `null` | Anthropic `budget_tokens` / Gemini `thinkingBudget` cap. OpenAI infers from model tier and ignores this field |
+| `level` | `"low" \| "medium" \| "high"` | `null` | Gemini `thinkingLevel` / Ollama `think` value |
+| `capture_reasoning` | `bool` | `true` | Expose the chain-of-thought trace via `ProviderResponse.reasoning_content` (Anthropic / Gemini / Ollama). OpenAI o-series keeps the trace server-side regardless |
+
+Per-provider translation:
+
+| Provider | Translation |
+|----------|-------------|
+| OpenAI o-series | Reasoning is implicit in the model name; the config is accepted for YAML uniformity but not forwarded to the wire |
+| Anthropic | `thinking: {type: "enabled", budget_tokens: <budget_tokens>}` |
+| Google Gemini 2.5+ | `generationConfig.thinkingConfig: {thinkingBudget, thinkingLevel, includeThoughts}` |
+| Ollama 0.9+ | top-level `think: <level>` if `level` is set, else `think: true` |
+
+```yaml
+- id: complex_reasoning
+  type: llm_call
+  model: claude-opus-4
+  prompt: "Solve: {state.problem}"
+  thinking:
+    enabled: true
+    budget_tokens: 5000
+    level: high
+    capture_reasoning: true
+  output: answer
+```
+
+Reasoning tokens are billed at the output rate. `TokenUsage.reasoning_tokens` and `billable_completion_tokens` track the spend; `calculate_cost()` includes them automatically. See [Reasoning models](providers.md#reasoning-models) for per-provider details, including the Ollama caveat that `eval_count` is not split.
 
 **Retry config:**
 

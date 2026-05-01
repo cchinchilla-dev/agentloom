@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -233,3 +235,186 @@ class TestAnthropicProvider:
         assert p.supports_model("claude-haiku-4-5-20251001")
         assert p.supports_model("claude-opus-4-6")
         assert not p.supports_model("gpt-4o-mini")
+
+
+class TestAnthropicReasoning:
+    @respx.mock
+    async def test_thinking_response_does_not_split_reasoning_tokens(self) -> None:
+        # Anthropic rolls extended-thinking tokens into ``output_tokens``
+        # rather than exposing a separate field, so ``reasoning_tokens``
+        # must stay 0 (documented limitation, same as Ollama). Cost is
+        # still correct because the rate is applied to ``output_tokens``
+        # which already includes the thinking volume.
+        body = {
+            "content": [
+                {"type": "thinking", "thinking": "Let me think step by step..."},
+                {"type": "text", "text": "The answer is 42."},
+            ],
+            "model": "claude-opus-4",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 30, "output_tokens": 208},
+        }
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, json=body)
+        )
+        provider = AnthropicProvider(api_key="k")
+        r = await provider.complete(
+            messages=[{"role": "user", "content": "solve"}], model="claude-opus-4"
+        )
+        assert r.usage.reasoning_tokens == 0
+        assert r.usage.completion_tokens == 208  # includes thinking volume
+        assert r.usage.billable_completion_tokens == 208
+        assert r.content == "The answer is 42."
+        assert r.reasoning_content == "Let me think step by step..."
+        await provider.close()
+
+    @respx.mock
+    async def test_capture_reasoning_writes_thinking_blocks(self) -> None:
+        # Multiple thinking blocks must be concatenated into reasoning_content
+        # in document order — each block's `thinking` field carries the trace.
+        body = {
+            "content": [
+                {"type": "thinking", "thinking": "First, recall the formula. "},
+                {"type": "thinking", "thinking": "Now substitute the numbers. "},
+                {"type": "text", "text": "The answer is 42."},
+            ],
+            "model": "claude-opus-4",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 54},
+        }
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, json=body)
+        )
+        provider = AnthropicProvider(api_key="k")
+        r = await provider.complete(
+            messages=[{"role": "user", "content": "solve"}], model="claude-opus-4"
+        )
+        assert r.reasoning_content == ("First, recall the formula. Now substitute the numbers. ")
+        assert r.content == "The answer is 42."
+        await provider.close()
+
+    @respx.mock
+    async def test_thinking_config_translated_to_payload(self) -> None:
+        # ``ThinkingConfig`` must be translated by the adapter into
+        # Anthropic's wire-format ``thinking`` payload.
+        from agentloom.core.models import ThinkingConfig
+
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = AnthropicProvider(api_key="k")
+        await provider.complete(
+            messages=[{"role": "user", "content": "solve"}],
+            model="claude-opus-4",
+            thinking_config=ThinkingConfig(enabled=True, budget_tokens=2048),
+        )
+        assert route.called
+        sent_payload = json.loads(route.calls[0].request.content)
+        assert sent_payload["thinking"] == {
+            "type": "enabled",
+            "budget_tokens": 2048,
+        }
+        await provider.close()
+
+    @respx.mock
+    async def test_raw_thinking_kwarg_still_passes_through(self) -> None:
+        # Power users that already build the wire-format ``thinking`` dict
+        # themselves must keep working — ``thinking`` stays on the
+        # allowlist as a passthrough and wins over ``thinking_config``.
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = AnthropicProvider(api_key="k")
+        await provider.complete(
+            messages=[{"role": "user", "content": "solve"}],
+            model="claude-opus-4",
+            thinking={"type": "enabled", "budget_tokens": 4096},
+        )
+        sent_payload = json.loads(route.calls[0].request.content)
+        assert sent_payload["thinking"] == {
+            "type": "enabled",
+            "budget_tokens": 4096,
+        }
+        await provider.close()
+
+    @respx.mock
+    async def test_stream_translates_thinking_config_to_payload(self) -> None:
+        # The stream path must exercise the same ``_translate_thinking_config``
+        # helper as ``complete``: ``ThinkingConfig`` arriving via
+        # ``thinking_config`` is rewritten to the wire-format ``thinking``
+        # payload before the request leaves the adapter.
+        from agentloom.core.models import ThinkingConfig
+
+        # Minimal SSE payload — message_start + message_delta with usage.
+        sse = (
+            'data: {"type":"message_start","message":{"model":"claude-opus-4",'
+            '"usage":{"input_tokens":3}}}\n\n'
+            'data: {"type":"content_block_delta","delta":{"text":"hi"}}\n\n'
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+            '"usage":{"output_tokens":1}}\n\n'
+        )
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, content=sse.encode())
+        )
+        provider = AnthropicProvider(api_key="k")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "solve"}],
+            model="claude-opus-4",
+            thinking_config=ThinkingConfig(enabled=True, budget_tokens=1024),
+        )
+        async for _ in sr:
+            pass
+        sent_payload = json.loads(route.calls[0].request.content)
+        assert sent_payload["thinking"] == {
+            "type": "enabled",
+            "budget_tokens": 1024,
+        }
+        # ``thinking_config`` must not survive into the wire payload.
+        assert "thinking_config" not in sent_payload
+        await provider.close()
+
+    def test_translate_thinking_config_respects_existing_thinking(self) -> None:
+        # When the caller already provided a raw ``thinking`` dict alongside
+        # ``thinking_config``, the raw form wins — the helper must not
+        # clobber it.
+        from agentloom.core.models import ThinkingConfig
+        from agentloom.providers.anthropic import _translate_thinking_config
+
+        extras: dict = {
+            "thinking": {"type": "enabled", "budget_tokens": 9999},
+            "thinking_config": ThinkingConfig(enabled=True, budget_tokens=128),
+        }
+        _translate_thinking_config(extras)
+        assert extras["thinking"] == {"type": "enabled", "budget_tokens": 9999}
+        assert "thinking_config" not in extras
+
+    @respx.mock
+    async def test_capture_reasoning_false_suppresses_trace(self) -> None:
+        # When the caller opts out via ``capture_reasoning=False`` the
+        # adapter must drop the ``type="thinking"`` blocks rather than
+        # surface them on ``ProviderResponse.reasoning_content``. The
+        # visible answer is unaffected.
+        from agentloom.core.models import ThinkingConfig
+
+        body = {
+            "content": [
+                {"type": "thinking", "thinking": "internal trace"},
+                {"type": "text", "text": "The answer is 42."},
+            ],
+            "model": "claude-opus-4",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 50},
+        }
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, json=body)
+        )
+        provider = AnthropicProvider(api_key="k")
+        cfg = ThinkingConfig(enabled=True, budget_tokens=1024, capture_reasoning=False)
+        r = await provider.complete(
+            messages=[{"role": "user", "content": "solve"}],
+            model="claude-opus-4",
+            thinking_config=cfg,
+        )
+        assert r.reasoning_content is None
+        assert r.content == "The answer is 42."
+        await provider.close()

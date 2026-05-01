@@ -393,3 +393,99 @@ class TestLLMCallStep:
         result = await step.execute(ctx)
         assert result.status == StepStatus.SUCCESS
         assert result.time_to_first_token_ms is None
+
+
+class TestThinkingConfig:
+    """``StepDefinition.thinking`` activates provider-side reasoning from
+    YAML/dict config. The step layer forwards the ``ThinkingConfig`` object
+    to the gateway under a single ``thinking_config`` kwarg; each provider
+    adapter translates it to its own request shape (Anthropic ``thinking``,
+    Gemini ``thinkingConfig``, Ollama ``think``)."""
+
+    @staticmethod
+    def test_disabled_thinking_emits_no_kwargs() -> None:
+        from agentloom.core.models import StepDefinition, StepType, ThinkingConfig
+        from agentloom.steps.llm_call import LLMCallStep
+
+        step = StepDefinition(
+            id="s",
+            type=StepType.LLM_CALL,
+            prompt="hi",
+            thinking=ThinkingConfig(enabled=False, budget_tokens=2048),
+        )
+        assert LLMCallStep._build_thinking_kwargs(step) == {}
+
+    @staticmethod
+    def test_enabled_thinking_forwards_config_object() -> None:
+        from agentloom.core.models import StepDefinition, StepType, ThinkingConfig
+        from agentloom.steps.llm_call import LLMCallStep
+
+        cfg = ThinkingConfig(enabled=True, budget_tokens=2048)
+        step = StepDefinition(
+            id="s",
+            type=StepType.LLM_CALL,
+            prompt="hi",
+            thinking=cfg,
+        )
+        kwargs = LLMCallStep._build_thinking_kwargs(step)
+        assert kwargs == {"thinking_config": cfg}
+
+    @staticmethod
+    def test_enabled_without_budget_still_forwards() -> None:
+        from agentloom.core.models import StepDefinition, StepType, ThinkingConfig
+        from agentloom.steps.llm_call import LLMCallStep
+
+        cfg = ThinkingConfig(enabled=True)
+        step = StepDefinition(
+            id="s",
+            type=StepType.LLM_CALL,
+            prompt="hi",
+            thinking=cfg,
+        )
+        kwargs = LLMCallStep._build_thinking_kwargs(step)
+        # The translation to ``budget_tokens`` happens per-provider, so the
+        # step layer just passes the config object through.
+        assert kwargs == {"thinking_config": cfg}
+
+    @staticmethod
+    def test_no_thinking_attribute_emits_empty() -> None:
+        from agentloom.core.models import StepDefinition, StepType
+        from agentloom.steps.llm_call import LLMCallStep
+
+        step = StepDefinition(id="s", type=StepType.LLM_CALL, prompt="hi")
+        assert LLMCallStep._build_thinking_kwargs(step) == {}
+
+    @staticmethod
+    def test_yaml_thinking_config_parses() -> None:
+        # Workflow YAML must accept ``thinking`` as a nested mapping under
+        # the step definition without any extra wiring. We feed a parsed
+        # mapping into ``from_dict`` rather than the YAML string form so
+        # the test stays clear of the path-existence quirk in
+        # ``WorkflowParser.from_yaml`` (which calls ``Path.exists()`` on
+        # the input and trips ENAMETOOLONG on multi-line strings).
+        import yaml as yaml_loader
+
+        from agentloom.core.parser import WorkflowParser
+
+        yaml_text = """
+name: thinking-test
+config:
+  provider: anthropic
+  model: claude-opus-4
+steps:
+  - id: complex_reasoning
+    type: llm_call
+    prompt: "Solve {state.problem}"
+    thinking:
+      enabled: true
+      budget_tokens: 4096
+      level: high
+      capture_reasoning: true
+"""
+        wf = WorkflowParser.from_dict(yaml_loader.safe_load(yaml_text))
+        s = wf.steps[0]
+        assert s.thinking is not None
+        assert s.thinking.enabled is True
+        assert s.thinking.budget_tokens == 4096
+        assert s.thinking.level == "high"
+        assert s.thinking.capture_reasoning is True

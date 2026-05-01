@@ -21,11 +21,34 @@ class StepStatus(StrEnum):
 
 
 class TokenUsage(BaseModel):
-    """Token usage for an LLM call."""
+    """Token usage for an LLM call.
+
+    ``reasoning_tokens`` is populated only when the provider reports a
+    separate reasoning / thinking token count — OpenAI o-series via
+    ``completion_tokens_details.reasoning_tokens`` and Gemini 2.5+ via
+    ``usageMetadata.thoughtsTokenCount``. Anthropic and Ollama do not
+    expose a separate count today (Anthropic rolls thinking into
+    ``output_tokens``; Ollama emits a single ``eval_count``), so the
+    field stays ``0`` for those providers — the chain-of-thought trace
+    is still surfaced via ``ProviderResponse.reasoning_content``. When
+    populated, providers bill these tokens at the output rate, so
+    cost calculation must include them.
+    """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    reasoning_tokens: int = 0
+
+    @property
+    def billable_completion_tokens(self) -> int:
+        """Tokens billed at the provider's output rate.
+
+        Always equal to ``completion_tokens + reasoning_tokens`` — exposed
+        as a property so downstream cost code does not have to remember
+        which field to add.
+        """
+        return self.completion_tokens + self.reasoning_tokens
 
 
 class StepResult(BaseModel):

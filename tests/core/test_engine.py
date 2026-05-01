@@ -329,3 +329,93 @@ class TestBudgetPreDispatchGate:
         # s2 never reached the provider (no SUCCESS).
         s2 = result.step_results.get("s2")
         assert s2 is None or s2.status != StepStatus.SUCCESS
+
+    async def test_budget_enforcement_accounts_for_reasoning_tokens(self) -> None:
+        """Reasoning tokens billed at output rate must count toward the
+        workflow budget. A model returning many thinking tokens should hit
+        BUDGET_EXCEEDED on the first step even when prompt+completion
+        tokens alone fit comfortably."""
+        from typing import Any
+
+        from agentloom.core.models import (
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+        from agentloom.core.results import TokenUsage
+        from agentloom.providers.base import (
+            BaseProvider,
+            ProviderResponse,
+            StreamResponse,
+        )
+        from agentloom.providers.gateway import ProviderGateway
+
+        class ThinkingProvider(BaseProvider):
+            name = "thinking-mock"
+
+            def supports_model(self, model: str) -> bool:
+                return True
+
+            async def complete(
+                self,
+                messages: list[dict[str, Any]],
+                model: str,
+                temperature: float | None = None,
+                max_tokens: int | None = None,
+                **kwargs: Any,
+            ) -> ProviderResponse:
+                # Cost dominated by reasoning tokens; the prompt+completion
+                # portion is intentionally tiny so the test fails on the
+                # reasoning component if accounting drops it.
+                return ProviderResponse(
+                    content="42",
+                    model=model,
+                    provider="thinking-mock",
+                    usage=TokenUsage(
+                        prompt_tokens=5,
+                        completion_tokens=2,
+                        total_tokens=507,
+                        reasoning_tokens=500,
+                    ),
+                    cost_usd=0.0008,  # incl. reasoning component
+                )
+
+            async def stream(
+                self,
+                messages: list[dict[str, Any]],
+                model: str,
+                temperature: float | None = None,
+                max_tokens: int | None = None,
+                **kwargs: Any,
+            ) -> StreamResponse:
+                raise NotImplementedError
+
+        gateway = ProviderGateway()
+        gateway.register(ThinkingProvider())
+
+        workflow = WorkflowDefinition(
+            name="budget-with-thinking",
+            config=WorkflowConfig(
+                provider="thinking-mock",
+                model="claude-opus-4",
+                budget_usd=0.0005,
+            ),
+            state={},
+            steps=[
+                StepDefinition(id="s1", type=StepType.LLM_CALL, prompt="hi"),
+                StepDefinition(id="s2", type=StepType.LLM_CALL, depends_on=["s1"], prompt="hi"),
+            ],
+        )
+        engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway)
+        result = await engine.run()
+
+        # First step alone (0.0008) overshoots 0.0005 because the cost
+        # includes the reasoning portion. If reasoning were dropped from
+        # accounting the cost would be much smaller and s2 would dispatch.
+        assert result.status == WorkflowStatus.BUDGET_EXCEEDED
+        s1 = result.step_results.get("s1")
+        assert s1 is not None and s1.status == StepStatus.SUCCESS
+        assert s1.token_usage.reasoning_tokens == 500
+        s2 = result.step_results.get("s2")
+        assert s2 is None or s2.status != StepStatus.SUCCESS

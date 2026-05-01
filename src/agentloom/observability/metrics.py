@@ -382,7 +382,22 @@ class MetricsManager:
         model: str,
         prompt_tokens: int,
         completion_tokens: int,
+        *,
+        reasoning_tokens: int = 0,
     ) -> None:
+        """Record token usage on the ``tokens_total`` counter.
+
+        ``reasoning_tokens`` is sourced from providers that report a
+        distinct reasoning / thinking token count — OpenAI o-series via
+        ``completion_tokens_details.reasoning_tokens`` and Gemini 2.5+ via
+        ``thoughtsTokenCount``. Anthropic does not expose a separate count
+        (thinking is rolled into ``output_tokens``) and Ollama emits a
+        single ``eval_count``; both stay at ``0`` here. Providers bill
+        reasoning at the output rate, so the third observation gives
+        dashboards a way to split chain-of-thought spend from regular
+        completion spend. Emitted only when non-zero — non-reasoning
+        workflows stay on a clean two-direction histogram.
+        """
         if not self._enabled:
             return
         if self._backend == "otel":
@@ -394,6 +409,11 @@ class MetricsManager:
                 completion_tokens,
                 {"provider": provider, "model": model, "direction": "output"},
             )
+            if reasoning_tokens:
+                self._token_counter.add(
+                    reasoning_tokens,
+                    {"provider": provider, "model": model, "direction": "reasoning"},
+                )
         else:  # pragma: no cover — prom fallback
             self._prom_counters["tokens_total"].labels(
                 provider=provider, model=model, direction="input"
@@ -401,6 +421,10 @@ class MetricsManager:
             self._prom_counters["tokens_total"].labels(
                 provider=provider, model=model, direction="output"
             ).inc(completion_tokens)
+            if reasoning_tokens:
+                self._prom_counters["tokens_total"].labels(
+                    provider=provider, model=model, direction="reasoning"
+                ).inc(reasoning_tokens)
 
     def record_attachments(self, step_type: str, count: int) -> None:
         if not self._enabled:

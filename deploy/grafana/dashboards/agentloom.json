@@ -221,7 +221,7 @@
       "id": 5,
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 2,
         "x": 11,
         "y": 1
       },
@@ -259,6 +259,62 @@
             "steps": [
               {
                 "color": "#B877D9",
+                "value": null
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Reasoning Tokens",
+      "description": "Chain-of-thought tokens from o-series, Claude extended thinking, and Gemini 2.5+ thinking. Stays at 0 for non-reasoning workflows; surfaces non-zero only when ``direction=\"reasoning\"`` observations are emitted.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 56,
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 13,
+        "y": 1
+      },
+      "targets": [
+        {
+          "expr": "sum(agentloom_tokens_total{direction=\"reasoning\",provider=~\"$provider\"}) or vector(0)",
+          "legendFormat": "Reasoning",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#FF780A"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#FF780A",
                 "value": null
               }
             ]
@@ -772,7 +828,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Tokens",
+      "title": "Tokens (input · output · reasoning)",
+      "description": "Token volume split by direction. The ``reasoning`` series surfaces chain-of-thought tokens from o-series, Claude extended thinking, and Gemini 2.5+ thinking. Series only appear once a workflow has emitted that direction.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -794,6 +851,11 @@
           "expr": "sum by(provider,model,direction)(agentloom_tokens_total{direction=\"output\",provider=~\"$provider\"})",
           "legendFormat": "output: {{provider}}/{{model}}",
           "refId": "B"
+        },
+        {
+          "expr": "sum by(provider,model,direction)(agentloom_tokens_total{direction=\"reasoning\",provider=~\"$provider\"})",
+          "legendFormat": "reasoning: {{provider}}/{{model}}",
+          "refId": "C"
         }
       ],
       "options": {
@@ -934,6 +996,11 @@
           "expr": "sum(agentloom_tokens_total{direction=\"output\",provider=~\"$provider\"})",
           "legendFormat": "Output",
           "refId": "B"
+        },
+        {
+          "expr": "sum(agentloom_tokens_total{direction=\"reasoning\",provider=~\"$provider\"})",
+          "legendFormat": "Reasoning",
+          "refId": "C"
         }
       ],
       "options": {
@@ -1605,7 +1672,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Token Cost",
+      "title": "Cost per workflow",
+      "description": "Cumulative spend per workflow, sourced from ``agentloom_cost_usd_total``. The metric already accounts for reasoning tokens at the output rate (``calculate_cost`` sums them into ``output_tokens`` before applying the per-model price), so reasoning-heavy workflows render accurately without a separate series. Per-provider / per-model breakdowns are tracked separately via ``agentloom_tokens_total``.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1619,14 +1687,9 @@
       },
       "targets": [
         {
-          "expr": "sum by(provider,model)(agentloom_tokens_total{direction=\"input\",provider=~\"$provider\"}) * 0.000001",
-          "legendFormat": "input: {{provider}}/{{model}}",
+          "expr": "sum by(workflow)(agentloom_cost_usd_total)",
+          "legendFormat": "{{workflow}}",
           "refId": "A"
-        },
-        {
-          "expr": "sum by(provider,model)(agentloom_tokens_total{direction=\"output\",provider=~\"$provider\"}) * 0.000003",
-          "legendFormat": "output: {{provider}}/{{model}}",
-          "refId": "B"
         }
       ],
       "options": {

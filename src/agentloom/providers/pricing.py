@@ -56,14 +56,24 @@ def calculate_cost(
     prompt_tokens: int,
     completion_tokens: int,
     pricing_table: dict[str, ModelPricing] | None = None,
+    *,
+    reasoning_tokens: int = 0,
 ) -> float:
     """Calculate the cost of an LLM call.
 
     Args:
         model: Model name.
         prompt_tokens: Number of input tokens.
-        completion_tokens: Number of output tokens.
+        completion_tokens: Number of visible output tokens.
         pricing_table: Custom pricing table (defaults to DEFAULT_PRICING).
+        reasoning_tokens: Separately reported provider-side reasoning
+            tokens (OpenAI o-series via
+            ``completion_tokens_details.reasoning_tokens``; Gemini 2.5+
+            via ``thoughtsTokenCount``). Billed at the output rate.
+            Anthropic and Ollama do not expose a split, so callers
+            should leave this at ``0`` for those providers — Anthropic
+            cost stays correct because thinking is already inside
+            ``completion_tokens`` (= API ``output_tokens``).
 
     Returns:
         Cost in USD. Returns 0.0 for unknown models.
@@ -84,5 +94,5 @@ def calculate_cost(
         return 0.0
 
     input_cost = (prompt_tokens / 1000) * pricing.input_cost_per_1k
-    output_cost = (completion_tokens / 1000) * pricing.output_cost_per_1k
+    output_cost = ((completion_tokens + reasoning_tokens) / 1000) * pricing.output_cost_per_1k
     return input_cost + output_cost
