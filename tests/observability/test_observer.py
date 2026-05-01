@@ -85,7 +85,19 @@ class TestProviderEvents:
         metrics = MagicMock()
         observer = WorkflowObserver(metrics=metrics)
         observer.on_tokens("openai", "gpt-4o-mini", 100, 200)
-        metrics.record_tokens.assert_called_once_with("openai", "gpt-4o-mini", 100, 200)
+        metrics.record_tokens.assert_called_once_with(
+            "openai", "gpt-4o-mini", 100, 200, reasoning_tokens=0
+        )
+
+    def test_on_tokens_reasoning(self) -> None:
+        # Reasoning tokens flow through `on_tokens` as a kwarg-only
+        # parameter so non-thinking call sites stay unchanged.
+        metrics = MagicMock()
+        observer = WorkflowObserver(metrics=metrics)
+        observer.on_tokens("anthropic", "claude-opus-4", 100, 50, reasoning_tokens=200)
+        metrics.record_tokens.assert_called_once_with(
+            "anthropic", "claude-opus-4", 100, 50, reasoning_tokens=200
+        )
 
 
 class TestCircuitBreakerEvents:

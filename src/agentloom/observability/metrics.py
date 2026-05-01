@@ -382,7 +382,18 @@ class MetricsManager:
         model: str,
         prompt_tokens: int,
         completion_tokens: int,
+        *,
+        reasoning_tokens: int = 0,
     ) -> None:
+        """Record token usage on the ``tokens_total`` counter.
+
+        ``reasoning_tokens`` covers OpenAI o-series ``reasoning_tokens`` and
+        Anthropic extended-thinking ``thinking_tokens``. Providers bill these
+        at the output rate, so they need their own dimension to keep
+        completion-token dashboards meaningful. The third observation is
+        emitted only when ``reasoning_tokens`` is non-zero — non-thinking
+        models stay on a clean two-direction histogram.
+        """
         if not self._enabled:
             return
         if self._backend == "otel":
@@ -394,6 +405,11 @@ class MetricsManager:
                 completion_tokens,
                 {"provider": provider, "model": model, "direction": "output"},
             )
+            if reasoning_tokens:
+                self._token_counter.add(
+                    reasoning_tokens,
+                    {"provider": provider, "model": model, "direction": "reasoning"},
+                )
         else:  # pragma: no cover — prom fallback
             self._prom_counters["tokens_total"].labels(
                 provider=provider, model=model, direction="input"
@@ -401,6 +417,10 @@ class MetricsManager:
             self._prom_counters["tokens_total"].labels(
                 provider=provider, model=model, direction="output"
             ).inc(completion_tokens)
+            if reasoning_tokens:
+                self._prom_counters["tokens_total"].labels(
+                    provider=provider, model=model, direction="reasoning"
+                ).inc(reasoning_tokens)
 
     def record_attachments(self, step_type: str, count: int) -> None:
         if not self._enabled:
