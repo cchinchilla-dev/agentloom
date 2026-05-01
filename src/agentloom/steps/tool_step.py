@@ -31,7 +31,14 @@ class ToolStep(BaseStep):
             raise StepError(step.id, str(e)) from e
 
         state_snapshot = await context.state_manager.get_state_snapshot()
-        resolved_args = self._resolve_args(step.tool_args, state_snapshot)
+        try:
+            resolved_args = self._resolve_args(step.tool_args, state_snapshot)
+        except (KeyError, ValueError, IndexError) as e:
+            # Template rendering can raise on a typo in a placeholder, a
+            # literal ``{`` in a JSON snippet, or a stray index. Surface
+            # these as ``StepError`` tied to the step id instead of letting
+            # the raw formatting exception bubble up.
+            raise StepError(step.id, f"Failed to resolve tool args: {e}") from e
 
         try:
             result = await tool.execute(**resolved_args)

@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from agentloom.checkpointing.base import BaseCheckpointer
 from agentloom.core.models import SandboxConfig, StepDefinition
 from agentloom.core.results import StepResult
 
@@ -29,7 +30,7 @@ class StepContext(BaseModel):
     observer: Any | None = None  # WorkflowObserver
     stream: bool = False
     on_stream_chunk: Callable[[str, str], None] | None = None
-    checkpointer: Any | None = None  # BaseCheckpointer — propagated to subworkflows
+    checkpointer: BaseCheckpointer | None = None
 
 
 class BaseStep(ABC):

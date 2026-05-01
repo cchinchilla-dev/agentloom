@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from agentloom.exceptions import ValidationError
 
@@ -56,16 +56,19 @@ class DAG:
         color: dict[str, int] = {n: WHITE for n in self._nodes}
 
         def iterative_dfs(root: str) -> None:
-            # Stack frames carry the current node plus an iterator over the
-            # successors we still need to visit. When the iterator is
+            # Stack frames carry the current node plus a queue of
+            # successors we still need to visit. When the queue is
             # exhausted we pop, matching the recursive version's behaviour.
-            stack: list[tuple[str, list[str]]] = []
+            # Using ``deque`` keeps successor consumption O(1) per step
+            # — list.pop(0) would make the traversal quadratic on
+            # high out-degree nodes.
+            stack: list[tuple[str, deque[str]]] = []
             path: list[str] = []
 
             def push(node: str) -> None:
                 color[node] = GRAY
                 path.append(node)
-                stack.append((node, sorted(self._edges.get(node, set()))))
+                stack.append((node, deque(sorted(self._edges.get(node, set())))))
 
             push(root)
             while stack:
@@ -75,7 +78,7 @@ class DAG:
                     path.pop()
                     stack.pop()
                     continue
-                succ = pending.pop(0)
+                succ = pending.popleft()
                 if color[succ] == GRAY:
                     cycle_start = path.index(succ)
                     cycle = path[cycle_start:] + [succ]
@@ -101,9 +104,9 @@ class DAG:
         The returned set includes the roots themselves.
         """
         reachable: set[str] = set()
-        queue: list[str] = sorted(r for r in roots if r in self._nodes)
+        queue: deque[str] = deque(sorted(r for r in roots if r in self._nodes))
         while queue:
-            node = queue.pop(0)
+            node = queue.popleft()
             if node in reachable:
                 continue
             reachable.add(node)

@@ -326,10 +326,11 @@ class WorkflowEngine:
                 if activated_targets_for_next:
                     activated_targets = activated_targets_for_next
                     # Skip non-activated direct children of any router that
-                    # just fired, then propagate the skip forward through
-                    # the DAG's transitive closure so grandchildren and
-                    # deeper descendants also get marked SKIPPED instead of
-                    # executing with empty parent state.
+                    # just fired, then propagate the skip forward through the
+                    # DAG's transitive closure. Any descendant of a skipped
+                    # branch is unreachable, including join-nodes whose other
+                    # predecessor is on an activated branch — they would
+                    # otherwise execute with one upstream output missing.
                     non_activated_children: set[str] = set()
                     for step_id in active_steps:
                         step_def = self.workflow.get_step(step_id)
@@ -337,19 +338,7 @@ class WorkflowEngine:
                             for child in dag.successors(step_id):
                                 if child not in activated_targets:
                                     non_activated_children.add(child)
-                    skipped_steps.update(non_activated_children)
-                    # Propagate: any node whose entire predecessor set is
-                    # already in skipped_steps is itself unreachable.
-                    changed = True
-                    while changed:
-                        changed = False
-                        for node in dag.nodes:
-                            if node in skipped_steps or node in self._completed_steps:
-                                continue
-                            preds = dag.predecessors(node)
-                            if preds and all(p in skipped_steps for p in preds):
-                                skipped_steps.add(node)
-                                changed = True
+                    skipped_steps.update(dag.transitive_successors(non_activated_children))
                 else:
                     # Reset activation for non-router layers
                     if activated_targets is not None:

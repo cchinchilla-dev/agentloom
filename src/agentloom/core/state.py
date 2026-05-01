@@ -119,10 +119,12 @@ class StateManager:
 
     @property
     def state(self) -> dict[str, Any]:
-        """Raw state dict — **read-only snapshot use only**.
+        """Raw state dict — **unsafe live reference for internal use only**.
 
-        This is a live reference to the internal dict. Do not mutate it;
-        do not rely on it remaining stable across ``await`` points. Prefer
+        This returns the internal state dict directly, not a snapshot.
+        Mutating it bypasses ``self._lock`` and can race with concurrent
+        readers/writers. Do not mutate it and do not rely on it remaining
+        stable across ``await`` points. Prefer
         ``await self.get_state_snapshot()`` for a defensive copy.
         """
         return self._state
