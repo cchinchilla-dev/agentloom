@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -38,6 +40,119 @@ class TestGoogleProvider:
         assert result.content == "Gemini says hi"
         assert result.provider == "google"
         assert result.usage.total_tokens == 12
+        await provider.close()
+
+    @respx.mock
+    async def test_google_missing_thoughts_token_count_defaults_to_zero(self) -> None:
+        # The base mock response does not include ``thoughtsTokenCount``.
+        # The adapter must default the field to 0 (rather than raising or
+        # propagating ``None``) — Gemini omits the field on non-thinking
+        # models and intermittently on ``gemini-3-flash-preview`` even
+        # when thinking is enabled.
+        respx.post(url__regex=r".*/models/gemini.*").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = GoogleProvider(api_key="test-key")
+        result = await provider.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gemini-2.5-flash",
+        )
+        assert result.usage.reasoning_tokens == 0
+        assert result.usage.billable_completion_tokens == result.usage.completion_tokens
+        assert result.reasoning_content is None
+        await provider.close()
+
+    @respx.mock
+    async def test_google_thoughts_token_count_populates_reasoning_tokens(self) -> None:
+        # When Gemini surfaces ``thoughtsTokenCount`` (Gemini 2.5+ thinking
+        # models), it must land in ``TokenUsage.reasoning_tokens`` and feed
+        # cost calculation at the output rate.
+        thinking_response = {
+            "candidates": [
+                {
+                    "content": {"parts": [{"text": "answer"}]},
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 5,
+                "thoughtsTokenCount": 200,
+                "totalTokenCount": 215,
+            },
+        }
+        respx.post(url__regex=r".*/models/gemini.*").mock(
+            return_value=httpx.Response(200, json=thinking_response)
+        )
+        provider = GoogleProvider(api_key="test-key")
+        result = await provider.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gemini-2.5-flash",
+        )
+        assert result.usage.reasoning_tokens == 200
+        assert result.usage.billable_completion_tokens == 205  # 5 + 200
+        await provider.close()
+
+    @respx.mock
+    async def test_google_thinking_config_passed_to_payload(self) -> None:
+        # ``thinking_config`` must be translated into Gemini's wire format
+        # under ``generationConfig.thinkingConfig`` with the per-field
+        # rename. Snake_case at the public API → camelCase on the wire.
+        from agentloom.core.models import ThinkingConfig
+
+        route = respx.post(url__regex=r".*/models/gemini.*").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = GoogleProvider(api_key="test-key")
+        cfg = ThinkingConfig(enabled=True, budget_tokens=4096, level="high", capture_reasoning=True)
+        await provider.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gemini-2.5-flash",
+            thinking_config=cfg,
+        )
+        sent = json.loads(route.calls.last.request.content)
+        assert sent["generationConfig"]["thinkingConfig"] == {
+            "thinkingBudget": 4096,
+            "thinkingLevel": "high",
+            "includeThoughts": True,
+        }
+        await provider.close()
+
+    @respx.mock
+    async def test_google_includes_thoughts_writes_reasoning_content(self) -> None:
+        # When ``includeThoughts=true`` is set, Gemini returns thought
+        # summaries as separate parts marked ``thought=true``. The adapter
+        # must split those into ``reasoning_content`` and keep them out of
+        # the visible ``content``.
+        response_with_thoughts = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"text": "Let me think about this carefully.", "thought": True},
+                            {"text": "The answer is 42."},
+                        ]
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 5,
+                "thoughtsTokenCount": 7,
+                "totalTokenCount": 22,
+            },
+        }
+        respx.post(url__regex=r".*/models/gemini.*").mock(
+            return_value=httpx.Response(200, json=response_with_thoughts)
+        )
+        provider = GoogleProvider(api_key="test-key")
+        result = await provider.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gemini-2.5-flash",
+        )
+        assert result.content == "The answer is 42."
+        assert result.reasoning_content == "Let me think about this carefully."
         await provider.close()
 
     @respx.mock
