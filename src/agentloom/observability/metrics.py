@@ -387,12 +387,16 @@ class MetricsManager:
     ) -> None:
         """Record token usage on the ``tokens_total`` counter.
 
-        ``reasoning_tokens`` covers OpenAI o-series ``reasoning_tokens`` and
-        Anthropic extended-thinking ``thinking_tokens``. Providers bill these
-        at the output rate, so they need their own dimension to keep
-        completion-token dashboards meaningful. The third observation is
-        emitted only when ``reasoning_tokens`` is non-zero — non-thinking
-        models stay on a clean two-direction histogram.
+        ``reasoning_tokens`` is sourced from providers that report a
+        distinct reasoning / thinking token count — OpenAI o-series via
+        ``completion_tokens_details.reasoning_tokens`` and Gemini 2.5+ via
+        ``thoughtsTokenCount``. Anthropic does not expose a separate count
+        (thinking is rolled into ``output_tokens``) and Ollama emits a
+        single ``eval_count``; both stay at ``0`` here. Providers bill
+        reasoning at the output rate, so the third observation gives
+        dashboards a way to split chain-of-thought spend from regular
+        completion spend. Emitted only when non-zero — non-reasoning
+        workflows stay on a clean two-direction histogram.
         """
         if not self._enabled:
             return

@@ -66,8 +66,14 @@ def calculate_cost(
         prompt_tokens: Number of input tokens.
         completion_tokens: Number of visible output tokens.
         pricing_table: Custom pricing table (defaults to DEFAULT_PRICING).
-        reasoning_tokens: Provider-side chain-of-thought tokens (o1/o3,
-            Claude extended thinking). Billed at the output rate.
+        reasoning_tokens: Separately reported provider-side reasoning
+            tokens (OpenAI o-series via
+            ``completion_tokens_details.reasoning_tokens``; Gemini 2.5+
+            via ``thoughtsTokenCount``). Billed at the output rate.
+            Anthropic and Ollama do not expose a split, so callers
+            should leave this at ``0`` for those providers — Anthropic
+            cost stays correct because thinking is already inside
+            ``completion_tokens`` (= API ``output_tokens``).
 
     Returns:
         Cost in USD. Returns 0.0 for unknown models.

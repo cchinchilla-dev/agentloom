@@ -42,22 +42,28 @@ _ANTHROPIC_EXTRA_PAYLOAD_KEYS = frozenset(
 )
 
 
-def _translate_thinking_config(extras: dict[str, Any]) -> None:
+def _translate_thinking_config(extras: dict[str, Any]) -> bool:
     """Convert a ``ThinkingConfig`` extra into Anthropic's ``thinking`` payload.
 
-    Mutates ``extras`` in place. If the caller already provided a raw
-    ``thinking`` dict, it wins — we don't clobber the explicit override.
+    Mutates ``extras`` in place and returns whether the caller wants the
+    chain-of-thought trace exposed via ``ProviderResponse.reasoning_content``.
+    Defaults to ``True`` so callers that don't pass a ``ThinkingConfig`` keep
+    receiving thinking blocks when the provider returns them. If the caller
+    already provided a raw ``thinking`` dict, it wins — we don't clobber the
+    explicit override.
     """
     cfg = extras.pop("thinking_config", None)
+    capture = True if cfg is None else bool(getattr(cfg, "capture_reasoning", True))
     if cfg is None or not getattr(cfg, "enabled", False):
-        return
+        return capture
     if "thinking" in extras:
-        return
+        return capture
     payload: dict[str, Any] = {"type": "enabled"}
     budget = getattr(cfg, "budget_tokens", None)
     if budget is not None:
         payload["budget_tokens"] = budget
     extras["thinking"] = payload
+    return capture
 
 
 class AnthropicProvider(BaseProvider):
@@ -158,7 +164,7 @@ class AnthropicProvider(BaseProvider):
         extras = validate_extra_kwargs(
             "anthropic", "complete", kwargs, _ANTHROPIC_EXTRA_PAYLOAD_KEYS
         )
-        _translate_thinking_config(extras)
+        capture_reasoning = _translate_thinking_config(extras)
         system_prompt, filtered_messages = self._format_messages(messages)
 
         payload: dict[str, Any] = {
@@ -216,7 +222,9 @@ class AnthropicProvider(BaseProvider):
             provider="anthropic",
             usage=usage,
             cost_usd=cost,
-            reasoning_content="".join(reasoning_parts) if reasoning_parts else None,
+            reasoning_content=(
+                "".join(reasoning_parts) if reasoning_parts and capture_reasoning else None
+            ),
             raw_response=data,
             finish_reason=data.get("stop_reason"),
         )
@@ -230,6 +238,8 @@ class AnthropicProvider(BaseProvider):
         **kwargs: Any,
     ) -> StreamResponse:
         extras = validate_extra_kwargs("anthropic", "stream", kwargs, _ANTHROPIC_EXTRA_PAYLOAD_KEYS)
+        # Stream does not yet capture ``thinking`` deltas (separate work);
+        # the return value is intentionally discarded here.
         _translate_thinking_config(extras)
         system_prompt, filtered_messages = self._format_messages(messages)
 

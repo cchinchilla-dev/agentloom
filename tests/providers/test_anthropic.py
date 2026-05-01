@@ -387,3 +387,34 @@ class TestAnthropicReasoning:
         _translate_thinking_config(extras)
         assert extras["thinking"] == {"type": "enabled", "budget_tokens": 9999}
         assert "thinking_config" not in extras
+
+    @respx.mock
+    async def test_capture_reasoning_false_suppresses_trace(self) -> None:
+        # When the caller opts out via ``capture_reasoning=False`` the
+        # adapter must drop the ``type="thinking"`` blocks rather than
+        # surface them on ``ProviderResponse.reasoning_content``. The
+        # visible answer is unaffected.
+        from agentloom.core.models import ThinkingConfig
+
+        body = {
+            "content": [
+                {"type": "thinking", "thinking": "internal trace"},
+                {"type": "text", "text": "The answer is 42."},
+            ],
+            "model": "claude-opus-4",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 50},
+        }
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, json=body)
+        )
+        provider = AnthropicProvider(api_key="k")
+        cfg = ThinkingConfig(enabled=True, budget_tokens=1024, capture_reasoning=False)
+        r = await provider.complete(
+            messages=[{"role": "user", "content": "solve"}],
+            model="claude-opus-4",
+            thinking_config=cfg,
+        )
+        assert r.reasoning_content is None
+        assert r.content == "The answer is 42."
+        await provider.close()

@@ -65,6 +65,31 @@ class TestStepLifecycle:
         observer.on_step_end("step1", "llm_call", "failed", 50.0, error="boom")
         span.set_attribute.assert_any_call("step.error", "boom")
 
+    def test_step_reasoning_tokens_set_on_span_when_nonzero(self) -> None:
+        # ``step.reasoning_tokens`` lands on the span only when reasoning
+        # was actually consumed, so non-thinking workflows keep the span
+        # surface clean.
+        tracing = MagicMock()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_step_start("step1", "llm_call")
+        span = tracing.start_span.return_value
+        observer.on_step_end(
+            "step1", "llm_call", "success", 100.0, tokens=300, reasoning_tokens=128
+        )
+        span.set_attribute.assert_any_call("step.reasoning_tokens", 128)
+
+    def test_step_reasoning_tokens_absent_when_zero(self) -> None:
+        # The default path should not emit ``step.reasoning_tokens`` so
+        # dashboards filtering on the attribute see zero events for
+        # non-reasoning models.
+        tracing = MagicMock()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_step_start("step1", "llm_call")
+        span = tracing.start_span.return_value
+        observer.on_step_end("step1", "llm_call", "success", 100.0, tokens=300)
+        attribute_keys = [call.args[0] for call in span.set_attribute.call_args_list]
+        assert "step.reasoning_tokens" not in attribute_keys
+
 
 class TestProviderEvents:
     def test_on_provider_call(self) -> None:

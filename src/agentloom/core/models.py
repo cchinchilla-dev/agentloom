@@ -79,8 +79,13 @@ class ThinkingConfig(BaseModel):
       set, else ``think: true``.
 
     ``capture_reasoning`` controls whether the chain-of-thought trace is
-    exposed via ``ProviderResponse.reasoning_content`` (Anthropic / Gemini /
-    Ollama). OpenAI keeps the trace server-side regardless.
+    exposed via ``ProviderResponse.reasoning_content``. Honoured by all
+    providers that surface a trace: Anthropic drops ``type="thinking"``
+    blocks when set to ``False``; Gemini omits ``includeThoughts`` from
+    the request so the server never sends thought summaries; Ollama
+    drops ``message.thinking`` and inline ``<think>...</think>`` tags
+    (the visible answer is still cleaned up). OpenAI keeps the trace
+    server-side regardless, so the field has no effect there.
     """
 
     enabled: bool = False

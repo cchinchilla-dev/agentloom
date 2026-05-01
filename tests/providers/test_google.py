@@ -399,3 +399,46 @@ class TestGoogleProvider:
         assert "tools" in captured
         assert "safetySettings" in captured
 
+
+class TestGoogleReasoningStream:
+    @respx.mock
+    async def test_stream_thinking_config_routes_to_payload_and_captures_thoughts(
+        self,
+    ) -> None:
+        # Streaming path mirrors ``complete``: ``thinking_config`` translates
+        # to ``generationConfig.thinkingConfig`` on the wire, ``thought=true``
+        # parts split into ``reasoning_content``, and ``thoughtsTokenCount``
+        # lands on ``StreamResponse.usage.reasoning_tokens``.
+        from agentloom.core.models import ThinkingConfig
+
+        sse = (
+            'data: {"candidates":[{"content":{"parts":['
+            '{"text":"thinking trace ","thought":true},'
+            '{"text":"answer chunk"}'
+            "]}}]}\n\n"
+            'data: {"candidates":[{"finishReason":"STOP"}],'
+            '"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,'
+            '"thoughtsTokenCount":7,"totalTokenCount":20}}\n\n'
+        )
+        route = respx.post(url__regex=r".*/models/gemini.*:streamGenerateContent.*").mock(
+            return_value=httpx.Response(200, content=sse.encode())
+        )
+        provider = GoogleProvider(api_key="test-key")
+        cfg = ThinkingConfig(enabled=True, budget_tokens=2048, capture_reasoning=True)
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gemini-2.5-flash",
+            thinking_config=cfg,
+        )
+        chunks: list[str] = []
+        async for chunk in sr:
+            chunks.append(chunk)
+        sent = json.loads(route.calls.last.request.content)
+        assert sent["generationConfig"]["thinkingConfig"] == {
+            "thinkingBudget": 2048,
+            "includeThoughts": True,
+        }
+        assert "".join(chunks) == "answer chunk"
+        assert sr.usage.reasoning_tokens == 7
+        assert sr.reasoning_content == "thinking trace "
+        await provider.close()

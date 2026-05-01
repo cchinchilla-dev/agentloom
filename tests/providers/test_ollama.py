@@ -148,6 +148,74 @@ class TestOllamaProvider:
         await provider.close()
 
     @respx.mock
+    async def test_ollama_capture_reasoning_false_suppresses_trace(self) -> None:
+        # When the caller opts out via ``capture_reasoning=False`` the
+        # adapter must NOT surface ``message.thinking`` or inline
+        # ``<think>...</think>`` content on ``reasoning_content``. The
+        # visible answer must still be clean (tags stripped from content).
+        from agentloom.core.models import ThinkingConfig
+
+        legacy_with_inline = {
+            "model": "qwen3",
+            "message": {
+                "role": "assistant",
+                "content": "<think>internal trace</think>The answer is 42.",
+                "thinking": "explicit trace",
+            },
+            "prompt_eval_count": 10,
+            "eval_count": 20,
+            "done_reason": "stop",
+        }
+        respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(200, json=legacy_with_inline)
+        )
+        provider = OllamaProvider()
+        result = await provider.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="qwen3",
+            thinking_config=ThinkingConfig(enabled=True, capture_reasoning=False),
+        )
+        assert result.reasoning_content is None
+        assert result.content == "The answer is 42."  # tags still stripped
+        await provider.close()
+
+    @respx.mock
+    async def test_ollama_stream_thinking_chunks_concat_into_reasoning_content(self) -> None:
+        # The streaming path must collect ``message.thinking`` deltas across
+        # NDJSON chunks and concatenate them into ``StreamResponse.reasoning_content``
+        # once the ``done`` event fires. ``think`` request param must also
+        # land on the wire payload for this branch.
+        from agentloom.core.models import ThinkingConfig
+
+        ndjson = (
+            '{"model":"deepseek-r1","message":{"role":"assistant","content":"",'
+            '"thinking":"step 1 "},"done":false}\n'
+            '{"model":"deepseek-r1","message":{"role":"assistant","content":"",'
+            '"thinking":"step 2 "},"done":false}\n'
+            '{"model":"deepseek-r1","message":{"role":"assistant","content":"42"},'
+            '"done":false}\n'
+            '{"model":"deepseek-r1","message":{"role":"assistant","content":""},'
+            '"done":true,"done_reason":"stop","prompt_eval_count":10,"eval_count":3}\n'
+        )
+        route = respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(200, content=ndjson.encode())
+        )
+        provider = OllamaProvider()
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="deepseek-r1",
+            thinking_config=ThinkingConfig(enabled=True),
+        )
+        chunks: list[str] = []
+        async for chunk in sr:
+            chunks.append(chunk)
+        sent = json.loads(route.calls.last.request.content)
+        assert sent["think"] is True
+        assert "".join(chunks) == "42"
+        assert sr.reasoning_content == "step 1 step 2 "
+        await provider.close()
+
+    @respx.mock
     async def test_api_error_raises(self) -> None:
         respx.post("http://localhost:11434/api/chat").mock(
             return_value=httpx.Response(404, text='{"error":"model not found"}')

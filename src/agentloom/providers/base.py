@@ -22,10 +22,13 @@ class ProviderResponse(BaseModel):
     cost_usd: float = 0.0
     raw_response: dict[str, Any] = Field(default_factory=dict)
     finish_reason: str | None = None
-    # Reasoning / chain-of-thought text, when the provider exposes it and
-    # the caller opted into capture. OpenAI o-series keeps the trace
-    # server-side, so this stays ``None``; Anthropic extended thinking
-    # returns ``type="thinking"`` content blocks which we concatenate here.
+    # Reasoning / chain-of-thought text. Populated when the provider
+    # exposes the trace and the caller did not opt out via
+    # ``ThinkingConfig.capture_reasoning``. OpenAI o-series keeps the
+    # trace server-side, so this stays ``None``; Anthropic concatenates
+    # ``type="thinking"`` blocks; Gemini surfaces ``thought=true`` parts;
+    # Ollama returns ``message.thinking`` (or strips inline
+    # ``<think>...</think>`` tags as a fallback).
     reasoning_content: str | None = None
 
 

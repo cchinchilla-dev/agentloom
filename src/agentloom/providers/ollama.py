@@ -44,18 +44,29 @@ def _split_inline_think_tags(text: str) -> tuple[str, str | None]:
     return cleaned, "".join(matches)
 
 
-def _build_ollama_think(cfg: Any) -> bool | str | None:
-    """Translate a ``ThinkingConfig`` into Ollama's ``think`` request param.
+def _pop_thinking_config(extras: dict[str, Any]) -> tuple[bool | str | None, bool]:
+    """Pop ``thinking_config`` from ``extras`` and translate it.
 
-    Returns ``None`` when reasoning is not requested. Levels override the
-    bool form; GPT-OSS via Ollama accepts ``"low"|"medium"|"high"`` directly.
+    Returns ``(think_param, capture_reasoning)``:
+
+    - ``think_param`` — the value to send under Ollama's top-level ``think``
+      key, or ``None`` if reasoning was not requested. Levels override the
+      bool form (GPT-OSS via Ollama accepts ``"low"|"medium"|"high"``).
+    - ``capture_reasoning`` — whether to surface the trace via
+      ``ProviderResponse.reasoning_content``. Defaults to ``True`` for
+      callers that don't pass a ``ThinkingConfig`` so existing workflows
+      keep their previous behaviour. When set to ``False``, inline
+      ``<think>...</think>`` tags still get stripped from the visible
+      ``content`` (kept clean) but the trace itself is dropped.
     """
+    cfg = extras.pop("thinking_config", None)
+    capture = True if cfg is None else bool(getattr(cfg, "capture_reasoning", True))
     if cfg is None or not getattr(cfg, "enabled", False):
-        return None
+        return None, capture
     level = getattr(cfg, "level", None)
     if level is not None:
-        return str(level)
-    return True
+        return str(level), capture
+    return True, capture
 
 
 # Keys mapped into Ollama's ``options`` bag (model-level generation params).
@@ -144,7 +155,7 @@ class OllamaProvider(BaseProvider):
         **kwargs: Any,
     ) -> ProviderResponse:
         extras = validate_extra_kwargs("ollama", "complete", kwargs, _OLLAMA_EXTRA_PAYLOAD_KEYS)
-        think_param = _build_ollama_think(extras.pop("thinking_config", None))
+        think_param, capture_reasoning = _pop_thinking_config(extras)
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
@@ -176,12 +187,13 @@ class OllamaProvider(BaseProvider):
         content = message.get("content", "")
         # Ollama 0.9+ separates the trace into ``message.thinking`` when
         # ``think`` was requested. Older models / un-flagged calls leak
-        # the trace inline as ``<think>...</think>`` — strip and surface
-        # it the same way for callers.
-        reasoning_content: str | None = message.get("thinking") or None
-        if not reasoning_content:
-            content, inline_trace = _split_inline_think_tags(content)
-            reasoning_content = inline_trace
+        # the trace inline as ``<think>...</think>``. Strip the tags from
+        # ``content`` regardless (the visible answer must always be clean);
+        # surface the captured trace only when the caller opted in via
+        # ``ThinkingConfig.capture_reasoning``.
+        thinking_field: str | None = message.get("thinking") or None
+        content, inline_trace = _split_inline_think_tags(content)
+        reasoning_content = (thinking_field or inline_trace) if capture_reasoning else None
 
         # Ollama does not split eval_count between thinking and visible
         # tokens, so ``reasoning_tokens`` stays 0 — the docs flag this as
@@ -214,7 +226,7 @@ class OllamaProvider(BaseProvider):
         **kwargs: Any,
     ) -> StreamResponse:
         extras = validate_extra_kwargs("ollama", "stream", kwargs, _OLLAMA_EXTRA_PAYLOAD_KEYS)
-        think_param = _build_ollama_think(extras.pop("thinking_config", None))
+        think_param, capture_reasoning = _pop_thinking_config(extras)
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
@@ -261,12 +273,15 @@ class OllamaProvider(BaseProvider):
                             total_tokens=prompt_tokens + completion_tokens,
                         )
                         sr.model = data.get("model", model)
-                        if thinking_buffer:
+                        if thinking_buffer and capture_reasoning:
                             sr.reasoning_content = "".join(thinking_buffer)
                         break
                     message = data.get("message", {})
                     thinking_chunk = message.get("thinking")
-                    if thinking_chunk:
+                    if thinking_chunk and capture_reasoning:
+                        # Buffer only when the caller opted in. When opted
+                        # out we still drain the field implicitly via the
+                        # parent loop without storing it.
                         thinking_buffer.append(thinking_chunk)
                     text = message.get("content", "")
                     if text:
