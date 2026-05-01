@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -24,6 +25,39 @@ from agentloom.providers.multimodal import (
 
 logger = logging.getLogger("agentloom.providers.ollama")
 
+# Inline ``<think>...</think>`` tags emitted by reasoning models on Ollama
+# < 0.9 or when ``think`` is not requested at all. Capture group keeps the
+# trace; substitution removes the wrapper from the visible answer.
+_THINK_TAG_RE = re.compile(r"<think>(.*?)</think>\s*", re.DOTALL)
+
+
+def _split_inline_think_tags(text: str) -> tuple[str, str | None]:
+    """Strip ``<think>...</think>`` from ``text``; return (clean, trace).
+
+    Returns ``(text, None)`` unchanged when no tags are present so the
+    common case stays a no-op.
+    """
+    matches = _THINK_TAG_RE.findall(text)
+    if not matches:
+        return text, None
+    cleaned = _THINK_TAG_RE.sub("", text)
+    return cleaned, "".join(matches)
+
+
+def _build_ollama_think(cfg: Any) -> bool | str | None:
+    """Translate a ``ThinkingConfig`` into Ollama's ``think`` request param.
+
+    Returns ``None`` when reasoning is not requested. Levels override the
+    bool form; GPT-OSS via Ollama accepts ``"low"|"medium"|"high"`` directly.
+    """
+    if cfg is None or not getattr(cfg, "enabled", False):
+        return None
+    level = getattr(cfg, "level", None)
+    if level is not None:
+        return str(level)
+    return True
+
+
 # Keys mapped into Ollama's ``options`` bag (model-level generation params).
 _OLLAMA_OPTION_KEYS = frozenset(
     {
@@ -41,7 +75,7 @@ _OLLAMA_OPTION_KEYS = frozenset(
 )
 # Top-level Ollama request keys (outside ``options``).
 _OLLAMA_TOPLEVEL_KEYS = frozenset({"format", "tools", "keep_alive"})
-_OLLAMA_EXTRA_PAYLOAD_KEYS = _OLLAMA_OPTION_KEYS | _OLLAMA_TOPLEVEL_KEYS
+_OLLAMA_EXTRA_PAYLOAD_KEYS = _OLLAMA_OPTION_KEYS | _OLLAMA_TOPLEVEL_KEYS | {"thinking_config"}
 
 
 class OllamaProvider(BaseProvider):
@@ -110,11 +144,14 @@ class OllamaProvider(BaseProvider):
         **kwargs: Any,
     ) -> ProviderResponse:
         extras = validate_extra_kwargs("ollama", "complete", kwargs, _OLLAMA_EXTRA_PAYLOAD_KEYS)
+        think_param = _build_ollama_think(extras.pop("thinking_config", None))
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
             "stream": False,
         }
+        if think_param is not None:
+            payload["think"] = think_param
         options: dict[str, Any] = {}
         if temperature is not None:
             options["temperature"] = temperature
@@ -135,9 +172,20 @@ class OllamaProvider(BaseProvider):
         raise_for_status("ollama", response)
 
         data = response.json()
-        content = data.get("message", {}).get("content", "")
+        message = data.get("message", {})
+        content = message.get("content", "")
+        # Ollama 0.9+ separates the trace into ``message.thinking`` when
+        # ``think`` was requested. Older models / un-flagged calls leak
+        # the trace inline as ``<think>...</think>`` — strip and surface
+        # it the same way for callers.
+        reasoning_content: str | None = message.get("thinking") or None
+        if not reasoning_content:
+            content, inline_trace = _split_inline_think_tags(content)
+            reasoning_content = inline_trace
 
-        # Ollama provides token counts in eval_count and prompt_eval_count
+        # Ollama does not split eval_count between thinking and visible
+        # tokens, so ``reasoning_tokens`` stays 0 — the docs flag this as
+        # a known limitation. Cost is 0 anyway for local models.
         prompt_tokens = data.get("prompt_eval_count", 0)
         completion_tokens = data.get("eval_count", 0)
         usage = TokenUsage(
@@ -152,6 +200,7 @@ class OllamaProvider(BaseProvider):
             provider="ollama",
             usage=usage,
             cost_usd=0.0,  # Local models are free
+            reasoning_content=reasoning_content,
             raw_response=data,
             finish_reason=data.get("done_reason"),
         )
@@ -165,11 +214,14 @@ class OllamaProvider(BaseProvider):
         **kwargs: Any,
     ) -> StreamResponse:
         extras = validate_extra_kwargs("ollama", "stream", kwargs, _OLLAMA_EXTRA_PAYLOAD_KEYS)
+        think_param = _build_ollama_think(extras.pop("thinking_config", None))
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
             "stream": True,
         }
+        if think_param is not None:
+            payload["think"] = think_param
         options: dict[str, Any] = {}
         if temperature is not None:
             options["temperature"] = temperature
@@ -183,6 +235,7 @@ class OllamaProvider(BaseProvider):
             payload[k] = extras[k]
 
         sr = StreamResponse(model=model, provider="ollama")
+        thinking_buffer: list[str] = []
 
         async def _generate() -> AsyncIterator[str]:
             async with self._client.stream("POST", "/api/chat", json=payload) as resp:
@@ -208,8 +261,14 @@ class OllamaProvider(BaseProvider):
                             total_tokens=prompt_tokens + completion_tokens,
                         )
                         sr.model = data.get("model", model)
+                        if thinking_buffer:
+                            sr.reasoning_content = "".join(thinking_buffer)
                         break
-                    text = data.get("message", {}).get("content", "")
+                    message = data.get("message", {})
+                    thinking_chunk = message.get("thinking")
+                    if thinking_chunk:
+                        thinking_buffer.append(thinking_chunk)
+                    text = message.get("content", "")
                     if text:
                         yield text
 

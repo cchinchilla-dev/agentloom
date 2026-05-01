@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -31,6 +33,118 @@ class TestOllamaProvider:
         assert result.usage.prompt_tokens == 15
         assert result.usage.completion_tokens == 10
         assert result.cost_usd == 0.0
+        await provider.close()
+
+    @respx.mock
+    async def test_ollama_reasoning_tokens_zero_documented_limitation(self) -> None:
+        # Ollama exposes a single ``eval_count`` for all output tokens
+        # without splitting thinking vs visible. ``reasoning_tokens`` thus
+        # always reports 0 — documented limitation. Cost is unaffected
+        # (local models are free).
+        respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = OllamaProvider()
+        result = await provider.complete(messages=[{"role": "user", "content": "hi"}], model="phi4")
+        assert result.usage.reasoning_tokens == 0
+        assert result.usage.billable_completion_tokens == result.usage.completion_tokens
+        assert result.reasoning_content is None
+        await provider.close()
+
+    @respx.mock
+    async def test_ollama_message_thinking_populates_reasoning_content(self) -> None:
+        # Ollama 0.9+ separates the trace into ``message.thinking`` when
+        # the caller requested thinking via the ``think`` request param.
+        # The adapter must surface it on ``reasoning_content`` with the
+        # visible answer kept clean on ``content``.
+        thinking_response = {
+            "model": "deepseek-r1",
+            "message": {
+                "role": "assistant",
+                "content": "The answer is 42.",
+                "thinking": "Let me work through this step by step...",
+            },
+            "prompt_eval_count": 15,
+            "eval_count": 30,
+            "done_reason": "stop",
+        }
+        respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(200, json=thinking_response)
+        )
+        provider = OllamaProvider()
+        result = await provider.complete(
+            messages=[{"role": "user", "content": "hi"}], model="deepseek-r1"
+        )
+        assert result.content == "The answer is 42."
+        assert result.reasoning_content == "Let me work through this step by step..."
+        await provider.close()
+
+    @respx.mock
+    async def test_ollama_inline_think_tags_stripped_from_content(self) -> None:
+        # Older models (or calls without ``think=true``) leak the trace
+        # inline as ``<think>...</think>`` in ``message.content``. The
+        # adapter strips the wrapper and surfaces the captured group on
+        # ``reasoning_content``.
+        legacy_response = {
+            "model": "qwen3",
+            "message": {
+                "role": "assistant",
+                "content": "<think>Working it out...</think>The answer is 42.",
+            },
+            "prompt_eval_count": 15,
+            "eval_count": 30,
+            "done_reason": "stop",
+        }
+        respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(200, json=legacy_response)
+        )
+        provider = OllamaProvider()
+        result = await provider.complete(
+            messages=[{"role": "user", "content": "hi"}], model="qwen3"
+        )
+        assert result.content == "The answer is 42."
+        assert result.reasoning_content == "Working it out..."
+        await provider.close()
+
+    @respx.mock
+    async def test_ollama_think_param_passed_to_payload(self) -> None:
+        # ``ThinkingConfig.enabled=True`` must surface as the top-level
+        # ``think`` request param so Ollama 0.9+ activates thinking mode.
+        # When ``level`` is set, it overrides the bool — GPT-OSS via
+        # Ollama accepts ``"low"|"medium"|"high"`` directly.
+        from agentloom.core.models import ThinkingConfig
+
+        route = respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = OllamaProvider()
+        cfg = ThinkingConfig(enabled=True, level="high")
+        await provider.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-oss",
+            thinking_config=cfg,
+        )
+        sent = json.loads(route.calls.last.request.content)
+        assert sent["think"] == "high"
+        await provider.close()
+
+    @respx.mock
+    async def test_ollama_think_param_bool_when_no_level(self) -> None:
+        # Without ``level``, the adapter sends ``think: true`` so reasoning
+        # models (DeepSeek-R1, Qwen3) activate their default thinking mode.
+        from agentloom.core.models import ThinkingConfig
+
+        route = respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = OllamaProvider()
+        await provider.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="deepseek-r1",
+            thinking_config=ThinkingConfig(enabled=True),
+        )
+        sent = json.loads(route.calls.last.request.content)
+        assert sent["think"] is True
         await provider.close()
 
     @respx.mock
