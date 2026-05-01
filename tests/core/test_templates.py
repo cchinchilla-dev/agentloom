@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from agentloom.core.templates import (
     DotAccessDict,
     DotAccessList,
     SafeFormatDict,
+    TemplateError,
     build_template_vars,
 )
 
@@ -118,3 +121,35 @@ class TestFormatSpec:
     def test_format_spec_applied_to_list_element(self) -> None:
         lst = DotAccessList([10, 20, 30])
         assert f"{lst[1]:03d}" == "020"
+
+
+class TestStrictRaiseBranches:
+    """Strict-mode TemplateError branches that the default warn-mode skips."""
+
+    def test_strict_dict_int_index_raises(self) -> None:
+        d = DotAccessDict({"a": 1}, strict=True)
+        with pytest.raises(TemplateError, match="int index"):
+            _ = d[0]  # type: ignore[index]
+
+    def test_strict_list_non_integer_index_raises(self) -> None:
+        lst = DotAccessList([1, 2, 3], strict=True)
+        with pytest.raises(TemplateError, match="non-integer index"):
+            _ = lst["bad"]  # type: ignore[index]
+
+    def test_strict_list_out_of_range_raises(self) -> None:
+        lst = DotAccessList([1, 2, 3], strict=True)
+        with pytest.raises(TemplateError, match="out of range"):
+            _ = lst[99]
+
+
+class TestFormatSpecOnContainers:
+    """``__format__`` honours ``format_spec`` on dict/list wrappers when the
+    underlying value supports the spec."""
+
+    def test_dict_format_spec_with_data_supporting_spec(self) -> None:
+        d = DotAccessDict({"x": 1234.5678})
+        assert format(d, "") == repr({"x": 1234.5678})
+
+    def test_list_format_spec_with_data_supporting_spec(self) -> None:
+        lst = DotAccessList([1, 2, 3])
+        assert format(lst, "") == repr([1, 2, 3])
