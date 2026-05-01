@@ -1,5 +1,19 @@
-# Model pricing table (USD per 1K tokens) — updated March 2026
+# Model pricing table (USD per 1K tokens) — updated May 2026
 # Override by setting AGENTLOOM_PRICING_FILE to your own YAML path.
+#
+# Reasoning models: o-series (OpenAI), Claude with extended thinking, and
+# Gemini 2.5+ thinking all bill chain-of-thought tokens at the OUTPUT rate.
+# ``calculate_cost`` adds ``reasoning_tokens`` to ``completion_tokens``
+# before applying ``output_cost_per_1k`` — no separate "reasoning" rate is
+# needed in this table.
+
+# OpenAI — GPT-5.5 (April 2026, flagship)
+gpt-5.5:
+  input: 0.00500
+  output: 0.03000
+gpt-5.5-pro:
+  input: 0.03000
+  output: 0.18000
 
 # OpenAI — GPT-5.4 (March 2026)
 gpt-5.4:
@@ -15,12 +29,58 @@ gpt-5.4-pro:
   input: 0.03000
   output: 0.18000
 
-# OpenAI — GPT-4.1 (April 2025)
+# OpenAI — GPT-5.1/5.2/5.3 (codex / interim, late 2025–early 2026)
+gpt-5.3-codex:
+  input: 0.00175
+  output: 0.01400
+gpt-5.2:
+  input: 0.00175
+  output: 0.01400
+gpt-5.2-codex:
+  input: 0.00175
+  output: 0.01400
+gpt-5.2-pro:
+  input: 0.02100
+  output: 0.16800
+gpt-5.1:
+  input: 0.00125
+  output: 0.01000
+gpt-5.1-codex:
+  input: 0.00125
+  output: 0.01000
+gpt-5.1-codex-max:
+  input: 0.00125
+  output: 0.01000
+
+# OpenAI — GPT-5 (August 2025 GA)
+gpt-5:
+  input: 0.00125
+  output: 0.01000
+gpt-5-codex:
+  input: 0.00125
+  output: 0.01000
+gpt-5-mini:
+  input: 0.00025
+  output: 0.00200
+gpt-5-nano:
+  input: 0.00005
+  output: 0.00040
+gpt-5-pro:
+  input: 0.01500
+  output: 0.12000
+
+# OpenAI — GPT-4.1 family (April 2025, long-context)
 gpt-4.1:
   input: 0.00200
   output: 0.00800
+gpt-4.1-mini:
+  input: 0.00040
+  output: 0.00160
+gpt-4.1-nano:
+  input: 0.00010
+  output: 0.00040
 
-# OpenAI — GPT-4o family
+# OpenAI — GPT-4o family (legacy)
 gpt-4o:
   input: 0.00250
   output: 0.01000
@@ -28,13 +88,41 @@ gpt-4o-mini:
   input: 0.00015
   output: 0.00060
 
-# OpenAI — reasoning models
+# OpenAI — reasoning models (o-series). Reasoning tokens are billed at
+# ``output`` rate — see header comment. ``*-pro`` are premium tiers;
+# ``*-deep-research`` variants run extended thought loops at higher rates.
+o1:
+  input: 0.01500
+  output: 0.06000
+o1-mini:
+  input: 0.00110
+  output: 0.00440
+o1-pro:
+  input: 0.15000
+  output: 0.60000
 o3:
   input: 0.00200
   output: 0.00800
+o3-mini:
+  input: 0.00110
+  output: 0.00440
+o3-pro:
+  input: 0.02000
+  output: 0.08000
+o3-deep-research:
+  input: 0.01000
+  output: 0.04000
 o4-mini:
   input: 0.00110
   output: 0.00440
+o4-mini-deep-research:
+  input: 0.00200
+  output: 0.00800
+
+# Anthropic — Claude 4.7 (April 2026, latest Opus tier)
+claude-opus-4-7:
+  input: 0.00500
+  output: 0.02500
 
 # Anthropic — Claude 4.6 (Feb 2026)
 claude-opus-4-6:
@@ -44,43 +132,97 @@ claude-sonnet-4-6:
   input: 0.00300
   output: 0.01500
 
-# Anthropic — Claude 4.5 (Sept-Nov 2025)
+# Anthropic — Claude 4.5 (Sept-Nov 2025). Aliases without the date suffix
+# match callers that pin to the family name (e.g. ``claude-sonnet-4-5``).
+# The prefix-match in ``calculate_cost`` runs longest-first, so dated
+# entries still take precedence when both are present.
 claude-opus-4-5-20251101:
+  input: 0.00500
+  output: 0.02500
+claude-opus-4-5:
   input: 0.00500
   output: 0.02500
 claude-sonnet-4-5-20250929:
   input: 0.00300
   output: 0.01500
+claude-sonnet-4-5:
+  input: 0.00300
+  output: 0.01500
 claude-haiku-4-5-20251001:
   input: 0.00100
   output: 0.00500
+claude-haiku-4-5:
+  input: 0.00100
+  output: 0.00500
+
+# Anthropic — Claude 3.7 Sonnet (Feb 2025, first reasoning Claude)
+claude-3-7-sonnet:
+  input: 0.00300
+  output: 0.01500
 
 # Anthropic — Claude 3.5 (legacy)
 claude-haiku-3-5-20241022:
   input: 0.00080
   output: 0.00400
+claude-haiku-3-5:
+  input: 0.00080
+  output: 0.00400
 
-# Anthropic — Claude 4.1 / 4 (legacy)
+# Anthropic — Claude 3 (legacy)
+claude-opus-3:
+  input: 0.01500
+  output: 0.07500
+claude-haiku-3:
+  input: 0.00025
+  output: 0.00125
+
+# Anthropic — Claude 4.1 / 4 (legacy). Aliases without dates resolve
+# the same family/version pin used by callers that don't snapshot.
 claude-opus-4-1-20250805:
+  input: 0.01500
+  output: 0.07500
+claude-opus-4-1:
   input: 0.01500
   output: 0.07500
 claude-opus-4-20250514:
   input: 0.01500
   output: 0.07500
+claude-opus-4-0:
+  input: 0.01500
+  output: 0.07500
 claude-sonnet-4-20250514:
   input: 0.00300
   output: 0.01500
+claude-sonnet-4-0:
+  input: 0.00300
+  output: 0.01500
 
-# Google — Gemini 3 (2026)
+# Google — Gemini 3 (2026). ``-preview`` aliases land before the GA name
+# for callers pinning to the preview SKU; rates are identical.
 gemini-3.1-pro:
+  input: 0.00200
+  output: 0.01200
+gemini-3.1-pro-preview:
+  input: 0.00200
+  output: 0.01200
+gemini-3-pro-preview:
+  input: 0.00200
+  output: 0.01200
+gemini-3-pro:
   input: 0.00200
   output: 0.01200
 gemini-3-flash:
   input: 0.00050
   output: 0.00300
+gemini-3.1-flash-image-preview:
+  input: 0.00050
+  output: 0.00300
 
 # Google — Gemini 3.1 Flash Lite (2026)
 gemini-3.1-flash-lite:
+  input: 0.00025
+  output: 0.00150
+gemini-3.1-flash-lite-preview:
   input: 0.00025
   output: 0.00150
 
@@ -99,8 +241,11 @@ gemini-2.5-flash-lite:
 
 # Google — Gemini 2.0 (deprecated, sunset June 2026)
 gemini-2.0-flash:
-  input: 0.00010
-  output: 0.00040
+  input: 0.00015
+  output: 0.00060
+gemini-2.0-flash-lite:
+  input: 0.000075
+  output: 0.00030
 
 # Ollama (local — free)
 qwen3:

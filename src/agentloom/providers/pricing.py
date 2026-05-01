@@ -56,14 +56,18 @@ def calculate_cost(
     prompt_tokens: int,
     completion_tokens: int,
     pricing_table: dict[str, ModelPricing] | None = None,
+    *,
+    reasoning_tokens: int = 0,
 ) -> float:
     """Calculate the cost of an LLM call.
 
     Args:
         model: Model name.
         prompt_tokens: Number of input tokens.
-        completion_tokens: Number of output tokens.
+        completion_tokens: Number of visible output tokens.
         pricing_table: Custom pricing table (defaults to DEFAULT_PRICING).
+        reasoning_tokens: Provider-side chain-of-thought tokens (o1/o3,
+            Claude extended thinking). Billed at the output rate.
 
     Returns:
         Cost in USD. Returns 0.0 for unknown models.
@@ -84,5 +88,5 @@ def calculate_cost(
         return 0.0
 
     input_cost = (prompt_tokens / 1000) * pricing.input_cost_per_1k
-    output_cost = (completion_tokens / 1000) * pricing.output_cost_per_1k
+    output_cost = ((completion_tokens + reasoning_tokens) / 1000) * pricing.output_cost_per_1k
     return input_cost + output_cost
