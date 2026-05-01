@@ -21,11 +21,29 @@ class StepStatus(StrEnum):
 
 
 class TokenUsage(BaseModel):
-    """Token usage for an LLM call."""
+    """Token usage for an LLM call.
+
+    ``reasoning_tokens`` covers the ``completion_tokens_details.reasoning_tokens``
+    field on OpenAI o-series responses and Anthropic's extended-thinking
+    ``thinking_tokens``. Providers bill these at the output rate, so cost
+    calculation must include them even though the user never sees the raw
+    chain-of-thought.
+    """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    reasoning_tokens: int = 0
+
+    @property
+    def billable_completion_tokens(self) -> int:
+        """Tokens billed at the provider's output rate.
+
+        Always equal to ``completion_tokens + reasoning_tokens`` — exposed
+        as a property so downstream cost code does not have to remember
+        which field to add.
+        """
+        return self.completion_tokens + self.reasoning_tokens
 
 
 class StepResult(BaseModel):
