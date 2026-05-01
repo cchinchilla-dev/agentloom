@@ -209,6 +209,13 @@ class TestArrayIndexPaths:
         with pytest.raises(IndexError):
             await sm.set("items[5]", "x")
 
+    async def test_set_nested_list_expansion_error_is_clear(self) -> None:
+        """Out-of-range list writes must point the user at the fact that lists
+        are not auto-expanded — the previous message only said "out of range"."""
+        sm = StateManager(initial_state={"items": []})
+        with pytest.raises(IndexError, match="not auto-expanded"):
+            await sm.set("items[0].name", "x")
+
     def test_sync_get_with_index(self) -> None:
         sm = StateManager(initial_state={"items": ["a", "b"]})
         assert sm.get_sync("items[0]") == "a"

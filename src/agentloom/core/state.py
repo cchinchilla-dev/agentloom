@@ -173,7 +173,12 @@ class StateManager:
                 if isinstance(current, list) and -len(current) <= part < len(current):
                     current = current[part]
                 else:
-                    raise IndexError(f"List index {part} out of range in path '{key}'")
+                    raise IndexError(
+                        f"List index {part} out of range in path '{key}'. "
+                        f"Lists are not auto-expanded by set(); pre-allocate the list "
+                        f"(e.g. via an initial value containing {part + 1} elements) "
+                        f"before writing to indexed paths."
+                    )
             else:
                 if part not in current or not isinstance(current[part], (dict, list)):
                     current[part] = {}
@@ -188,7 +193,11 @@ class StateManager:
             if isinstance(current, list) and -len(current) <= last < len(current):
                 current[last] = value
             else:
-                raise IndexError(f"List index {last} out of range in path '{key}'")
+                raise IndexError(
+                    f"List index {last} out of range in path '{key}'. "
+                    f"Lists are not auto-expanded by set(); pre-allocate the list "
+                    f"before writing to indexed paths."
+                )
         else:
             if not isinstance(current, dict):
                 raise TypeError(

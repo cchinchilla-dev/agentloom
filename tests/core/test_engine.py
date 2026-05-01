@@ -232,3 +232,100 @@ class TestJitteredBackoff:
         # raw = 2**10 = 1024, capped at 10.
         d = _jittered_backoff(2.0, 10, 10.0, jitter=False)
         assert d == 10.0
+
+
+class TestRouterSkipCascade:
+    """Regression: router skip must propagate through the full DAG closure."""
+
+    async def test_router_skip_cascades_to_grandchildren(
+        self, mock_gateway: ProviderGateway
+    ) -> None:
+        """Router -> {path_a, path_b}, path_a -> review_a, path_b -> review_b.
+        Activating only path_a must leave review_b SKIPPED, not SUCCESS."""
+        from agentloom.core.models import (
+            Condition,
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+
+        workflow = WorkflowDefinition(
+            name="cascade",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={"choice": "a"},
+            steps=[
+                StepDefinition(
+                    id="route",
+                    type=StepType.ROUTER,
+                    conditions=[
+                        Condition(expression="state.choice == 'a'", target="path_a"),
+                        Condition(expression="state.choice == 'b'", target="path_b"),
+                    ],
+                ),
+                StepDefinition(
+                    id="path_a",
+                    type=StepType.LLM_CALL,
+                    depends_on=["route"],
+                    prompt="A",
+                ),
+                StepDefinition(
+                    id="path_b",
+                    type=StepType.LLM_CALL,
+                    depends_on=["route"],
+                    prompt="B",
+                ),
+                StepDefinition(
+                    id="review_a",
+                    type=StepType.LLM_CALL,
+                    depends_on=["path_a"],
+                    prompt="review A",
+                ),
+                StepDefinition(
+                    id="review_b",
+                    type=StepType.LLM_CALL,
+                    depends_on=["path_b"],
+                    prompt="review B",
+                ),
+            ],
+        )
+        engine = WorkflowEngine(workflow=workflow, provider_gateway=mock_gateway)
+        result = await engine.run()
+
+        assert result.step_results["path_a"].status == StepStatus.SUCCESS
+        assert result.step_results["path_b"].status == StepStatus.SKIPPED
+        assert result.step_results["review_a"].status == StepStatus.SUCCESS
+        # The critical regression: review_b used to execute with empty state.
+        assert result.step_results["review_b"].status == StepStatus.SKIPPED
+
+
+class TestBudgetPreDispatchGate:
+    """Prior-exhausted budget must stop further step dispatch before the call."""
+
+    async def test_budget_pre_dispatch_gate_blocks_after_exhaustion(
+        self, mock_gateway: ProviderGateway
+    ) -> None:
+        from agentloom.core.models import (
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+
+        workflow = WorkflowDefinition(
+            name="budget",
+            config=WorkflowConfig(provider="mock", model="mock-model", budget_usd=0.0005),
+            state={},
+            steps=[
+                StepDefinition(id="s1", type=StepType.LLM_CALL, prompt="hi"),
+                StepDefinition(id="s2", type=StepType.LLM_CALL, depends_on=["s1"], prompt="hi"),
+            ],
+        )
+        engine = WorkflowEngine(workflow=workflow, provider_gateway=mock_gateway)
+        # MockProvider returns cost_usd=0.001 per call — the first step alone
+        # overshoots the 0.0005 budget, so s2 must never dispatch.
+        result = await engine.run()
+        assert result.status == WorkflowStatus.BUDGET_EXCEEDED
+        # s2 never reached the provider (no SUCCESS).
+        s2 = result.step_results.get("s2")
+        assert s2 is None or s2.status != StepStatus.SUCCESS

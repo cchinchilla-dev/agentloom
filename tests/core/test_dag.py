@@ -264,3 +264,49 @@ class TestGetReadyNodes:
         dag = DAG()
         ready = dag.get_ready_nodes(completed=set())
         assert ready == []
+
+
+class TestIterativeCycleDetection:
+    """The cycle-detection DFS is iterative so deep chains do not hit Python's recursion limit."""
+
+    def test_cycle_detection_handles_deep_graph(self) -> None:
+        dag = DAG()
+        for i in range(2000):
+            dag.add_edge(f"n{i}", f"n{i + 1}")
+        # No cycle; must validate without raising RecursionError.
+        assert dag.validate() == []
+
+    def test_cycle_detection_message_is_accurate(self) -> None:
+        # Two independent cycles. Both should be reported with their own
+        # path, not leak nodes from the first traversal into the second.
+        dag = DAG()
+        dag.add_edge("a", "b")
+        dag.add_edge("b", "a")
+        dag.add_edge("c", "d")
+        dag.add_edge("d", "c")
+
+        errors = dag.validate()
+        assert any("a -> b -> a" in e or "b -> a -> b" in e for e in errors)
+        assert any("c -> d -> c" in e or "d -> c -> d" in e for e in errors)
+
+
+class TestTransitiveSuccessors:
+    def test_transitive_successors_single_root(self) -> None:
+        dag = DAG()
+        dag.add_edge("r", "a")
+        dag.add_edge("a", "b")
+        dag.add_edge("b", "c")
+        assert dag.transitive_successors({"a"}) == {"a", "b", "c"}
+
+    def test_transitive_successors_multiple_roots(self) -> None:
+        dag = DAG()
+        dag.add_edge("r", "a")
+        dag.add_edge("r", "b")
+        dag.add_edge("a", "c")
+        dag.add_edge("b", "c")
+        assert dag.transitive_successors({"a", "b"}) == {"a", "b", "c"}
+
+    def test_transitive_successors_unknown_root_returns_empty(self) -> None:
+        dag = DAG()
+        dag.add_edge("a", "b")
+        assert dag.transitive_successors({"not_in_graph"}) == set()
