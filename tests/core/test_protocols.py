@@ -23,8 +23,11 @@ from agentloom.tools.registry import ToolRegistry
 class TestProtocolConformance:
     """Concrete implementations structurally satisfy the Protocols.
 
-    ``runtime_checkable`` lets us use ``isinstance`` as the conformance
-    check; a failure here means a method signature drifted.
+    ``runtime_checkable`` lets us use ``isinstance`` as a structural
+    smoke test — it verifies that the required attributes exist and that
+    callables are callable. Parameter and return-type signatures are
+    **not** validated at runtime, so a failure here means an attribute
+    or method was removed or renamed, not that signatures drifted.
     """
 
     def test_state_manager_conforms(self) -> None:

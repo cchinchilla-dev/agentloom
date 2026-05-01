@@ -204,3 +204,23 @@ class TestRetryWithPolicyNonRetryable:
             await retry_with_policy(always_429, policy, "smoke")
 
         assert len(attempts) == 3, "max_retries=2 means 3 total attempts"
+
+    def test_is_retryable_extracts_status_from_httpx_response(self) -> None:
+        # ``httpx.HTTPStatusError`` does not expose ``status_code`` directly
+        # — the status lives on ``exc.response.status_code``. The helper
+        # must dig into the response so a permanent 404 from an attachment
+        # download (or any direct httpx call site) bails out instead of
+        # being treated as a transient status-less failure.
+        from types import SimpleNamespace
+
+        from agentloom.resilience.retry import is_retryable_exception
+
+        class FakeHTTPStatusError(Exception):
+            def __init__(self, status: int) -> None:
+                super().__init__(f"HTTP {status}")
+                self.response = SimpleNamespace(status_code=status)
+
+        # 404 is not in the default retryable list — must NOT retry.
+        assert is_retryable_exception(FakeHTTPStatusError(404), [429, 500, 502, 503, 504]) is False
+        # 503 IS in the list — must retry.
+        assert is_retryable_exception(FakeHTTPStatusError(503), [429, 500, 502, 503, 504]) is True

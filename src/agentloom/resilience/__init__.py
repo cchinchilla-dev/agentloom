@@ -7,6 +7,7 @@ from agentloom.resilience.retry import (
     DEFAULT_RETRYABLE_STATUS_CODES,
     RetryPolicy,
     compute_backoff,
+    extract_status_code,
     is_retryable_exception,
     retry_with_policy,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "RateLimiter",
     "RetryPolicy",
     "compute_backoff",
+    "extract_status_code",
     "is_retryable_exception",
     "retry_with_policy",
 ]

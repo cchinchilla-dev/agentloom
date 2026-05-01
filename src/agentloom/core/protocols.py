@@ -103,6 +103,36 @@ class ObserverProtocol(Protocol):
         **kwargs: Any,
     ) -> None: ...
 
+    # Provider-level hooks called by engine + gateway. Listed here so an
+    # ``isinstance(obs, ObserverProtocol)`` check fails for observers that
+    # would crash mid-run on a missing method.
+
+    def on_provider_call(
+        self,
+        provider: str,
+        model: str,
+        latency_s: float,
+        stream: bool = False,
+        **kwargs: Any,
+    ) -> None: ...
+
+    def on_tokens(
+        self,
+        provider: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        **kwargs: Any,
+    ) -> None: ...
+
+    def on_stream_response(
+        self,
+        provider: str,
+        model: str,
+        ttft_s: float,
+        **kwargs: Any,
+    ) -> None: ...
+
 
 @runtime_checkable
 class CheckpointerProtocol(Protocol):

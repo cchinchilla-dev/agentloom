@@ -26,7 +26,11 @@ from agentloom.exceptions import (
     PauseRequestedError,
     WorkflowError,
 )
-from agentloom.resilience.retry import compute_backoff, is_retryable_exception
+from agentloom.resilience.retry import (
+    compute_backoff,
+    extract_status_code,
+    is_retryable_exception,
+)
 from agentloom.steps.base import BaseStep, StepContext
 from agentloom.steps.registry import StepRegistry, create_default_registry
 
@@ -646,7 +650,7 @@ class WorkflowEngine:
                     logger.warning(
                         "Step '%s' failed with non-retryable status %s; not retrying: %s",
                         step_id,
-                        getattr(e, "status_code", None),
+                        extract_status_code(e),
                         e,
                     )
                     break

@@ -34,15 +34,40 @@ def compute_backoff(base: float, attempt: int, maximum: float, jitter: bool) -> 
     return max(0.0, delay)
 
 
+def extract_status_code(exc: BaseException) -> int | None:
+    """Return the HTTP status carried by *exc*, or ``None`` if it has none.
+
+    Handles three common shapes:
+
+    - ``ProviderError`` / ``RateLimitError`` expose ``status_code`` directly.
+    - ``httpx.HTTPStatusError`` (and its subclasses) carry the status under
+      ``exc.response.status_code`` — the bare exception has no
+      ``status_code`` attribute, so a naive ``getattr`` would silently miss
+      it and treat the failure as transient.
+    - Everything else (network errors, generic provider failures, parser
+      hiccups) returns ``None`` and the caller can treat it as transient.
+    """
+    code = getattr(exc, "status_code", None)
+    if code is not None:
+        return int(code)
+    response = getattr(exc, "response", None)
+    if response is not None:
+        rcode = getattr(response, "status_code", None)
+        if rcode is not None:
+            return int(rcode)
+    return None
+
+
 def is_retryable_exception(exc: BaseException, codes: list[int]) -> bool:
     """Return True if *exc* should trigger a retry under *codes*.
 
-    If *exc* exposes a ``status_code`` attribute (e.g. ``ProviderError``,
-    ``RateLimitError``, ``httpx.HTTPStatusError``), the code must be in
+    If *exc* exposes a status code via ``exc.status_code`` or
+    ``exc.response.status_code`` (covers ``ProviderError``,
+    ``RateLimitError``, and ``httpx.HTTPStatusError``), the code must be in
     *codes*. Exceptions without a status code are retryable by default —
     a network error or generic provider failure is treated as transient.
     """
-    code = getattr(exc, "status_code", None)
+    code = extract_status_code(exc)
     if code is None:
         return True
     return code in codes
@@ -89,7 +114,7 @@ async def retry_with_policy(
                 logger.debug(
                     "%s failed with non-retryable status %s; giving up",
                     operation_name,
-                    getattr(e, "status_code", None),
+                    extract_status_code(e),
                 )
                 break
 
