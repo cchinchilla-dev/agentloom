@@ -8,6 +8,8 @@ then exports them to Prometheus via its prometheus exporter (port 8889).
 from __future__ import annotations
 
 import logging
+import os
+from collections import OrderedDict
 from typing import Any
 
 from agentloom.compat import is_available, try_import
@@ -64,8 +66,15 @@ class MetricsManager:
         self._mock_replay_counter: Any = None
         self._recording_capture_counter: Any = None
         self._recording_latency_histogram: Any = None
-        self._circuit_states: dict[str, int] = {}  # provider -> state int
-        self._budget_remaining: dict[str, float] = {}  # workflow -> remaining USD
+        # LRU-bounded gauges. Workflows that template provider/workflow
+        # names (multi-tenant, scoped runs, dynamic env) produce unbounded
+        # keys; without an explicit cap the export callback iterates the
+        # full dict on every OTel scrape (Prometheus default 15 s) and
+        # eventually stalls. Cap defaults to 1024 — override via env.
+        max_keys = int(os.environ.get("AGENTLOOM_METRICS_MAX_KEYS", "1024"))
+        self._max_metric_keys = max_keys
+        self._circuit_states: OrderedDict[str, int] = OrderedDict()
+        self._budget_remaining: OrderedDict[str, float] = OrderedDict()
 
         # prometheus_client instruments (fallback)
         self._prom_counters: dict[str, Any] = {}
@@ -461,10 +470,25 @@ class MetricsManager:
                 provider=provider, model=model
             ).observe(latency_s)
 
+    def _bound_set(self, dct: OrderedDict[str, Any], key: str, value: Any) -> None:
+        """Insert ``key=value`` into *dct* with LRU eviction past the cap.
+
+        Touches existing keys to MRU; on overflow drops the oldest key so
+        the export callback's iteration cost stays bounded regardless of
+        upstream key cardinality.
+        """
+        if key in dct:
+            dct.move_to_end(key)
+            dct[key] = value
+            return
+        dct[key] = value
+        if len(dct) > self._max_metric_keys:
+            dct.popitem(last=False)
+
     def set_budget_remaining(self, workflow: str, remaining: float) -> None:
         if not self._enabled:
             return
-        self._budget_remaining[workflow] = remaining
+        self._bound_set(self._budget_remaining, workflow, remaining)
         if self._backend == "prom":  # pragma: no cover — prom fallback
             self._prom_gauges["budget_remaining"].labels(workflow=workflow).set(remaining)
 
@@ -472,7 +496,7 @@ class MetricsManager:
         if not self._enabled:
             return
         # OTel: update dict read by the observable gauge callback
-        self._circuit_states[provider] = state
+        self._bound_set(self._circuit_states, provider, state)
         if self._backend == "prom":  # pragma: no cover — prom fallback
             self._prom_gauges["circuit_state"].labels(provider=provider).set(state)
 

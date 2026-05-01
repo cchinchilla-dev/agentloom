@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Template hardening — opt-in strict mode for template rendering: `SafeFormatDict(strict=True)` and `DotAccessDict(strict=True)` raise `TemplateError` on missing keys; default behaviour (warn + render empty) is unchanged. `__format__` now honours `format_spec`. `ToolStep._resolve_args` renders `{state.x}` substitutions consistently with `llm_call` (#110).
 - State and approval-gate cleanup — the unsafe `state_manager.{set_sync,get_sync}` accessors are renamed to `_set_sync_unsafe` / `_get_sync_unsafe` (legacy names removed in this release); approval-gate UX moved out of the step body into the CLI rendering layer for consistency (#110).
 - Subworkflow observability + checkpointer propagation — `SubworkflowStep` forwards `observer`, `checkpointer`, `on_stream_chunk`, and `run_id` to the child engine; checkpoint JSON serialization is moved off the event loop into a worker thread; the `NoopObserver` now implements every hook; observer hooks accept `**kwargs` for forward-compat; webhook deliveries get a configurable deadline (default 5s) with status `timeout`; `StepContext.checkpointer` is now plumbed through (#111).
+- Bound the metrics gauge dictionaries `_circuit_states` and `_budget_remaining` with LRU eviction so long-running deployments cannot grow per-provider or per-workflow cardinality without bound (#111).
 
 ### Security
 

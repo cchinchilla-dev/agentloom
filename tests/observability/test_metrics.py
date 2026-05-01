@@ -148,6 +148,40 @@ class TestMetricsEnabled:
         mm.shutdown()
 
 
+class TestBoundedCardinality:
+    """LRU cap on the lifelong process-global metric dicts. Backend-agnostic
+    — the cap lives in pure Python, not the OTel/Prom layer."""
+
+    def test_bounded_cardinality_circuit_states(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from collections import OrderedDict
+
+        monkeypatch.setenv("AGENTLOOM_METRICS_MAX_KEYS", "3")
+        mm = MetricsManager(enabled=False)  # backend-agnostic
+        # Inject the bound directly — covers the cap regardless of backend.
+        mm._max_metric_keys = 3
+        states: OrderedDict[str, int] = OrderedDict()
+
+        for i in range(3):
+            mm._bound_set(states, f"provider-{i}", 0)
+        assert list(states.keys()) == ["provider-0", "provider-1", "provider-2"]
+
+        # Touch provider-0 → moves to MRU end.
+        mm._bound_set(states, "provider-0", 1)
+        assert list(states.keys()) == ["provider-1", "provider-2", "provider-0"]
+
+        # Adding provider-3 evicts provider-1 (LRU).
+        mm._bound_set(states, "provider-3", 0)
+        assert list(states.keys()) == ["provider-2", "provider-0", "provider-3"]
+        assert states["provider-0"] == 1  # value preserved on touch
+
+    def test_bounded_cardinality_default_cap(self) -> None:
+        # The default cap should be reasonable; we read it back from the
+        # manager rather than hard-coding so a future tuning change only
+        # needs one edit.
+        mm = MetricsManager(enabled=False)
+        assert mm._max_metric_keys >= 64
+
+
 class TestMetricsOTelSetup:
     """Verify OTel instruments are created when available."""
 
