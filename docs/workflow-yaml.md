@@ -44,6 +44,7 @@ steps:                                      # at least one step required
 | `responses_file` | `string` | `null` | Mock provider recording path (when `provider: mock`) |
 | `latency_model` | `string` | `constant` | Mock latency mode: `constant` / `normal` / `replay` |
 | `latency_ms` | `float` | `0` | Mock provider simulated latency per call |
+| `capture_prompts` | `bool` | `false` | When true, `llm_call` spans emit an `agentloom.prompt.captured` event with the rendered prompt + system prompt. Off by default — opt-in for debugging or trusted environments only |
 
 ## Checkpointing
 
