@@ -99,22 +99,12 @@ class ObserverProtocol(Protocol):
         status: str,
         duration_ms: float,
         cost_usd: float = 0.0,
-        tokens: int = 0,
         **kwargs: Any,
     ) -> None: ...
 
     # Provider-level hooks called by engine + gateway. Listed here so an
     # ``isinstance(obs, ObserverProtocol)`` check fails for observers that
     # would crash mid-run on a missing method.
-
-    def on_provider_call(
-        self,
-        provider: str,
-        model: str,
-        latency_s: float,
-        stream: bool = False,
-        **kwargs: Any,
-    ) -> None: ...
 
     def on_tokens(
         self,

@@ -103,6 +103,9 @@ class NoopObserver:
     ) -> None:
         pass
 
+    def attach_step_event(self, step_id: str, event_name: str, attributes: dict[str, Any]) -> None:
+        pass
+
     def on_step_end(
         self,
         step_id: str,
@@ -110,7 +113,6 @@ class NoopObserver:
         status: str,
         duration_ms: float,
         cost_usd: float = 0.0,
-        tokens: int = 0,
         error: str | None = None,
         attachment_count: int = 0,
         time_to_first_token_ms: float | None = None,
@@ -119,8 +121,18 @@ class NoopObserver:
     ) -> None:
         pass
 
-    def on_provider_call(
-        self, provider: str, model: str, latency_s: float, stream: bool = False, **kwargs: Any
+    def on_provider_call_start(
+        self, step_id: str, provider: str, model: str, **kwargs: Any
+    ) -> None:
+        pass
+
+    def on_provider_call_end(
+        self,
+        step_id: str,
+        provider: str,
+        model: str,
+        latency_s: float,
+        **kwargs: Any,
     ) -> None:
         pass
 

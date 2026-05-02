@@ -136,7 +136,13 @@ class ProviderGateway:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
-        """Route a completion request to the appropriate provider with fallback."""
+        """Route a completion request to the appropriate provider with fallback.
+
+        ``step_id`` may be passed via kwargs so the observer can scope the
+        per-attempt provider spans to the originating step. Pulled out of
+        kwargs before forwarding so it never reaches the provider HTTP call.
+        """
+        step_id: str | None = kwargs.pop("step_id", None)
         candidates = self._get_candidates(model)
 
         if not candidates:
@@ -147,7 +153,7 @@ class ProviderGateway:
 
         errors: list[str] = []
 
-        for entry in candidates:
+        for attempt_idx, entry in enumerate(candidates):
             # Fast-fail when the circuit is open: do NOT consume the rate
             # limiter budget for traffic that will never reach the provider.
             if entry.circuit_breaker._maybe_transition_to_half_open() == CircuitState.OPEN:
@@ -155,6 +161,23 @@ class ProviderGateway:
                 errors.append(msg)
                 logger.warning(msg)
                 continue
+
+            attempt_started = False
+            attempt_start = 0.0
+            if step_id is not None and self._observer:
+                start_hook = getattr(self._observer, "on_provider_call_start", None)
+                if start_hook:
+                    attempt_start = anyio.current_time()
+                    start_hook(
+                        step_id=step_id,
+                        provider=entry.provider.name,
+                        model=model,
+                        attempt=attempt_idx,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        stream=False,
+                    )
+                    attempt_started = True
 
             try:
                 if entry.rate_limiter:
@@ -180,6 +203,22 @@ class ProviderGateway:
                     resp_tokens = response.usage.completion_tokens
                     await entry.rate_limiter.consume_response_tokens(resp_tokens)
 
+                if attempt_started and self._observer:
+                    end_hook = getattr(self._observer, "on_provider_call_end", None)
+                    if end_hook:
+                        end_hook(
+                            step_id=step_id,
+                            provider=entry.provider.name,
+                            model=response.model or model,
+                            latency_s=anyio.current_time() - attempt_start,
+                            attempt=attempt_idx,
+                            prompt_tokens=response.usage.prompt_tokens,
+                            completion_tokens=response.usage.completion_tokens,
+                            reasoning_tokens=response.usage.reasoning_tokens,
+                            finish_reason=response.finish_reason,
+                            stream=False,
+                        )
+
                 logger.debug(
                     "Provider '%s' responded for model '%s'",
                     entry.provider.name,
@@ -191,12 +230,36 @@ class ProviderGateway:
                 msg = f"Provider '{entry.provider.name}' circuit is open"
                 errors.append(msg)
                 logger.warning(msg)
+                if attempt_started and self._observer:
+                    end_hook = getattr(self._observer, "on_provider_call_end", None)
+                    if end_hook:
+                        end_hook(
+                            step_id=step_id,
+                            provider=entry.provider.name,
+                            model=model,
+                            latency_s=anyio.current_time() - attempt_start,
+                            attempt=attempt_idx,
+                            error="CircuitOpenError",
+                            stream=False,
+                        )
                 continue
 
             except Exception as e:
                 msg = f"Provider '{entry.provider.name}' failed: {e}"
                 errors.append(msg)
                 logger.warning(msg)
+                if attempt_started and self._observer:
+                    end_hook = getattr(self._observer, "on_provider_call_end", None)
+                    if end_hook:
+                        end_hook(
+                            step_id=step_id,
+                            provider=entry.provider.name,
+                            model=model,
+                            latency_s=anyio.current_time() - attempt_start,
+                            attempt=attempt_idx,
+                            error=type(e).__name__,
+                            stream=False,
+                        )
                 if self._observer:
                     error_hook = getattr(self._observer, "on_provider_error", None)
                     if error_hook:
@@ -224,6 +287,9 @@ class ProviderGateway:
         engine's retry logic will re-attempt the entire step (potentially
         routing to a different provider if the circuit breaker has tripped).
         """
+        # ``step_id`` is consumed locally by per-attempt observability hooks
+        # and must not reach the provider HTTP call.
+        step_id = kwargs.pop("step_id", None)
         candidates = self._get_candidates(model)
 
         if not candidates:
@@ -234,7 +300,7 @@ class ProviderGateway:
 
         errors: list[str] = []
 
-        for entry in candidates:
+        for attempt_idx, entry in enumerate(candidates):
             try:
                 entry.circuit_breaker.allow_request()
             except CircuitOpenError:
@@ -242,6 +308,23 @@ class ProviderGateway:
                 errors.append(msg)
                 logger.warning(msg)
                 continue
+
+            attempt_started = False
+            attempt_start = 0.0
+            if step_id is not None and self._observer:
+                start_hook = getattr(self._observer, "on_provider_call_start", None)
+                if start_hook:
+                    attempt_start = anyio.current_time()
+                    start_hook(
+                        step_id=step_id,
+                        provider=entry.provider.name,
+                        model=model,
+                        attempt=attempt_idx,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        stream=True,
+                    )
+                    attempt_started = True
 
             try:
                 if entry.rate_limiter:
@@ -265,8 +348,14 @@ class ProviderGateway:
                     _inner: StreamResponse = inner_sr,
                     _entry: ProviderEntry = entry,
                     _outer: StreamResponse = outer_sr,
+                    _attempt_started: bool = attempt_started,
+                    _attempt_start: float = attempt_start,
+                    _attempt_idx: int = attempt_idx,
+                    _step_id: str | None = step_id,
+                    _observer: Any = self._observer,
                 ) -> AsyncIterator[str]:
                     cancelled_exc = anyio.get_cancelled_exc_class()
+                    error_type: str | None = None
                     try:
                         raw_iter = _inner._iterator
                         if raw_iter is None:
@@ -286,10 +375,11 @@ class ProviderGateway:
                         raise
                     except Exception as exc:
                         _entry.circuit_breaker.record_failure()
-                        if self._observer:
-                            hook = getattr(self._observer, "on_provider_error", None)
+                        error_type = type(exc).__name__
+                        if _observer:
+                            hook = getattr(_observer, "on_provider_error", None)
                             if hook:
-                                hook(_entry.provider.name, type(exc).__name__)
+                                hook(_entry.provider.name, error_type)
                         raise
                     else:
                         _entry.circuit_breaker.record_success()
@@ -302,6 +392,22 @@ class ProviderGateway:
                         _outer.cost_usd = _inner.cost_usd
                         _outer.finish_reason = _inner.finish_reason
                         _outer.model = _inner.model
+                        if _attempt_started and _observer:
+                            end_hook = getattr(_observer, "on_provider_call_end", None)
+                            if end_hook:
+                                end_hook(
+                                    step_id=_step_id,
+                                    provider=_entry.provider.name,
+                                    model=_inner.model,
+                                    latency_s=anyio.current_time() - _attempt_start,
+                                    attempt=_attempt_idx,
+                                    prompt_tokens=_inner.usage.prompt_tokens,
+                                    completion_tokens=_inner.usage.completion_tokens,
+                                    reasoning_tokens=_inner.usage.reasoning_tokens,
+                                    finish_reason=_inner.finish_reason,
+                                    error=error_type,
+                                    stream=True,
+                                )
 
                 outer_sr._set_iterator(_wrapped_iter())
                 logger.debug(
@@ -315,6 +421,18 @@ class ProviderGateway:
                 msg = f"Provider '{entry.provider.name}' circuit is open"
                 errors.append(msg)
                 logger.warning(msg)
+                if attempt_started and self._observer:
+                    end_hook = getattr(self._observer, "on_provider_call_end", None)
+                    if end_hook:
+                        end_hook(
+                            step_id=step_id,
+                            provider=entry.provider.name,
+                            model=model,
+                            latency_s=anyio.current_time() - attempt_start,
+                            attempt=attempt_idx,
+                            error="CircuitOpenError",
+                            stream=True,
+                        )
                 continue
 
             except RateLimitError as e:
@@ -328,6 +446,18 @@ class ProviderGateway:
                 msg = f"Provider '{entry.provider.name}' rate-limited: {e}"
                 errors.append(msg)
                 logger.warning(msg)
+                if attempt_started and self._observer:
+                    end_hook = getattr(self._observer, "on_provider_call_end", None)
+                    if end_hook:
+                        end_hook(
+                            step_id=step_id,
+                            provider=entry.provider.name,
+                            model=model,
+                            latency_s=anyio.current_time() - attempt_start,
+                            attempt=attempt_idx,
+                            error="RateLimitError",
+                            stream=True,
+                        )
                 continue
 
             except Exception as e:
@@ -335,6 +465,18 @@ class ProviderGateway:
                 # back to the circuit breaker — allow_request() already
                 # incremented the half-open counter.
                 entry.circuit_breaker.record_failure()
+                if attempt_started and self._observer:
+                    end_hook = getattr(self._observer, "on_provider_call_end", None)
+                    if end_hook:
+                        end_hook(
+                            step_id=step_id,
+                            provider=entry.provider.name,
+                            model=model,
+                            latency_s=anyio.current_time() - attempt_start,
+                            attempt=attempt_idx,
+                            error=type(e).__name__,
+                            stream=True,
+                        )
                 msg = (
                     f"Provider '{entry.provider.name}' failed to start "
                     f"streaming for model '{model}': {e}"

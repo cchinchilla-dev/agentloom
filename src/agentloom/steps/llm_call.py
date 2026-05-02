@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 import time
 from typing import Any
 
 from agentloom.core.models import Attachment, StepDefinition
-from agentloom.core.results import StepResult, StepStatus
+from agentloom.core.results import PromptMetadata, StepResult, StepStatus
 from agentloom.core.templates import SafeFormatDict, build_template_vars
 from agentloom.exceptions import StepError
+from agentloom.observability.schema import SpanAttr
 from agentloom.providers.multimodal import (
     ContentBlock,
     build_multimodal_content,
@@ -18,6 +21,36 @@ from agentloom.providers.multimodal import (
 from agentloom.steps.base import BaseStep, StepContext
 
 logger = logging.getLogger("agentloom.steps")
+
+# Captures the variable path inside a ``{path[!conv][:spec]}`` template
+# placeholder, including ``state.items[0].name``-style indexed paths so the
+# emitted ``agentloom.prompt.template_vars`` reflects the full reference.
+_TEMPLATE_VAR_RE = re.compile(r"\{([\w][\w.\[\]]*?)(?:[!:][^}]*)?\}")
+
+
+def _build_prompt_metadata(
+    workflow_name: str,
+    step_id: str,
+    step_prompt_template: str | None,
+    rendered: str,
+) -> PromptMetadata:
+    """Compute the non-sensitive bits of prompt provenance.
+
+    Hash is truncated to 16 hex chars — plenty for correlating traces
+    without the storage cost of a full SHA-256. Template-variable names
+    are extracted from the *template* (not the rendered output) so we
+    see ``state.user_input``, not the interpolated value.
+    """
+    h = hashlib.sha256(rendered.encode("utf-8")).hexdigest()[:16]
+    template_vars: list[str] = []
+    if step_prompt_template:
+        template_vars = sorted(set(_TEMPLATE_VAR_RE.findall(step_prompt_template)))
+    return PromptMetadata(
+        hash=h,
+        length_chars=len(rendered),
+        template_id=f"{workflow_name}:{step_id}",
+        template_vars=template_vars,
+    )
 
 
 class LLMCallStep(BaseStep):
@@ -61,6 +94,21 @@ class LLMCallStep(BaseStep):
         except (KeyError, ValueError) as e:
             raise StepError(step.id, f"Prompt template error: {e}") from e
 
+        # Opt-in full-prompt capture as a span event so trusted environments
+        # can debug from Jaeger without re-running. Off by default — see
+        # ``WorkflowConfig.capture_prompts``.
+        if context.capture_prompts and context.observer is not None:
+            attach = getattr(context.observer, "attach_step_event", None)
+            if callable(attach):
+                attach(
+                    step.id,
+                    SpanAttr.PROMPT_CAPTURED_EVENT,
+                    {
+                        "prompt": rendered_prompt,
+                        "system_prompt": rendered_system or "",
+                    },
+                )
+
         content_blocks: list[ContentBlock] = []
         if step.attachments:
             try:
@@ -90,7 +138,13 @@ class LLMCallStep(BaseStep):
 
         if context.stream:
             return await self._execute_stream(
-                context, messages, model, step, start, len(content_blocks)
+                context,
+                messages,
+                model,
+                step,
+                start,
+                len(content_blocks),
+                rendered_prompt=rendered_prompt,
             )
 
         provider_kwargs = self._build_thinking_kwargs(step)
@@ -100,6 +154,7 @@ class LLMCallStep(BaseStep):
                 model=model,
                 temperature=step.temperature,
                 max_tokens=step.max_tokens,
+                step_id=step.id,
                 **provider_kwargs,
             )
         except Exception as e:
@@ -116,6 +171,11 @@ class LLMCallStep(BaseStep):
         if step.output:
             await context.state_manager.set(step.output, response.content)
 
+        prompt_metadata = _build_prompt_metadata(
+            context.workflow_name, step.id, step.prompt, rendered_prompt
+        )
+        prompt_metadata.finish_reason = response.finish_reason
+
         return StepResult(
             step_id=step.id,
             status=StepStatus.SUCCESS,
@@ -126,6 +186,7 @@ class LLMCallStep(BaseStep):
             model=response.model,
             provider=response.provider,
             attachment_count=len(content_blocks),
+            prompt_metadata=prompt_metadata,
         )
 
     async def _execute_stream(
@@ -136,6 +197,8 @@ class LLMCallStep(BaseStep):
         step: StepDefinition,
         start: float,
         attachment_count: int,
+        *,
+        rendered_prompt: str = "",
     ) -> StepResult:
         """Execute the LLM call in streaming mode."""
         if context.provider_gateway is None:
@@ -147,6 +210,7 @@ class LLMCallStep(BaseStep):
                 model=model,
                 temperature=step.temperature,
                 max_tokens=step.max_tokens,
+                step_id=step.id,
                 **provider_kwargs,
             )
         except Exception as e:
@@ -201,6 +265,11 @@ class LLMCallStep(BaseStep):
         if step.output:
             await context.state_manager.set(step.output, response.content)
 
+        prompt_metadata = _build_prompt_metadata(
+            context.workflow_name, step.id, step.prompt, rendered_prompt
+        )
+        prompt_metadata.finish_reason = response.finish_reason
+
         return StepResult(
             step_id=step.id,
             status=StepStatus.SUCCESS,
@@ -212,6 +281,7 @@ class LLMCallStep(BaseStep):
             provider=response.provider,
             attachment_count=attachment_count,
             time_to_first_token_ms=ttft_ms,
+            prompt_metadata=prompt_metadata,
         )
 
     @staticmethod

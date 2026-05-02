@@ -81,8 +81,10 @@ class TestRunCheckpoint:
                 cp_files = list(Path(cp_dir).glob("*.json"))
                 assert len(cp_files) == 1
 
-    def test_no_run_id_without_checkpoint_flag(self) -> None:
-        """Running without --checkpoint should not print a run ID."""
+    def test_no_run_id_echo_without_checkpoint_flag(self) -> None:
+        """Without --checkpoint the CLI should not surface the Run ID to
+        the user (the id is only actionable when a checkpointer is active —
+        otherwise it's internal-only metadata used for trace correlation)."""
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             f.write(SIMPLE_YAML)
             f.flush()

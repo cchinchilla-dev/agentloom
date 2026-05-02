@@ -412,12 +412,20 @@ class TestObserverIntegration:
         result = await engine.run()
 
         assert result.status == WorkflowStatus.SUCCESS
-        observer.on_workflow_start.assert_called_once_with("obs-test")
+        # run_id is always generated now (used for trace correlation), so
+        # the observer receives a non-empty hex string regardless of whether
+        # a checkpointer was configured.
+        observer.on_workflow_start.assert_called_once()
+        call = observer.on_workflow_start.call_args
+        assert call.args == ("obs-test",)
+        assert call.kwargs["run_id"]  # non-empty
+        # The observer received the same id the engine carries internally —
+        # required so spans and external systems can join on it.
+        assert call.kwargs["run_id"] == engine.run_id
         observer.on_step_start.assert_called_once_with("s", "llm_call", stream=False)
         observer.on_step_end.assert_called_once()
         observer.on_workflow_end.assert_called_once()
-        # Provider call and token events also fired
-        observer.on_provider_call.assert_called_once()
+        # Token events also fired (provider-level spans use start/end pair).
         observer.on_tokens.assert_called_once()
 
     async def test_observer_on_failure(self) -> None:

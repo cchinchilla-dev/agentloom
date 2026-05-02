@@ -171,26 +171,106 @@ All metrics are prefixed with `agentloom_`.
 
 ### Provider metrics
 
+AgentLoom-specific counters live alongside the canonical OTel GenAI client histogram. The histogram replaces the previous `provider_latency_seconds` — distributions are required by the spec.
+
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `provider_calls_total` | counter | provider, model, stream | Provider API call count |
-| `provider_latency_seconds` | histogram | provider, model, stream | Provider response latency |
-| `provider_errors_total` | counter | provider, error_type | Provider error count |
-| `circuit_breaker_state` | gauge | provider | Circuit breaker state (0/1/2) |
+| `agentloom_provider_calls_total` | counter | provider, model, stream | Provider API call count |
+| `gen_ai.client.operation.duration` | histogram (s) | gen_ai.operation.name, gen_ai.provider.name, stream | OTel canonical operation duration |
+| `agentloom_provider_errors_total` | counter | provider, error_type | Provider error count |
+| `agentloom_circuit_breaker_state` | gauge | provider | Circuit breaker state (0/1/2) |
 
 ### Token metrics
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `tokens_total` | counter | provider, model, direction | Token usage (input/output) |
-| `attachments_total` | counter | step_type | Attachment count by step type |
+| `gen_ai.client.token.usage` | histogram (`{token}`) | gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model, gen_ai.token.type | OTel canonical per-call token observations. `gen_ai.token.type` is `input` / `output` / `reasoning` (reasoning is an AgentLoom extension to the spec's `input`/`output` enum) |
+| `agentloom_attachments_total` | counter | step_type | Attachment count by step type |
 
 ### Streaming metrics
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `stream_responses_total` | counter | provider, model | Streaming response count |
-| `time_to_first_token_seconds` | histogram | provider, model | Time to first token latency |
+| `agentloom_stream_responses_total` | counter | provider, model | Streaming response count (no OTel equivalent — kept AgentLoom-specific) |
+| `gen_ai.client.operation.time_to_first_chunk` | histogram (s) | gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model | OTel canonical streaming TTFT |
+
+---
+
+## Span schema
+
+AgentLoom emits a three-level span hierarchy: **workflow → step → provider call** (and **tool call** when a step invokes a registered tool). Every span / attribute / metric name is centralised in `agentloom.observability.schema` so downstream consumers (Grafana dashboards, AgentTest, Jaeger plugins) parse a stable contract.
+
+### Hierarchy
+
+```
+workflow:<workflow_name>                   # AgentLoom orchestration
+└── step:<step_id>                         # AgentLoom orchestration
+    └── chat <model>                       # OTel GenAI inference span — one per fallback attempt
+```
+
+A failed primary provider followed by a successful fallback shows up as two sibling `chat <model>` spans under the same `step:*` parent — useful for debugging fallback latency.
+
+### Attribute conventions
+
+Inference spans follow the **canonical OTel GenAI registry** (May 2026 spec). Workflow / step orchestration spans use AgentLoom-specific names.
+
+| Namespace | Source | Example |
+|-----------|--------|---------|
+| `gen_ai.*` | OpenTelemetry GenAI registry (canonical names) | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.request.temperature`, `gen_ai.request.max_tokens`, `gen_ai.request.stream`, `gen_ai.response.model`, `gen_ai.response.finish_reasons` (array), `gen_ai.response.time_to_first_chunk`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.reasoning.output_tokens` |
+| `error.*` | OTel general semantic conventions | `error.type` (set on errored inference spans alongside `step.error`) |
+| `workflow.*` / `step.*` | AgentLoom orchestration metadata | `workflow.run_id`, `workflow.status`, `step.id`, `step.type`, `step.duration_ms`, `step.cost_usd` |
+| `tool.*` | Tool-call details | `tool.name`, `tool.args_hash`, `tool.success` |
+| `agentloom.*` | AgentLoom-specific (no OTel equivalent) | `agentloom.prompt.hash`, `agentloom.approval_gate.decision`, `agentloom.webhook.status`, `agentloom.recording.provider` |
+
+### Workflow-level attributes
+
+| Attribute | Description |
+|-----------|-------------|
+| `workflow.name` | Workflow identifier |
+| `workflow.run_id` | Per-execution UUID — correlate Jaeger traces with checkpoints / external systems |
+| `workflow.status` | Final status (`success` / `failed` / `paused` / `budget_exceeded` / `timeout`) |
+| `workflow.duration_ms` | End-to-end execution time |
+| `workflow.total_tokens`, `workflow.total_cost_usd` | Aggregates across all steps |
+
+### Step-level attributes
+
+| Attribute | Description |
+|-----------|-------------|
+| `step.id`, `step.type`, `step.status` | Step identification |
+| `step.duration_ms`, `step.cost_usd` | Per-step latency / spend |
+| `step.stream`, `step.attachments` | Streaming flag, attachment count |
+| `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` | Operation type (`chat` for `llm_call`), provider (e.g. `openai`, `gcp.gemini`), model |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | Visible token counts |
+| `gen_ai.usage.reasoning.output_tokens` | Chain-of-thought tokens (o-series, Gemini 2.5+ thinking) — emitted only when non-zero |
+| `gen_ai.response.finish_reasons` | Array of provider-supplied stop reasons (e.g. `["stop"]`) |
+| `gen_ai.response.time_to_first_chunk` | Streaming-only, in seconds |
+| `agentloom.prompt.hash`, `agentloom.prompt.length_chars` | Prompt fingerprint for correlating failures with the prompt that caused them |
+| `agentloom.prompt.template_id`, `agentloom.prompt.template_vars` | Template provenance |
+
+### Inference-level attributes (provider span)
+
+The `chat <model>` span — emitted once per fallback attempt by the gateway — carries the full set of GenAI inference attributes. A single `step:*` may have multiple sibling provider spans when fallback fires.
+
+| Attribute | Description |
+|-----------|-------------|
+| `gen_ai.operation.name` | Always `chat` for `llm_call`; future operation types follow the OTel registry (`embeddings`, `execute_tool`, `invoke_agent`, …) |
+| `gen_ai.provider.name` | Canonical OTel value (e.g. `openai`, `anthropic`, `gcp.gemini`) translated from AgentLoom's internal provider name |
+| `gen_ai.request.model`, `gen_ai.response.model` | Requested model and the model the provider actually responded with (may differ when the provider auto-resolves a version, e.g. `gpt-4o-mini` → `gpt-4o-mini-2024-07-18`) |
+| `gen_ai.request.temperature`, `gen_ai.request.max_tokens` | Sampling controls passed through to the provider |
+| `gen_ai.request.stream` | `true` for streaming calls — distinguishes streaming vs non-streaming inference at the inference span level |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.reasoning.output_tokens` | Token counts |
+| `gen_ai.response.finish_reasons` | Array of stop reasons |
+| `gen_ai.response.time_to_first_chunk` | Streaming-only |
+| `error.type` | Set on errored attempts (OTel general convention, alongside the AgentLoom-specific `step.error`) |
+| `agentloom.provider.attempt`, `agentloom.provider.attempt_outcome` | Fallback attempt index (0-indexed) and outcome (`ok` / `error`) — debugging fallback behaviour |
+
+### Capture flags
+
+Full prompt content is **not** captured by default — size and secrets concerns. Set `config.capture_prompts: true` in the workflow YAML to opt in: each `llm_call` span then carries an `agentloom.prompt.captured` OTel event with the rendered `prompt` and `system_prompt`. Event payloads avoid the attribute-size cap and stay easy to filter at the OTel collector. Off by default; opt-in for debugging or trusted environments.
+
+### Provider name translation
+
+AgentLoom's internal provider names map to the canonical OTel registry values: `google` → `gcp.gemini`, others (`openai`, `anthropic`, `ollama`) match the registry as-is. Custom values (`ollama`, `mock`) ride the spec's "vendor extension" allowance. The bundled Grafana dashboard queries Prometheus metrics (not span attributes), so dashboard panels are unaffected by attribute renames.
 
 ---
 
