@@ -169,6 +169,7 @@ class TestNoopObserver:
         obs.on_workflow_start("wf")
         obs.on_workflow_end("wf", "success", 100.0, 50, 0.001)
         obs.on_step_start("s1", "llm_call")
+        obs.attach_step_event("s1", "agentloom.prompt.captured", {"prompt": "hi"})
         obs.on_step_end("s1", "llm_call", "success", 5.0, 0.0001)
         obs.on_provider_call_start("s1", "openai", "gpt-4o-mini")
         obs.on_provider_call_end("s1", "openai", "gpt-4o-mini", 1.5)

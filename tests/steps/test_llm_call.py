@@ -186,6 +186,62 @@ class TestLLMCallStep:
         assert result.cost_usd > 0
         assert result.token_usage.total_tokens == 30
 
+    async def test_template_error_raises_step_error(self, step: LLMCallStep) -> None:
+        # ``KeyError`` / ``ValueError`` from ``format_map`` surface as a
+        # ``StepError`` so the engine reports a clean failure with the
+        # step id, not a raw template traceback.
+        from agentloom.exceptions import StepError
+
+        gw = ProviderGateway()
+        ctx = self._make_context(
+            StepDefinition(
+                id="bad",
+                type=StepType.LLM_CALL,
+                # ``{0:bad_format}`` triggers ValueError inside format_map.
+                prompt="Answer: {0:bad_format}",
+            ),
+            gateway=gw,
+        )
+        with pytest.raises(StepError, match="Prompt template error"):
+            await step.execute(ctx)
+
+    async def test_capture_prompts_attaches_span_event(self, step: LLMCallStep) -> None:
+        # When ``capture_prompts=True``, ``LLMCallStep`` calls
+        # ``observer.attach_step_event`` with the rendered prompt as the
+        # event payload. Off by default — covered separately.
+        from unittest.mock import MagicMock
+
+        from tests.conftest import MockProvider
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        observer = MagicMock()
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="answer",
+                type=StepType.LLM_CALL,
+                prompt="Hi {state.q}",
+                system_prompt="System {state.q}",
+            ),
+            state_manager=StateManager(initial_state={"q": "world"}),
+            provider_gateway=gw,
+            workflow_config=WorkflowConfig(provider="mock", model="mock-model"),
+            workflow_model="mock-model",
+            observer=observer,
+            capture_prompts=True,
+        )
+        result = await step.execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+        # Event fired with the rendered prompt as payload.
+        observer.attach_step_event.assert_called_once()
+        call = observer.attach_step_event.call_args
+        assert call.args[0] == "answer"
+        assert call.args[1] == "agentloom.prompt.captured"
+        assert call.args[2]["prompt"] == "Hi world"
+        assert call.args[2]["system_prompt"] == "System world"
+
     async def test_system_prompt_rendered(self, step: LLMCallStep) -> None:
         from tests.conftest import MockProvider
 
