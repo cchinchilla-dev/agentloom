@@ -66,40 +66,30 @@ class TestStepLifecycle:
         span.set_attribute.assert_any_call("step.error", "boom")
 
     def test_step_reasoning_tokens_set_on_span_when_nonzero(self) -> None:
-        # ``step.reasoning_tokens`` lands on the span only when reasoning
-        # was actually consumed, so non-thinking workflows keep the span
-        # surface clean.
+        # Reasoning tokens land on the span under the OTel GenAI semantic
+        # convention name only when reasoning was actually consumed, so
+        # non-thinking workflows keep the span surface clean.
         tracing = MagicMock()
         observer = WorkflowObserver(tracing=tracing)
         observer.on_step_start("step1", "llm_call")
         span = tracing.start_span.return_value
-        observer.on_step_end(
-            "step1", "llm_call", "success", 100.0, tokens=300, reasoning_tokens=128
-        )
-        span.set_attribute.assert_any_call("step.reasoning_tokens", 128)
+        observer.on_step_end("step1", "llm_call", "success", 100.0, reasoning_tokens=128)
+        span.set_attribute.assert_any_call("gen_ai.usage.reasoning.output_tokens", 128)
 
     def test_step_reasoning_tokens_absent_when_zero(self) -> None:
-        # The default path should not emit ``step.reasoning_tokens`` so
-        # dashboards filtering on the attribute see zero events for
-        # non-reasoning models.
+        # The default path should not emit the reasoning-tokens attribute
+        # so dashboards filtering on it see zero events for non-reasoning
+        # models.
         tracing = MagicMock()
         observer = WorkflowObserver(tracing=tracing)
         observer.on_step_start("step1", "llm_call")
         span = tracing.start_span.return_value
-        observer.on_step_end("step1", "llm_call", "success", 100.0, tokens=300)
+        observer.on_step_end("step1", "llm_call", "success", 100.0)
         attribute_keys = [call.args[0] for call in span.set_attribute.call_args_list]
-        assert "step.reasoning_tokens" not in attribute_keys
+        assert "gen_ai.usage.reasoning.output_tokens" not in attribute_keys
 
 
 class TestProviderEvents:
-    def test_on_provider_call(self) -> None:
-        metrics = MagicMock()
-        observer = WorkflowObserver(metrics=metrics)
-        observer.on_provider_call("openai", "gpt-4o-mini", 0.5)
-        metrics.record_provider_call.assert_called_once_with(
-            "openai", "gpt-4o-mini", 0.5, stream=False
-        )
-
     def test_on_provider_error(self) -> None:
         metrics = MagicMock()
         observer = WorkflowObserver(metrics=metrics)
@@ -152,7 +142,7 @@ class TestHITLEvents:
         observer.on_step_start("gate", "approval_gate")
         span = tracing.start_span.return_value
         observer.on_approval_gate("gate", "my-wf", "rejected")
-        span.set_attribute.assert_any_call("approval_gate.decision", "rejected")
+        span.set_attribute.assert_any_call("agentloom.approval_gate.decision", "rejected")
 
     def test_on_webhook_delivery_records_metrics(self) -> None:
         metrics = MagicMock()
@@ -166,8 +156,8 @@ class TestHITLEvents:
         observer.on_step_start("gate", "approval_gate")
         span = tracing.start_span.return_value
         observer.on_webhook_delivery("gate", "my-wf", "failed", 6.0)
-        span.set_attribute.assert_any_call("webhook.status", "failed")
-        span.set_attribute.assert_any_call("webhook.latency_s", 6.0)
+        span.set_attribute.assert_any_call("agentloom.webhook.status", "failed")
+        span.set_attribute.assert_any_call("agentloom.webhook.latency_s", 6.0)
 
     def test_no_metrics_no_error(self) -> None:
         observer = WorkflowObserver()
@@ -188,7 +178,7 @@ class TestMockAndRecordingEvents:
         observer.on_step_start("step_a", "llm_call")
         span = tracing.start_span.return_value
         observer.on_mock_replay("my-wf", "step_a", "prompt_hash")
-        span.set_attribute.assert_any_call("mock.matched_by", "prompt_hash")
+        span.set_attribute.assert_any_call("agentloom.mock.matched_by", "prompt_hash")
 
     def test_on_recording_capture_records_metrics(self) -> None:
         metrics = MagicMock()
@@ -202,8 +192,8 @@ class TestMockAndRecordingEvents:
         observer.on_step_start("step_a", "llm_call")
         span = tracing.start_span.return_value
         observer.on_recording_capture("step_a", "openai", "gpt-4o-mini", 1.2)
-        span.set_attribute.assert_any_call("recording.provider", "openai")
-        span.set_attribute.assert_any_call("recording.latency_s", 1.2)
+        span.set_attribute.assert_any_call("agentloom.recording.provider", "openai")
+        span.set_attribute.assert_any_call("agentloom.recording.latency_s", 1.2)
 
     def test_no_metrics_no_error(self) -> None:
         observer = WorkflowObserver()
