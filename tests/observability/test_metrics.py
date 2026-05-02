@@ -79,11 +79,10 @@ class TestMetricsEnabled:
             mm.shutdown()
 
     def test_reasoning_tokens_metric_emitted(self) -> None:
-        # When `reasoning_tokens` is non-zero, `record_tokens` must add a
-        # third observation with `direction="reasoning"` so dashboards can
-        # split chain-of-thought spend from regular completion spend. The
-        # OTel GenAI semantic-convention rename to `gen_ai.token.type` is
-        # tracked separately in #125.
+        # When ``reasoning_tokens`` is non-zero, ``record_tokens`` must
+        # observe the histogram a third time with
+        # ``gen_ai.token.type="reasoning"`` so dashboards can split
+        # chain-of-thought spend from regular completion spend.
         from unittest.mock import MagicMock
 
         mm = MetricsManager(enabled=True)
@@ -91,36 +90,39 @@ class TestMetricsEnabled:
             # prom fallback exercised via smoke; OTel path is what we audit.
             return
         spy = MagicMock()
-        mm._token_counter = spy
+        mm._token_histogram = spy
         mm.record_tokens("anthropic", "claude-opus-4", 100, 50, reasoning_tokens=200)
-        # Expect 3 add() calls: input, output, reasoning.
-        assert spy.add.call_count == 3
-        directions = {call.args[1]["direction"] for call in spy.add.call_args_list}
-        assert directions == {"input", "output", "reasoning"}
-        # The reasoning observation must carry the right value and labels.
+        # Expect 3 record() calls: input, output, reasoning.
+        assert spy.record.call_count == 3
+        token_types = {call.args[1]["gen_ai.token.type"] for call in spy.record.call_args_list}
+        assert token_types == {"input", "output", "reasoning"}
+        # The reasoning observation must carry the right value and attrs.
         reasoning_calls = [
-            call for call in spy.add.call_args_list if call.args[1]["direction"] == "reasoning"
+            call
+            for call in spy.record.call_args_list
+            if call.args[1]["gen_ai.token.type"] == "reasoning"
         ]
         assert len(reasoning_calls) == 1
         assert reasoning_calls[0].args[0] == 200
-        assert reasoning_calls[0].args[1]["provider"] == "anthropic"
-        assert reasoning_calls[0].args[1]["model"] == "claude-opus-4"
+        assert reasoning_calls[0].args[1]["gen_ai.provider.name"] == "anthropic"
+        assert reasoning_calls[0].args[1]["gen_ai.request.model"] == "claude-opus-4"
         mm.shutdown()
 
     def test_reasoning_tokens_zero_does_not_emit_third_observation(self) -> None:
         # Default path — no reasoning tokens — must not emit a reasoning
-        # observation. Dashboards counting `direction="reasoning"` should
-        # see zero events for non-thinking models.
+        # observation. Dashboards filtering on
+        # ``gen_ai.token.type="reasoning"`` should see zero events for
+        # non-thinking models.
         from unittest.mock import MagicMock
 
         mm = MetricsManager(enabled=True)
         if mm._backend != "otel":
             return
         spy = MagicMock()
-        mm._token_counter = spy
+        mm._token_histogram = spy
         mm.record_tokens("openai", "gpt-4o-mini", 100, 50)
-        directions = {call.args[1]["direction"] for call in spy.add.call_args_list}
-        assert "reasoning" not in directions
+        token_types = {call.args[1]["gen_ai.token.type"] for call in spy.record.call_args_list}
+        assert "reasoning" not in token_types
         mm.shutdown()
 
     def test_set_circuit_state(self) -> None:
@@ -239,8 +241,9 @@ class TestMetricsOTelSetup:
         assert mm._step_histogram is not None
         assert mm._provider_counter is not None
         assert mm._provider_error_counter is not None
-        assert mm._provider_histogram is not None
-        assert mm._token_counter is not None
+        assert mm._operation_duration_histogram is not None
+        assert mm._token_histogram is not None
+        assert mm._time_to_first_chunk_histogram is not None
         assert mm._workflow_histogram is not None
         assert mm._cost_counter is not None
         mm.shutdown()

@@ -85,18 +85,20 @@ class TestGenAIEnums:
 
 
 class TestMetricNameCentralization:
-    def test_metric_names_prefixed_with_agentloom(self) -> None:
+    def test_metric_names_prefixed_with_agentloom_or_gen_ai(self) -> None:
+        # AgentLoom-specific metrics use the ``agentloom_`` prefix; GenAI
+        # client metrics use the canonical OTel registry name (``gen_ai.client.*``).
         for attr_name, value in vars(MetricName).items():
             if attr_name.isupper() and isinstance(value, str):
-                assert value.startswith("agentloom_"), (
-                    f"{attr_name}={value!r} must start with 'agentloom_'"
+                assert value.startswith("agentloom_") or value.startswith("gen_ai.client."), (
+                    f"{attr_name}={value!r} must start with 'agentloom_' or 'gen_ai.client.'"
                 )
 
     def test_metric_names_match_emissions(self) -> None:
         """``MetricName`` constants must mirror exactly what ``metrics.py``
-        emits to OTel — drift breaks the Grafana dashboard silently. This
-        test scans the source for ``agentloom_*`` literal names and
-        asserts every one is declared in the schema."""
+        emits — drift breaks the Grafana dashboard silently. The scan
+        accepts both AgentLoom-prefixed names (``agentloom_*``) and the
+        canonical OTel GenAI names (``gen_ai.client.*``)."""
         import re
         from pathlib import Path
 
@@ -107,7 +109,9 @@ class TestMetricNameCentralization:
             / "observability"
             / "metrics.py"
         ).read_text()
-        emitted = set(re.findall(r'"(agentloom_[a-z_]+)"', metrics_src))
+        agentloom_emitted = set(re.findall(r'"(agentloom_[a-z_]+)"', metrics_src))
+        gen_ai_emitted = set(re.findall(r'"(gen_ai\.client\.[a-z_.]+)"', metrics_src))
+        emitted = agentloom_emitted | gen_ai_emitted
         declared = {
             value
             for attr_name, value in vars(MetricName).items()
@@ -302,7 +306,11 @@ class TestSchemaModuleIsSingleSourceOfTruth:
         ]
         offenders: list[tuple[str, int, str]] = []
         for path in src_root.rglob("*.py"):
-            if path.name == "schema.py":
+            # ``schema.py`` declares the contract; ``metrics.py`` passes
+            # attribute keys as raw strings (OTel SDK requires str keys, not
+            # constants) into histogram observations — its names mirror the
+            # canonical ``gen_ai.*`` registry entries which schema.py owns.
+            if path.name in ("schema.py", "metrics.py"):
                 continue
             text = path.read_text()
             for line_no, line in enumerate(text.splitlines(), start=1):

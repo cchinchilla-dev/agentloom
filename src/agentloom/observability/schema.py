@@ -94,6 +94,14 @@ class SpanAttr:
     GEN_AI_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens"
     GEN_AI_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
     GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = "gen_ai.usage.reasoning.output_tokens"
+    # ``gen_ai.token.type`` is the histogram attribute that splits the
+    # ``gen_ai.client.token.usage`` metric into input / output / reasoning
+    # buckets. ``input`` and ``output`` are the OTel registry's well-known
+    # values; ``reasoning`` is an AgentLoom extension that keeps
+    # chain-of-thought spend separately attributable on dashboards
+    # (the spec leaves room for custom values; reasoning isn't enumerated
+    # but isn't excluded either).
+    GEN_AI_TOKEN_TYPE = "gen_ai.token.type"
 
     # Provider call attempts (gateway-level; one span per fallback attempt)
     PROVIDER_ATTEMPT = "agentloom.provider.attempt"
@@ -153,15 +161,18 @@ class MetricName:
     STEP_DURATION_SECONDS = "agentloom_step_duration_seconds"
     ATTACHMENTS_TOTAL = "agentloom_attachments_total"
 
-    # Provider gateway
+    # Provider gateway — counters / errors keep AgentLoom names; latency
+    # is now the canonical OTel ``gen_ai.client.operation.duration``.
     PROVIDER_CALLS_TOTAL = "agentloom_provider_calls_total"
-    PROVIDER_LATENCY_SECONDS = "agentloom_provider_latency_seconds"
     PROVIDER_ERRORS_TOTAL = "agentloom_provider_errors_total"
 
-    # Tokens / streaming
-    TOKENS_TOTAL = "agentloom_tokens_total"
+    # GenAI client metrics — canonical OTel registry names.
+    GEN_AI_CLIENT_TOKEN_USAGE = "gen_ai.client.token.usage"
+    GEN_AI_CLIENT_OPERATION_DURATION = "gen_ai.client.operation.duration"
+    GEN_AI_CLIENT_TIME_TO_FIRST_CHUNK = "gen_ai.client.operation.time_to_first_chunk"
+
+    # Streaming response counter (no OTel equivalent — AgentLoom-specific).
     STREAM_RESPONSES_TOTAL = "agentloom_stream_responses_total"
-    TIME_TO_FIRST_TOKEN_SECONDS = "agentloom_time_to_first_token_seconds"
 
     # Resilience gauges
     CIRCUIT_BREAKER_STATE = "agentloom_circuit_breaker_state"

@@ -227,7 +227,7 @@
       },
       "targets": [
         {
-          "expr": "sum(agentloom_tokens_total{provider=~\"$provider\"}) or vector(0)",
+          "expr": "sum(gen_ai_client_token_usage_sum{gen_ai_provider_name=~\"$provider\"}) or vector(0)",
           "legendFormat": "Total Tokens",
           "refId": "A"
         }
@@ -269,7 +269,7 @@
     {
       "type": "stat",
       "title": "Reasoning Tokens",
-      "description": "Chain-of-thought tokens from o-series, Claude extended thinking, and Gemini 2.5+ thinking. Stays at 0 for non-reasoning workflows; surfaces non-zero only when ``direction=\"reasoning\"`` observations are emitted.",
+      "description": "Chain-of-thought tokens from o-series, Claude extended thinking, and Gemini 2.5+ thinking. Stays at 0 for non-reasoning workflows; surfaces non-zero only when ``gen_ai_token_type=\"reasoning\"`` observations are emitted.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -283,7 +283,7 @@
       },
       "targets": [
         {
-          "expr": "sum(agentloom_tokens_total{direction=\"reasoning\",provider=~\"$provider\"}) or vector(0)",
+          "expr": "sum(gen_ai_client_token_usage_sum{gen_ai_token_type=\"reasoning\",gen_ai_provider_name=~\"$provider\"}) or vector(0)",
           "legendFormat": "Reasoning",
           "refId": "A"
         }
@@ -843,17 +843,17 @@
       },
       "targets": [
         {
-          "expr": "sum by(provider,model,direction)(agentloom_tokens_total{direction=\"input\",provider=~\"$provider\"})",
+          "expr": "sum by(gen_ai_provider_name,gen_ai_request_model,gen_ai_token_type)(gen_ai_client_token_usage_sum{gen_ai_token_type=\"input\",gen_ai_provider_name=~\"$provider\"})",
           "legendFormat": "input: {{provider}}/{{model}}",
           "refId": "A"
         },
         {
-          "expr": "sum by(provider,model,direction)(agentloom_tokens_total{direction=\"output\",provider=~\"$provider\"})",
+          "expr": "sum by(gen_ai_provider_name,gen_ai_request_model,gen_ai_token_type)(gen_ai_client_token_usage_sum{gen_ai_token_type=\"output\",gen_ai_provider_name=~\"$provider\"})",
           "legendFormat": "output: {{provider}}/{{model}}",
           "refId": "B"
         },
         {
-          "expr": "sum by(provider,model,direction)(agentloom_tokens_total{direction=\"reasoning\",provider=~\"$provider\"})",
+          "expr": "sum by(gen_ai_provider_name,gen_ai_request_model,gen_ai_token_type)(gen_ai_client_token_usage_sum{gen_ai_token_type=\"reasoning\",gen_ai_provider_name=~\"$provider\"})",
           "legendFormat": "reasoning: {{provider}}/{{model}}",
           "refId": "C"
         }
@@ -935,7 +935,7 @@
       },
       "targets": [
         {
-          "expr": "sum by(provider,model)(agentloom_tokens_total{provider=~\"$provider\"})",
+          "expr": "sum by(gen_ai_provider_name,gen_ai_request_model)(gen_ai_client_token_usage_sum{gen_ai_provider_name=~\"$provider\"})",
           "legendFormat": "{{provider}} / {{model}}",
           "refId": "A",
           "instant": true
@@ -988,17 +988,17 @@
       },
       "targets": [
         {
-          "expr": "sum(agentloom_tokens_total{direction=\"input\",provider=~\"$provider\"})",
+          "expr": "sum(gen_ai_client_token_usage_sum{gen_ai_token_type=\"input\",gen_ai_provider_name=~\"$provider\"})",
           "legendFormat": "Input",
           "refId": "A"
         },
         {
-          "expr": "sum(agentloom_tokens_total{direction=\"output\",provider=~\"$provider\"})",
+          "expr": "sum(gen_ai_client_token_usage_sum{gen_ai_token_type=\"output\",gen_ai_provider_name=~\"$provider\"})",
           "legendFormat": "Output",
           "refId": "B"
         },
         {
-          "expr": "sum(agentloom_tokens_total{direction=\"reasoning\",provider=~\"$provider\"})",
+          "expr": "sum(gen_ai_client_token_usage_sum{gen_ai_token_type=\"reasoning\",gen_ai_provider_name=~\"$provider\"})",
           "legendFormat": "Reasoning",
           "refId": "C"
         }
@@ -1087,17 +1087,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by(le,provider)(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\",stream=~\"$stream\"}))",
+          "expr": "histogram_quantile(0.50, sum by(le,gen_ai_provider_name)(gen_ai_client_operation_duration_seconds_bucket{gen_ai_provider_name=~\"$provider\",stream=~\"$stream\"}))",
           "legendFormat": "p50 {{provider}}",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by(le,provider)(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\",stream=~\"$stream\"}))",
+          "expr": "histogram_quantile(0.95, sum by(le,gen_ai_provider_name)(gen_ai_client_operation_duration_seconds_bucket{gen_ai_provider_name=~\"$provider\",stream=~\"$stream\"}))",
           "legendFormat": "p95 {{provider}}",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by(le,provider)(agentloom_provider_latency_seconds_bucket{provider=~\"$provider\",stream=~\"$stream\"}))",
+          "expr": "histogram_quantile(0.99, sum by(le,gen_ai_provider_name)(gen_ai_client_operation_duration_seconds_bucket{gen_ai_provider_name=~\"$provider\",stream=~\"$stream\"}))",
           "legendFormat": "p99 {{provider}}",
           "refId": "C"
         }
@@ -1673,7 +1673,7 @@
     {
       "type": "timeseries",
       "title": "Cost per workflow",
-      "description": "Cumulative spend per workflow, sourced from ``agentloom_cost_usd_total``. The metric already accounts for reasoning tokens at the output rate (``calculate_cost`` sums them into ``output_tokens`` before applying the per-model price), so reasoning-heavy workflows render accurately without a separate series. Per-provider / per-model breakdowns are tracked separately via ``agentloom_tokens_total``.",
+      "description": "Cumulative spend per workflow, sourced from ``agentloom_cost_usd_total``. The metric already accounts for reasoning tokens at the output rate (``calculate_cost`` sums them into ``output_tokens`` before applying the per-model price), so reasoning-heavy workflows render accurately without a separate series. Per-provider / per-model breakdowns are tracked separately via ``gen_ai_client_token_usage_sum``.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1824,7 +1824,7 @@
       },
       "targets": [
         {
-          "expr": "(sum(agentloom_tokens_total) or vector(0)) / (sum(agentloom_workflow_runs_total) or vector(1))",
+          "expr": "(sum(gen_ai_client_token_usage_sum) or vector(0)) / (sum(agentloom_workflow_runs_total) or vector(1))",
           "legendFormat": "Avg Tokens / Run",
           "refId": "A"
         }
@@ -1936,7 +1936,7 @@
       },
       "targets": [
         {
-          "expr": "(sum(agentloom_tokens_total{direction=\"output\"}) or vector(0)) / (sum(agentloom_tokens_total{direction=\"input\"}) or vector(1))",
+          "expr": "(sum(gen_ai_client_token_usage_sum{gen_ai_token_type=\"output\"}) or vector(0)) / (sum(gen_ai_client_token_usage_sum{gen_ai_token_type=\"input\"}) or vector(1))",
           "legendFormat": "Token Input/Output Ratio",
           "refId": "A"
         }
@@ -2633,7 +2633,7 @@
           },
           "targets": [
             {
-              "expr": "agentloom_time_to_first_token_seconds_sum{provider=~\"$provider\"} / agentloom_time_to_first_token_seconds_count{provider=~\"$provider\"}",
+              "expr": "gen_ai_client_operation_time_to_first_chunk_seconds_sum{gen_ai_provider_name=~\"$provider\"} / gen_ai_client_operation_time_to_first_chunk_seconds_count{gen_ai_provider_name=~\"$provider\"}",
               "legendFormat": "{{provider}}/{{model}}",
               "refId": "A",
               "instant": true
@@ -2685,7 +2685,7 @@
           },
           "targets": [
             {
-              "expr": "agentloom_time_to_first_token_seconds_sum{provider=~\"$provider\"} / agentloom_time_to_first_token_seconds_count{provider=~\"$provider\"}",
+              "expr": "gen_ai_client_operation_time_to_first_chunk_seconds_sum{gen_ai_provider_name=~\"$provider\"} / gen_ai_client_operation_time_to_first_chunk_seconds_count{gen_ai_provider_name=~\"$provider\"}",
               "legendFormat": "{{provider}} / {{model}}",
               "refId": "A",
               "instant": true
@@ -3015,10 +3015,10 @@
           "uid": "prometheus"
         },
         "query": {
-          "query": "label_values(agentloom_tokens_total, provider)",
+          "query": "label_values(gen_ai_client_token_usage_sum, gen_ai_provider_name)",
           "refId": "StandardVariableQuery"
         },
-        "definition": "label_values(agentloom_tokens_total, provider)",
+        "definition": "label_values(gen_ai_client_token_usage_sum, gen_ai_provider_name)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,

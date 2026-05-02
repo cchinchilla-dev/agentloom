@@ -119,14 +119,20 @@ class MetricsManager:
             "agentloom_provider_errors_total",
             description="Total provider errors",
         )
-        self._provider_histogram = meter.create_histogram(
-            "agentloom_provider_latency_seconds",
-            description="Provider API call latency",
+        # Canonical OTel GenAI client metric — replaces the AgentLoom-prefixed
+        # ``agentloom_provider_latency_seconds`` with the spec's name.
+        self._operation_duration_histogram = meter.create_histogram(
+            "gen_ai.client.operation.duration",
+            description="GenAI operation duration (per OTel GenAI conventions)",
             unit="s",
         )
-        self._token_counter = meter.create_counter(
-            "agentloom_tokens_total",
-            description="Total tokens consumed",
+        # Canonical OTel GenAI token usage histogram — replaces the
+        # AgentLoom counter ``agentloom_tokens_total``. The OTel spec
+        # mandates a histogram so distributions are queryable.
+        self._token_histogram = meter.create_histogram(
+            "gen_ai.client.token.usage",
+            description="GenAI token usage per operation (per OTel GenAI conventions)",
+            unit="{token}",
         )
         self._workflow_histogram = meter.create_histogram(
             "agentloom_workflow_duration_seconds",
@@ -145,9 +151,11 @@ class MetricsManager:
             "agentloom_stream_responses_total",
             description="Total streamed LLM responses",
         )
-        self._ttft_histogram = meter.create_histogram(
-            "agentloom_time_to_first_token_seconds",
-            description="Time to first token for streamed responses",
+        # Canonical OTel GenAI metric — replaces the AgentLoom-prefixed
+        # ``agentloom_time_to_first_token_seconds`` with the spec name.
+        self._time_to_first_chunk_histogram = meter.create_histogram(
+            "gen_ai.client.operation.time_to_first_chunk",
+            description="GenAI streaming time-to-first-chunk (per OTel GenAI conventions)",
             unit="s",
         )
         self._approval_gate_counter = meter.create_counter(
@@ -231,10 +239,13 @@ class MetricsManager:
             "Total provider errors",
             ["provider", "error_type"],
         )
-        self._prom_counters["tokens_total"] = prom.Counter(
-            "agentloom_tokens_total",
-            "Total tokens consumed",
-            ["provider", "model", "direction"],
+        # GenAI client token-usage histogram — Prometheus fallback name
+        # mirrors the canonical OTel form (``gen_ai.client.token.usage``)
+        # with dots collapsed to underscores per the OTLP→Prom convention.
+        self._prom_histograms["token_usage"] = prom.Histogram(
+            "gen_ai_client_token_usage",
+            "GenAI token usage per operation (per OTel GenAI conventions)",
+            ["gen_ai_provider_name", "gen_ai_request_model", "gen_ai_token_type"],
         )
         self._prom_histograms["step_duration"] = prom.Histogram(
             "agentloom_step_duration_seconds",
@@ -242,10 +253,10 @@ class MetricsManager:
             ["step_type", "stream"],
             buckets=[0.1, 0.5, 1, 2, 5, 10, 30, 60],
         )
-        self._prom_histograms["provider_latency"] = prom.Histogram(
-            "agentloom_provider_latency_seconds",
-            "Provider API call latency",
-            ["provider", "stream"],
+        self._prom_histograms["operation_duration"] = prom.Histogram(
+            "gen_ai_client_operation_duration_seconds",
+            "GenAI operation duration (per OTel GenAI conventions)",
+            ["gen_ai_provider_name", "stream"],
             buckets=[0.1, 0.5, 1, 2, 5, 10, 30],
         )
         self._prom_counters["attachments"] = prom.Counter(
@@ -258,10 +269,10 @@ class MetricsManager:
             "Total streamed LLM responses",
             ["provider", "model"],
         )
-        self._prom_histograms["ttft"] = prom.Histogram(
-            "agentloom_time_to_first_token_seconds",
-            "Time to first token for streamed responses",
-            ["provider", "model"],
+        self._prom_histograms["time_to_first_chunk"] = prom.Histogram(
+            "gen_ai_client_operation_time_to_first_chunk_seconds",
+            "GenAI streaming time-to-first-chunk (per OTel GenAI conventions)",
+            ["gen_ai_provider_name", "gen_ai_request_model"],
             buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
         )
         self._prom_counters["approval_gates"] = prom.Counter(  # pragma: no cover
@@ -354,16 +365,28 @@ class MetricsManager:
             return
         stream_str = str(stream).lower()
         if self._backend == "otel":
+            # Counter (AgentLoom-specific) — keeps the per-(provider,model)
+            # call count; OTel's spec doesn't have a direct equivalent.
             self._provider_counter.add(
                 1, {"provider": provider, "model": model, "stream": stream_str}
             )
-            self._provider_histogram.record(latency_s, {"provider": provider, "stream": stream_str})
+            # Histogram — canonical OTel GenAI client metric. Attributes
+            # follow the spec: ``gen_ai.operation.name`` + ``gen_ai.provider.name``.
+            self._operation_duration_histogram.record(
+                latency_s,
+                {
+                    "gen_ai.operation.name": "chat",
+                    "gen_ai.provider.name": provider,
+                    "gen_ai.request.model": model,
+                    "stream": stream_str,
+                },
+            )
         else:  # pragma: no cover — prom fallback
             self._prom_counters["provider_calls"].labels(
                 provider=provider, model=model, stream=stream_str
             ).inc()
-            self._prom_histograms["provider_latency"].labels(
-                provider=provider, stream=stream_str
+            self._prom_histograms["operation_duration"].labels(
+                gen_ai_provider_name=provider, stream=stream_str
             ).observe(latency_s)
 
     def record_provider_error(self, provider: str, error_type: str) -> None:
@@ -385,46 +408,52 @@ class MetricsManager:
         *,
         reasoning_tokens: int = 0,
     ) -> None:
-        """Record token usage on the ``tokens_total`` counter.
+        """Record token usage on the ``gen_ai.client.token.usage`` histogram.
 
-        ``reasoning_tokens`` is sourced from providers that report a
-        distinct reasoning / thinking token count — OpenAI o-series via
-        ``completion_tokens_details.reasoning_tokens`` and Gemini 2.5+ via
-        ``thoughtsTokenCount``. Anthropic does not expose a separate count
-        (thinking is rolled into ``output_tokens``) and Ollama emits a
-        single ``eval_count``; both stay at ``0`` here. Providers bill
-        reasoning at the output rate, so the third observation gives
-        dashboards a way to split chain-of-thought spend from regular
-        completion spend. Emitted only when non-zero — non-reasoning
-        workflows stay on a clean two-direction histogram.
+        Each call generates one observation per non-zero token type with
+        the canonical OTel GenAI attributes (``gen_ai.operation.name``,
+        ``gen_ai.provider.name``, ``gen_ai.request.model``,
+        ``gen_ai.token.type``). ``reasoning_tokens`` rides under
+        ``gen_ai.token.type="reasoning"`` — an AgentLoom extension to the
+        OTel registry's ``input``/``output`` enum so chain-of-thought spend
+        stays attributable on dashboards. Sourced from OpenAI o-series
+        ``completion_tokens_details.reasoning_tokens`` and Gemini 2.5+
+        ``thoughtsTokenCount``; Anthropic / Ollama don't expose a split
+        and stay at ``0``.
         """
         if not self._enabled:
             return
         if self._backend == "otel":
-            self._token_counter.add(
-                prompt_tokens,
-                {"provider": provider, "model": model, "direction": "input"},
-            )
-            self._token_counter.add(
-                completion_tokens,
-                {"provider": provider, "model": model, "direction": "output"},
+            common: dict[str, Any] = {
+                "gen_ai.operation.name": "chat",
+                "gen_ai.provider.name": provider,
+                "gen_ai.request.model": model,
+            }
+            self._token_histogram.record(prompt_tokens, {**common, "gen_ai.token.type": "input"})
+            self._token_histogram.record(
+                completion_tokens, {**common, "gen_ai.token.type": "output"}
             )
             if reasoning_tokens:
-                self._token_counter.add(
-                    reasoning_tokens,
-                    {"provider": provider, "model": model, "direction": "reasoning"},
+                self._token_histogram.record(
+                    reasoning_tokens, {**common, "gen_ai.token.type": "reasoning"}
                 )
         else:  # pragma: no cover — prom fallback
-            self._prom_counters["tokens_total"].labels(
-                provider=provider, model=model, direction="input"
-            ).inc(prompt_tokens)
-            self._prom_counters["tokens_total"].labels(
-                provider=provider, model=model, direction="output"
-            ).inc(completion_tokens)
+            self._prom_histograms["token_usage"].labels(
+                gen_ai_provider_name=provider,
+                gen_ai_request_model=model,
+                gen_ai_token_type="input",
+            ).observe(prompt_tokens)
+            self._prom_histograms["token_usage"].labels(
+                gen_ai_provider_name=provider,
+                gen_ai_request_model=model,
+                gen_ai_token_type="output",
+            ).observe(completion_tokens)
             if reasoning_tokens:
-                self._prom_counters["tokens_total"].labels(
-                    provider=provider, model=model, direction="reasoning"
-                ).inc(reasoning_tokens)
+                self._prom_histograms["token_usage"].labels(
+                    gen_ai_provider_name=provider,
+                    gen_ai_request_model=model,
+                    gen_ai_token_type="reasoning",
+                ).observe(reasoning_tokens)
 
     def record_attachments(self, step_type: str, count: int) -> None:
         if not self._enabled:
@@ -446,9 +475,18 @@ class MetricsManager:
         if not self._enabled:
             return
         if self._backend == "otel":
-            self._ttft_histogram.record(ttft_s, {"provider": provider, "model": model})
+            self._time_to_first_chunk_histogram.record(
+                ttft_s,
+                {
+                    "gen_ai.operation.name": "chat",
+                    "gen_ai.provider.name": provider,
+                    "gen_ai.request.model": model,
+                },
+            )
         else:  # pragma: no cover — prom fallback
-            self._prom_histograms["ttft"].labels(provider=provider, model=model).observe(ttft_s)
+            self._prom_histograms["time_to_first_chunk"].labels(
+                gen_ai_provider_name=provider, gen_ai_request_model=model
+            ).observe(ttft_s)
 
     def record_approval_gate(self, workflow: str, decision: str) -> None:
         if not self._enabled:

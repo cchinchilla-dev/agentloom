@@ -171,26 +171,28 @@ All metrics are prefixed with `agentloom_`.
 
 ### Provider metrics
 
+AgentLoom-specific counters live alongside the canonical OTel GenAI client histogram. The histogram replaces the previous `provider_latency_seconds` — distributions are required by the spec.
+
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `provider_calls_total` | counter | provider, model, stream | Provider API call count |
-| `provider_latency_seconds` | histogram | provider, model, stream | Provider response latency |
-| `provider_errors_total` | counter | provider, error_type | Provider error count |
-| `circuit_breaker_state` | gauge | provider | Circuit breaker state (0/1/2) |
+| `agentloom_provider_calls_total` | counter | provider, model, stream | Provider API call count |
+| `gen_ai.client.operation.duration` | histogram (s) | gen_ai.operation.name, gen_ai.provider.name, stream | OTel canonical operation duration |
+| `agentloom_provider_errors_total` | counter | provider, error_type | Provider error count |
+| `agentloom_circuit_breaker_state` | gauge | provider | Circuit breaker state (0/1/2) |
 
 ### Token metrics
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `tokens_total` | counter | provider, model, direction | Token usage (`input` / `output` / `reasoning`) |
-| `attachments_total` | counter | step_type | Attachment count by step type |
+| `gen_ai.client.token.usage` | histogram (`{token}`) | gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model, gen_ai.token.type | OTel canonical per-call token observations. `gen_ai.token.type` is `input` / `output` / `reasoning` (reasoning is an AgentLoom extension to the spec's `input`/`output` enum) |
+| `agentloom_attachments_total` | counter | step_type | Attachment count by step type |
 
 ### Streaming metrics
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `stream_responses_total` | counter | provider, model | Streaming response count |
-| `time_to_first_token_seconds` | histogram | provider, model | Time to first token latency |
+| `agentloom_stream_responses_total` | counter | provider, model | Streaming response count (no OTel equivalent — kept AgentLoom-specific) |
+| `gen_ai.client.operation.time_to_first_chunk` | histogram (s) | gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model | OTel canonical streaming TTFT |
 
 ---
 
