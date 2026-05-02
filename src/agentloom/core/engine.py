@@ -215,7 +215,7 @@ class WorkflowEngine:
         logger.info("Starting workflow: %s", workflow_name)
 
         if self.observer:
-            self.observer.on_workflow_start(workflow_name)
+            self.observer.on_workflow_start(workflow_name, run_id=self.run_id)
 
         dag = WorkflowParser.build_dag(self.workflow)
         layers = dag.execution_layers()
@@ -492,6 +492,7 @@ class WorkflowEngine:
             stream=should_stream,
             on_stream_chunk=self._stream_callback,
             checkpointer=self._checkpointer,
+            capture_prompts=self.workflow.config.capture_prompts,
         )
 
         max_retries = step_def.retry.max_retries
@@ -530,25 +531,28 @@ class WorkflowEngine:
                         )
 
                     if self.observer:
+                        pmeta = result.prompt_metadata
                         self.observer.on_step_end(
                             step_id,
                             step_def.type.value,
                             "success",
                             result.duration_ms,
                             result.cost_usd,
-                            result.token_usage.total_tokens,
                             attachment_count=result.attachment_count,
                             time_to_first_token_ms=result.time_to_first_token_ms,
                             stream=should_stream,
+                            prompt_tokens=result.token_usage.prompt_tokens,
+                            completion_tokens=result.token_usage.completion_tokens,
                             reasoning_tokens=result.token_usage.reasoning_tokens,
+                            model=result.model,
+                            provider=result.provider,
+                            finish_reason=(pmeta.finish_reason if pmeta else None),
+                            prompt_hash=(pmeta.hash if pmeta else None),
+                            prompt_length_chars=(pmeta.length_chars if pmeta else None),
+                            prompt_template_id=(pmeta.template_id if pmeta else None),
+                            prompt_template_vars=(",".join(pmeta.template_vars) if pmeta else None),
                         )
                         if result.provider and result.model:
-                            self.observer.on_provider_call(
-                                result.provider,
-                                result.model,
-                                result.duration_ms / 1000.0,
-                                stream=should_stream,
-                            )
                             if result.token_usage.total_tokens > 0:
                                 self.observer.on_tokens(
                                     result.provider,
@@ -631,7 +635,6 @@ class WorkflowEngine:
                         "paused",
                         paused_result.duration_ms,
                         paused_result.cost_usd,
-                        paused_result.token_usage.total_tokens,
                         stream=should_stream,
                     )
                 return
@@ -675,7 +678,6 @@ class WorkflowEngine:
                     last_result.status.value,
                     last_result.duration_ms,
                     last_result.cost_usd,
-                    last_result.token_usage.total_tokens,
                     error=last_result.error,
                     attachment_count=last_result.attachment_count,
                     stream=should_stream,

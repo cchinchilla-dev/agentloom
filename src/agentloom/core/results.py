@@ -51,6 +51,22 @@ class TokenUsage(BaseModel):
         return self.completion_tokens + self.reasoning_tokens
 
 
+class PromptMetadata(BaseModel):
+    """Non-sensitive provenance metadata for a rendered LLM prompt.
+
+    Captured by ``LLMCallStep`` and forwarded to the observer so traces
+    can correlate a failed run to the prompt that produced it without
+    storing the full prompt text (size, secrets). Full-prompt capture is
+    a separate opt-in flag.
+    """
+
+    hash: str
+    length_chars: int
+    template_id: str
+    template_vars: list[str] = Field(default_factory=list)
+    finish_reason: str | None = None
+
+
 class StepResult(BaseModel):
     """Result from executing a single step."""
 
@@ -65,6 +81,7 @@ class StepResult(BaseModel):
     provider: str | None = None
     attachment_count: int = 0
     time_to_first_token_ms: float | None = None
+    prompt_metadata: PromptMetadata | None = None
 
 
 class WorkflowStatus(StrEnum):
