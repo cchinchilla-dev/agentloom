@@ -22,7 +22,10 @@ from agentloom.steps.base import BaseStep, StepContext
 
 logger = logging.getLogger("agentloom.steps")
 
-_TEMPLATE_VAR_RE = re.compile(r"\{([\w.]+)")
+# Captures the variable path inside a ``{path[!conv][:spec]}`` template
+# placeholder, including ``state.items[0].name``-style indexed paths so the
+# emitted ``agentloom.prompt.template_vars`` reflects the full reference.
+_TEMPLATE_VAR_RE = re.compile(r"\{([\w][\w.\[\]]*?)(?:[!:][^}]*)?\}")
 
 
 def _build_prompt_metadata(

@@ -108,6 +108,50 @@ class TestMetricsEnabled:
         assert reasoning_calls[0].args[1]["gen_ai.request.model"] == "claude-opus-4"
         mm.shutdown()
 
+    def test_token_histogram_translates_provider_name(self) -> None:
+        # The histogram must carry the canonical OTel ``gen_ai.provider.name``
+        # value, not the AgentLoom internal short name. ``google`` →
+        # ``gcp.gemini``. Without this translation, token series for Gemini
+        # land on a non-canonical label and don't correlate with the spans
+        # (which already translate via ``to_genai_provider_name``).
+        from unittest.mock import MagicMock
+
+        mm = MetricsManager(enabled=True)
+        if mm._backend != "otel":
+            return
+        spy = MagicMock()
+        mm._token_histogram = spy
+        mm.record_tokens("google", "gemini-2.5-flash", 50, 30)
+        for call in spy.record.call_args_list:
+            assert call.args[1]["gen_ai.provider.name"] == "gcp.gemini"
+        mm.shutdown()
+
+    def test_operation_duration_histogram_translates_provider_name(self) -> None:
+        from unittest.mock import MagicMock
+
+        mm = MetricsManager(enabled=True)
+        if mm._backend != "otel":
+            return
+        spy = MagicMock()
+        mm._operation_duration_histogram = spy
+        mm.record_provider_call("google", "gemini-2.5-flash", 0.42, stream=False)
+        spy.record.assert_called_once()
+        attrs = spy.record.call_args.args[1]
+        assert attrs["gen_ai.provider.name"] == "gcp.gemini"
+
+    def test_time_to_first_chunk_histogram_translates_provider_name(self) -> None:
+        from unittest.mock import MagicMock
+
+        mm = MetricsManager(enabled=True)
+        if mm._backend != "otel":
+            return
+        spy = MagicMock()
+        mm._time_to_first_chunk_histogram = spy
+        mm.record_time_to_first_token("google", "gemini-2.5-flash", 0.18)
+        spy.record.assert_called_once()
+        attrs = spy.record.call_args.args[1]
+        assert attrs["gen_ai.provider.name"] == "gcp.gemini"
+
     def test_reasoning_tokens_zero_does_not_emit_third_observation(self) -> None:
         # Default path — no reasoning tokens — must not emit a reasoning
         # observation. Dashboards filtering on

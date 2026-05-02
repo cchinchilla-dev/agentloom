@@ -186,6 +186,27 @@ class TestLLMCallStep:
         assert result.cost_usd > 0
         assert result.token_usage.total_tokens == 30
 
+    def test_prompt_metadata_template_vars_handles_indexed_paths(self) -> None:
+        # ``state.items[0].name`` must round-trip as the full path, not be
+        # truncated to ``state.items``. The previous regex (``[\w.]+``) chopped
+        # at ``[``; the new one captures the bracketed segment so the
+        # ``agentloom.prompt.template_vars`` attr stays accurate for prompts
+        # that reach into list elements.
+        from agentloom.steps.llm_call import _build_prompt_metadata
+
+        meta = _build_prompt_metadata(
+            "wf",
+            "step",
+            "Answer for {state.items[0].name} from {state.q!r:>10}",
+            "rendered",
+        )
+        assert "state.items[0].name" in meta.template_vars
+        assert "state.q" in meta.template_vars
+        # The format-spec / conversion suffix must NOT bleed into the
+        # captured variable name — this would corrupt downstream filtering
+        # on ``agentloom.prompt.template_vars``.
+        assert all("!" not in v and ":" not in v for v in meta.template_vars)
+
     async def test_template_error_raises_step_error(self, step: LLMCallStep) -> None:
         # ``KeyError`` / ``ValueError`` from ``format_map`` surface as a
         # ``StepError`` so the engine reports a clean failure with the

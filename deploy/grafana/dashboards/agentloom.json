@@ -844,17 +844,17 @@
       "targets": [
         {
           "expr": "sum by(gen_ai_provider_name,gen_ai_request_model,gen_ai_token_type)(gen_ai_client_token_usage_sum{gen_ai_token_type=\"input\",gen_ai_provider_name=~\"$provider\"})",
-          "legendFormat": "input: {{provider}}/{{model}}",
+          "legendFormat": "input: {{gen_ai_provider_name}}/{{gen_ai_request_model}}",
           "refId": "A"
         },
         {
           "expr": "sum by(gen_ai_provider_name,gen_ai_request_model,gen_ai_token_type)(gen_ai_client_token_usage_sum{gen_ai_token_type=\"output\",gen_ai_provider_name=~\"$provider\"})",
-          "legendFormat": "output: {{provider}}/{{model}}",
+          "legendFormat": "output: {{gen_ai_provider_name}}/{{gen_ai_request_model}}",
           "refId": "B"
         },
         {
           "expr": "sum by(gen_ai_provider_name,gen_ai_request_model,gen_ai_token_type)(gen_ai_client_token_usage_sum{gen_ai_token_type=\"reasoning\",gen_ai_provider_name=~\"$provider\"})",
-          "legendFormat": "reasoning: {{provider}}/{{model}}",
+          "legendFormat": "reasoning: {{gen_ai_provider_name}}/{{gen_ai_request_model}}",
           "refId": "C"
         }
       ],
@@ -936,7 +936,7 @@
       "targets": [
         {
           "expr": "sum by(gen_ai_provider_name,gen_ai_request_model)(gen_ai_client_token_usage_sum{gen_ai_provider_name=~\"$provider\"})",
-          "legendFormat": "{{provider}} / {{model}}",
+          "legendFormat": "{{gen_ai_provider_name}} / {{gen_ai_request_model}}",
           "refId": "A",
           "instant": true
         }
@@ -1088,17 +1088,17 @@
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum by(le,gen_ai_provider_name)(gen_ai_client_operation_duration_seconds_bucket{gen_ai_provider_name=~\"$provider\",stream=~\"$stream\"}))",
-          "legendFormat": "p50 {{provider}}",
+          "legendFormat": "p50 {{gen_ai_provider_name}}",
           "refId": "A"
         },
         {
           "expr": "histogram_quantile(0.95, sum by(le,gen_ai_provider_name)(gen_ai_client_operation_duration_seconds_bucket{gen_ai_provider_name=~\"$provider\",stream=~\"$stream\"}))",
-          "legendFormat": "p95 {{provider}}",
+          "legendFormat": "p95 {{gen_ai_provider_name}}",
           "refId": "B"
         },
         {
           "expr": "histogram_quantile(0.99, sum by(le,gen_ai_provider_name)(gen_ai_client_operation_duration_seconds_bucket{gen_ai_provider_name=~\"$provider\",stream=~\"$stream\"}))",
-          "legendFormat": "p99 {{provider}}",
+          "legendFormat": "p99 {{gen_ai_provider_name}}",
           "refId": "C"
         }
       ],
@@ -2634,7 +2634,7 @@
           "targets": [
             {
               "expr": "gen_ai_client_operation_time_to_first_chunk_seconds_sum{gen_ai_provider_name=~\"$provider\"} / gen_ai_client_operation_time_to_first_chunk_seconds_count{gen_ai_provider_name=~\"$provider\"}",
-              "legendFormat": "{{provider}}/{{model}}",
+              "legendFormat": "{{gen_ai_provider_name}}/{{gen_ai_request_model}}",
               "refId": "A",
               "instant": true
             }
@@ -2686,7 +2686,7 @@
           "targets": [
             {
               "expr": "gen_ai_client_operation_time_to_first_chunk_seconds_sum{gen_ai_provider_name=~\"$provider\"} / gen_ai_client_operation_time_to_first_chunk_seconds_count{gen_ai_provider_name=~\"$provider\"}",
-              "legendFormat": "{{provider}} / {{model}}",
+              "legendFormat": "{{gen_ai_provider_name}} / {{gen_ai_request_model}}",
               "refId": "A",
               "instant": true
             }

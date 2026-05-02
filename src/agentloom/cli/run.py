@@ -185,7 +185,11 @@ async def _run_async(
     )
 
     typer.echo(f"Running workflow: {workflow.name}")
-    if engine.run_id:
+    # ``engine.run_id`` is always populated now (used for trace correlation),
+    # but the user-facing "Run ID" echo stays gated on checkpoint mode — that's
+    # the only context where the id is useful to the operator (resume from
+    # checkpoint).
+    if checkpointer is not None:
         typer.echo(f"Run ID: {engine.run_id}")
     result = await engine.run()
 

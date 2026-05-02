@@ -100,7 +100,11 @@ class WorkflowEngine:
         self._budget_spent: float = 0.0
 
         self._checkpointer = checkpointer
-        self.run_id = run_id or (uuid.uuid4().hex[:12] if checkpointer else "")
+        # Always generate a run_id so ``workflow.run_id`` propagates through
+        # the span tree on every workflow execution, not only checkpointed
+        # ones — external trace consumers (AgentTest, Jaeger search) rely on
+        # it to correlate a Jaeger trace with a workflow run.
+        self.run_id = run_id or uuid.uuid4().hex[:12]
         self._completed_steps: set[str] = set()
         self._checkpoint_created_at = datetime.now(UTC).isoformat()
 

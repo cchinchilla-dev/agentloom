@@ -13,6 +13,7 @@ from collections import OrderedDict
 from typing import Any
 
 from agentloom.compat import is_available, try_import
+from agentloom.observability.schema import to_genai_provider_name
 
 logger = logging.getLogger("agentloom.observability.metrics")
 
@@ -376,7 +377,7 @@ class MetricsManager:
                 latency_s,
                 {
                     "gen_ai.operation.name": "chat",
-                    "gen_ai.provider.name": provider,
+                    "gen_ai.provider.name": to_genai_provider_name(provider),
                     "gen_ai.request.model": model,
                     "stream": stream_str,
                 },
@@ -386,7 +387,7 @@ class MetricsManager:
                 provider=provider, model=model, stream=stream_str
             ).inc()
             self._prom_histograms["operation_duration"].labels(
-                gen_ai_provider_name=provider, stream=stream_str
+                gen_ai_provider_name=to_genai_provider_name(provider), stream=stream_str
             ).observe(latency_s)
 
     def record_provider_error(self, provider: str, error_type: str) -> None:
@@ -423,10 +424,11 @@ class MetricsManager:
         """
         if not self._enabled:
             return
+        canonical_provider = to_genai_provider_name(provider)
         if self._backend == "otel":
             common: dict[str, Any] = {
                 "gen_ai.operation.name": "chat",
-                "gen_ai.provider.name": provider,
+                "gen_ai.provider.name": canonical_provider,
                 "gen_ai.request.model": model,
             }
             self._token_histogram.record(prompt_tokens, {**common, "gen_ai.token.type": "input"})
@@ -439,18 +441,18 @@ class MetricsManager:
                 )
         else:  # pragma: no cover — prom fallback
             self._prom_histograms["token_usage"].labels(
-                gen_ai_provider_name=provider,
+                gen_ai_provider_name=canonical_provider,
                 gen_ai_request_model=model,
                 gen_ai_token_type="input",
             ).observe(prompt_tokens)
             self._prom_histograms["token_usage"].labels(
-                gen_ai_provider_name=provider,
+                gen_ai_provider_name=canonical_provider,
                 gen_ai_request_model=model,
                 gen_ai_token_type="output",
             ).observe(completion_tokens)
             if reasoning_tokens:
                 self._prom_histograms["token_usage"].labels(
-                    gen_ai_provider_name=provider,
+                    gen_ai_provider_name=canonical_provider,
                     gen_ai_request_model=model,
                     gen_ai_token_type="reasoning",
                 ).observe(reasoning_tokens)
@@ -474,18 +476,19 @@ class MetricsManager:
     def record_time_to_first_token(self, provider: str, model: str, ttft_s: float) -> None:
         if not self._enabled:
             return
+        canonical_provider = to_genai_provider_name(provider)
         if self._backend == "otel":
             self._time_to_first_chunk_histogram.record(
                 ttft_s,
                 {
                     "gen_ai.operation.name": "chat",
-                    "gen_ai.provider.name": provider,
+                    "gen_ai.provider.name": canonical_provider,
                     "gen_ai.request.model": model,
                 },
             )
         else:  # pragma: no cover — prom fallback
             self._prom_histograms["time_to_first_chunk"].labels(
-                gen_ai_provider_name=provider, gen_ai_request_model=model
+                gen_ai_provider_name=canonical_provider, gen_ai_request_model=model
             ).observe(ttft_s)
 
     def record_approval_gate(self, workflow: str, decision: str) -> None:
