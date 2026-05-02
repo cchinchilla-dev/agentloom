@@ -261,6 +261,95 @@ class TestProviderFallback:
         assert resp2.content == "Rust is a systems language"
 
 
+class TestProviderSpansPerFallbackAttempt:
+    """The gateway emits one provider span per attempt during fallback so
+    Jaeger / Grafana can show the failed primary attempt alongside the
+    successful fallback. Without this the trace tree collapses both into
+    a single span and the latency split between attempts is invisible.
+    """
+
+    async def test_provider_span_emitted_per_fallback_attempt(self) -> None:
+        from unittest.mock import MagicMock
+
+        gateway = ProviderGateway()
+        failing = FailingProvider(error_msg="primary down")
+        failing.name = "primary"
+        succeeding = MockProvider(responses={"hello": "fallback answer"})
+        succeeding.name = "fallback_provider"
+
+        gateway.register(failing, priority=0)
+        gateway.register(succeeding, priority=1)
+
+        observer = MagicMock()
+        gateway.set_observer(observer)
+
+        response = await gateway.complete(
+            messages=[{"role": "user", "content": "hello"}],
+            model="test-model",
+            step_id="my_step",
+        )
+        assert response.content == "fallback answer"
+
+        # Two start hooks (one per attempt) and two end hooks.
+        assert observer.on_provider_call_start.call_count == 2
+        assert observer.on_provider_call_end.call_count == 2
+
+        # First attempt: primary, attempt=0.
+        first_start = observer.on_provider_call_start.call_args_list[0]
+        assert first_start.kwargs["provider"] == "primary"
+        assert first_start.kwargs["attempt"] == 0
+        assert first_start.kwargs["step_id"] == "my_step"
+
+        # First attempt closed with error.
+        first_end = observer.on_provider_call_end.call_args_list[0]
+        assert first_end.kwargs["provider"] == "primary"
+        assert first_end.kwargs["attempt"] == 0
+        assert first_end.kwargs["error"] is not None
+
+        # Second attempt: fallback, attempt=1, success.
+        second_start = observer.on_provider_call_start.call_args_list[1]
+        assert second_start.kwargs["provider"] == "fallback_provider"
+        assert second_start.kwargs["attempt"] == 1
+
+        second_end = observer.on_provider_call_end.call_args_list[1]
+        assert second_end.kwargs["provider"] == "fallback_provider"
+        assert second_end.kwargs["attempt"] == 1
+        assert second_end.kwargs.get("error") is None
+
+    async def test_no_step_id_skips_provider_spans(self) -> None:
+        # Backwards compat: callers that don't pass step_id (legacy code,
+        # tests) must not cause an exception. The hooks simply aren't fired.
+        from unittest.mock import MagicMock
+
+        gateway = ProviderGateway()
+        provider = MockProvider()
+        gateway.register(provider, priority=0)
+        observer = MagicMock()
+        gateway.set_observer(observer)
+
+        await gateway.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="test-model",
+        )
+        assert observer.on_provider_call_start.call_count == 0
+        assert observer.on_provider_call_end.call_count == 0
+
+    async def test_step_id_not_forwarded_to_provider(self) -> None:
+        # The step_id kwarg is consumed by the gateway and must not leak
+        # into the provider's HTTP payload (it would be a 400 from any
+        # provider that validates extras).
+        gateway = ProviderGateway()
+        provider = MockProvider()
+        gateway.register(provider, priority=0)
+        await gateway.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="test-model",
+            step_id="should_be_consumed",
+        )
+        # MockProvider records each call's kwargs; assert step_id absent.
+        assert "step_id" not in provider.calls[0]
+
+
 class TestGatewayStreaming:
     """Test gateway stream() method."""
 

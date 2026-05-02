@@ -412,12 +412,11 @@ class TestObserverIntegration:
         result = await engine.run()
 
         assert result.status == WorkflowStatus.SUCCESS
-        observer.on_workflow_start.assert_called_once_with("obs-test")
+        observer.on_workflow_start.assert_called_once_with("obs-test", run_id="")
         observer.on_step_start.assert_called_once_with("s", "llm_call", stream=False)
         observer.on_step_end.assert_called_once()
         observer.on_workflow_end.assert_called_once()
-        # Provider call and token events also fired
-        observer.on_provider_call.assert_called_once()
+        # Token events also fired (provider-level spans use start/end pair).
         observer.on_tokens.assert_called_once()
 
     async def test_observer_on_failure(self) -> None:
