@@ -38,6 +38,9 @@ class StepContext(BaseModel):
     workflow_provider: str = "openai"
     run_id: str = ""
     workflow_name: str = ""
+    capture_prompts: bool = (
+        False  # WorkflowConfig.capture_prompts — gate for span-event prompt capture
+    )
     sandbox_config: SandboxConfig = Field(default_factory=SandboxConfig)
     observer: Any | None = None  # ObserverProtocol
     stream: bool = False

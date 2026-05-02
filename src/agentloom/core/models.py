@@ -192,6 +192,11 @@ class WorkflowConfig(BaseModel):
     latency_model: Literal["constant", "normal", "replay"] = "constant"
     latency_ms: float = 0.0
 
+    # Observability
+    capture_prompts: bool = (
+        False  # When true, llm_call spans emit a span event with the rendered prompt
+    )
+
 
 class WorkflowDefinition(BaseModel):
     """Complete workflow definition — the top-level schema for YAML files."""
