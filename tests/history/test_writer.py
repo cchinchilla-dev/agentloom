@@ -120,6 +120,22 @@ class TestRunHistoryWriter:
         # File name carries a timestamp fallback.
         assert path.name.startswith("anon-")
 
+    async def test_unsafe_run_id_falls_back_to_anonymous_name(self, tmp_path: Path) -> None:
+        # Path-traversal guard: a hostile or buggy caller passing a
+        # ``run_id`` with separators must NOT cause a write outside
+        # ``runs_dir``. The writer falls back to the anonymous timestamp
+        # name so the record still lands on disk for ``agentloom history``
+        # but inside the configured directory.
+        writer = RunHistoryWriter(runs_dir=tmp_path)
+        wf = _make_workflow()
+        for hostile_id in ("../escape", "a/b/c", "..", "/abs/path", "with\x00null"):
+            path = await writer.record(_make_result(wf), wf, run_id=hostile_id)
+            assert path is not None
+            # Must stay inside runs_dir.
+            assert path.parent == tmp_path, f"escaped runs_dir for {hostile_id!r}: {path}"
+            # Must use the fallback anon- prefix, not the hostile id.
+            assert path.name.startswith("anon-"), path.name
+
     async def test_atomic_write_no_tempfile_leftover(self, tmp_path: Path) -> None:
         # Writer routes through ``write_text(<tmp>)`` + ``os.replace`` so a
         # crash mid-write leaves either the previous file or no file —

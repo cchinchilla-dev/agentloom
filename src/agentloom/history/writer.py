@@ -8,10 +8,10 @@ block the event loop.
 Default location is ``./agentloom_runs/``; callers can override via the
 ``AGENTLOOM_RUNS_DIR`` env var or the ``runs_dir`` constructor argument.
 
-The file format is ``v1`` — newline-delimited JSON, one record per file
-named ``<run_id>.json``. A future version can bundle into a single
-``runs.jsonl`` when volumes grow; the per-file layout keeps atomic writes
-and direct inspection trivial in the meantime.
+The file format is ``v1`` — one pretty-printed JSON document per file,
+named ``<run_id>.json``. The per-file layout keeps atomic writes and
+direct inspection trivial; a future version can bundle into a single
+``runs.jsonl`` when volumes grow.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import platform
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,15 @@ from typing import Any
 import anyio
 
 from agentloom.core.models import WorkflowDefinition
-from agentloom.core.results import StepResult, WorkflowResult
+from agentloom.core.results import StepResult, StepStatus, WorkflowResult
+
+# Allow only safe characters in the file basename so a hostile or buggy
+# caller can't pass ``../etc/passwd`` or similar and write outside the
+# configured runs dir. Leading ``.`` is rejected so ``.``, ``..`` and
+# hidden-file forms can't slip through; the engine's auto-generated
+# UUID hex always passes. This guard exists for the public
+# ``RunHistoryWriter`` surface.
+_SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
 
 try:
     from importlib.metadata import (
@@ -104,8 +113,15 @@ def build_record(
         "providers_used": _providers_used(result.step_results),
         "total_cost_usd": result.total_cost_usd,
         "total_tokens": result.total_tokens,
+        # Count every step that the engine actually attempted (i.e.
+        # produced a result for), not only successes. ``"steps_executed"``
+        # here matches the issue #77 example field name and reflects total
+        # work done, including failures and pauses — useful for spotting
+        # workflows that consistently fail past a certain step count.
+        # Skipped steps (router branches not taken) are excluded so the
+        # number tracks runtime cost rather than DAG size.
         "steps_executed": sum(
-            1 for r in result.step_results.values() if r.status.value == "success"
+            1 for r in result.step_results.values() if r.status != StepStatus.SKIPPED
         ),
         "duration_ms": result.total_duration_ms,
         "error": result.error,
@@ -131,11 +147,17 @@ class RunHistoryWriter:
         self.runs_dir = Path(resolved)
 
     def _path_for(self, run_id: str) -> Path:
-        # Fall back to the timestamp when the engine ran without a
-        # checkpointer (run_id == ""). The record still lands on disk so
-        # ``agentloom history`` can find it; the file name just becomes
-        # the timestamp instead of an opaque id.
-        name = run_id or datetime.now(UTC).strftime("anon-%Y%m%dT%H%M%S%f")
+        # Fall back to a timestamp-based name when the engine ran without
+        # an explicit run_id, OR when the supplied id contains characters
+        # that would let it escape ``self.runs_dir`` (path separators,
+        # ``..``, NUL, etc). Engine-generated UUID hex always passes the
+        # safe-name regex; this guard exists because ``RunHistoryWriter``
+        # is part of the public API and a hostile / buggy caller could
+        # otherwise write outside the configured directory.
+        if not run_id or not _SAFE_RUN_ID_RE.match(run_id):
+            name = datetime.now(UTC).strftime("anon-%Y%m%dT%H%M%S%f")
+        else:
+            name = run_id
         return self.runs_dir / f"{name}.json"
 
     async def record(

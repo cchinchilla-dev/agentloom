@@ -127,23 +127,27 @@ class WorkflowResult(BaseModel):
     run_id: str = ""
     annotations: list[QualityAnnotation] = Field(default_factory=list)
 
-    # Live tracing context attached by the engine before the result is
-    # returned to the caller. Excluded from serialization (PrivateAttr) so
-    # ``model_dump()`` / JSON output stays a pure data snapshot. When set,
-    # ``annotate()`` auto-emits the annotation as an OTel span so the issue
-    # #59 contract — "metadata exported as OTel span attributes, visible in
-    # Jaeger" — holds with no extra plumbing on the caller side.
-    _tracing: Any = PrivateAttr(default=None)
+    # Optional callable wired by the engine before the result is returned
+    # to the caller. Signature: ``Callable[[QualityAnnotation], None]``.
+    # ``PrivateAttr`` excludes it from serialization so ``model_dump()`` /
+    # JSON output stays a pure data snapshot, and the indirection keeps
+    # ``core/results.py`` free of any ``observability/`` import (per the
+    # ``CLAUDE.md`` layering rule — "core code never imports from
+    # observability/ directly"). When set, ``annotate()`` invokes the
+    # emitter so the issue #59 contract — "metadata exported as OTel span
+    # attributes, visible in Jaeger" — holds without the caller threading
+    # any infrastructure through.
+    _emit_quality: Any = PrivateAttr(default=None)
 
-    def attach_tracing(self, tracing: Any) -> None:
-        """Wire a live tracing manager onto this result.
+    def attach_quality_emitter(self, emitter: Any) -> None:
+        """Wire a callback that publishes :class:`QualityAnnotation` spans.
 
-        Called by :class:`WorkflowEngine` after the result is built so
-        subsequent :meth:`annotate` calls can publish quality spans
-        without the caller threading the tracer through manually. ``None``
-        is accepted and disables auto-emission (offline / replay paths).
+        The engine builds and attaches the closure (capturing the live
+        tracing manager + run_id + workflow name) so this module never
+        imports from ``agentloom.observability`` directly. ``None`` is
+        accepted and disables auto-emission for offline / replay paths.
         """
-        self._tracing = tracing
+        self._emit_quality = emitter
 
     def annotate(
         self,
@@ -156,14 +160,14 @@ class WorkflowResult(BaseModel):
         """Attach a quality annotation to this result.
 
         The annotation is always appended to :attr:`annotations`. When the
-        engine has wired a live tracing context via :meth:`attach_tracing`
-        (the default for any workflow run with observability enabled),
-        the annotation is also emitted immediately as a standalone
-        ``quality:<target>`` OTel span carrying ``workflow.run_id`` so
-        downstream consumers see it in Jaeger without additional code.
-        Offline / replay scenarios where no tracer is wired keep working —
-        the annotation is still recorded on the result, the OTel emission
-        is just a no-op.
+        engine has wired a quality-span emitter via
+        :meth:`attach_quality_emitter` (the default for any workflow run
+        with observability enabled), the annotation is also published
+        immediately as a standalone ``quality:<target>`` OTel span carrying
+        ``workflow.run_id`` so downstream consumers see it in Jaeger
+        without additional code. Offline / replay scenarios where no
+        emitter is wired keep working — the annotation is recorded on the
+        result, and the OTel emission is simply a no-op.
         """
         annotation = QualityAnnotation(
             target=target,
@@ -172,16 +176,6 @@ class WorkflowResult(BaseModel):
             metadata=metadata,
         )
         self.annotations.append(annotation)
-        if self._tracing is not None:
-            # Lazy import to keep the core results module free of an
-            # observability dependency at import time — observability is
-            # an optional extra and core must stay importable without it.
-            from agentloom.observability.quality import emit_quality_annotation
-
-            emit_quality_annotation(
-                annotation,
-                self._tracing,
-                run_id=self.run_id,
-                workflow_name=self.workflow_name,
-            )
+        if self._emit_quality is not None:
+            self._emit_quality(annotation)
         return annotation

@@ -47,7 +47,13 @@ def _record_timestamp(record: dict[str, Any]) -> datetime | None:
         ts = datetime.fromisoformat(ts_raw)
     except ValueError:
         return None
-    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+    # Normalize to UTC: naive timestamps are treated as already-UTC
+    # (matches what ``RunHistoryWriter`` writes via ``datetime.now(UTC)``);
+    # tz-aware timestamps in any other zone are converted so ``--since`` /
+    # ``--until`` comparisons are unambiguous regardless of source.
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=UTC)
+    return ts.astimezone(UTC)
 
 
 def _matches(
@@ -70,7 +76,11 @@ def _matches(
             return False
         if since is not None and ts < since:
             return False
-        if until is not None and ts > until:
+        # Closed-open window — ``--until 2026-05-02`` excludes records on
+        # that day (anchored at 00:00 UTC). Matches ``git log --until``
+        # and ``find -newermt`` operator expectations and keeps
+        # ``--since X --until Y`` composable as a half-open range.
+        if until is not None and ts >= until:
             return False
     cost = float(record.get("total_cost_usd") or 0.0)
     if min_cost is not None and cost < min_cost:

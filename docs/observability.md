@@ -307,15 +307,15 @@ The engine writes a JSON record to `./agentloom_runs/<run_id>.json` after every 
   "timestamp": "2026-05-02T18:34:18+00:00",
   "agentloom_version": "0.5.0",
   "python_version": "3.12.13",
-  "platform": "macOS-14.5-arm64",
   "workflow_name": "simple-qa",
   "workflow_hash": "sha256:...",
-  "providers_used": ["openai/gpt-4o-mini"],
   "status": "success",
+  "providers_used": ["openai/gpt-4o-mini"],
   "total_cost_usd": 0.012,
   "total_tokens": 320,
   "steps_executed": 5,
-  "duration_ms": 3200
+  "duration_ms": 3200,
+  "error": null
 }
 ```
 

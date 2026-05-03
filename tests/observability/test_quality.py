@@ -93,6 +93,62 @@ class TestEmitQualityAnnotation:
         emit_quality_annotation(annotation, None, run_id="r", workflow_name="w")
         emit_quality_annotation(annotation, 0, run_id="r", workflow_name="w")
 
+    def test_emit_coerces_non_primitive_metadata_to_json(self) -> None:
+        # OTel attribute values must be primitives or lists of primitives;
+        # passing a dict / set / custom object can raise inside the
+        # exporter. The emitter JSON-serializes anything else so the
+        # span survives ``set_attribute``.
+        from unittest.mock import MagicMock
+
+        tracing = MagicMock()
+        annotation = QualityAnnotation(
+            target="x",
+            quality_score=1.0,
+            metadata={
+                "primitive": "ok",
+                "nested": {"k": "v"},
+                "list_mixed": [1, "two"],
+                "list_homogeneous": [1, 2, 3],
+            },
+        )
+        emit_quality_annotation(annotation, tracing, run_id="r", workflow_name="w")
+
+        attrs = tracing.start_span.call_args.kwargs["attributes"]
+        # Primitive passes through unchanged.
+        assert attrs["agentloom.quality.metadata.primitive"] == "ok"
+        # Homogeneous primitive list passes through.
+        assert attrs["agentloom.quality.metadata.list_homogeneous"] == [1, 2, 3]
+        # Dict and mixed-type list are JSON-serialized to strings.
+        nested = attrs["agentloom.quality.metadata.nested"]
+        assert isinstance(nested, str)
+        assert "k" in nested and "v" in nested
+        assert isinstance(attrs["agentloom.quality.metadata.list_mixed"], str)
+
+    def test_emit_handles_empty_list_and_unserializable_metadata(self) -> None:
+        # Empty list is trivially homogeneous and OTel-safe — passes
+        # through unchanged. Custom objects without a JSON encoding fall
+        # back to ``str(value)``; covers the json.dumps exception branch.
+        from unittest.mock import MagicMock
+
+        class _Unserializable:
+            def __repr__(self) -> str:
+                return "<unserializable>"
+
+        tracing = MagicMock()
+        annotation = QualityAnnotation(
+            target="x",
+            quality_score=1.0,
+            metadata={"empty": [], "obj": _Unserializable()},
+        )
+        emit_quality_annotation(annotation, tracing, run_id="r", workflow_name="w")
+
+        attrs = tracing.start_span.call_args.kwargs["attributes"]
+        assert attrs["agentloom.quality.metadata.empty"] == []
+        # Custom object → str() fallback (json.dumps default=str catches it).
+        obj_attr = attrs["agentloom.quality.metadata.obj"]
+        assert isinstance(obj_attr, str)
+        assert "unserializable" in obj_attr
+
     def test_emit_falls_back_to_span_end_when_tracing_lacks_end_span(self) -> None:
         # Defensive duck-typed branch: callers can pass a tracer-like
         # object that exposes ``start_span`` but not ``end_span``; the
@@ -153,39 +209,35 @@ class TestAutoEmitFromAnnotate:
     example. Manual ``emit_quality_annotation`` calls remain available for
     offline / replay paths but are no longer the only way to publish."""
 
-    def test_annotate_with_tracing_attached_emits_span(self) -> None:
+    def test_annotate_with_emitter_attached_publishes_span(self) -> None:
+        # ``attach_quality_emitter`` wires a callable that ``annotate()``
+        # invokes with each new annotation. Decouples ``core/results.py``
+        # from any ``observability/`` import (the engine builds the
+        # closure that knows how to emit). This test mirrors the exact
+        # pattern the engine uses: emitter is a MagicMock so we can
+        # assert on what would have been published.
         from unittest.mock import MagicMock
 
         from agentloom.core.results import WorkflowResult, WorkflowStatus
 
-        tracing = MagicMock()
+        emitter = MagicMock()
         result = WorkflowResult(
             workflow_name="wf",
             status=WorkflowStatus.SUCCESS,
             run_id="run-x",
         )
-        result.attach_tracing(tracing)
+        result.attach_quality_emitter(emitter)
         annotation = result.annotate("answer", quality_score=4.5, source="human_feedback")
 
-        # Span emitted with canonical attrs.
-        tracing.start_span.assert_called_once()
-        name, kwargs = (
-            tracing.start_span.call_args.args[0],
-            tracing.start_span.call_args.kwargs,
-        )
-        assert name == "quality:answer"
-        attrs = kwargs["attributes"]
-        assert attrs["workflow.run_id"] == "run-x"
-        assert attrs["workflow.name"] == "wf"
-        assert attrs["agentloom.quality.score"] == 4.5
-        assert attrs["agentloom.quality.source"] == "human_feedback"
+        # Emitter invoked exactly once with the new annotation.
+        emitter.assert_called_once_with(annotation)
         # Annotation also recorded on the result for offline consumers.
         assert annotation in result.annotations
 
     def test_observer_exposes_tracing_via_public_property(self) -> None:
-        # The engine wires ``result.attach_tracing`` from
-        # ``observer.tracing`` (public) — not ``observer._tracing``
-        # (private). Guards against re-introducing the private access.
+        # The engine reads ``observer.tracing`` (public) — not
+        # ``observer._tracing`` (private). Guards against re-introducing
+        # the private access from the engine wiring.
         from unittest.mock import MagicMock
 
         from agentloom.observability.observer import WorkflowObserver

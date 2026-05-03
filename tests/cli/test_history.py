@@ -107,13 +107,15 @@ def test_history_filter_by_since_and_until_combined(tmp_path: Path) -> None:
         ["history", "--runs-dir", str(tmp_path), "--since", "2026-05-01", "--until", "2026-05-02"],
     )
     assert result.exit_code == 0
-    # b and c are inside the window; --until is inclusive of end-of-day
-    # via the day boundary at midnight UTC, so c (12:00 on 2026-05-02) is
-    # AFTER 2026-05-02T00:00:00Z and gets excluded — that's the same
-    # semantics typical of ``find -newermt`` / ``git log --until``.
+    # Closed-open window: ``--since 2026-05-01`` is inclusive of midnight
+    # UTC on 2026-05-01; ``--until 2026-05-02`` is exclusive of midnight
+    # UTC on 2026-05-02. So only ``b`` (12:00 on 2026-05-01) qualifies —
+    # ``a`` is before, ``c`` is on/after the upper bound, ``d`` is after.
+    # Same semantics as ``git log --until`` / ``find -newermt``.
     assert " b " in result.output
-    assert "a " not in result.output
-    assert "d " not in result.output
+    assert " a " not in result.output
+    assert " c " not in result.output
+    assert " d " not in result.output
 
 
 def test_history_filter_by_min_cost(tmp_path: Path) -> None:
@@ -214,6 +216,18 @@ def test_history_date_filter_excludes_record_with_unparseable_timestamp(
     assert result.exit_code == 0
     assert "good" in result.output
     assert "bad_ts" not in result.output
+
+
+def test_history_naive_timestamp_treated_as_utc(tmp_path: Path) -> None:
+    # Naive timestamps (no tz suffix) — possible from a record produced
+    # by an older writer or external tool — get treated as already-UTC.
+    # Documented behavior; covers the ``ts.tzinfo is None`` branch.
+    _write_record(
+        tmp_path, "naive", run_id="naive", workflow_name="x", timestamp="2026-05-02T10:00:00"
+    )
+    result = runner.invoke(app, ["history", "--runs-dir", str(tmp_path), "--since", "2026-05-01"])
+    assert result.exit_code == 0
+    assert "naive" in result.output
 
 
 def test_history_full_iso_timestamp_accepted(tmp_path: Path) -> None:
