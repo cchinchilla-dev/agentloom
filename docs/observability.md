@@ -272,6 +272,70 @@ Full prompt content is **not** captured by default — size and secrets concerns
 
 AgentLoom's internal provider names map to the canonical OTel registry values: `google` → `gcp.gemini`, others (`openai`, `anthropic`, `ollama`) match the registry as-is. Custom values (`ollama`, `mock`) ride the spec's "vendor extension" allowance. The bundled Grafana dashboard queries Prometheus metrics (not span attributes), so dashboard panels are unaffected by attribute renames.
 
+### Quality annotations
+
+Workflow spans capture latency, tokens, and cost — but not output *correctness*. The `WorkflowResult.annotate()` API attaches post-hoc quality scores so evaluators or human reviewers can correlate execution performance with output quality.
+
+```python
+result = await engine.run()
+result.annotate("answer", quality_score=4.5, source="human_feedback", rubric="helpfulness")
+```
+
+Each annotation produces a standalone `quality:<target>` OTel span carrying:
+
+| Attribute                          | Meaning                                                                |
+|------------------------------------|------------------------------------------------------------------------|
+| `workflow.run_id`                  | The original run id — group quality spans with the run by joining here |
+| `workflow.name`                    | Workflow name for filtering                                            |
+| `agentloom.quality.target`         | The annotation target (`"answer"`, `"step:review"`, ...)               |
+| `agentloom.quality.score`          | Numeric score                                                          |
+| `agentloom.quality.source`         | Producer (`"human_feedback"`, `"llm_judge"`, `"regex"`, ...)           |
+| `agentloom.quality.metadata.<key>` | Free-form metadata, flattened so each key is queryable in Jaeger       |
+
+The workflow span is already closed by the time `result.annotate()` runs, so retroactive attribute attachment isn't possible — standalone spans keyed by `workflow.run_id` are the workaround. The engine wires its tracing context onto the result before returning, so `result.annotate(...)` **auto-publishes the span** the moment it's called — no extra plumbing required to see the annotation in Jaeger. Offline / replay scenarios that construct a `WorkflowResult` without a tracer fall back to data-only annotations; `agentloom.observability.quality.emit_quality_annotations(result, tracing)` is available for batch evaluators that need to push annotations through a tracer assembled later.
+
+In Grafana / Jaeger, a query like `workflow.run_id="<id>" AND name=~"quality:.*"` lists every annotation attached to a run; `agentloom.quality.score < 3` surfaces low-quality outputs across runs to diagnose regressions.
+
+### Per-run history records
+
+The engine writes a JSON record to `./agentloom_runs/<run_id>.json` after every workflow execution (success or failure). Records are intentionally small and self-contained so post-hoc debugging never requires replaying the workflow:
+
+```json
+{
+  "_schema_version": 1,
+  "run_id": "abc123def456",
+  "timestamp": "2026-05-02T18:34:18+00:00",
+  "agentloom_version": "0.5.0",
+  "python_version": "3.12.13",
+  "platform": "macOS-14.5-arm64",
+  "workflow_name": "simple-qa",
+  "workflow_hash": "sha256:...",
+  "providers_used": ["openai/gpt-4o-mini"],
+  "status": "success",
+  "total_cost_usd": 0.012,
+  "total_tokens": 320,
+  "steps_executed": 5,
+  "duration_ms": 3200
+}
+```
+
+Override the directory via the `AGENTLOOM_RUNS_DIR` env var or the `runs_dir` argument on `RunHistoryWriter`. Disk I/O happens in a worker thread so the write doesn't block the event loop, and any failure (broken directory, permissions) is logged at debug and swallowed — history is best-effort, never load-bearing.
+
+Inspect records via the CLI:
+
+```bash
+agentloom history                                  # most recent 20 runs, table format
+agentloom history --workflow simple-qa             # filter by workflow
+agentloom history --provider openai                # filter by provider prefix
+agentloom history --since 2026-05-01               # date filter (UTC midnight anchor)
+agentloom history --since 2026-05-01 --until 2026-05-02   # date range
+agentloom history --min-cost 0.10                  # cost filters
+agentloom history --max-cost 1.00
+agentloom history --json                           # machine-readable
+```
+
+`--since` / `--until` accept `YYYY-MM-DD` (anchored at UTC midnight) or full ISO 8601. `--min-cost` / `--max-cost` operate on `total_cost_usd`. Filters compose, so `--workflow simple-qa --since 2026-05-01 --max-cost 0.10` lists every cheap run of `simple-qa` since May 1st. The table columns (`TIMESTAMP`, `RUN ID`, `WORKFLOW`, `STATUS`, `COST USD`, `DUR MS`) are stable — downstream `grep` / `awk` scripts can rely on the layout. `agentloom history` is distinct from `agentloom runs`: `runs` lists checkpointed-resumable executions from the configured checkpointer, while `history` lists every execution regardless of checkpointing.
+
 ---
 
 ## Troubleshooting
