@@ -114,6 +114,22 @@ class WorkflowEngine:
             if set_obs:
                 set_obs(observer)
 
+    async def _write_run_history(self, result: WorkflowResult) -> None:
+        """Persist a per-run JSON record.
+
+        Silent on failure so a broken history directory cannot prevent a
+        workflow from returning its result to the caller.
+        """
+        # Lazy import to keep the engine's import graph minimal and avoid
+        # paying the cost for callers that never look at run history.
+        from agentloom.history.writer import RunHistoryWriter
+
+        try:
+            writer = RunHistoryWriter()
+            await writer.record(result, self.workflow, run_id=self.run_id)
+        except Exception:
+            logger.debug("Run history write skipped", exc_info=True)
+
     async def _save_checkpoint(
         self,
         status: str,
@@ -361,6 +377,7 @@ class WorkflowEngine:
             )
 
             await self._save_checkpoint(status.value)
+            await self._write_run_history(result)
 
             if self.observer:
                 self.observer.on_workflow_end(
