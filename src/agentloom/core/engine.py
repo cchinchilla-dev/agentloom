@@ -374,7 +374,18 @@ class WorkflowEngine:
                 total_tokens=total_tokens,
                 total_cost_usd=total_cost,
                 error=failed_steps[0].error if failed_steps else None,
+                run_id=self.run_id,
             )
+            # Wire the live tracing manager onto the result so subsequent
+            # ``result.annotate(...)`` calls auto-emit quality spans (issue
+            # #59). When observability is disabled the attribute stays
+            # ``None`` and ``annotate()`` degrades to data-only. The
+            # ``tracing`` property keeps observers free to expose their
+            # own state shape; we don't reach into ``_tracing`` directly.
+            tracing_ctx = (
+                getattr(self.observer, "tracing", None) if self.observer is not None else None
+            )
+            result.attach_tracing(tracing_ctx)
 
             await self._save_checkpoint(status.value)
             await self._write_run_history(result)

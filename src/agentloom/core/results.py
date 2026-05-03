@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class StepStatus(StrEnum):
@@ -94,6 +94,25 @@ class WorkflowStatus(StrEnum):
     PAUSED = "paused"
 
 
+class QualityAnnotation(BaseModel):
+    """Post-hoc quality metadata attached to a :class:`WorkflowResult`.
+
+    Produced by evaluators, human reviewers, or downstream scoring code
+    *after* the run completes. Emitted to OTel as a standalone
+    ``quality:<target>`` span that carries ``workflow.run_id`` so trace
+    consumers can correlate annotations back to the original run.
+
+    ``target`` is a free-form label (e.g. ``"answer"``, ``"summary"``,
+    ``"step:review"``); ``source`` identifies who produced the score
+    (``"human_feedback"``, ``"llm_judge"``, ``"regex"``).
+    """
+
+    target: str
+    quality_score: float
+    source: str = "unknown"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class WorkflowResult(BaseModel):
     """Result from executing a complete workflow."""
 
@@ -105,3 +124,64 @@ class WorkflowResult(BaseModel):
     total_tokens: int = 0
     total_cost_usd: float = 0.0
     error: str | None = None
+    run_id: str = ""
+    annotations: list[QualityAnnotation] = Field(default_factory=list)
+
+    # Live tracing context attached by the engine before the result is
+    # returned to the caller. Excluded from serialization (PrivateAttr) so
+    # ``model_dump()`` / JSON output stays a pure data snapshot. When set,
+    # ``annotate()`` auto-emits the annotation as an OTel span so the issue
+    # #59 contract — "metadata exported as OTel span attributes, visible in
+    # Jaeger" — holds with no extra plumbing on the caller side.
+    _tracing: Any = PrivateAttr(default=None)
+
+    def attach_tracing(self, tracing: Any) -> None:
+        """Wire a live tracing manager onto this result.
+
+        Called by :class:`WorkflowEngine` after the result is built so
+        subsequent :meth:`annotate` calls can publish quality spans
+        without the caller threading the tracer through manually. ``None``
+        is accepted and disables auto-emission (offline / replay paths).
+        """
+        self._tracing = tracing
+
+    def annotate(
+        self,
+        target: str,
+        *,
+        quality_score: float,
+        source: str = "unknown",
+        **metadata: Any,
+    ) -> QualityAnnotation:
+        """Attach a quality annotation to this result.
+
+        The annotation is always appended to :attr:`annotations`. When the
+        engine has wired a live tracing context via :meth:`attach_tracing`
+        (the default for any workflow run with observability enabled),
+        the annotation is also emitted immediately as a standalone
+        ``quality:<target>`` OTel span carrying ``workflow.run_id`` so
+        downstream consumers see it in Jaeger without additional code.
+        Offline / replay scenarios where no tracer is wired keep working —
+        the annotation is still recorded on the result, the OTel emission
+        is just a no-op.
+        """
+        annotation = QualityAnnotation(
+            target=target,
+            quality_score=quality_score,
+            source=source,
+            metadata=metadata,
+        )
+        self.annotations.append(annotation)
+        if self._tracing is not None:
+            # Lazy import to keep the core results module free of an
+            # observability dependency at import time — observability is
+            # an optional extra and core must stay importable without it.
+            from agentloom.observability.quality import emit_quality_annotation
+
+            emit_quality_annotation(
+                annotation,
+                self._tracing,
+                run_id=self.run_id,
+                workflow_name=self.workflow_name,
+            )
+        return annotation
