@@ -183,3 +183,92 @@ class TestLoadRecords:
         records = load_records(tmp_path)
         # Corrupt file silently skipped; valid one loaded.
         assert [r["run_id"] for r in records] == ["good"]
+
+    async def test_skips_non_dict_top_level(self, tmp_path: Path) -> None:
+        # ``load_records`` only yields dict records — a JSON top-level list
+        # or string is treated as malformed and silently dropped so a
+        # hand-crafted file in the runs dir can't break the CLI listing.
+        (tmp_path / "list.json").write_text(json.dumps(["not", "a", "record"]))
+        records = load_records(tmp_path)
+        assert records == []
+
+    async def test_falls_back_to_mtime_when_timestamp_missing(self, tmp_path: Path) -> None:
+        # No ``timestamp`` field → ordering uses the file's mtime so the
+        # CLI listing stays usable even on records authored by external
+        # tools that didn't follow the schema.
+        (tmp_path / "no-ts.json").write_text(json.dumps({"run_id": "no-ts"}))
+        records = load_records(tmp_path)
+        assert records[0]["run_id"] == "no-ts"
+
+    async def test_falls_back_to_mtime_on_bad_timestamp(self, tmp_path: Path) -> None:
+        # Unparseable timestamp shouldn't raise — fall back to mtime.
+        (tmp_path / "bad-ts.json").write_text(
+            json.dumps({"run_id": "bad-ts", "timestamp": "not-a-date"})
+        )
+        records = load_records(tmp_path)
+        assert records[0]["run_id"] == "bad-ts"
+
+
+class TestAgentLoomVersionResolution:
+    def test_returns_unknown_when_distribution_not_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # In-repo runs (or vendored installs) where the package metadata
+        # isn't registered must still produce a record — version field
+        # falls back to ``"unknown"`` rather than raising.
+        from importlib.metadata import PackageNotFoundError
+
+        from agentloom.history import writer as writer_mod
+
+        def _raise(_: str) -> str:
+            raise PackageNotFoundError("agentloom")
+
+        monkeypatch.setattr(writer_mod, "_pkg_version", _raise)
+        assert writer_mod._agentloom_version() == "unknown"
+
+    def test_returns_unknown_when_importlib_metadata_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Defensive against the documented ImportError fallback at the top
+        # of writer.py — exercised by setting ``_pkg_version`` to ``None``.
+        from agentloom.history import writer as writer_mod
+
+        monkeypatch.setattr(writer_mod, "_pkg_version", None)
+        assert writer_mod._agentloom_version() == "unknown"
+
+
+class TestPermissionErrorPath:
+    async def test_record_returns_none_on_readonly_filesystem(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Containers / CI sometimes mount the workdir read-only; the
+        # writer must downgrade ``PermissionError`` to a debug log + None
+        # so workflow execution is unaffected by an unwritable history dir.
+        writer = RunHistoryWriter(runs_dir=tmp_path)
+
+        async def _fake_run_sync(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise PermissionError("read-only fs")
+
+        monkeypatch.setattr("anyio.to_thread.run_sync", _fake_run_sync)
+        wf = _make_workflow()
+        result = await writer.record(_make_result(wf), wf, run_id="r")
+        assert result is None
+
+    async def test_record_returns_none_on_generic_exception(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The catch-all ``except Exception`` branch must also downgrade to
+        # a warning + None — a corrupted disk, an interrupted system call,
+        # an unexpected backend bug should never propagate up and break
+        # the workflow result handoff. Regression for the observed gap
+        # where the previous "fake_run_sync swallows fn()" test silently
+        # short-circuited before reaching the exception path.
+        writer = RunHistoryWriter(runs_dir=tmp_path)
+
+        async def _fake_run_sync(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise OSError("disk full")  # noqa: TRY003 — synthetic test failure
+
+        monkeypatch.setattr("anyio.to_thread.run_sync", _fake_run_sync)
+        wf = _make_workflow()
+        result = await writer.record(_make_result(wf), wf, run_id="r")
+        assert result is None

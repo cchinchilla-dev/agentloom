@@ -181,6 +181,73 @@ def test_history_no_records_message(tmp_path: Path) -> None:
     assert "No run records found" in result.output
 
 
+def test_history_date_filter_excludes_record_without_timestamp(tmp_path: Path) -> None:
+    # A record that lacks a parseable ``timestamp`` cannot satisfy a date
+    # predicate — it must be excluded when ``--since`` / ``--until`` is set
+    # (rather than being silently included as if it matched).
+    _write_record(tmp_path, "no_ts", run_id="no_ts", workflow_name="x")  # no timestamp
+    _write_record(
+        tmp_path,
+        "good",
+        run_id="good",
+        workflow_name="x",
+        timestamp="2026-05-02T10:00:00+00:00",
+    )
+    result = runner.invoke(app, ["history", "--runs-dir", str(tmp_path), "--since", "2026-05-01"])
+    assert result.exit_code == 0
+    assert "good" in result.output
+    assert "no_ts" not in result.output
+
+
+def test_history_date_filter_excludes_record_with_unparseable_timestamp(
+    tmp_path: Path,
+) -> None:
+    _write_record(tmp_path, "bad_ts", run_id="bad_ts", workflow_name="x", timestamp="garbage")
+    _write_record(
+        tmp_path,
+        "good",
+        run_id="good",
+        workflow_name="x",
+        timestamp="2026-05-02T10:00:00+00:00",
+    )
+    result = runner.invoke(app, ["history", "--runs-dir", str(tmp_path), "--since", "2026-05-01"])
+    assert result.exit_code == 0
+    assert "good" in result.output
+    assert "bad_ts" not in result.output
+
+
+def test_history_full_iso_timestamp_accepted(tmp_path: Path) -> None:
+    # ``--since`` accepts full ISO 8601, not only ``YYYY-MM-DD``. Cover
+    # the non-date-only branch in ``_parse_date``.
+    _write_record(
+        tmp_path,
+        "early",
+        run_id="early",
+        workflow_name="x",
+        timestamp="2026-05-01T10:00:00+00:00",
+    )
+    _write_record(
+        tmp_path,
+        "late",
+        run_id="late",
+        workflow_name="x",
+        timestamp="2026-05-01T15:00:00+00:00",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "history",
+            "--runs-dir",
+            str(tmp_path),
+            "--since",
+            "2026-05-01T12:00:00+00:00",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "late" in result.output
+    assert "early" not in result.output
+
+
 def test_history_json_output_filtered(tmp_path: Path) -> None:
     _write_record(
         tmp_path,

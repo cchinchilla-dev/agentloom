@@ -93,6 +93,20 @@ class TestEmitQualityAnnotation:
         emit_quality_annotation(annotation, None, run_id="r", workflow_name="w")
         emit_quality_annotation(annotation, 0, run_id="r", workflow_name="w")
 
+    def test_emit_falls_back_to_span_end_when_tracing_lacks_end_span(self) -> None:
+        # Defensive duck-typed branch: callers can pass a tracer-like
+        # object that exposes ``start_span`` but not ``end_span``; the
+        # emitter must close the span via ``span.end()`` rather than leak.
+        from unittest.mock import MagicMock
+
+        span = MagicMock()
+        tracing = MagicMock(spec=["start_span"])
+        tracing.start_span.return_value = span
+        annotation = QualityAnnotation(target="x", quality_score=1.0)
+
+        emit_quality_annotation(annotation, tracing, run_id="r", workflow_name="w")
+        span.end.assert_called_once()
+
     def test_emit_all_iterates(self) -> None:
         tracing = MagicMock()
         tracing.start_span.return_value = MagicMock()

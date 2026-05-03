@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
+
+if TYPE_CHECKING:
+    import pytest
 
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import (
@@ -427,6 +430,35 @@ class TestObserverIntegration:
         observer.on_workflow_end.assert_called_once()
         # Token events also fired (provider-level spans use start/end pair).
         observer.on_tokens.assert_called_once()
+
+    async def test_run_history_failure_does_not_break_workflow(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The history writer is best-effort: if it raises (broken disk,
+        # import error, anything), the workflow must still return its
+        # result to the caller. Engine swallows + debug-logs the error.
+        from agentloom.history import writer as writer_mod
+
+        class _Boom:
+            def __init__(self, *a: object, **kw: object) -> None:
+                pass
+
+            async def record(self, *a: object, **kw: object) -> None:
+                raise RuntimeError("history backend exploded")
+
+        monkeypatch.setattr(writer_mod, "RunHistoryWriter", _Boom)
+
+        gw = ProviderGateway()
+        gw.register(MockProvider(), models=["mock-model"])
+        wf = WorkflowDefinition(
+            name="history-fail",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            steps=[StepDefinition(id="s", type=StepType.LLM_CALL, prompt="hi", output="out")],
+        )
+        engine = WorkflowEngine(workflow=wf, provider_gateway=gw)
+        result = await engine.run()
+        # Workflow ran cleanly even though history write blew up.
+        assert result.status == WorkflowStatus.SUCCESS
 
     async def test_observer_on_failure(self) -> None:
         gw = ProviderGateway()
