@@ -32,6 +32,7 @@ class SpanName:
     WORKFLOW = "workflow:{workflow_name}"
     STEP = "step:{step_id}"
     AGENT = "agent:{agent_name}"
+    QUALITY = "quality:{target}"
 
     # GenAI inference / tool spans follow the canonical OTel template
     # ``{gen_ai.operation.name} {model}`` so Jaeger / Grafana GenAI dashboards
@@ -140,6 +141,12 @@ class SpanAttr:
     # Quality annotations (see issue #59)
     QUALITY_SCORE = "agentloom.quality.score"
     QUALITY_SOURCE = "agentloom.quality.source"
+    QUALITY_TARGET = "agentloom.quality.target"
+    # Prefix for arbitrary quality.metadata.* attributes — annotations carry
+    # free-form metadata that we flatten under this namespace so each key
+    # becomes a first-class span attribute (queryable in Jaeger without
+    # JSON parsing).
+    QUALITY_METADATA_PREFIX = "agentloom.quality.metadata."
 
 
 class MetricName:

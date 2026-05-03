@@ -114,6 +114,70 @@ class WorkflowEngine:
             if set_obs:
                 set_obs(observer)
 
+    async def _write_run_history(self, result: WorkflowResult) -> None:
+        """Persist a per-run JSON record.
+
+        Silent on failure so a broken history directory cannot prevent a
+        workflow from returning its result to the caller.
+        """
+        # Lazy import to keep the engine's import graph minimal and avoid
+        # paying the cost for callers that never look at run history.
+        from agentloom.history.writer import RunHistoryWriter
+
+        try:
+            writer = RunHistoryWriter()
+            await writer.record(result, self.workflow, run_id=self.run_id)
+        except Exception:
+            logger.debug("Run history write skipped", exc_info=True)
+
+    def _attach_quality_emitter(self, result: WorkflowResult, workflow_name: str) -> None:
+        """Wire a quality-span emitter onto *result* if a tracer is available.
+
+        Builds a closure capturing the live tracing manager + run_id +
+        workflow name so subsequent ``result.annotate(...)`` calls publish
+        a ``quality:<target>`` OTel span without the caller threading any
+        infrastructure through. Keeps ``core/results.py`` free of any
+        ``observability/`` import (per ``CLAUDE.md`` layering rule) — the
+        engine is the only module that knits the two together.
+        """
+        if self.observer is None:
+            return
+        tracing_ctx = getattr(self.observer, "tracing", None)
+        if tracing_ctx is None:
+            return
+        # Lazy import: ``agentloom.observability.quality`` carries no
+        # opentelemetry dependency itself (only schema constants), so the
+        # import is always safe; deferring it keeps the engine import
+        # graph minimal for callers that never annotate.
+        from agentloom.observability.quality import emit_quality_annotation
+
+        def _emitter(annotation: Any) -> None:
+            emit_quality_annotation(
+                annotation,
+                tracing_ctx,
+                run_id=self.run_id,
+                workflow_name=workflow_name,
+            )
+
+        result.attach_quality_emitter(_emitter)
+
+    async def _finalize_result(self, result: WorkflowResult, workflow_name: str) -> None:
+        """Common post-construction wiring for every terminal ``WorkflowResult``.
+
+        Centralises three concerns that previously only ran on the success
+        path:
+          * stamp ``run_id`` so trace-correlation works across all outcomes
+            (failure / budget_exceeded / paused traces are otherwise
+            orphaned)
+          * attach the quality-span emitter so ``result.annotate(...)``
+            keeps working on non-success terminations too
+          * write the per-run history record so ``agentloom history``
+            shows every execution, not only successful ones
+        """
+        result.run_id = self.run_id
+        self._attach_quality_emitter(result, workflow_name)
+        await self._write_run_history(result)
+
     async def _save_checkpoint(
         self,
         status: str,
@@ -359,8 +423,8 @@ class WorkflowEngine:
                 total_cost_usd=total_cost,
                 error=failed_steps[0].error if failed_steps else None,
             )
-
             await self._save_checkpoint(status.value)
+            await self._finalize_result(result, workflow_name)
 
             if self.observer:
                 self.observer.on_workflow_end(
@@ -394,7 +458,7 @@ class WorkflowEngine:
                         0,
                         self._budget_spent,
                     )
-                return WorkflowResult(
+                result = WorkflowResult(
                     workflow_name=workflow_name,
                     status=WorkflowStatus.BUDGET_EXCEEDED,
                     step_results=await self.state.all_step_results(),
@@ -403,6 +467,8 @@ class WorkflowEngine:
                     total_cost_usd=self._budget_spent,
                     error=str(budget_err),
                 )
+                await self._finalize_result(result, workflow_name)
+                return result
 
             # Check for PauseRequestedError wrapped in ExceptionGroup
             # (anyio task groups always wrap step exceptions).
@@ -424,7 +490,7 @@ class WorkflowEngine:
                     workflow_name,
                     pause_err.step_id,
                 )
-                return WorkflowResult(
+                result = WorkflowResult(
                     workflow_name=workflow_name,
                     status=WorkflowStatus.PAUSED,
                     step_results=step_results,
@@ -434,6 +500,8 @@ class WorkflowEngine:
                     total_cost_usd=sum(r.cost_usd for r in step_results.values()),
                     error=str(pause_err),
                 )
+                await self._finalize_result(result, workflow_name)
+                return result
 
             await self._save_checkpoint("failed")
             if self.observer:
@@ -441,7 +509,7 @@ class WorkflowEngine:
                     workflow_name, "failed", duration, 0, self._budget_spent
                 )
             logger.error("Workflow '%s' failed: %s", workflow_name, e)
-            return WorkflowResult(
+            result = WorkflowResult(
                 workflow_name=workflow_name,
                 status=WorkflowStatus.FAILED,
                 step_results=await self.state.all_step_results(),
@@ -449,6 +517,8 @@ class WorkflowEngine:
                 total_duration_ms=duration,
                 error=str(e),
             )
+            await self._finalize_result(result, workflow_name)
+            return result
 
     async def _execute_step_with_limit(self, step_id: str, limiter: anyio.CapacityLimiter) -> None:
         """Execute a step with concurrency limiting."""

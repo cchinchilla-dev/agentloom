@@ -83,6 +83,8 @@ Returned by `engine.run()` after workflow execution completes:
 | `total_tokens` | `int` | Sum of all tokens consumed |
 | `total_cost_usd` | `float` | Estimated total cost |
 | `error` | `str | None` | First failure message, if any |
+| `run_id` | `str` | Per-execution UUID (always set; propagated to spans / history records) |
+| `annotations` | `list[QualityAnnotation]` | Post-hoc quality scores attached via `result.annotate(...)` (#59) |
 
 ### StepResult
 

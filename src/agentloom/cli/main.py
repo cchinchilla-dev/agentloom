@@ -11,6 +11,7 @@ app = typer.Typer(
 )
 
 from agentloom.cli.callback_server import callback_server  # noqa: E402
+from agentloom.cli.history import history  # noqa: E402
 from agentloom.cli.info import info  # noqa: E402
 from agentloom.cli.replay import replay  # noqa: E402
 from agentloom.cli.resume import resume  # noqa: E402
@@ -23,6 +24,7 @@ app.command("run")(run)
 app.command("replay")(replay)
 app.command("resume")(resume)
 app.command("runs")(runs)
+app.command("history")(history)
 app.command("validate")(validate)
 app.command("visualize")(visualize)
 app.command("info")(info)

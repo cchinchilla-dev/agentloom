@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
+
+if TYPE_CHECKING:
+    import pytest
 
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import (
@@ -427,6 +430,88 @@ class TestObserverIntegration:
         observer.on_workflow_end.assert_called_once()
         # Token events also fired (provider-level spans use start/end pair).
         observer.on_tokens.assert_called_once()
+
+    async def test_run_id_populated_on_failure_path(self) -> None:
+        # Regression for the gap where ``run_id`` was only stamped on the
+        # success path. Trace correlation + history listing require it on
+        # every termination, including failures.
+        gw = ProviderGateway()
+        gw.register(FailingProvider(), models=["mock-model"])
+        wf = WorkflowDefinition(
+            name="failing-wf",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            steps=[StepDefinition(id="s", type=StepType.LLM_CALL, prompt="hi")],
+        )
+        engine = WorkflowEngine(workflow=wf, provider_gateway=gw)
+        result = await engine.run()
+        assert result.status == WorkflowStatus.FAILED
+        assert result.run_id == engine.run_id, (
+            "run_id must be populated on failure for trace correlation"
+        )
+
+    async def test_run_history_written_on_failure_path(self, tmp_path) -> None:
+        # ``agentloom history`` should list failed runs alongside
+        # successful ones — otherwise debugging a production incident
+        # via the CLI is impossible. Regression for the prior behavior
+        # where only the success path called the writer.
+        from pathlib import Path as _Path
+
+        gw = ProviderGateway()
+        gw.register(FailingProvider(), models=["mock-model"])
+        wf = WorkflowDefinition(
+            name="hist-fail",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            steps=[StepDefinition(id="s", type=StepType.LLM_CALL, prompt="hi")],
+        )
+
+        import os
+
+        runs_dir = tmp_path / "runs"
+        os.environ["AGENTLOOM_RUNS_DIR"] = str(runs_dir)
+        try:
+            engine = WorkflowEngine(workflow=wf, provider_gateway=gw)
+            result = await engine.run()
+        finally:
+            del os.environ["AGENTLOOM_RUNS_DIR"]
+
+        assert result.status == WorkflowStatus.FAILED
+        files = list(_Path(runs_dir).glob("*.json"))
+        assert len(files) == 1, f"expected 1 history record, got {files}"
+        import json as _json
+
+        record = _json.loads(files[0].read_text())
+        assert record["status"] == "failed"
+        assert record["error"]
+        assert record["run_id"] == result.run_id
+
+    async def test_run_history_failure_does_not_break_workflow(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The history writer is best-effort: if it raises (broken disk,
+        # import error, anything), the workflow must still return its
+        # result to the caller. Engine swallows + debug-logs the error.
+        from agentloom.history import writer as writer_mod
+
+        class _Boom:
+            def __init__(self, *a: object, **kw: object) -> None:
+                pass
+
+            async def record(self, *a: object, **kw: object) -> None:
+                raise RuntimeError("history backend exploded")
+
+        monkeypatch.setattr(writer_mod, "RunHistoryWriter", _Boom)
+
+        gw = ProviderGateway()
+        gw.register(MockProvider(), models=["mock-model"])
+        wf = WorkflowDefinition(
+            name="history-fail",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            steps=[StepDefinition(id="s", type=StepType.LLM_CALL, prompt="hi", output="out")],
+        )
+        engine = WorkflowEngine(workflow=wf, provider_gateway=gw)
+        result = await engine.run()
+        # Workflow ran cleanly even though history write blew up.
+        assert result.status == WorkflowStatus.SUCCESS
 
     async def test_observer_on_failure(self) -> None:
         gw = ProviderGateway()

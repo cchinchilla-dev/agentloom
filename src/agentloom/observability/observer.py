@@ -45,6 +45,16 @@ class WorkflowObserver:
         self._run_id: str = ""
         self._workflow_name: str = ""
 
+    @property
+    def tracing(self) -> Any | None:
+        """Public read-only handle to the underlying tracing manager.
+
+        Used by the engine to wire ``WorkflowResult.attach_tracing`` so
+        ``result.annotate(...)`` can auto-emit quality spans (#59) without
+        reaching into private observer state.
+        """
+        return self._tracing
+
     def on_workflow_start(self, workflow_name: str, *, run_id: str = "", **kwargs: Any) -> None:
         self._run_id = run_id
         self._workflow_name = workflow_name

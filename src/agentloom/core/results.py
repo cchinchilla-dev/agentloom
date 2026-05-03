@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class StepStatus(StrEnum):
@@ -94,6 +94,25 @@ class WorkflowStatus(StrEnum):
     PAUSED = "paused"
 
 
+class QualityAnnotation(BaseModel):
+    """Post-hoc quality metadata attached to a :class:`WorkflowResult`.
+
+    Produced by evaluators, human reviewers, or downstream scoring code
+    *after* the run completes. Emitted to OTel as a standalone
+    ``quality:<target>`` span that carries ``workflow.run_id`` so trace
+    consumers can correlate annotations back to the original run.
+
+    ``target`` is a free-form label (e.g. ``"answer"``, ``"summary"``,
+    ``"step:review"``); ``source`` identifies who produced the score
+    (``"human_feedback"``, ``"llm_judge"``, ``"regex"``).
+    """
+
+    target: str
+    quality_score: float
+    source: str = "unknown"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class WorkflowResult(BaseModel):
     """Result from executing a complete workflow."""
 
@@ -105,3 +124,58 @@ class WorkflowResult(BaseModel):
     total_tokens: int = 0
     total_cost_usd: float = 0.0
     error: str | None = None
+    run_id: str = ""
+    annotations: list[QualityAnnotation] = Field(default_factory=list)
+
+    # Optional callable wired by the engine before the result is returned
+    # to the caller. Signature: ``Callable[[QualityAnnotation], None]``.
+    # ``PrivateAttr`` excludes it from serialization so ``model_dump()`` /
+    # JSON output stays a pure data snapshot, and the indirection keeps
+    # ``core/results.py`` free of any ``observability/`` import (per the
+    # ``CLAUDE.md`` layering rule — "core code never imports from
+    # observability/ directly"). When set, ``annotate()`` invokes the
+    # emitter so the issue #59 contract — "metadata exported as OTel span
+    # attributes, visible in Jaeger" — holds without the caller threading
+    # any infrastructure through.
+    _emit_quality: Any = PrivateAttr(default=None)
+
+    def attach_quality_emitter(self, emitter: Any) -> None:
+        """Wire a callback that publishes :class:`QualityAnnotation` spans.
+
+        The engine builds and attaches the closure (capturing the live
+        tracing manager + run_id + workflow name) so this module never
+        imports from ``agentloom.observability`` directly. ``None`` is
+        accepted and disables auto-emission for offline / replay paths.
+        """
+        self._emit_quality = emitter
+
+    def annotate(
+        self,
+        target: str,
+        *,
+        quality_score: float,
+        source: str = "unknown",
+        **metadata: Any,
+    ) -> QualityAnnotation:
+        """Attach a quality annotation to this result.
+
+        The annotation is always appended to :attr:`annotations`. When the
+        engine has wired a quality-span emitter via
+        :meth:`attach_quality_emitter` (the default for any workflow run
+        with observability enabled), the annotation is also published
+        immediately as a standalone ``quality:<target>`` OTel span carrying
+        ``workflow.run_id`` so downstream consumers see it in Jaeger
+        without additional code. Offline / replay scenarios where no
+        emitter is wired keep working — the annotation is recorded on the
+        result, and the OTel emission is simply a no-op.
+        """
+        annotation = QualityAnnotation(
+            target=target,
+            quality_score=quality_score,
+            source=source,
+            metadata=metadata,
+        )
+        self.annotations.append(annotation)
+        if self._emit_quality is not None:
+            self._emit_quality(annotation)
+        return annotation
