@@ -109,7 +109,12 @@ class MockProvider(BaseProvider):
         self._observer = observer
         self._workflow_name = workflow_name
         self.calls: list[dict[str, Any]] = []
-        self._responses: dict[str, dict[str, Any]] = {}
+        # Each value is either a single response dict OR a list of turns
+        # to play in order (for tool-calling loops where one step issues
+        # multiple complete() calls). The cursor below tracks which turn
+        # the next call should emit per step_id.
+        self._responses: dict[str, Any] = {}
+        self._turn_cursor: dict[str, int] = {}
         if self.responses_file and self.responses_file.exists():
             raw = json.loads(self.responses_file.read_text())
             if not isinstance(raw, dict):
@@ -126,7 +131,18 @@ class MockProvider(BaseProvider):
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if step_id and step_id in self._responses:
-            return self._responses[step_id]
+            entry = self._responses[step_id]
+            # List form: pop the next turn (clamp at last so excess
+            # iterations replay the final response — saner than
+            # raising mid-loop).
+            if isinstance(entry, list):
+                if not entry:
+                    return None
+                idx = self._turn_cursor.get(step_id, 0)
+                turn = entry[min(idx, len(entry) - 1)]
+                self._turn_cursor[step_id] = idx + 1
+                return turn if isinstance(turn, dict) else None
+            return entry if isinstance(entry, dict) else None
         key = prompt_hash(messages, model, temperature, max_tokens, extra)
         return self._responses.get(key)
 
@@ -185,10 +201,28 @@ class MockProvider(BaseProvider):
             )
 
         usage_data = entry.get("usage", {}) or {}
+        # Tool calls (#116): hydrate ``tool_calls`` from the recording so
+        # replay drives the LLM step's tool-iteration loop. Each turn in
+        # a list-shaped recording can carry its own ``tool_calls`` block.
+        tool_calls: list[Any] = []
+        recorded_tool_calls = entry.get("tool_calls") or []
+        if recorded_tool_calls:
+            from agentloom.providers.base import ToolCall
+
+            for tc in recorded_tool_calls:
+                tool_calls.append(
+                    ToolCall(
+                        id=str(tc.get("id", "")),
+                        name=str(tc.get("name", "")),
+                        arguments=tc.get("arguments", {}) or {},
+                    )
+                )
+
+
         return ProviderResponse(
             content=str(entry.get("content", "")),
             model=str(entry.get("model", model)),
-            provider=self.name,
+            provider=str(entry.get("provider", self.name)),
             usage=TokenUsage(
                 prompt_tokens=int(usage_data.get("prompt_tokens", 0)),
                 completion_tokens=int(usage_data.get("completion_tokens", 0)),
@@ -196,6 +230,7 @@ class MockProvider(BaseProvider):
             ),
             cost_usd=float(entry.get("cost_usd", 0.0)),
             finish_reason=entry.get("finish_reason", "stop"),
+            tool_calls=tool_calls,
         )
 
     def supports_model(self, model: str) -> bool:
