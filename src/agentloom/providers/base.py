@@ -12,6 +12,21 @@ from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
 
 
+class ToolCall(BaseModel):
+    """A function-call decision returned by the model (#116).
+
+    ``id`` is provider-assigned and must round-trip back as
+    ``tool_call_id`` (OpenAI) or ``tool_use_id`` (Anthropic) on the
+    follow-up message that supplies the result. ``arguments`` is the
+    parsed JSON object — adapters do the JSON decode before constructing
+    this so the LLM step sees a usable dict rather than a string.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 class ProviderResponse(BaseModel):
     """Unified response from any LLM provider."""
 
@@ -30,6 +45,11 @@ class ProviderResponse(BaseModel):
     # Ollama returns ``message.thinking`` (or strips inline
     # ``<think>...</think>`` tags as a fallback).
     reasoning_content: str | None = None
+    # Tool calls (#116): empty list when the model didn't pick a tool.
+    # When non-empty, ``content`` may be empty (the model committed to a
+    # function call instead of text) — the LLM step dispatches each call
+    # via the tool registry and re-prompts with the results.
+    tool_calls: list[ToolCall] = Field(default_factory=list)
 
 
 class StreamResponse:

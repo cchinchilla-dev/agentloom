@@ -154,8 +154,23 @@ class OllamaProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
+        agentloom_tools = kwargs.pop("agentloom_tools", None)
+        agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         extras = validate_extra_kwargs("ollama", "complete", kwargs, _OLLAMA_EXTRA_PAYLOAD_KEYS)
         think_param, capture_reasoning = _pop_thinking_config(extras)
+        if agentloom_tools:
+            from agentloom.steps._tools import translate_tools_for_ollama
+
+            extras["tools"] = translate_tools_for_ollama(agentloom_tools)
+            # Ollama doesn't expose tool_choice; only model-side support
+            # decides whether the call is honored. Surface the silent drop
+            # via debug log so users debugging "why doesn't my tool fire"
+            # have a hint.
+            if agentloom_tool_choice not in (None, "auto"):
+                logger.debug(
+                    "Ollama ignores tool_choice=%r; only model-side support matters.",
+                    agentloom_tool_choice,
+                )
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
@@ -206,6 +221,11 @@ class OllamaProvider(BaseProvider):
             total_tokens=prompt_tokens + completion_tokens,
         )
 
+        from agentloom.steps._tools import parse_tool_calls_from_openai
+
+        tool_calls = parse_tool_calls_from_openai(data.get("message", {}) or {})
+
+
         return ProviderResponse(
             content=content,
             model=data.get("model", model),
@@ -215,6 +235,7 @@ class OllamaProvider(BaseProvider):
             reasoning_content=reasoning_content,
             raw_response=data,
             finish_reason=data.get("done_reason"),
+            tool_calls=tool_calls,
         )
 
     async def stream(

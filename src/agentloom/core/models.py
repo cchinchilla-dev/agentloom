@@ -108,6 +108,24 @@ class ThinkingConfig(BaseModel):
     capture_reasoning: bool = True
 
 
+class ToolDefinition(BaseModel):
+    """LLM-callable tool declaration on an ``llm_call`` step (#116).
+
+    ``parameters`` is a JSON Schema object describing the function's
+    arguments. The provider adapters translate this declaration into the
+    wire format their API expects (OpenAI/Ollama use it as-is, Anthropic
+    nests it under ``input_schema``, Google nests it under
+    ``function_declarations``). Tool dispatch resolves ``name`` against
+    the workflow's ``tool_registry`` so a built-in or user-registered
+    tool runs the call.
+    """
+
+    name: str
+    description: str = ""
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+
 class StepDefinition(BaseModel):
     """Definition of a single workflow step."""
 
@@ -154,6 +172,15 @@ class StepDefinition(BaseModel):
 
     # Reasoning / extended thinking
     thinking: ThinkingConfig | None = None
+
+    # Tool calling (#116) — LLM picks tools at runtime
+    tools: list[ToolDefinition] = Field(default_factory=list)
+    # ``tool_choice``: "auto" | "required" | "none" | {"name": "..."}.
+    # Auto lets the model decide; required forces a tool call; none
+    # disables tools for this turn (useful for tool-augmented chats that
+    # want a final summary without further calls).
+    tool_choice: Any = "auto"
+    max_tool_iterations: int = 5
 
 
 class SandboxConfig(BaseModel):
