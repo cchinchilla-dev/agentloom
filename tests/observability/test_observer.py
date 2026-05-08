@@ -260,6 +260,56 @@ class TestProviderErrorCleanup:
         span.end.assert_called_once()
 
 
+class TestToolCallObservability:
+    """``on_tool_call`` records the per-tool counter / histogram via the
+    metrics manager and emits an ``execute_tool {name}`` child span carrying
+    the tool name, args/result hashes, duration, and success flag."""
+
+    def test_records_metric_and_emits_span(self) -> None:
+        tracing = MagicMock()
+        metrics = MagicMock()
+        observer = WorkflowObserver(tracing=tracing, metrics=metrics)
+        observer.on_workflow_start("wf", run_id="rid-7")
+        tracing.start_span.reset_mock()  # ignore the workflow span
+        observer.on_tool_call(
+            step_id="s1",
+            call_id="c1",
+            tool_name="add",
+            args_hash="abcd1234",
+            result_hash="ef567890",
+            duration_ms=12.3,
+            success=True,
+        )
+        # Metric — counter + histogram via record_tool_call.
+        metrics.record_tool_call.assert_called_once_with("add", True, 0.0123)
+        # Span — name follows the canonical ``execute_tool {tool_name}``
+        # template; attrs include the run_id propagation + tool fields.
+        tracing.start_span.assert_called_once()
+        name = tracing.start_span.call_args.args[0]
+        attrs = tracing.start_span.call_args.kwargs["attributes"]
+        assert name == "execute_tool add"
+        assert attrs["tool.name"] == "add"
+        assert attrs["tool.call_id"] == "c1"
+        assert attrs["tool.args_hash"] == "abcd1234"
+        assert attrs["tool.result_hash"] == "ef567890"
+        assert attrs["tool.duration_ms"] == 12.3
+        assert attrs["tool.success"] is True
+        assert attrs["workflow.run_id"] == "rid-7"
+
+    def test_noop_when_no_tracing_or_metrics(self) -> None:
+        # Defensive: tool dispatch shouldn't fail when observability is off.
+        observer = WorkflowObserver()
+        observer.on_tool_call(
+            step_id="s1",
+            call_id="c1",
+            tool_name="x",
+            args_hash="a",
+            result_hash="b",
+            duration_ms=1.0,
+            success=False,
+        )
+
+
 class TestStreamResponse:
     def test_records_ttft_and_stream_count(self) -> None:
         metrics = MagicMock()

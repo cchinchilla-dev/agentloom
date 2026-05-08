@@ -174,6 +174,15 @@ class TestNoopObserver:
         obs.on_provider_call_start("s1", "openai", "gpt-4o-mini")
         obs.on_provider_call_end("s1", "openai", "gpt-4o-mini", 1.5)
         obs.on_provider_error("openai", "RateLimitError")
+        obs.on_tool_call(
+            step_id="s1",
+            call_id="c1",
+            tool_name="add",
+            args_hash="x",
+            result_hash="y",
+            duration_ms=1.0,
+            success=True,
+        )
         obs.on_stream_response("openai", "gpt-4o-mini", 0.3)
         obs.on_tokens("openai", "gpt-4o-mini", 100, 50)
         obs.on_mock_replay("wf", "s1", "step_id")
