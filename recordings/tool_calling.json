@@ -1,0 +1,27 @@
+{
+  "ask": [
+    {
+      "content": "",
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "tool_calls": [
+        {
+          "id": "call_demo_1",
+          "name": "http_request",
+          "arguments": {"url": "https://httpbin.org/get", "method": "GET"}
+        }
+      ],
+      "usage": {"prompt_tokens": 35, "completion_tokens": 18, "total_tokens": 53},
+      "cost_usd": 0.000018,
+      "finish_reason": "tool_calls"
+    },
+    {
+      "content": "The /get endpoint of httpbin accepts the GET HTTP method, as confirmed by the successful response from https://httpbin.org/get.",
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "usage": {"prompt_tokens": 320, "completion_tokens": 26, "total_tokens": 346},
+      "cost_usd": 0.000061,
+      "finish_reason": "stop"
+    }
+  ]
+}

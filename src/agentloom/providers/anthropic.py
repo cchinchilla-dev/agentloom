@@ -111,6 +111,13 @@ class AnthropicProvider(BaseProvider):
             else:
                 parts: list[dict[str, Any]] = []
                 for block in content:
+                    # Tool-calling messages build pure-dict wire-format
+                    # blocks (``tool_use``, ``tool_result``); pass those
+                    # through verbatim. Multimodal Pydantic blocks below need
+                    # translation to Anthropic's specific keys.
+                    if isinstance(block, dict):
+                        parts.append(block)
+                        continue
                     if isinstance(block, TextBlock):
                         parts.append({"type": "text", "text": block.text})
                     elif isinstance(block, ImageBlock):

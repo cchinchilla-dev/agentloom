@@ -1,0 +1,51 @@
+name: tool-calling-agent
+version: "1.0"
+description: |
+  Demonstrates native tool/function calling. The model decides
+  at runtime to invoke ``http_request`` to fetch JSON from an API,
+  receives the result on the next turn, and emits a final answer.
+
+  Runs offline against the committed recording fixture. With
+  ``--provider openai --model gpt-4o-mini`` it makes real calls and
+  the model picks the tool autonomously.
+
+  Producing a fresh recording:
+    agentloom run examples/35_tool_calling.yaml --provider openai \\
+      --model gpt-4o-mini --record recordings/tool_calling.json
+
+config:
+  provider: mock
+  model: gpt-4o-mini
+  responses_file: recordings/tool_calling.json
+  latency_model: constant
+  latency_ms: 0
+  sandbox:
+    enabled: true
+    allow_network: true
+    allowed_domains: ["httpbin.org"]
+    allowed_schemes: ["https"]
+
+state:
+  question: "What HTTP method does the httpbin /get endpoint accept?"
+
+steps:
+  - id: ask
+    type: llm_call
+    prompt: "{state.question}"
+    tools:
+      - name: http_request
+        description: "Make an HTTP request to a given URL and return the response body."
+        parameters:
+          type: object
+          properties:
+            url:
+              type: string
+              description: "Full URL to GET."
+            method:
+              type: string
+              enum: ["GET", "POST"]
+              description: "HTTP method."
+          required: [url]
+    tool_choice: auto
+    max_tool_iterations: 3
+    output: answer
