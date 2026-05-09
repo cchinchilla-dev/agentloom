@@ -110,16 +110,34 @@ def translate_tool_choice_for_anthropic(choice: Any) -> Any:
 
 
 def parse_tool_calls_from_openai(message: dict[str, Any]) -> list[ToolCall]:
-    """OpenAI returns ``message.tool_calls = [{id, type, function: {name, arguments}}]``."""
+    """Parse ``message.tool_calls`` from OpenAI-shaped responses.
+
+    Handles both wire variants seen in the wild:
+
+    * **OpenAI canonical**: ``[{id, type:"function", function:{name, arguments:"<json>"}}]``
+      — ``arguments`` is a JSON-encoded string.
+    * **Ollama / OpenAI-compatible relays**: ``[{id, function:{name, arguments:{...}}}]``
+      — ``type`` may be omitted entirely, and ``arguments`` may already be a
+      decoded dict. Treat the absence of ``type`` as ``"function"`` (the
+      only call kind we currently dispatch); a non-function explicit
+      ``type`` (e.g. ``"code_interpreter"``) is skipped.
+    """
     raw_calls = message.get("tool_calls") or []
     calls: list[ToolCall] = []
     for entry in raw_calls:
-        if entry.get("type") != "function":
+        entry_type = entry.get("type", "function")
+        if entry_type != "function":
             continue
         fn = entry.get("function", {})
-        try:
-            args = json.loads(fn.get("arguments") or "{}")
-        except json.JSONDecodeError:
+        raw_args = fn.get("arguments")
+        if isinstance(raw_args, dict):
+            args: dict[str, Any] = raw_args
+        elif isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args or "{}")
+            except json.JSONDecodeError:
+                args = {}
+        else:
             args = {}
         calls.append(ToolCall(id=entry.get("id", ""), name=fn.get("name", ""), arguments=args))
     return calls

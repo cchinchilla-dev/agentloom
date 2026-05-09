@@ -225,7 +225,6 @@ class OllamaProvider(BaseProvider):
 
         tool_calls = parse_tool_calls_from_openai(data.get("message", {}) or {})
 
-
         return ProviderResponse(
             content=content,
             model=data.get("model", model),

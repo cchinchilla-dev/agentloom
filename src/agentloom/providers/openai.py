@@ -187,7 +187,6 @@ class OpenAIProvider(BaseProvider):
 
         tool_calls = parse_tool_calls_from_openai(message)
 
-
         return ProviderResponse(
             content=content,
             model=data.get("model", model),

@@ -218,7 +218,6 @@ class MockProvider(BaseProvider):
                     )
                 )
 
-
         return ProviderResponse(
             content=str(entry.get("content", "")),
             model=str(entry.get("model", model)),
