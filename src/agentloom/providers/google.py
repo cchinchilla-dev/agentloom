@@ -280,7 +280,6 @@ class GoogleProvider(BaseProvider):
 
         tool_calls = parse_tool_calls_from_google(content_parts)
 
-
         return ProviderResponse(
             content=content,
             model=model,

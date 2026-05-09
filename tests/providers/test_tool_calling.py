@@ -127,6 +127,30 @@ class TestToolParsing:
         assert len(calls) == 1
         assert calls[0].name == ""
 
+    def test_ollama_compat_response_with_dict_args_and_no_type(self) -> None:
+        # Real Ollama 0.x ``/api/chat`` returns tool_calls in OpenAI-compatible
+        # shape but (a) omits ``"type": "function"`` and (b) ships
+        # ``arguments`` as an already-decoded dict, not a JSON string. Without
+        # this regression, Ollama tool calling silently drops every call —
+        # the parser's strict ``type == "function"`` check skips entries
+        # missing the field, and ``json.loads(<dict>)`` would TypeError.
+        # Captured from a live ``llama3.1:8b`` response on 2026-05-09.
+        message = {
+            "tool_calls": [
+                {
+                    "id": "call_eh7yrv0u",
+                    "function": {
+                        "index": 0,
+                        "name": "add",
+                        "arguments": {"a": 17, "b": 25},  # already a dict
+                    },
+                    # NOTE: no "type" key
+                }
+            ]
+        }
+        calls = parse_tool_calls_from_openai(message)
+        assert calls == [ToolCall(id="call_eh7yrv0u", name="add", arguments={"a": 17, "b": 25})]
+
     def test_anthropic_parses_tool_use_blocks(self) -> None:
         blocks = [
             {"type": "text", "text": "I'll use a tool."},

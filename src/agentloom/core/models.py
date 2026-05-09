@@ -121,7 +121,6 @@ class ToolDefinition(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 
-
 class StepDefinition(BaseModel):
     """Definition of a single workflow step."""
 
