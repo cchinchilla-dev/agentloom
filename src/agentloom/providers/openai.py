@@ -150,8 +150,15 @@ class OpenAIProvider(BaseProvider):
             )
 
             extras["tools"] = translate_tools_for_openai(agentloom_tools)
-            if agentloom_tool_choice is not None and agentloom_tool_choice != "none":
-                extras["tool_choice"] = translate_tool_choice_for_openai(agentloom_tool_choice)
+            # ``"none"`` must be forwarded explicitly — when ``tools`` is set
+            # OpenAI defaults to ``tool_choice="auto"``, so silently dropping
+            # the field would disable the user's request to disable tools.
+            if agentloom_tool_choice is not None:
+                extras["tool_choice"] = (
+                    "none"
+                    if agentloom_tool_choice == "none"
+                    else translate_tool_choice_for_openai(agentloom_tool_choice)
+                )
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),

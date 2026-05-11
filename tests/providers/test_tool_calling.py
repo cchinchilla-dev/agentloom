@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 import httpx
+import pytest
 import respx
 
 from agentloom.core.engine import WorkflowEngine
@@ -122,10 +123,26 @@ class TestToolParsing:
     def test_openai_skips_non_function_entries(self) -> None:
         message = {"tool_calls": [{"id": "x", "type": "code_interpreter"}, {"type": "function"}]}
         calls = parse_tool_calls_from_openai(message)
-        # Only the second entry is a function — its function dict is empty
-        # so name="" and args={}; we accept it (degenerate case).
+        # Both are dropped: the first is non-function, the second has no
+        # ``id`` / ``name`` (would 400 on the follow-up tool message).
+        assert calls == []
+
+    def test_openai_skips_entries_with_empty_id_or_name(self) -> None:
+        # Defense-in-depth: a malformed model response with blank id/name
+        # would generate an invalid ``tool_call_id`` on the follow-up
+        # message, which OpenAI rejects with 400. Skip + warn rather than
+        # constructing a call we know can't dispatch.
+        message = {
+            "tool_calls": [
+                {"id": "", "type": "function", "function": {"name": "ok"}},
+                {"id": "good", "type": "function", "function": {"name": ""}},
+                {"id": "good", "type": "function", "function": {"name": "ok"}},
+            ]
+        }
+        calls = parse_tool_calls_from_openai(message)
         assert len(calls) == 1
-        assert calls[0].name == ""
+        assert calls[0].id == "good"
+        assert calls[0].name == "ok"
 
     def test_ollama_compat_response_with_dict_args_and_no_type(self) -> None:
         # Real Ollama 0.x ``/api/chat`` returns tool_calls in OpenAI-compatible
@@ -402,6 +419,169 @@ class TestDispatchObserverHook:
 
         observer.on_tool_call.assert_called_once()
         assert observer.on_tool_call.call_args.kwargs["success"] is False
+
+
+class TestToolChoiceWireForwarding:
+    """End-to-end checks that ``tool_choice`` reaches the provider's wire
+    payload correctly — Copilot review surfaced silent drops on OpenAI
+    and silent fall-through to AUTO on Google."""
+
+    @respx.mock
+    async def test_openai_forwards_none_to_disable_tools(self) -> None:
+        # ``tool_choice="none"`` MUST reach the wire. With ``tools=`` set
+        # OpenAI defaults to ``"auto"``, so dropping the field would mean
+        # the user's explicit "no tools this turn" gets ignored.
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "model": "gpt-4o-mini",
+                    "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                },
+            )
+        )
+        provider = OpenAIProvider(api_key="k")
+        await provider.complete(
+            messages=[{"role": "user", "content": "ping"}],
+            model="gpt-4o-mini",
+            agentloom_tools=[
+                ToolDefinition(name="add", description="d", parameters={"type": "object"})
+            ],
+            agentloom_tool_choice="none",
+        )
+        body = json.loads(route.calls[0].request.content)
+        assert body["tool_choice"] == "none"
+        await provider.close()
+
+
+class TestGoogleAssistantMessagePreservesText:
+    """Gemini can return text + functionCall in the same turn. The
+    assistant-message synthesizer must include the text part so iteration
+    2+ replays the model's full prior turn (Copilot finding)."""
+
+    def test_text_part_kept_alongside_function_calls(self) -> None:
+        from agentloom.steps._tools import build_assistant_message_with_tool_calls
+
+        msg = build_assistant_message_with_tool_calls(
+            "google",
+            "Let me check that.",
+            [ToolCall(id="g_1", name="lookup", arguments={"key": "x"})],
+        )
+        # Text part comes first, then the functionCall part.
+        assert msg["role"] == "model"
+        assert msg["parts"][0] == {"text": "Let me check that."}
+        assert msg["parts"][1] == {"functionCall": {"name": "lookup", "args": {"key": "x"}}}
+
+    def test_no_text_part_when_content_empty(self) -> None:
+        # Backward-compat: empty content yields the same shape as before.
+        from agentloom.steps._tools import build_assistant_message_with_tool_calls
+
+        msg = build_assistant_message_with_tool_calls(
+            "google",
+            "",
+            [ToolCall(id="g_1", name="lookup", arguments={})],
+        )
+        assert msg["parts"] == [{"functionCall": {"name": "lookup", "args": {}}}]
+
+
+class TestStreamFallbackPropagatesToolFields:
+    """``BaseProvider.stream()`` default fallback wraps ``complete()``;
+    the rolled-up ``StreamResponse.to_provider_response()`` must include
+    ``tool_calls`` and ``reasoning_content`` so callers don't lose them
+    when streaming through a provider that hasn't overridden ``stream()``."""
+
+    async def test_fallback_copies_tool_calls_and_reasoning(self) -> None:
+        from agentloom.providers.base import BaseProvider, ProviderResponse
+
+        captured = ProviderResponse(
+            content="hi",
+            model="m",
+            provider="p",
+            reasoning_content="thinking...",
+            tool_calls=[ToolCall(id="c1", name="add", arguments={"a": 1})],
+        )
+
+        class _Stub(BaseProvider):
+            name = "p"
+
+            async def complete(self, **_kw: Any) -> ProviderResponse:
+                return captured
+
+            def supports_model(self, model: str) -> bool:
+                return True
+
+        sr = await _Stub().stream(messages=[], model="m")
+        async for _ in sr:
+            pass
+        out = sr.to_provider_response()
+        assert out.reasoning_content == "thinking..."
+        assert len(out.tool_calls) == 1
+        assert out.tool_calls[0].id == "c1"
+
+
+class TestToolChoiceValidation:
+    """``StepDefinition.tool_choice`` is a constrained union — invalid
+    YAML / Python values fail at model construction rather than silently
+    coercing to AUTO at the wire layer."""
+
+    def test_valid_string_choices(self) -> None:
+        for value in ("auto", "required", "none"):
+            step = StepDefinition(id="s", type=StepType.LLM_CALL, prompt="x", tool_choice=value)
+            assert step.tool_choice == value
+
+    def test_valid_dict_choice_coerces_to_typed_model(self) -> None:
+        from agentloom.core.models import ToolChoiceByName
+
+        step = StepDefinition(
+            id="s", type=StepType.LLM_CALL, prompt="x", tool_choice={"name": "lookup"}
+        )
+        assert isinstance(step.tool_choice, ToolChoiceByName)
+        assert step.tool_choice.name == "lookup"
+
+    def test_invalid_string_rejected(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            StepDefinition(
+                id="s",
+                type=StepType.LLM_CALL,
+                prompt="x",
+                tool_choice="anything-else",
+            )
+
+    def test_max_tool_iterations_zero_rejected(self) -> None:
+        # ``max_tool_iterations >= 1`` invariant guards the loop body
+        # against ``response`` being unset on exit.
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            StepDefinition(
+                id="s",
+                type=StepType.LLM_CALL,
+                prompt="x",
+                max_tool_iterations=0,
+            )
+
+
+class TestDispatchObserverHookFailure:
+    """A flaky observability backend (exporter misconfig, transient OTel
+    failure) must not abort the dispatch task group and break the step."""
+
+    async def test_observer_hook_exception_swallowed(self) -> None:
+        registry = _registry_with(_AddTool())
+
+        class _BrokenObserver:
+            def on_tool_call(self, **_kw: Any) -> None:
+                raise RuntimeError("OTel exporter is down")
+
+        calls = [ToolCall(id="c1", name="add", arguments={"a": 1, "b": 2})]
+        # Must NOT raise — dispatch succeeds, hook failure is debug-logged.
+        results = await dispatch_tool_calls(
+            calls, registry, observer=_BrokenObserver(), step_id="s1"
+        )
+        assert results[0][2] is True  # tool succeeded despite hook failure
+        assert results[0][1] == "3"
 
 
 class TestStreamEvents:

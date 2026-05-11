@@ -115,6 +115,18 @@ def parse_tool_calls_from_openai(message: dict[str, Any]) -> list[ToolCall]:
         if entry_type != "function":
             continue
         fn = entry.get("function", {})
+        # OpenAI's ``role:"tool"`` follow-up message requires a non-empty
+        # ``tool_call_id``; an empty id or name would round-trip as garbage
+        # and the next request 400s. Skip + warn instead of constructing a
+        # call we know can't dispatch.
+        call_id = entry.get("id")
+        call_name = fn.get("name")
+        if not isinstance(call_id, str) or not call_id.strip():
+            logger.warning("Skipping tool call without an id: %r", entry)
+            continue
+        if not isinstance(call_name, str) or not call_name.strip():
+            logger.warning("Skipping tool call without a function name: %r", entry)
+            continue
         raw_args = fn.get("arguments")
         if isinstance(raw_args, dict):
             args: dict[str, Any] = raw_args
@@ -125,7 +137,7 @@ def parse_tool_calls_from_openai(message: dict[str, Any]) -> list[ToolCall]:
                 args = {}
         else:
             args = {}
-        calls.append(ToolCall(id=entry.get("id", ""), name=fn.get("name", ""), arguments=args))
+        calls.append(ToolCall(id=call_id, name=call_name, arguments=args))
     return calls
 
 
@@ -202,15 +214,23 @@ async def dispatch_tool_calls(
         if observer is not None:
             hook = getattr(observer, "on_tool_call", None)
             if callable(hook):
-                hook(
-                    step_id=step_id,
-                    call_id=call.id,
-                    tool_name=call.name,
-                    args_hash=_hash_text(json.dumps(call.arguments, sort_keys=True, default=str)),
-                    result_hash=_hash_text(text),
-                    duration_ms=(time.monotonic() - start) * 1000.0,
-                    success=success,
-                )
+                # Observability is best-effort: an exporter misconfig or
+                # transient OTel failure must not abort the dispatch task
+                # group and fail the step.
+                try:
+                    hook(
+                        step_id=step_id,
+                        call_id=call.id,
+                        tool_name=call.name,
+                        args_hash=_hash_text(
+                            json.dumps(call.arguments, sort_keys=True, default=str)
+                        ),
+                        result_hash=_hash_text(text),
+                        duration_ms=(time.monotonic() - start) * 1000.0,
+                        success=success,
+                    )
+                except Exception:
+                    logger.debug("on_tool_call hook failed", exc_info=True)
 
     async with anyio.create_task_group() as tg:
         for idx, call in enumerate(calls):
@@ -231,11 +251,25 @@ def build_assistant_message_with_tool_calls(
             blocks.append({"type": "tool_use", "id": c.id, "name": c.name, "input": c.arguments})
         return {"role": "assistant", "content": blocks}
     if provider == "google":
+        # Gemini can return text alongside ``functionCall`` parts; preserve
+        # the text so iteration 2+ sees the model's full prior turn.
+        parts: list[dict[str, Any]] = []
+        if content:
+            parts.append({"text": content})
+        parts.extend({"functionCall": {"name": c.name, "args": c.arguments}} for c in calls)
+        return {"role": "model", "parts": parts}
+    if provider == "ollama":
+        # Ollama expects ``arguments`` as a dict (not a JSON-encoded string)
+        # and rejects unknown keys like ``id`` / ``type``. Captured from a
+        # live ``llama3.1:8b`` request that 400'd with "Value looks like
+        # object, but can't find closing '}' symbol" when sent the OpenAI
+        # canonical shape on iteration 2+.
         return {
-            "role": "model",
-            "parts": [{"functionCall": {"name": c.name, "args": c.arguments}} for c in calls],
+            "role": "assistant",
+            "content": content or "",
+            "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls],
         }
-    # OpenAI / Ollama: ``content`` must be a string (formatter rejects None);
+    # OpenAI canonical: ``content`` must be a string (formatter rejects None);
     # empty string is accepted alongside tool_calls.
     return {
         "role": "assistant",
@@ -283,5 +317,9 @@ def build_tool_result_messages(
                 ],
             }
         ]
-    # OpenAI / Ollama: one tool message per call, keyed by tool_call_id.
+    if provider == "ollama":
+        # Ollama keys the result by ``name`` (not ``tool_call_id``) and
+        # rejects requests that include the OpenAI ``tool_call_id`` field.
+        return [{"role": "tool", "name": call.name, "content": text} for call, text, _ in results]
+    # OpenAI canonical: one tool message per call, keyed by tool_call_id.
     return [{"role": "tool", "tool_call_id": call.id, "content": text} for call, text, _ in results]

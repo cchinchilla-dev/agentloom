@@ -237,6 +237,12 @@ class BaseProvider(ABC):
         sr.usage = response.usage
         sr.cost_usd = response.cost_usd
         sr.finish_reason = response.finish_reason
+        # Propagate reasoning trace + tool calls so callers that read
+        # ``sr.to_provider_response()`` see the same fields they'd get
+        # from a non-streaming call. Without this, providers that rely on
+        # the fallback silently lose tool decisions when streamed.
+        sr.reasoning_content = response.reasoning_content
+        sr.tool_calls = list(response.tool_calls)
 
         async def _single_chunk() -> AsyncIterator[str]:
             yield response.content
