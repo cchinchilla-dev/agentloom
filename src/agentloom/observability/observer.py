@@ -316,7 +316,7 @@ class WorkflowObserver:
         success: bool,
         **kwargs: Any,
     ) -> None:
-        """Record a model-dispatched tool call (#116).
+        """Record a model-dispatched tool call.
 
         Emits a child span under the active step span carrying the canonical
         ``execute_tool {name}`` name plus tool attrs, and records the

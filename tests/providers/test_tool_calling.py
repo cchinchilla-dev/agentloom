@@ -388,7 +388,7 @@ class TestGoogleToolChoiceDictSelectsSpecificFunction:
 class TestDispatchObserverHook:
     """``dispatch_tool_calls`` calls ``observer.on_tool_call`` per call so
     each dispatch lands on the trace as a child span tagged by tool +
-    success status (#116 observability spec)."""
+    success status."""
 
     async def test_observer_hook_fires_with_hashes_and_duration(self) -> None:
         from unittest.mock import MagicMock
@@ -585,7 +585,7 @@ class TestDispatchObserverHookFailure:
 
 
 class TestStreamEvents:
-    """Typed stream events surface (issue #116). Adapters that haven't
+    """Typed stream events surface. Adapters that haven't
     wired the typed iterator fall back to wrapping plain text chunks as
     ``TextDelta`` events, terminated with ``StreamDone``."""
 
@@ -932,3 +932,178 @@ class TestLLMStepToolLoop:
             sr = result.step_results["ask"]
             assert sr.status == StepStatus.FAILED
             assert "tool registry" in (sr.error or "").lower()
+
+
+class TestToolChoiceTranslators:
+    """Direct coverage for the per-provider tool_choice translators —
+    each branch (string modes, ``{"name": ...}``, fallback) needs to
+    round-trip through the helper so silent regressions surface."""
+
+    def test_openai_translates_name_dict_to_function_envelope(self) -> None:
+        from agentloom.steps._tools import translate_tool_choice_for_openai
+
+        out = translate_tool_choice_for_openai({"name": "lookup"})
+        assert out == {"type": "function", "function": {"name": "lookup"}}
+
+    def test_openai_passes_through_string_modes(self) -> None:
+        from agentloom.steps._tools import translate_tool_choice_for_openai
+
+        assert translate_tool_choice_for_openai("auto") == "auto"
+        assert translate_tool_choice_for_openai("required") == "required"
+
+    def test_anthropic_string_modes(self) -> None:
+        from agentloom.steps._tools import translate_tool_choice_for_anthropic
+
+        assert translate_tool_choice_for_anthropic("auto") == {"type": "auto"}
+        assert translate_tool_choice_for_anthropic("required") == {"type": "any"}
+        # ``"none"`` becomes ``None`` so the adapter omits the field
+        # entirely — Anthropic has no explicit "disable tools" mode.
+        assert translate_tool_choice_for_anthropic("none") is None
+
+    def test_anthropic_name_dict_pins_specific_tool(self) -> None:
+        from agentloom.steps._tools import translate_tool_choice_for_anthropic
+
+        out = translate_tool_choice_for_anthropic({"name": "lookup"})
+        assert out == {"type": "tool", "name": "lookup"}
+
+    def test_anthropic_unknown_falls_back_to_auto(self) -> None:
+        # An unexpected value (e.g. a stray dict without ``name``) must
+        # not crash the request — fall back to AUTO so the call still
+        # round-trips and the model decides whether to invoke a tool.
+        from agentloom.steps._tools import translate_tool_choice_for_anthropic
+
+        assert translate_tool_choice_for_anthropic({"unknown": "x"}) == {"type": "auto"}
+
+    def test_ollama_translator_returns_openai_shape(self) -> None:
+        # Ollama uses the OpenAI wire shape; the translator is a thin
+        # delegate but the indirection needs at least one direct call.
+        from agentloom.steps._tools import translate_tools_for_ollama
+
+        out = translate_tools_for_ollama(
+            [ToolDefinition(name="add", description="d", parameters={"type": "object"})]
+        )
+        assert out[0]["function"]["name"] == "add"
+
+
+class TestParseToolCallsEdgeCases:
+    def test_invalid_json_arguments_yield_empty_args(self) -> None:
+        # A model that emits malformed JSON for ``arguments`` must not
+        # crash the parser — fall back to ``{}`` and let dispatch
+        # surface the missing-arg error to the model on the next turn.
+        message = {
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "add", "arguments": "{not json"},
+                }
+            ]
+        }
+        calls = parse_tool_calls_from_openai(message)
+        assert calls == [ToolCall(id="c1", name="add", arguments={})]
+
+
+class TestAssistantAndResultBuildersOllamaGoogle:
+    """Cover the Ollama assistant-message branch and the Google /
+    Ollama tool-result branches that the existing suite didn't reach."""
+
+    def test_ollama_assistant_message_uses_dict_args(self) -> None:
+        c = ToolCall(id="c1", name="add", arguments={"a": 1, "b": 2})
+        msg = build_assistant_message_with_tool_calls("ollama", "thinking", [c])
+        # Ollama wire shape: ``arguments`` is a dict (not a JSON string)
+        # and the entry has no ``id`` / ``type`` keys.
+        tc = msg["tool_calls"][0]
+        assert tc["function"]["name"] == "add"
+        assert tc["function"]["arguments"] == {"a": 1, "b": 2}
+        assert "id" not in tc
+        assert "type" not in tc
+
+    def test_google_tool_result_message_shapes_function_response(self) -> None:
+        c = ToolCall(id="g_1", name="lookup", arguments={"key": "x"})
+        out = build_tool_result_messages("google", [(c, "ok", True)])
+        assert out[0]["role"] == "function"
+        fr = out[0]["parts"][0]["functionResponse"]
+        assert fr["name"] == "lookup"
+        assert fr["response"] == {"result": "ok"}
+
+    def test_google_tool_result_message_surfaces_error_on_failure(self) -> None:
+        # Gemini's ``functionResponse`` uses ``response: {error: ...}``
+        # to signal failure; the wire branch must hit on ``success=False``.
+        c = ToolCall(id="g_1", name="lookup", arguments={})
+        out = build_tool_result_messages("google", [(c, "boom", False)])
+        fr = out[0]["parts"][0]["functionResponse"]
+        assert fr["response"] == {"error": "boom"}
+
+    def test_ollama_tool_result_message_keyed_by_name(self) -> None:
+        # Ollama rejects requests that include the OpenAI ``tool_call_id``
+        # field — the result message must key by tool ``name`` instead.
+        c = ToolCall(id="ignored", name="add", arguments={})
+        out = build_tool_result_messages("ollama", [(c, "5", True)])
+        assert out == [{"role": "tool", "name": "add", "content": "5"}]
+
+
+class TestMetricsRecordToolCallDisabled:
+    """When the metrics manager is disabled (no extras installed / no
+    backend configured) ``record_tool_call`` must be a noop — guards the
+    early-return that hot paths rely on."""
+
+    def test_disabled_manager_short_circuits(self) -> None:
+        from agentloom.observability.metrics import MetricsManager
+
+        mgr = MetricsManager.__new__(MetricsManager)
+        mgr._enabled = False  # type: ignore[attr-defined]
+        # Must not touch ``_tool_call_counter`` / ``_tool_call_histogram``;
+        # those attributes don't exist on the bare instance, so any code
+        # path that forgets the guard would AttributeError here.
+        mgr.record_tool_call("add", success=True, duration_s=0.01)
+
+
+class TestMockProviderToolCallingReplay:
+    """``MockProvider`` hydrates ``tool_calls`` from the recording and
+    advances a per-step cursor so a single step replays a multi-turn
+    tool-iteration loop."""
+
+    async def test_list_form_replays_turns_in_order_and_clamps(self) -> None:
+        from agentloom.providers.mock import MockProvider
+
+        provider = MockProvider()
+        # Two-turn loop: first call drives a tool dispatch, second emits
+        # the final answer. A third call must replay the last turn
+        # (clamped) rather than raise mid-step.
+        provider._responses["ask"] = [  # type: ignore[assignment]
+            {
+                "content": "",
+                "model": "mock",
+                "tool_calls": [{"id": "c1", "name": "add", "arguments": {"a": 1, "b": 2}}],
+                "finish_reason": "tool_calls",
+            },
+            {
+                "content": "the answer is 3",
+                "model": "mock",
+                "finish_reason": "stop",
+            },
+        ]
+        r1 = await provider.complete(messages=[], model="mock", step_id="ask")
+        assert r1.finish_reason == "tool_calls"
+        assert r1.tool_calls[0].name == "add"
+        assert r1.tool_calls[0].arguments == {"a": 1, "b": 2}
+
+        r2 = await provider.complete(messages=[], model="mock", step_id="ask")
+        assert r2.content == "the answer is 3"
+        assert r2.tool_calls == []
+
+        # Cursor clamps at the last turn — excess iterations replay the
+        # final answer rather than raising or returning ``None``.
+        r3 = await provider.complete(messages=[], model="mock", step_id="ask")
+        assert r3.content == "the answer is 3"
+
+    async def test_empty_list_falls_through_to_default_response(self) -> None:
+        # Defensive: an empty turn list shouldn't crash — the lookup
+        # returns ``None`` and ``complete`` falls back to the configured
+        # default response rather than raising.
+        from agentloom.providers.mock import MockProvider
+
+        provider = MockProvider(default_response="fallback")
+        provider._responses["ask"] = []  # type: ignore[assignment]
+        r = await provider.complete(messages=[], model="mock", step_id="ask")
+        assert r.content == "fallback"

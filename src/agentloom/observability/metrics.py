@@ -154,7 +154,7 @@ class MetricsManager:
             "agentloom_stream_responses_total",
             description="Total streamed LLM responses",
         )
-        # Tool calls dispatched by the model (#116). Tagged by tool name +
+        # Tool calls dispatched by the model. Tagged by tool name +
         # status so dashboards can split successes from failures and spot
         # tools that consistently fail or hang.
         self._tool_call_counter = meter.create_counter(
@@ -491,7 +491,7 @@ class MetricsManager:
             self._prom_counters["attachments"].labels(step_type=step_type).inc(count)
 
     def record_tool_call(self, tool_name: str, success: bool, duration_s: float) -> None:
-        """Record a model-dispatched tool call (#116).
+        """Record a model-dispatched tool call.
 
         Counter is tagged ``status=success|failure`` so dashboards can
         plot a per-tool failure rate; histogram tracks execution latency.
