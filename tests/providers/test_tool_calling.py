@@ -455,6 +455,82 @@ class TestToolChoiceWireForwarding:
         await provider.close()
 
 
+class TestGoogleCompleteStringChoiceMapsToMode:
+    """``complete`` with a string ``tool_choice`` hits the ``else`` branch
+    that maps ``"auto"``/``"required"``/``"none"`` to Gemini's mode enum.
+    The dict-form ``{"name": ...}`` test exercises the other branch."""
+
+    @respx.mock
+    async def test_required_maps_to_any_mode(self) -> None:
+        from agentloom.providers.google import GoogleProvider
+
+        route = respx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            "gemini-2.5-flash:generateContent"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "model": "gemini-2.5-flash",
+                    "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+                    "usageMetadata": {
+                        "promptTokenCount": 1,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 2,
+                    },
+                },
+            )
+        )
+        provider = GoogleProvider(api_key="k")
+        await provider.complete(
+            messages=[{"role": "user", "content": "ping"}],
+            model="gemini-2.5-flash",
+            agentloom_tools=[
+                ToolDefinition(name="add", description="d", parameters={"type": "object"})
+            ],
+            agentloom_tool_choice="required",
+        )
+        body = json.loads(route.calls[0].request.content)
+        cfg = body["toolConfig"]["functionCallingConfig"]
+        assert cfg["mode"] == "ANY"
+        assert "allowedFunctionNames" not in cfg
+        await provider._client.aclose()
+
+    @respx.mock
+    async def test_none_maps_to_none_mode(self) -> None:
+        from agentloom.providers.google import GoogleProvider
+
+        route = respx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            "gemini-2.5-flash:generateContent"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "model": "gemini-2.5-flash",
+                    "candidates": [{"content": {"parts": [{"text": "5+5 is 10"}]}}],
+                    "usageMetadata": {
+                        "promptTokenCount": 1,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 2,
+                    },
+                },
+            )
+        )
+        provider = GoogleProvider(api_key="k")
+        await provider.complete(
+            messages=[{"role": "user", "content": "what is 5+5?"}],
+            model="gemini-2.5-flash",
+            agentloom_tools=[
+                ToolDefinition(name="add", description="d", parameters={"type": "object"})
+            ],
+            agentloom_tool_choice="none",
+        )
+        body = json.loads(route.calls[0].request.content)
+        assert body["toolConfig"]["functionCallingConfig"]["mode"] == "NONE"
+        await provider._client.aclose()
+
+
 class TestGoogleAssistantMessagePreservesText:
     """Gemini can return text + functionCall in the same turn. The
     assistant-message synthesizer must include the text part so iteration
@@ -1210,6 +1286,36 @@ class TestStreamForwardsToolKwargs:
         await provider._client.aclose()
 
     @respx.mock
+    async def test_google_stream_with_string_choice_hits_mode_lookup(self) -> None:
+        # The ``{"name": "fn"}`` test exercises the dict branch; this
+        # exercises the ``else`` branch that maps plain string choices
+        # to Gemini's mode enum.
+        from agentloom.providers.google import GoogleProvider
+
+        route = respx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            "gemini-2.5-flash:streamGenerateContent?alt=sse&key=k"
+        ).mock(return_value=httpx.Response(200, text="data: {}\n\n"))
+        provider = GoogleProvider(api_key="k")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gemini-2.5-flash",
+            agentloom_tools=[
+                ToolDefinition(name="add", description="d", parameters={"type": "object"})
+            ],
+            agentloom_tool_choice="required",
+        )
+        async for _ in sr:
+            pass
+        body = json.loads(route.calls[0].request.content)
+        # ``"required"`` maps to Gemini's ANY mode (no allowedFunctionNames
+        # pin since no specific function was named).
+        cfg = body["toolConfig"]["functionCallingConfig"]
+        assert cfg["mode"] == "ANY"
+        assert "allowedFunctionNames" not in cfg
+        await provider._client.aclose()
+
+    @respx.mock
     async def test_ollama_stream_accepts_tool_kwargs(self) -> None:
         from agentloom.providers.ollama import OllamaProvider
 
@@ -1231,6 +1337,342 @@ class TestStreamForwardsToolKwargs:
         # Ollama uses the OpenAI tool shape on the wire.
         assert body["tools"][0]["function"]["name"] == "add"
         await provider._client.aclose()
+
+
+class TestOllamaCompleteForwardsToolKwargs:
+    """``OllamaProvider.complete`` translates ``agentloom_tools`` to the
+    OpenAI-compatible wire shape and logs a debug message when
+    ``tool_choice`` is set (Ollama ignores it model-side). The bypass
+    + log path was uncovered until now."""
+
+    @respx.mock
+    async def test_complete_forwards_tools_and_logs_choice(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        from agentloom.providers.ollama import OllamaProvider
+
+        route = respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "message": {"role": "assistant", "content": "ok"},
+                    "model": "llama3.1:8b",
+                    "done": True,
+                    "done_reason": "stop",
+                    "prompt_eval_count": 5,
+                    "eval_count": 2,
+                },
+            )
+        )
+        provider = OllamaProvider()
+        with caplog.at_level(logging.DEBUG, logger="agentloom.providers.ollama"):
+            await provider.complete(
+                messages=[{"role": "user", "content": "ping"}],
+                model="llama3.1:8b",
+                agentloom_tools=[
+                    ToolDefinition(name="add", description="d", parameters={"type": "object"})
+                ],
+                # Non-``auto`` triggers the debug-log branch surfacing the
+                # silent drop so users can debug "why doesn't my tool fire".
+                agentloom_tool_choice="required",
+            )
+        body = json.loads(route.calls[0].request.content)
+        assert body["tools"][0]["function"]["name"] == "add"
+        assert any("Ollama ignores tool_choice" in rec.message for rec in caplog.records)
+        await provider._client.aclose()
+
+
+class TestAnthropicFormatPassesDictBlocksVerbatim:
+    """When an assistant turn carries pre-formed Anthropic blocks
+    (``tool_use`` / ``tool_result`` dicts), the formatter must pass them
+    through verbatim — without this, iteration 2+ of the tool loop loses
+    the prior tool-call context."""
+
+    def test_dict_blocks_pass_through(self) -> None:
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me check."},
+                    {
+                        "type": "tool_use",
+                        "id": "tu_1",
+                        "name": "lookup",
+                        "input": {"key": "x"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "content": "value-x",
+                    },
+                ],
+            },
+        ]
+        _system, formatted = AnthropicProvider._format_messages(msgs)
+        # Both list-content messages must round-trip with their blocks
+        # intact; verbatim passthrough is what makes iteration 2+ work.
+        assert formatted[0]["content"][0] == {"type": "text", "text": "Let me check."}
+        assert formatted[0]["content"][1]["type"] == "tool_use"
+        assert formatted[0]["content"][1]["id"] == "tu_1"
+        assert formatted[1]["content"][0]["type"] == "tool_result"
+        assert formatted[1]["content"][0]["tool_use_id"] == "tu_1"
+
+
+class TestLLMStepStreamFailurePaths:
+    """``LLMCallStep`` must surface streaming failures as a FAILED
+    ``StepResult`` rather than letting the exception escape — both the
+    gateway crash before any chunk and an iteration error mid-stream
+    were uncovered until now."""
+
+    async def test_stream_raises_before_first_chunk_yields_failed_step(self) -> None:
+        from agentloom.core.engine import WorkflowEngine
+        from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+
+        class _BoomProvider(BaseProvider):
+            name = "boom"
+
+            async def complete(self, **_kw: Any) -> ProviderResponse:  # pragma: no cover
+                raise NotImplementedError
+
+            async def stream(self, **_kw: Any) -> StreamResponse:
+                raise RuntimeError("gateway is down")
+
+            def supports_model(self, _m: str) -> bool:
+                return True
+
+        from agentloom.providers.gateway import ProviderGateway
+
+        gw = ProviderGateway()
+        gw.register(_BoomProvider(), models=["boom-model"])
+        wf = WorkflowDefinition(
+            name="stream-boom",
+            config=WorkflowConfig(provider="boom", model="boom-model"),
+            steps=[
+                StepDefinition(
+                    id="ask",
+                    type=StepType.LLM_CALL,
+                    prompt="ping",
+                    stream=True,
+                    retry={"max_retries": 0},
+                )
+            ],
+        )
+        result = await WorkflowEngine(workflow=wf, provider_gateway=gw).run()
+        await gw.close()
+        sr = result.step_results["ask"]
+        assert sr.status == StepStatus.FAILED
+        assert "gateway is down" in (sr.error or "")
+
+    async def test_stream_chunk_callback_failure_disables_callback(self) -> None:
+        # When ``on_stream_chunk`` raises, the step must keep iterating
+        # the stream (the callback is best-effort observability), then
+        # disable the callback for subsequent chunks so we don't log on
+        # every yield.
+        from agentloom.core.engine import WorkflowEngine
+        from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+
+        class _TextStream(BaseProvider):
+            name = "stream-test"
+
+            async def complete(self, **_kw: Any) -> ProviderResponse:  # pragma: no cover
+                raise NotImplementedError
+
+            async def stream(self, **_kw: Any) -> StreamResponse:
+                sr = StreamResponse(model="m", provider=self.name)
+
+                async def _gen():  # type: ignore[no-untyped-def]
+                    yield "hello "
+                    yield "world"
+
+                sr._set_iterator(_gen())
+                sr.finish_reason = "stop"
+                return sr
+
+            def supports_model(self, _m: str) -> bool:
+                return True
+
+        from agentloom.providers.gateway import ProviderGateway
+
+        gw = ProviderGateway()
+        gw.register(_TextStream(), models=["m"])
+        seen: list[str] = []
+
+        def _cb(step_id: str, chunk: str) -> None:
+            seen.append(chunk)
+            raise RuntimeError("callback broke")
+
+        wf = WorkflowDefinition(
+            name="stream-cb-boom",
+            config=WorkflowConfig(provider="stream-test", model="m"),
+            steps=[
+                StepDefinition(
+                    id="ask",
+                    type=StepType.LLM_CALL,
+                    prompt="ping",
+                    stream=True,
+                    retry={"max_retries": 0},
+                )
+            ],
+        )
+        result = await WorkflowEngine(workflow=wf, provider_gateway=gw, on_stream_chunk=_cb).run()
+        await gw.close()
+        sr = result.step_results["ask"]
+        # The step still succeeds — the callback failure is swallowed
+        # and the callback is disabled after the first throw, so only
+        # the first chunk was observed by the caller.
+        assert sr.status == StepStatus.SUCCESS
+        assert seen == ["hello "]
+
+
+class TestLLMStepToolChoiceByNameNormalisation:
+    """``StepDefinition.tool_choice = {"name": "X"}`` is coerced to a
+    ``ToolChoiceByName`` Pydantic model at validation time, and the
+    step layer normalises it back to ``{"name": "X"}`` before forwarding
+    to the provider. The normaliser branch was uncovered until now."""
+
+    @respx.mock
+    async def test_typed_choice_round_trips_to_provider_dict(self) -> None:
+        from agentloom.core.models import ToolChoiceByName
+
+        # Two-turn loop: iter 1 returns a tool call; iter 2 the final answer.
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "model": "gpt-4o-mini",
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "id": "c1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "lookup",
+                                                "arguments": '{"key": "x"}',
+                                            },
+                                        }
+                                    ],
+                                },
+                                "finish_reason": "tool_calls",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 5,
+                            "completion_tokens": 4,
+                            "total_tokens": 9,
+                        },
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "model": "gpt-4o-mini",
+                        "choices": [
+                            {
+                                "message": {"role": "assistant", "content": "value-for-x"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 7,
+                            "completion_tokens": 3,
+                            "total_tokens": 10,
+                        },
+                    },
+                ),
+            ]
+        )
+
+        from agentloom.providers.gateway import ProviderGateway
+        from agentloom.tools.base import BaseTool
+        from agentloom.tools.registry import ToolRegistry
+
+        class _Lookup(BaseTool):
+            name = "lookup"
+            description = "Look up a key."
+            parameters_schema = {
+                "type": "object",
+                "properties": {"key": {"type": "string"}},
+                "required": ["key"],
+            }
+
+            async def execute(self, **kw: Any) -> Any:
+                return f"value-for-{kw['key']}"
+
+        wf = WorkflowDefinition(
+            name="typed-choice",
+            config=WorkflowConfig(provider="openai", model="gpt-4o-mini"),
+            steps=[
+                StepDefinition(
+                    id="ask",
+                    type=StepType.LLM_CALL,
+                    prompt="pick the right one",
+                    tools=[
+                        ToolDefinition(
+                            name="lookup",
+                            description="d",
+                            parameters={"type": "object"},
+                        )
+                    ],
+                    # Pydantic coerces dict → ``ToolChoiceByName``; the
+                    # step layer must convert back to a plain dict so
+                    # the provider translator sees the expected shape.
+                    tool_choice=ToolChoiceByName(name="lookup"),
+                    max_tool_iterations=3,
+                    retry={"max_retries": 0},
+                )
+            ],
+        )
+        gw = ProviderGateway()
+        gw.register(OpenAIProvider(api_key="k"))
+        reg = ToolRegistry()
+        reg.register(_Lookup())
+        result = await WorkflowEngine(workflow=wf, provider_gateway=gw, tool_registry=reg).run()
+        await gw.close()
+        sr = result.step_results["ask"]
+        assert sr.status == StepStatus.SUCCESS
+        assert sr.output == "value-for-x"
+
+
+class TestLLMStepRunToolLoopDefensiveGuard:
+    """``_run_tool_loop`` raises ``StepError`` when invoked with no
+    gateway. The engine layer guards against this earlier so the
+    branch is defensive — exercise it directly so the line stays
+    covered if the guard order ever changes."""
+
+    async def test_no_gateway_raises_step_error(self) -> None:
+        from unittest.mock import MagicMock
+
+        from agentloom.exceptions import StepError
+        from agentloom.steps.base import StepContext
+        from agentloom.steps.llm_call import LLMCallStep
+
+        step_def = StepDefinition(id="ask", type=StepType.LLM_CALL, prompt="x")
+        ctx = StepContext(
+            step_definition=step_def,
+            state_manager=MagicMock(),
+            provider_gateway=None,
+        )
+        step = LLMCallStep()
+        with pytest.raises(StepError, match="No provider gateway configured"):
+            await step._run_tool_loop(
+                context=ctx,
+                step=step_def,
+                messages=[{"role": "user", "content": "x"}],
+                model="m",
+                provider_kwargs={},
+            )
 
 
 class TestAnthropicNoneSuppressesTools:
