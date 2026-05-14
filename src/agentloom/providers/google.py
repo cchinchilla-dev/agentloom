@@ -300,8 +300,26 @@ class GoogleProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
+        # Mirror ``complete``: surface the tool spec to streaming requests so
+        # ``--stream`` + ``tools=`` is not rejected by extras validation.
+        agentloom_tools = kwargs.pop("agentloom_tools", None)
+        agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         extras = validate_extra_kwargs("google", "stream", kwargs, _GOOGLE_EXTRA_PAYLOAD_KEYS)
         thinking_payload = _build_thinking_config_payload(extras.pop("thinking_config", None))
+        if agentloom_tools:
+            from agentloom.steps._tools import translate_tools_for_google
+
+            extras["tools"] = translate_tools_for_google(agentloom_tools)
+            choice = agentloom_tool_choice or "auto"
+            fn_config: dict[str, Any]
+            if isinstance(choice, dict) and "name" in choice:
+                fn_config = {"mode": "ANY", "allowedFunctionNames": [choice["name"]]}
+            else:
+                mode = {"auto": "AUTO", "required": "ANY", "none": "NONE"}.get(
+                    choice if isinstance(choice, str) else "auto", "AUTO"
+                )
+                fn_config = {"mode": mode}
+            extras["tool_config"] = {"functionCallingConfig": fn_config}
         system_instruction, contents = self._format_messages(messages)
 
         payload: dict[str, Any] = {"contents": contents}

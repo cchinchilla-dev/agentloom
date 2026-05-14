@@ -252,8 +252,23 @@ class OllamaProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
+        # Mirror ``complete``: pop the tool-loop kwargs so ``--stream`` workflows
+        # with ``tools=`` set don't crash on extras validation. Ollama still
+        # ignores ``tool_choice`` at the wire level (logged below) — only
+        # model-side support decides whether the call is honored.
+        agentloom_tools = kwargs.pop("agentloom_tools", None)
+        agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         extras = validate_extra_kwargs("ollama", "stream", kwargs, _OLLAMA_EXTRA_PAYLOAD_KEYS)
         think_param, capture_reasoning = _pop_thinking_config(extras)
+        if agentloom_tools:
+            from agentloom.steps._tools import translate_tools_for_ollama
+
+            extras["tools"] = translate_tools_for_ollama(agentloom_tools)
+            if agentloom_tool_choice not in (None, "auto"):
+                logger.debug(
+                    "Ollama ignores tool_choice=%r; only model-side support matters.",
+                    agentloom_tool_choice,
+                )
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),

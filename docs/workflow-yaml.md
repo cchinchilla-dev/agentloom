@@ -215,7 +215,7 @@ The model can pick tools at runtime. Declare them on the step; the engine dispat
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `tools` | `list[ToolDefinition]` | `[]` | Tool declarations the model can pick. `parameters` is JSON Schema. Names resolve against the registered `ToolRegistry`; an unknown name is reported back as a tool failure rather than aborting the loop. |
-| `tool_choice` | `string \| dict` | `"auto"` | `"auto"` lets the model decide; `"required"` forces a call; `"none"` disables tools for this turn; `{"name": "..."}` pins to a specific tool. Anthropic ignores `"none"` (omits the field); Ollama ignores `tool_choice` entirely (model-side support decides). |
+| `tool_choice` | `string \| dict` | `"auto"` | `"auto"` lets the model decide; `"required"` forces a call; `"none"` disables tools for this turn; `{"name": "..."}` pins to a specific tool. Anthropic has no native `"none"` mode, so when `"none"` is set the adapter drops `tools` from the wire entirely — same observable behavior as the other providers. Ollama ignores `tool_choice` at the wire level (model-side support decides whether a call fires). |
 | `max_tool_iterations` | `int` | `5` | Cap on call→result→re-prompt loops. When hit, `finish_reason` becomes `"max_tool_iterations"` so callers can detect runaway behavior. |
 
 The dispatched tool runs through the existing sandbox (#105), so `http_request`, `shell_command`, `file_read`, `file_write` honor the workflow's `sandbox:` config. Multiple tool calls in one response are dispatched concurrently (anyio task group); results preserve order in the conversation. Cost and tokens accumulate across iterations on the surfaced `StepResult`.
@@ -339,6 +339,8 @@ Enable streaming at the workflow level, per-step, or via CLI:
     ```
 
 Token usage, cost, and time-to-first-token are tracked during streaming.
+
+**Streaming + tools.** `stream: true` is compatible with `tools: [...]` — the request wire carries the tool spec and the final `ProviderResponse` returned by `StreamResponse.to_provider_response()` exposes any `tool_calls` the model emitted. Per-chunk `ToolCallDelta` / `ToolCallComplete` events are not yet surfaced by every adapter (follow-up work); read `tool_calls` after the stream is exhausted for now.
 
 ---
 

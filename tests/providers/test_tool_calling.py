@@ -1107,3 +1107,195 @@ class TestMockProviderToolCallingReplay:
         provider._responses["ask"] = []  # type: ignore[assignment]
         r = await provider.complete(messages=[], model="mock", step_id="ask")
         assert r.content == "fallback"
+
+
+class TestStreamForwardsToolKwargs:
+    """Streaming + tool calling was silently broken: each provider's
+    ``stream()`` called ``validate_extra_kwargs`` before popping the
+    ``agentloom_tools`` / ``agentloom_tool_choice`` keys, so the request
+    raised ``TypeError`` before the wire call. Regression for the bug
+    surfaced by the real-provider validation matrix on 2026-05-14."""
+
+    @respx.mock
+    async def test_openai_stream_accepts_tool_kwargs_and_forwards(self) -> None:
+        # Empty SSE response is fine — we only assert that the request
+        # body carries ``tools`` + ``tool_choice`` and that the call
+        # didn't crash on extras validation.
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, text="data: [DONE]\n\n")
+        )
+        provider = OpenAIProvider(api_key="k")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-4o-mini",
+            agentloom_tools=[
+                ToolDefinition(name="add", description="d", parameters={"type": "object"})
+            ],
+            agentloom_tool_choice="required",
+        )
+        async for _ in sr:
+            pass
+        body = json.loads(route.calls[0].request.content)
+        assert body["tools"][0]["function"]["name"] == "add"
+        assert body["tool_choice"] == "required"
+        await provider.close()
+
+    @respx.mock
+    async def test_openai_stream_forwards_none_choice_explicitly(self) -> None:
+        # ``"none"`` must reach the wire on streaming too — otherwise the
+        # default ``"auto"`` would let the model invoke tools.
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, text="data: [DONE]\n\n")
+        )
+        provider = OpenAIProvider(api_key="k")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-4o-mini",
+            agentloom_tools=[
+                ToolDefinition(name="add", description="d", parameters={"type": "object"})
+            ],
+            agentloom_tool_choice="none",
+        )
+        async for _ in sr:
+            pass
+        body = json.loads(route.calls[0].request.content)
+        assert body["tool_choice"] == "none"
+        await provider.close()
+
+    @respx.mock
+    async def test_anthropic_stream_accepts_tool_kwargs(self) -> None:
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, text="event: message_stop\ndata: {}\n\n")
+        )
+        provider = AnthropicProvider(api_key="k")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-haiku-4-5-20251001",
+            agentloom_tools=[
+                ToolDefinition(name="add", description="d", parameters={"type": "object"})
+            ],
+            agentloom_tool_choice="required",
+        )
+        async for _ in sr:
+            pass
+        body = json.loads(route.calls[0].request.content)
+        assert body["tools"][0]["name"] == "add"
+        assert body["tool_choice"] == {"type": "any"}
+        await provider.close()
+
+    @respx.mock
+    async def test_google_stream_accepts_tool_kwargs(self) -> None:
+        from agentloom.providers.google import GoogleProvider
+
+        route = respx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            "gemini-2.5-flash:streamGenerateContent?alt=sse&key=k"
+        ).mock(return_value=httpx.Response(200, text="data: {}\n\n"))
+        provider = GoogleProvider(api_key="k")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gemini-2.5-flash",
+            agentloom_tools=[
+                ToolDefinition(name="add", description="d", parameters={"type": "object"})
+            ],
+            agentloom_tool_choice={"name": "add"},
+        )
+        async for _ in sr:
+            pass
+        body = json.loads(route.calls[0].request.content)
+        assert body["tools"][0]["function_declarations"][0]["name"] == "add"
+        cfg = body["toolConfig"]["functionCallingConfig"]
+        assert cfg["mode"] == "ANY"
+        assert cfg["allowedFunctionNames"] == ["add"]
+        await provider._client.aclose()
+
+    @respx.mock
+    async def test_ollama_stream_accepts_tool_kwargs(self) -> None:
+        from agentloom.providers.ollama import OllamaProvider
+
+        route = respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(200, text='{"done": true}\n')
+        )
+        provider = OllamaProvider()
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="llama3.1:8b",
+            agentloom_tools=[
+                ToolDefinition(name="add", description="d", parameters={"type": "object"})
+            ],
+            agentloom_tool_choice="required",  # silently ignored at wire level
+        )
+        async for _ in sr:
+            pass
+        body = json.loads(route.calls[0].request.content)
+        # Ollama uses the OpenAI tool shape on the wire.
+        assert body["tools"][0]["function"]["name"] == "add"
+        await provider._client.aclose()
+
+
+class TestAnthropicNoneSuppressesTools:
+    """Anthropic has no native ``tool_choice="none"`` mode — the translator
+    returns ``None`` so the field is omitted, but historically ``tools``
+    still went on the wire, letting the model invoke them anyway. The fix
+    suppresses ``tools`` from the payload entirely when choice is ``"none"``
+    so user intent is honored across providers."""
+
+    @respx.mock
+    async def test_complete_omits_tools_when_choice_is_none(self) -> None:
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "content": [{"type": "text", "text": "10"}],
+                    "model": "claude-haiku-4-5-20251001",
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 5, "output_tokens": 2},
+                },
+            )
+        )
+        provider = AnthropicProvider(api_key="k")
+        await provider.complete(
+            messages=[{"role": "user", "content": "what is 5+5?"}],
+            model="claude-haiku-4-5-20251001",
+            agentloom_tools=[
+                ToolDefinition(name="add", description="d", parameters={"type": "object"})
+            ],
+            agentloom_tool_choice="none",
+        )
+        body = json.loads(route.calls[0].request.content)
+        # Neither key should reach the wire — without this, Claude sees the
+        # tool definition and may decide to call it despite the user's
+        # explicit "no tools this turn".
+        assert "tools" not in body
+        assert "tool_choice" not in body
+        await provider.close()
+
+    @respx.mock
+    async def test_stream_omits_tools_when_choice_is_none(self) -> None:
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, text="event: message_stop\ndata: {}\n\n")
+        )
+        provider = AnthropicProvider(api_key="k")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-haiku-4-5-20251001",
+            agentloom_tools=[
+                ToolDefinition(name="add", description="d", parameters={"type": "object"})
+            ],
+            agentloom_tool_choice="none",
+        )
+        async for _ in sr:
+            pass
+        body = json.loads(route.calls[0].request.content)
+        assert "tools" not in body
+        assert "tool_choice" not in body
+        await provider.close()
+        # Defensive: an empty turn list shouldn't crash — the lookup
+        # returns ``None`` and ``complete`` falls back to the configured
+        # default response rather than raising.
+        from agentloom.providers.mock import MockProvider
+
+        provider = MockProvider(default_response="fallback")
+        provider._responses["ask"] = []  # type: ignore[assignment]
+        r = await provider.complete(messages=[], model="mock", step_id="ask")
+        assert r.content == "fallback"

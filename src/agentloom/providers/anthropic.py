@@ -174,7 +174,14 @@ class AnthropicProvider(BaseProvider):
             "anthropic", "complete", kwargs, _ANTHROPIC_EXTRA_PAYLOAD_KEYS
         )
         capture_reasoning = _translate_thinking_config(extras)
-        if agentloom_tools:
+        if agentloom_tools and agentloom_tool_choice != "none":
+            # Anthropic has no native ``tool_choice="none"`` mode — the
+            # translator returns ``None`` in that case so the field is
+            # omitted, but keeping ``tools`` in the payload still lets the
+            # model invoke them. To honor the user's "do not call tools
+            # this turn" intent, drop ``tools`` from the wire entirely
+            # when choice is ``"none"`` (regression test in
+            # ``test_tool_calling.TestAnthropicNoneSuppressesTools``).
             from agentloom.steps._tools import (
                 translate_tool_choice_for_anthropic,
                 translate_tools_for_anthropic,
@@ -261,10 +268,24 @@ class AnthropicProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
+        # Mirror ``complete``: forward the tool surface to streaming requests
+        # too, otherwise ``--stream`` + ``tools=`` crashes on extras validation.
+        agentloom_tools = kwargs.pop("agentloom_tools", None)
+        agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         extras = validate_extra_kwargs("anthropic", "stream", kwargs, _ANTHROPIC_EXTRA_PAYLOAD_KEYS)
         # Stream does not yet capture ``thinking`` deltas (separate work);
         # the return value is intentionally discarded here.
         _translate_thinking_config(extras)
+        if agentloom_tools and agentloom_tool_choice != "none":
+            from agentloom.steps._tools import (
+                translate_tool_choice_for_anthropic,
+                translate_tools_for_anthropic,
+            )
+
+            extras["tools"] = translate_tools_for_anthropic(agentloom_tools)
+            mapped_choice = translate_tool_choice_for_anthropic(agentloom_tool_choice or "auto")
+            if mapped_choice is not None:
+                extras["tool_choice"] = mapped_choice
         system_prompt, filtered_messages = self._format_messages(messages)
 
         payload: dict[str, Any] = {

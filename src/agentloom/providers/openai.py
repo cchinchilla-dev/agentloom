@@ -220,8 +220,27 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
+        # Mirror ``complete``: pop the tool-loop kwargs before validation so
+        # ``--stream`` workflows with ``tools=`` set don't error out. Without
+        # this, ``validate_extra_kwargs`` rejects ``agentloom_tools`` /
+        # ``agentloom_tool_choice`` and the request never leaves the client.
+        agentloom_tools = kwargs.pop("agentloom_tools", None)
+        agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         extras = validate_extra_kwargs("openai", "stream", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
         extras.pop("thinking_config", None)
+        if agentloom_tools:
+            from agentloom.steps._tools import (
+                translate_tool_choice_for_openai,
+                translate_tools_for_openai,
+            )
+
+            extras["tools"] = translate_tools_for_openai(agentloom_tools)
+            if agentloom_tool_choice is not None:
+                extras["tool_choice"] = (
+                    "none"
+                    if agentloom_tool_choice == "none"
+                    else translate_tool_choice_for_openai(agentloom_tool_choice)
+                )
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
