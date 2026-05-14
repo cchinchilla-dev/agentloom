@@ -108,6 +108,25 @@ class ThinkingConfig(BaseModel):
     capture_reasoning: bool = True
 
 
+class ToolDefinition(BaseModel):
+    """LLM-callable tool declared on an ``llm_call`` step.
+
+    ``parameters`` is a JSON Schema object; provider adapters translate it
+    to each API's native shape. ``name`` resolves against the workflow's
+    ``tool_registry`` for dispatch.
+    """
+
+    name: str
+    description: str = ""
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolChoiceByName(BaseModel):
+    """Pin tool selection to a specific function: ``{"name": "..."}``."""
+
+    name: str
+
+
 class StepDefinition(BaseModel):
     """Definition of a single workflow step."""
 
@@ -154,6 +173,12 @@ class StepDefinition(BaseModel):
 
     # Reasoning / extended thinking
     thinking: ThinkingConfig | None = None
+
+    # Tool calling — LLM picks tools at runtime. Constrained union so YAML
+    # typos fail fast at parse time instead of silently coercing to AUTO.
+    tools: list[ToolDefinition] = Field(default_factory=list)
+    tool_choice: Literal["auto", "required", "none"] | ToolChoiceByName = "auto"
+    max_tool_iterations: int = Field(default=5, ge=1)
 
 
 class SandboxConfig(BaseModel):

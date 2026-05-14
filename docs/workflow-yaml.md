@@ -191,6 +191,37 @@ Per-provider translation:
 
 Reasoning tokens are billed at the output rate. `TokenUsage.reasoning_tokens` and `billable_completion_tokens` track the spend; `calculate_cost()` includes them automatically. See [Reasoning models](providers.md#reasoning-models) for per-provider details, including the Ollama caveat that `eval_count` is not split.
 
+**Tool calling:**
+
+The model can pick tools at runtime. Declare them on the step; the engine dispatches via the workflow's `ToolRegistry`, feeds results back, and re-prompts until the model stops asking for tools.
+
+```yaml
+- id: ask
+  type: llm_call
+  prompt: "What is the user's account balance?"
+  tools:
+    - name: lookup_account
+      description: "Retrieve account info by ID."
+      parameters:
+        type: object
+        properties:
+          account_id: { type: string }
+        required: [account_id]
+  tool_choice: auto              # auto | required | none | {name: lookup_account}
+  max_tool_iterations: 5         # bound the loop; default 5
+  output: answer
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `tools` | `list[ToolDefinition]` | `[]` | Tool declarations the model can pick. `parameters` is JSON Schema. Names resolve against the registered `ToolRegistry`; an unknown name is reported back as a tool failure rather than aborting the loop. |
+| `tool_choice` | `string \| dict` | `"auto"` | `"auto"` lets the model decide; `"required"` forces a call; `"none"` disables tools for this turn; `{"name": "..."}` pins to a specific tool. Anthropic has no native `"none"` mode, so when `"none"` is set the adapter drops `tools` from the wire entirely — same observable behavior as the other providers. Ollama ignores `tool_choice` at the wire level (model-side support decides whether a call fires). |
+| `max_tool_iterations` | `int` | `5` | Cap on call→result→re-prompt loops. When hit, `finish_reason` becomes `"max_tool_iterations"` so callers can detect runaway behavior. |
+
+The dispatched tool runs through the existing sandbox (#105), so `http_request`, `shell_command`, `file_read`, `file_write` honor the workflow's `sandbox:` config. Multiple tool calls in one response are dispatched concurrently (anyio task group); results preserve order in the conversation. Cost and tokens accumulate across iterations on the surfaced `StepResult`.
+
+The legacy `tool` step (static DAG node, author chooses the tool) keeps working unchanged — `tools=` on `llm_call` is the new dynamic, model-driven path.
+
 **Retry config:**
 
 | Field | Type | Default | Description |
@@ -231,7 +262,7 @@ Evaluates conditions against state and activates a target step. Steps not activa
 
 ### `tool`
 
-Executes a registered tool (shell command, HTTP request, etc.).
+Executes a registered tool with author-chosen arguments — the workflow author decides which tool to call, not the model. For model-driven tool selection, use the `tools=` field on an `llm_call` step (see [tool calling](#llm_call) above).
 
 ```yaml
 - id: fetch
@@ -308,6 +339,8 @@ Enable streaming at the workflow level, per-step, or via CLI:
     ```
 
 Token usage, cost, and time-to-first-token are tracked during streaming.
+
+**Streaming + tools.** `stream: true` is compatible with `tools: [...]` — the request wire carries the tool spec and the final `ProviderResponse` returned by `StreamResponse.to_provider_response()` exposes any `tool_calls` the model emitted. Per-chunk `ToolCallDelta` / `ToolCallComplete` events are not yet surfaced by every adapter (follow-up work); read `tool_calls` after the stream is exhausted for now.
 
 ---
 

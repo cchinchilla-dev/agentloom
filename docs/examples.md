@@ -295,3 +295,19 @@ fixtures and CI.
 # Depends on the recording captured from example 31
 agentloom run examples/32_yaml_mock.yaml --lite
 ```
+
+## Tool calling
+
+### 35 — Native tool/function calling
+
+ReAct-style agent: the model decides to invoke `http_request` against `httpbin.org/get`, receives the JSON, and emits a final natural-language answer. Sandbox is on with `allowed_domains: ["httpbin.org"]`, so the model-dispatched call goes through the same security policy as static `tool` steps (#105).
+
+**Demonstrates:** `tools` declaration on `llm_call`, `tool_choice: auto`, `max_tool_iterations`, model-driven dispatch via `ToolRegistry`, sandboxed tool execution, replay support for tool-iteration loops.
+
+```bash
+# Mock-replay against the committed recording (no API calls)
+agentloom run examples/35_tool_calling.yaml --lite
+
+# Real call: pass --provider + --model to drive a live model
+agentloom run examples/35_tool_calling.yaml --provider openai --model gpt-4o-mini
+```

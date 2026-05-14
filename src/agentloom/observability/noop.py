@@ -139,6 +139,9 @@ class NoopObserver:
     def on_provider_error(self, provider: str, error_type: str, **kwargs: Any) -> None:
         pass
 
+    def on_tool_call(self, **kwargs: Any) -> None:
+        pass
+
     def on_stream_response(self, provider: str, model: str, ttft_s: float, **kwargs: Any) -> None:
         pass
 

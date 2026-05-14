@@ -145,6 +145,14 @@ class GoogleProvider(BaseProvider):
                 content = msg.get("content", "")
                 system_instruction = content if isinstance(content, str) else str(content)
                 continue
+            # Tool-loop messages already in Gemini wire shape (role=``model``
+            # with ``functionCall`` parts, role=``function`` with
+            # ``functionResponse`` parts) — pass them through verbatim so
+            # iteration 2+ preserves the call context. Identified by the
+            # presence of ``parts`` instead of ``content``.
+            if "parts" in msg:
+                contents.append(msg)
+                continue
             role = "user" if msg["role"] == "user" else "model"
             content = msg.get("content", "")
             if isinstance(content, str):
@@ -180,8 +188,27 @@ class GoogleProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
+        agentloom_tools = kwargs.pop("agentloom_tools", None)
+        agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         extras = validate_extra_kwargs("google", "complete", kwargs, _GOOGLE_EXTRA_PAYLOAD_KEYS)
         thinking_payload = _build_thinking_config_payload(extras.pop("thinking_config", None))
+        if agentloom_tools:
+            from agentloom.steps._tools import translate_tools_for_google
+
+            extras["tools"] = translate_tools_for_google(agentloom_tools)
+            # ``{"name": "fn"}`` selects a specific function via Gemini's
+            # ANY mode + ``allowedFunctionNames``. Plain strings map to
+            # AUTO / ANY / NONE; anything else falls back to AUTO.
+            choice = agentloom_tool_choice or "auto"
+            fn_config: dict[str, Any]
+            if isinstance(choice, dict) and "name" in choice:
+                fn_config = {"mode": "ANY", "allowedFunctionNames": [choice["name"]]}
+            else:
+                mode = {"auto": "AUTO", "required": "ANY", "none": "NONE"}.get(
+                    choice if isinstance(choice, str) else "auto", "AUTO"
+                )
+                fn_config = {"mode": mode}
+            extras["tool_config"] = {"functionCallingConfig": fn_config}
         system_instruction, contents = self._format_messages(messages)
 
         payload: dict[str, Any] = {"contents": contents}
@@ -217,9 +244,10 @@ class GoogleProvider(BaseProvider):
         candidates = data.get("candidates", [])
         content = ""
         reasoning_content: str | None = None
+        content_parts: list[dict[str, Any]] = []
         if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            content, reasoning_trace = _parse_gemini_content_parts(parts)
+            content_parts = candidates[0].get("content", {}).get("parts", []) or []
+            content, reasoning_trace = _parse_gemini_content_parts(content_parts)
             if reasoning_trace:
                 reasoning_content = reasoning_trace
 
@@ -248,6 +276,10 @@ class GoogleProvider(BaseProvider):
         if candidates:
             finish_reason = candidates[0].get("finishReason")
 
+        from agentloom.steps._tools import parse_tool_calls_from_google
+
+        tool_calls = parse_tool_calls_from_google(content_parts)
+
         return ProviderResponse(
             content=content,
             model=model,
@@ -257,6 +289,7 @@ class GoogleProvider(BaseProvider):
             reasoning_content=reasoning_content,
             raw_response=data,
             finish_reason=finish_reason,
+            tool_calls=tool_calls,
         )
 
     async def stream(
@@ -267,8 +300,26 @@ class GoogleProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
+        # Mirror ``complete``: surface the tool spec to streaming requests so
+        # ``--stream`` + ``tools=`` is not rejected by extras validation.
+        agentloom_tools = kwargs.pop("agentloom_tools", None)
+        agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         extras = validate_extra_kwargs("google", "stream", kwargs, _GOOGLE_EXTRA_PAYLOAD_KEYS)
         thinking_payload = _build_thinking_config_payload(extras.pop("thinking_config", None))
+        if agentloom_tools:
+            from agentloom.steps._tools import translate_tools_for_google
+
+            extras["tools"] = translate_tools_for_google(agentloom_tools)
+            choice = agentloom_tool_choice or "auto"
+            fn_config: dict[str, Any]
+            if isinstance(choice, dict) and "name" in choice:
+                fn_config = {"mode": "ANY", "allowedFunctionNames": [choice["name"]]}
+            else:
+                mode = {"auto": "AUTO", "required": "ANY", "none": "NONE"}.get(
+                    choice if isinstance(choice, str) else "auto", "AUTO"
+                )
+                fn_config = {"mode": mode}
+            extras["tool_config"] = {"functionCallingConfig": fn_config}
         system_instruction, contents = self._format_messages(messages)
 
         payload: dict[str, Any] = {"contents": contents}

@@ -304,6 +304,44 @@ class WorkflowObserver:
         else:
             span.end()
 
+    def on_tool_call(
+        self,
+        *,
+        step_id: str,
+        call_id: str,
+        tool_name: str,
+        args_hash: str,
+        result_hash: str,
+        duration_ms: float,
+        success: bool,
+        **kwargs: Any,
+    ) -> None:
+        """Record a model-dispatched tool call.
+
+        Emits a child span under the active step span carrying the canonical
+        ``execute_tool {name}`` name plus tool attrs, and records the
+        per-tool counter + histogram. Args / result are hashed (not raw)
+        so PII never lands on the trace.
+        """
+        if self._metrics:
+            self._metrics.record_tool_call(tool_name, success, duration_ms / 1000.0)
+        if self._tracing:
+            attrs: dict[str, Any] = {
+                SpanAttr.TOOL_CALL_ID: call_id,
+                SpanAttr.TOOL_NAME: tool_name,
+                SpanAttr.TOOL_ARGS_HASH: args_hash,
+                SpanAttr.TOOL_RESULT_HASH: result_hash,
+                SpanAttr.TOOL_DURATION_MS: duration_ms,
+                SpanAttr.TOOL_SUCCESS: success,
+            }
+            if self._run_id:
+                attrs[SpanAttr.WORKFLOW_RUN_ID] = self._run_id
+            span = self._tracing.start_span(
+                SpanName.GEN_AI_TOOL_CALL.format(tool_name=tool_name),
+                attributes=attrs,
+            )
+            self._tracing.end_span(span)
+
     def on_provider_error(
         self,
         provider: str,

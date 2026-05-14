@@ -78,6 +78,28 @@ class TestMetricsEnabled:
         if mm._backend == "otel":
             mm.shutdown()
 
+    def test_record_tool_call(self) -> None:
+        # Records both the per-tool counter (with status label) and the
+        # latency histogram. Status maps to ``"success"`` / ``"failure"``
+        # so dashboards can derive a per-tool failure rate.
+        from unittest.mock import MagicMock
+
+        mm = MetricsManager(enabled=True)
+        if mm._backend != "otel":
+            return
+        counter_spy = MagicMock()
+        histogram_spy = MagicMock()
+        mm._tool_call_counter = counter_spy
+        mm._tool_call_histogram = histogram_spy
+        mm.record_tool_call("add", success=True, duration_s=0.42)
+        mm.record_tool_call("add", success=False, duration_s=1.1)
+
+        counter_spy.add.assert_any_call(1, {"tool_name": "add", "status": "success"})
+        counter_spy.add.assert_any_call(1, {"tool_name": "add", "status": "failure"})
+        histogram_spy.record.assert_any_call(0.42, {"tool_name": "add"})
+        histogram_spy.record.assert_any_call(1.1, {"tool_name": "add"})
+        mm.shutdown()
+
     def test_reasoning_tokens_metric_emitted(self) -> None:
         # When ``reasoning_tokens`` is non-zero, ``record_tokens`` must
         # observe the histogram a third time with

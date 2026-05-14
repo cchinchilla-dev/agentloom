@@ -13,6 +13,7 @@ from agentloom.core.results import PromptMetadata, StepResult, StepStatus
 from agentloom.core.templates import SafeFormatDict, build_template_vars
 from agentloom.exceptions import StepError
 from agentloom.observability.schema import SpanAttr
+from agentloom.providers.base import ProviderResponse
 from agentloom.providers.multimodal import (
     ContentBlock,
     build_multimodal_content,
@@ -55,6 +56,100 @@ def _build_prompt_metadata(
 
 class LLMCallStep(BaseStep):
     """Executes an LLM call with prompt template rendering from state."""
+
+    @staticmethod
+    async def _run_tool_loop(
+        *,
+        context: StepContext,
+        step: StepDefinition,
+        messages: list[dict[str, Any]],
+        model: str,
+        provider_kwargs: dict[str, Any],
+    ) -> ProviderResponse:
+        """Iterate complete() → dispatch tools → re-prompt until done.
+
+        Cost and tokens accumulate across iterations. ``max_tool_iterations``
+        bounds the loop; collapses to a single call when ``tools`` is empty.
+        """
+        from agentloom.core.results import TokenUsage
+        from agentloom.steps._tools import (
+            build_assistant_message_with_tool_calls,
+            build_tool_result_messages,
+            dispatch_tool_calls,
+        )
+
+        accumulated_prompt = 0
+        accumulated_completion = 0
+        accumulated_reasoning = 0
+        accumulated_cost = 0.0
+
+        gateway = context.provider_gateway
+        if gateway is None:
+            raise StepError(step.id, "No provider gateway configured")
+        # ``max_tool_iterations`` is validated >= 1 on the model so the
+        # loop runs at least once; ``response`` is therefore guaranteed
+        # to be assigned when we exit.
+        response: ProviderResponse | None = None
+        for _ in range(step.max_tool_iterations):
+            response = await gateway.complete(
+                messages=messages,
+                model=model,
+                temperature=step.temperature,
+                max_tokens=step.max_tokens,
+                step_id=step.id,
+                **provider_kwargs,
+            )
+            accumulated_prompt += response.usage.prompt_tokens
+            accumulated_completion += response.usage.completion_tokens
+            accumulated_reasoning += response.usage.reasoning_tokens
+            accumulated_cost += response.cost_usd
+
+            if not response.tool_calls or not step.tools:
+                # Replace the response usage with the accumulated totals so
+                # the caller sees the full conversation cost.
+                response.usage = TokenUsage(
+                    prompt_tokens=accumulated_prompt,
+                    completion_tokens=accumulated_completion,
+                    total_tokens=(
+                        accumulated_prompt + accumulated_completion + accumulated_reasoning
+                    ),
+                    reasoning_tokens=accumulated_reasoning,
+                )
+                response.cost_usd = accumulated_cost
+                return response
+
+            if context.tool_registry is None:
+                raise StepError(
+                    step.id,
+                    "Tool registry required for tools= declaration but not configured.",
+                )
+
+            results = await dispatch_tool_calls(
+                response.tool_calls,
+                context.tool_registry,
+                observer=context.observer,
+                step_id=step.id,
+            )
+            messages.append(
+                build_assistant_message_with_tool_calls(
+                    response.provider, response.content, response.tool_calls
+                )
+            )
+            messages.extend(build_tool_result_messages(response.provider, results))
+
+        # Loop exhausted; surface the last response with the cap noted as
+        # finish_reason so callers can detect it. ``response`` is set
+        # because ``max_tool_iterations`` is validated >= 1.
+        assert response is not None
+        response.usage = TokenUsage(
+            prompt_tokens=accumulated_prompt,
+            completion_tokens=accumulated_completion,
+            total_tokens=(accumulated_prompt + accumulated_completion + accumulated_reasoning),
+            reasoning_tokens=accumulated_reasoning,
+        )
+        response.cost_usd = accumulated_cost
+        response.finish_reason = "max_tool_iterations"
+        return response
 
     @staticmethod
     def _build_thinking_kwargs(step: StepDefinition) -> dict[str, Any]:
@@ -148,14 +243,29 @@ class LLMCallStep(BaseStep):
             )
 
         provider_kwargs = self._build_thinking_kwargs(step)
+        if step.tools:
+            from agentloom.core.models import ToolChoiceByName
+
+            provider_kwargs["agentloom_tools"] = step.tools
+            # Normalize the typed-union ``tool_choice`` to the dict form
+            # the provider translators expect — keeps the wire layer
+            # provider-shape-agnostic.
+            choice: Any = step.tool_choice
+            if isinstance(choice, ToolChoiceByName):
+                choice = {"name": choice.name}
+            provider_kwargs["agentloom_tool_choice"] = choice
+
+        # Tool-call loop: re-prompt with tool results until the model
+        # stops requesting tools or we exhaust ``max_tool_iterations``.
+        # Costs and tokens accumulate across iterations; only the final
+        # response's content is exposed to the caller.
         try:
-            response = await context.provider_gateway.complete(
+            response = await self._run_tool_loop(
+                context=context,
+                step=step,
                 messages=messages,
                 model=model,
-                temperature=step.temperature,
-                max_tokens=step.max_tokens,
-                step_id=step.id,
-                **provider_kwargs,
+                provider_kwargs=provider_kwargs,
             )
         except Exception as e:
             duration = (time.monotonic() - start) * 1000

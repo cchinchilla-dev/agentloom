@@ -64,6 +64,8 @@ class MetricsManager:
         self._attachment_counter: Any = None
         self._stream_counter: Any = None
         self._ttft_histogram: Any = None
+        self._tool_call_counter: Any = None
+        self._tool_call_histogram: Any = None
         self._mock_replay_counter: Any = None
         self._recording_capture_counter: Any = None
         self._recording_latency_histogram: Any = None
@@ -151,6 +153,18 @@ class MetricsManager:
         self._stream_counter = meter.create_counter(
             "agentloom_stream_responses_total",
             description="Total streamed LLM responses",
+        )
+        # Tool calls dispatched by the model. Tagged by tool name +
+        # status so dashboards can split successes from failures and spot
+        # tools that consistently fail or hang.
+        self._tool_call_counter = meter.create_counter(
+            "agentloom_tool_calls_total",
+            description="Total model-dispatched tool calls",
+        )
+        self._tool_call_histogram = meter.create_histogram(
+            "agentloom_tool_call_duration_seconds",
+            description="Tool-call execution duration",
+            unit="s",
         )
         # Canonical OTel GenAI metric — replaces the AgentLoom-prefixed
         # ``agentloom_time_to_first_token_seconds`` with the spec name.
@@ -269,6 +283,17 @@ class MetricsManager:
             "agentloom_stream_responses_total",
             "Total streamed LLM responses",
             ["provider", "model"],
+        )
+        self._prom_counters["tool_calls"] = prom.Counter(
+            "agentloom_tool_calls_total",
+            "Total model-dispatched tool calls",
+            ["tool_name", "status"],
+        )
+        self._prom_histograms["tool_call_duration"] = prom.Histogram(
+            "agentloom_tool_call_duration_seconds",
+            "Tool-call execution duration",
+            ["tool_name"],
+            buckets=[0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60],
         )
         self._prom_histograms["time_to_first_chunk"] = prom.Histogram(
             "gen_ai_client_operation_time_to_first_chunk_seconds",
@@ -464,6 +489,24 @@ class MetricsManager:
             self._attachment_counter.add(count, {"step_type": step_type})
         else:  # pragma: no cover — prom fallback
             self._prom_counters["attachments"].labels(step_type=step_type).inc(count)
+
+    def record_tool_call(self, tool_name: str, success: bool, duration_s: float) -> None:
+        """Record a model-dispatched tool call.
+
+        Counter is tagged ``status=success|failure`` so dashboards can
+        plot a per-tool failure rate; histogram tracks execution latency.
+        """
+        if not self._enabled:
+            return
+        status = "success" if success else "failure"
+        if self._backend == "otel":
+            self._tool_call_counter.add(1, {"tool_name": tool_name, "status": status})
+            self._tool_call_histogram.record(duration_s, {"tool_name": tool_name})
+        else:  # pragma: no cover — prom fallback
+            self._prom_counters["tool_calls"].labels(tool_name=tool_name, status=status).inc()
+            self._prom_histograms["tool_call_duration"].labels(tool_name=tool_name).observe(
+                duration_s
+            )
 
     def record_stream_response(self, provider: str, model: str) -> None:
         if not self._enabled:

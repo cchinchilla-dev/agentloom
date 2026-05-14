@@ -80,6 +80,13 @@ class OpenAIProvider(BaseProvider):
         """Convert internal content blocks to OpenAI's vision/audio format."""
         formatted: list[dict[str, Any]] = []
         for msg in messages:
+            # Tool-loop messages (assistant with ``tool_calls``, role=``tool``
+            # with ``tool_call_id``) ship in OpenAI wire shape directly —
+            # pass them through verbatim so iteration 2+ sees the prior
+            # decision and result.
+            if "tool_calls" in msg or msg.get("role") == "tool":
+                formatted.append(msg)
+                continue
             content = msg.get("content", "")
             if isinstance(content, str):
                 formatted.append({"role": msg["role"], "content": content})
@@ -126,11 +133,32 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
+        # Tool definitions arrive as ``ToolDefinition`` Pydantic instances —
+        # translate to OpenAI's wire format before forwarding so callers
+        # don't have to know provider-specific shapes.
+        agentloom_tools = kwargs.pop("agentloom_tools", None)
+        agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         extras = validate_extra_kwargs("openai", "complete", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
         # ``thinking_config`` is accepted at the step layer for YAML
         # uniformity but has no chat-completions equivalent — drop it
         # before splatting extras into the request body.
         extras.pop("thinking_config", None)
+        if agentloom_tools:
+            from agentloom.steps._tools import (
+                translate_tool_choice_for_openai,
+                translate_tools_for_openai,
+            )
+
+            extras["tools"] = translate_tools_for_openai(agentloom_tools)
+            # ``"none"`` must be forwarded explicitly — when ``tools`` is set
+            # OpenAI defaults to ``tool_choice="auto"``, so silently dropping
+            # the field would disable the user's request to disable tools.
+            if agentloom_tool_choice is not None:
+                extras["tool_choice"] = (
+                    "none"
+                    if agentloom_tool_choice == "none"
+                    else translate_tool_choice_for_openai(agentloom_tool_choice)
+                )
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),
@@ -149,7 +177,8 @@ class OpenAIProvider(BaseProvider):
         raise_for_status("openai", response)
 
         data = response.json()
-        content = data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
+        content = message.get("content") or ""
         usage_data = data.get("usage", {})
         # o-series returns reasoning tokens under completion_tokens_details;
         # ordinary gpt-* responses omit the field and resolve to 0.
@@ -168,6 +197,10 @@ class OpenAIProvider(BaseProvider):
             reasoning_tokens=usage.reasoning_tokens,
         )
 
+        from agentloom.steps._tools import parse_tool_calls_from_openai
+
+        tool_calls = parse_tool_calls_from_openai(message)
+
         return ProviderResponse(
             content=content,
             model=data.get("model", model),
@@ -176,6 +209,7 @@ class OpenAIProvider(BaseProvider):
             cost_usd=cost,
             raw_response=data,
             finish_reason=data["choices"][0].get("finish_reason"),
+            tool_calls=tool_calls,
         )
 
     async def stream(
@@ -186,8 +220,27 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
+        # Mirror ``complete``: pop the tool-loop kwargs before validation so
+        # ``--stream`` workflows with ``tools=`` set don't error out. Without
+        # this, ``validate_extra_kwargs`` rejects ``agentloom_tools`` /
+        # ``agentloom_tool_choice`` and the request never leaves the client.
+        agentloom_tools = kwargs.pop("agentloom_tools", None)
+        agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         extras = validate_extra_kwargs("openai", "stream", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
         extras.pop("thinking_config", None)
+        if agentloom_tools:
+            from agentloom.steps._tools import (
+                translate_tool_choice_for_openai,
+                translate_tools_for_openai,
+            )
+
+            extras["tools"] = translate_tools_for_openai(agentloom_tools)
+            if agentloom_tool_choice is not None:
+                extras["tool_choice"] = (
+                    "none"
+                    if agentloom_tool_choice == "none"
+                    else translate_tool_choice_for_openai(agentloom_tool_choice)
+                )
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._format_messages(messages),

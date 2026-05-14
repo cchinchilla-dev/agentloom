@@ -109,9 +109,11 @@ class SpanAttr:
     PROVIDER_ATTEMPT_OUTCOME = "agentloom.provider.attempt_outcome"
 
     # Tool calls
+    TOOL_CALL_ID = "tool.call_id"
     TOOL_NAME = "tool.name"
     TOOL_ARGS_HASH = "tool.args_hash"
     TOOL_RESULT_HASH = "tool.result_hash"
+    TOOL_DURATION_MS = "tool.duration_ms"
     TOOL_SUCCESS = "tool.success"
 
     # Prompt metadata (AgentLoom-specific, no full-prompt capture by default)
@@ -180,6 +182,12 @@ class MetricName:
 
     # Streaming response counter (no OTel equivalent — AgentLoom-specific).
     STREAM_RESPONSES_TOTAL = "agentloom_stream_responses_total"
+
+    # Tool calls dispatched by the model. Counter tagged by tool name +
+    # status (success / failure); histogram captures execution latency
+    # per tool.
+    TOOL_CALLS_TOTAL = "agentloom_tool_calls_total"
+    TOOL_CALL_DURATION_SECONDS = "agentloom_tool_call_duration_seconds"
 
     # Resilience gauges
     CIRCUIT_BREAKER_STATE = "agentloom_circuit_breaker_state"
