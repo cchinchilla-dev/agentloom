@@ -10,6 +10,7 @@ from typing import Any, Protocol, runtime_checkable
 import httpx
 
 from agentloom.core.models import WebhookConfig
+from agentloom.core.redact import RedactionPolicy, redact_state
 from agentloom.core.templates import SafeFormatDict, build_template_vars
 from agentloom.exceptions import SandboxViolationError
 from agentloom.tools.sandbox import ToolSandbox, default_deny_webhook_target
@@ -32,13 +33,21 @@ _BACKOFF_BASE = 2.0
 
 @dataclass(frozen=True)
 class WebhookContext:
-    """Contextual data sent alongside the webhook payload."""
+    """Contextual data sent alongside the webhook payload.
+
+    ``redaction_policy`` is honoured when rendering ``body_template`` — any
+    state value matching the policy renders as a stable sentinel so the
+    webhook destination never sees the plaintext secret. The fallback
+    payload (no template) carries no state, so the policy has no effect
+    there.
+    """
 
     run_id: str
     step_id: str
     workflow_name: str
     state: dict[str, Any] = field(default_factory=dict)
     callback_base_url: str = ""
+    redaction_policy: RedactionPolicy | None = None
 
 
 def _build_payload(config: WebhookConfig, context: WebhookContext) -> str:
@@ -48,7 +57,12 @@ def _build_payload(config: WebhookConfig, context: WebhookContext) -> str:
     from the workflow state.  Otherwise a default payload is generated.
     """
     if config.body_template:
-        template_vars = build_template_vars(context.state)
+        rendered_state = (
+            redact_state(context.state, context.redaction_policy)
+            if context.redaction_policy
+            else context.state
+        )
+        template_vars = build_template_vars(rendered_state)
         template_vars["run_id"] = context.run_id
         template_vars["step_id"] = context.step_id
         template_vars["workflow_name"] = context.workflow_name

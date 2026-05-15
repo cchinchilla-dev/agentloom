@@ -232,6 +232,26 @@ class WorkflowConfig(BaseModel):
     )
 
 
+class StateKeyConfig(BaseModel):
+    """Per-key state metadata, currently used only for redaction.
+
+    YAML usage::
+
+        state:
+          api_key: "..."
+        state_schema:
+          api_key: { redact: true }
+
+    Glob keys are supported (``"*token*"``); ``redact: true`` causes the
+    value to be replaced with a stable ``<REDACTED:sha256=...>`` sentinel
+    in every persisted artefact (checkpoint, run history, OTel span event,
+    webhook body). The in-memory state stays plaintext so steps that
+    legitimately need the secret keep working.
+    """
+
+    redact: bool = False
+
+
 class WorkflowDefinition(BaseModel):
     """Complete workflow definition — the top-level schema for YAML files."""
 
@@ -240,6 +260,7 @@ class WorkflowDefinition(BaseModel):
     description: str = ""
     config: WorkflowConfig = Field(default_factory=WorkflowConfig)
     state: dict[str, Any] = Field(default_factory=dict)
+    state_schema: dict[str, StateKeyConfig] = Field(default_factory=dict)
     steps: list[StepDefinition]
 
     def get_step(self, step_id: str) -> StepDefinition | None:
@@ -252,3 +273,7 @@ class WorkflowDefinition(BaseModel):
     def step_ids(self) -> list[str]:
         """Return all step IDs in definition order."""
         return [s.id for s in self.steps]
+
+    def redaction_patterns(self) -> list[str]:
+        """Glob patterns flagged ``redact: true`` in the state schema."""
+        return [key for key, cfg in self.state_schema.items() if cfg.redact]

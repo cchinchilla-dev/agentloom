@@ -14,6 +14,7 @@ import anyio
 from agentloom.checkpointing.base import BaseCheckpointer, CheckpointData
 from agentloom.core.models import StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
+from agentloom.core.redact import RedactionPolicy, redact_state
 from agentloom.core.results import (
     StepResult,
     StepStatus,
@@ -108,6 +109,14 @@ class WorkflowEngine:
         self._completed_steps: set[str] = set()
         self._checkpoint_created_at = datetime.now(UTC).isoformat()
 
+        # Build the redaction policy once at startup — combines the
+        # workflow-level ``state_schema:`` declarations with the
+        # ``AGENTLOOM_REDACT_STATE_KEYS`` env var so a deployment-wide
+        # baseline (env) can coexist with per-workflow overrides (YAML).
+        self._redaction_policy = RedactionPolicy(
+            workflow.redaction_patterns()
+        ).merge(RedactionPolicy.from_env())
+
         # Wire observer into gateway for circuit breaker events
         if observer and provider_gateway:
             set_obs = getattr(provider_gateway, "set_observer", None)
@@ -197,11 +206,25 @@ class WorkflowEngine:
             if result.status == StepStatus.SUCCESS
         )
 
+        # Apply the redaction policy on the way to disk. The in-memory
+        # ``self.state`` stays plaintext so a subsequent step that
+        # interpolates ``{state.api_key}`` keeps working; only the
+        # serialized snapshot carries the sentinel. The workflow definition
+        # is dumped too — its ``state:`` block carries the literal YAML seed
+        # so it needs the same treatment, otherwise the secret reappears
+        # under ``workflow_definition.state``.
+        persisted_state = redact_state(state_snapshot, self._redaction_policy)
+        workflow_dump = self.workflow.model_dump()
+        if self._redaction_policy and "state" in workflow_dump:
+            workflow_dump["state"] = redact_state(
+                workflow_dump["state"], self._redaction_policy
+            )
+
         data = CheckpointData(
             workflow_name=self.workflow.name,
             run_id=self.run_id,
-            workflow_definition=self.workflow.model_dump(),
-            state=state_snapshot,
+            workflow_definition=workflow_dump,
+            state=persisted_state,
             step_results={k: v.model_dump() for k, v in step_results.items()},
             completed_steps=completed_steps,
             status=status,
@@ -562,6 +585,7 @@ class WorkflowEngine:
             workflow_model=self.workflow.config.model,
             workflow_provider=self.workflow.config.provider,
             sandbox_config=self.workflow.config.sandbox,
+            redaction_policy=self._redaction_policy,
             observer=self.observer,
             stream=should_stream,
             on_stream_chunk=self._stream_callback,

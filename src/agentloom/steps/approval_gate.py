@@ -85,6 +85,7 @@ class ApprovalGateStep(BaseStep):
             step_id=step.id,
             workflow_name=context.workflow_name,
             state=state_snapshot,
+            redaction_policy=context.redaction_policy,
         )
 
         # Build a ToolSandbox from the workflow's declared sandbox config so

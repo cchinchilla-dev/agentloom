@@ -191,16 +191,34 @@ class LLMCallStep(BaseStep):
 
         # Opt-in full-prompt capture as a span event so trusted environments
         # can debug from Jaeger without re-running. Off by default — see
-        # ``WorkflowConfig.capture_prompts``.
+        # ``WorkflowConfig.capture_prompts``. When a redaction policy is in
+        # effect the captured copy is re-rendered against the redacted state
+        # so secret values never reach the trace backend.
         if context.capture_prompts and context.observer is not None:
             attach = getattr(context.observer, "attach_step_event", None)
             if callable(attach):
+                captured_prompt = rendered_prompt
+                captured_system = rendered_system or ""
+                if context.redaction_policy:
+                    from agentloom.core.redact import redact_state as _redact_state
+
+                    safe_state = _redact_state(state_snapshot, context.redaction_policy)
+                    safe_vars = build_template_vars(safe_state)
+                    try:
+                        captured_prompt = step.prompt.format_map(SafeFormatDict(safe_vars))
+                        if step.system_prompt:
+                            captured_system = step.system_prompt.format_map(
+                                SafeFormatDict(safe_vars)
+                            )
+                    except (KeyError, ValueError):  # pragma: no cover — already validated
+                        captured_prompt = rendered_prompt
+                        captured_system = rendered_system or ""
                 attach(
                     step.id,
                     SpanAttr.PROMPT_CAPTURED_EVENT,
                     {
-                        "prompt": rendered_prompt,
-                        "system_prompt": rendered_system or "",
+                        "prompt": captured_prompt,
+                        "system_prompt": captured_system,
                     },
                 )
 

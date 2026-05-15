@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agentloom.checkpointing.base import BaseCheckpointer
 from agentloom.core.models import SandboxConfig, StepDefinition
+from agentloom.core.redact import RedactionPolicy
 from agentloom.core.results import StepResult
 
 # Protocols exported from core.protocols describe the contract each of
@@ -42,6 +43,7 @@ class StepContext(BaseModel):
         False  # WorkflowConfig.capture_prompts — gate for span-event prompt capture
     )
     sandbox_config: SandboxConfig = Field(default_factory=SandboxConfig)
+    redaction_policy: RedactionPolicy = Field(default_factory=RedactionPolicy)
     observer: Any | None = None  # ObserverProtocol
     stream: bool = False
     on_stream_chunk: Callable[[str, str], None] | None = None

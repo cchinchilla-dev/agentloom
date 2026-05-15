@@ -382,3 +382,112 @@ class TestResumeWithRouter:
         assert result.step_results["general"].status == StepStatus.SKIPPED
         # Provider called once (for billing only)
         assert len(provider.calls) == 1
+
+
+class TestCheckpointStateRedaction:
+    """Checkpoint files must NOT carry plaintext for redacted keys.
+
+    Approval-gate workflows always checkpoint on pause, so any state key
+    flagged via ``state_schema: {key: {redact: true}}`` or
+    ``AGENTLOOM_REDACT_STATE_KEYS`` has to be masked before the JSON
+    lands on disk — both the runtime snapshot and the literal ``state:``
+    block carried inside ``workflow_definition``.
+    """
+
+    async def test_state_keys_are_redacted_in_persisted_file(
+        self, tmp_path: Path
+    ) -> None:
+        from agentloom.core.models import StateKeyConfig
+
+        wf = WorkflowDefinition(
+            name="redact-test",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={
+                "api_key": "sk-secret-do-not-log-AAAAAAAA",
+                "password": "P@ssw0rd!",
+                "jwt": "eyJhbGciOi.payload.sig",
+                "user": "alice",
+            },
+            state_schema={
+                "api_key": StateKeyConfig(redact=True),
+                "password": StateKeyConfig(redact=True),
+                "jwt": StateKeyConfig(redact=True),
+            },
+            steps=[
+                StepDefinition(
+                    id="noop",
+                    type=StepType.LLM_CALL,
+                    prompt="Hello {state.user}",
+                    output="ans",
+                )
+            ],
+        )
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, priority=0)
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        engine = WorkflowEngine(workflow=wf, provider_gateway=gw, checkpointer=cp)
+        await engine.run()
+        await engine._save_checkpoint("success")
+
+        files = list(tmp_path.glob("*.json"))
+        assert files, "expected a checkpoint file to be written"
+        raw = files[0].read_text()
+        for secret in (
+            "sk-secret-do-not-log-AAAAAAAA",
+            "P@ssw0rd!",
+            "eyJhbGciOi.payload.sig",
+        ):
+            assert secret not in raw, f"{secret!r} leaked into {files[0]}"
+        assert "alice" in raw
+
+    async def test_redaction_applies_to_workflow_definition_state_block(
+        self, tmp_path: Path
+    ) -> None:
+        from agentloom.core.models import StateKeyConfig
+
+        wf = WorkflowDefinition(
+            name="redact-test",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={"api_key": "sk-yaml-seed"},
+            state_schema={"api_key": StateKeyConfig(redact=True)},
+            steps=[
+                StepDefinition(
+                    id="noop", type=StepType.LLM_CALL, prompt="hi", output="ans"
+                )
+            ],
+        )
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, priority=0)
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        engine = WorkflowEngine(workflow=wf, provider_gateway=gw, checkpointer=cp)
+        await engine.run()
+        await engine._save_checkpoint("success")
+
+        import json
+
+        doc = json.loads(next(tmp_path.glob("*.json")).read_text())
+        assert "sk-yaml-seed" not in json.dumps(doc)
+
+    async def test_no_redaction_keeps_plaintext(self, tmp_path: Path) -> None:
+        wf = WorkflowDefinition(
+            name="no-redact",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={"api_key": "plain"},
+            steps=[
+                StepDefinition(
+                    id="noop", type=StepType.LLM_CALL, prompt="hi", output="ans"
+                )
+            ],
+        )
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, priority=0)
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        engine = WorkflowEngine(workflow=wf, provider_gateway=gw, checkpointer=cp)
+        await engine.run()
+        await engine._save_checkpoint("success")
+
+        raw = next(tmp_path.glob("*.json")).read_text()
+        assert "plain" in raw
