@@ -33,8 +33,13 @@ class DotAccessDict:
         self._strict = strict
 
     def __getattr__(self, name: str) -> object:
-        if name.startswith("_"):
-            return object.__getattribute__(self, name)
+        # ``__getattr__`` is invoked only when the normal ``__dict__`` /
+        # type lookup misses — internal access (``self._data`` /
+        # ``self._strict``) never reaches here. Refusing to fall back to
+        # ``object.__getattribute__`` closes the runtime half of the
+        # router subscript bypass: previously ``state['_data']`` and
+        # ``state['__class__']`` reached the wrapper's raw attributes
+        # and leaked the underlying dict / type.
         if name not in self._data:
             if self._strict:
                 raise TemplateError(f"state.{name}")

@@ -208,3 +208,96 @@ class TestRouterStepPropagatesSecurityError:
         )
         with pytest.raises(SecurityError):
             await step.execute(context)
+
+
+class TestRejectsSubscriptDunderBypass:
+    """``state['__class__']`` and ``state['_secret']`` must be blocked.
+
+    Previously the validator only inspected ``ast.Attribute`` nodes,
+    leaving string-constant subscripts as an end-run around the dunder
+    gate. The fix applies ``_reject_attribute`` to ``ast.Subscript``
+    slices too when the slice is an ``ast.Constant`` of type ``str``.
+    """
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "state['__class__']",
+            "state['_data']",
+            "state['_secret']",
+            "state['_data']['_secret']",
+            "state['__init__']",
+            "state['__dict__']",
+            "state['mro']",
+            "state['format_map']",
+        ],
+    )
+    def test_subscript_with_blocked_string_raises(self, expr: str) -> None:
+        from agentloom.core.templates import DotAccessDict
+
+        ns = {"state": DotAccessDict({"_secret": "x", "user": "alice"})}
+        with pytest.raises(SecurityError):
+            evaluate_expression(expr, ns)
+
+    @pytest.mark.parametrize(
+        "expr,expected",
+        [
+            ("state['user']", "alice"),
+            ("state['items'][0]", 1),
+            ("state['nested']['key']", "value"),
+        ],
+    )
+    def test_non_blocked_subscript_keeps_working(
+        self, expr: str, expected: object
+    ) -> None:
+        from agentloom.core.templates import DotAccessDict
+
+        ns = {
+            "state": DotAccessDict(
+                {"user": "alice", "items": [1, 2, 3], "nested": {"key": "value"}}
+            )
+        }
+        assert evaluate_expression(expr, ns) == expected
+
+
+class TestDotAccessDictDoesNotLeakInternals:
+    """``state['_data']`` must not return the wrapper's raw underlying dict.
+
+    Runtime half of the router subscript bypass: previously
+    ``DotAccessDict.__getattr__("_data")`` fell back to
+    ``object.__getattribute__`` and exposed the wrapper's own attribute.
+    """
+
+    def test_subscript_underscored_missing_returns_empty(self) -> None:
+        from agentloom.core.templates import DotAccessDict
+
+        d = DotAccessDict({"user": "alice"})
+        assert d["_data"] == ""
+        assert d["__class__"] == ""
+        assert d["__init__"] == ""
+
+    def test_subscript_underscored_present_returns_user_value(self) -> None:
+        from agentloom.core.templates import DotAccessDict
+
+        d = DotAccessDict({"_internal": "private-value"})
+        assert d["_internal"] == "private-value"
+
+    def test_strict_mode_raises_on_missing_underscored(self) -> None:
+        from agentloom.core.templates import DotAccessDict, TemplateError
+
+        d = DotAccessDict({"user": "alice"}, strict=True)
+        with pytest.raises(TemplateError):
+            _ = d["_data"]
+        with pytest.raises(TemplateError):
+            _ = d["__class__"]
+
+    def test_user_supplied_underscored_key_still_readable(self) -> None:
+        # If the workflow author genuinely puts an underscored key into
+        # state, ``DotAccessDict`` returns it like any other key. This is
+        # by design: privacy is the AST validator's job (it refuses
+        # ``state._secret`` / ``state['_secret']`` in router predicates).
+        from agentloom.core.templates import DotAccessDict
+
+        d = DotAccessDict({"_intentionally_private": "user-data"})
+        assert d["_intentionally_private"] == "user-data"
+        assert d._intentionally_private == "user-data"

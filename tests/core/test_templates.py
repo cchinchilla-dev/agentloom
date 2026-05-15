@@ -44,11 +44,14 @@ class TestDotAccessDict:
         d = DotAccessDict({"a": 1})
         assert "1" in f"{d}"
 
-    def test_private_attr_raises(self) -> None:
+    def test_private_attr_returns_empty_non_strict(self) -> None:
+        # Previously private attrs delegated to ``object.__getattribute__``,
+        # which let ``d['_data']`` reach the wrapper's underlying dict via
+        # ``__getitem__`` → ``__getattr__``. Every dynamic lookup now goes
+        # through the same data-only path: a missing key renders empty
+        # under non-strict and raises ``TemplateError`` under strict.
         d = DotAccessDict({"a": 1})
-        # Private attrs delegate to object.__getattribute__
-        with __import__("pytest").raises(AttributeError):
-            _ = d._nonexistent
+        assert d._nonexistent == ""
 
     def test_int_key_returns_empty(self) -> None:
         d = DotAccessDict({"a": 1})

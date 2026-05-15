@@ -83,6 +83,18 @@ def _reject_attribute(attr: str, expr_str: str) -> None:
         )
 
 
+def _reject_subscript(slice_node: ast.AST, expr_str: str) -> None:
+    """Apply the dunder/blocklist check to string-constant subscripts.
+
+    Without this, ``state['__class__']`` and ``state['_secret']`` reach
+    ``DotAccessDict.__getitem__`` and bypass the attribute-only guard.
+    Numeric and non-constant slices are left alone (list indexing, slicing,
+    variable subscripts).
+    """
+    if isinstance(slice_node, ast.Constant) and isinstance(slice_node.value, str):
+        _reject_attribute(slice_node.value, expr_str)
+
+
 def _validate_expression(expr_str: str) -> ast.Expression:
     """Parse and validate that an expression only uses allowed constructs.
 
@@ -110,6 +122,8 @@ def _validate_expression(expr_str: str) -> ast.Expression:
             )
         if isinstance(node, ast.Attribute):
             _reject_attribute(node.attr, expr_str)
+        if isinstance(node, ast.Subscript):
+            _reject_subscript(node.slice, expr_str)
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
                 if node.func.id not in _ALLOWED_FUNCTIONS:
