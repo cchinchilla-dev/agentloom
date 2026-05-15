@@ -112,6 +112,24 @@ Steps with `output: key` update `state[key]` after execution.
 
 Templates render `tool` step args through the same renderer as `prompt` fields, so `{state.url}` substitutions work uniformly across step types. By default a missing key (`{state.does_not_exist}`) is logged and rendered as an empty string; to raise `TemplateError` on missing keys instead, build the namespace with `build_template_vars(state, strict=True)` (so nested `{state.*}` lookups also raise) and render with `SafeFormatDict(template_vars, strict=True)`.
 
+### `state_schema` — per-key redaction
+
+Sensitive state values can be flagged so they never land in a checkpoint, webhook body, or trace span. The plaintext stays in memory so the active workflow can still use it.
+
+```yaml
+state:
+  api_key: "sk-..."
+  password: "hunter2"
+  user_id: 42
+
+state_schema:
+  api_key: { redact: true }
+  password: { redact: true }
+  "*token*": { redact: true }
+```
+
+Glob patterns match against the key name; for nested dicts they match against the dotted path (`credentials.access_token`). The same policy can be applied deployment-wide via `AGENTLOOM_REDACT_STATE_KEYS=api_key,password,*token*` (env-var and YAML policies are merged). See [Security → State redaction](providers.md#state-redaction) for the full surface and the resume contract.
+
 ---
 
 ## Step types
@@ -361,6 +379,7 @@ config:
     allowed_schemes: [https]                # restrict URL schemes (default: http, https)
     max_write_bytes: 1000000
     danger_opt_in: [bash]                   # opt-in per meta-executable (empty by default)
+    allow_internal_webhook_targets: false   # let approval_gate.notify reach loopback/RFC 1918
 ```
 
 | Option | Type | Default | Description |
@@ -375,6 +394,7 @@ config:
 | `allowed_schemes` | `list[str]` | `["http", "https"]` | URL scheme whitelist (rejects `file://`, `gopher://`, etc.) |
 | `max_write_bytes` | `int \| null` | `null` (unlimited) | Maximum file write size |
 | `danger_opt_in` | `list[str]` | `[]` | Per-binary opt-in for meta-executables (`bash`, `python`, `env`, `xargs`, ...). Empty by default — meta-executables defeat the command allowlist by re-launching arbitrary binaries. Add only the names you actually need. |
+| `allow_internal_webhook_targets` | `bool` | `false` | Permit `approval_gate.notify.url` to reach loopback / link-local (incl. cloud metadata at `169.254.169.254`) / RFC 1918 destinations. Off by default — see [Webhook destination gate](providers.md#webhook-destination-gate). |
 
 !!! warning "Meta-executables"
     Even when `bash` is in `allowed_commands`, the sandbox **rejects** the call unless `bash` is also listed in `danger_opt_in`. The opt-in is per-binary, not a global flag — `danger_opt_in: ["bash"]` does not also enable `python`. The same gate applies to `sh`, `python`, `python3`, `env`, `xargs`, `eval`, `exec`. Relative path arguments are validated against the configured cwd; `../` escapes are rejected.

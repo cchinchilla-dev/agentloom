@@ -151,6 +151,51 @@ usage.billable_completion_tokens  # completion + reasoning
 
 URL-based attachments (`fetch: local`) are protected against Server-Side Request Forgery. The engine blocks requests to private and reserved IP ranges (RFC 1918, loopback, link-local) before any network call is made.
 
+### Webhook destination gate
+
+Approval-gate webhooks (`approval_gate.notify.url`) are subject to the same destination filter. When `config.sandbox.enabled` is set, the URL must satisfy `allow_network`, `allowed_schemes`, and `allowed_domains`. When the sandbox is disabled, a built-in deny-list still blocks loopback, link-local (including AWS / GCP / Azure metadata at `169.254.169.254`), RFC 1918, and any scheme other than `http`/`https`. Workflows that genuinely need to notify an in-cluster service can opt out per-workflow:
+
+```yaml
+config:
+  sandbox:
+    allow_internal_webhook_targets: true
+```
+
+A blocked webhook is logged and emitted as a `status="sandbox_blocked"` observer breadcrumb; the approval gate itself still pauses normally because pause and notify are independent.
+
+### Router expression boundary
+
+Router conditions are AST-validated against an allowlist (`==`, `and`/`or`, safe builtins like `len`). Dunder and underscored attributes are rejected on both `state.foo` and `state['foo']` so a workflow author who seeds state with `_secret` cannot accidentally surface it through a router predicate. Attribute calls (`state.label.strip().lower()`) keep working but `eval`, `__import__`, comprehensions, lambdas, and starred unpacking remain blocked.
+
+### Allowed paths
+
+`sandbox.allowed_paths` grants both read and write access to a directory tree; `readable_paths` and `writable_paths` narrow it down per direction. Resolved paths must live inside an allowed prefix, and the resolution itself is wrapped — null bytes, oversized components, and OS-level rejections surface as `SandboxViolationError` (not the raw `ValueError`/`OSError`).
+
+!!! warning "Avoid mounting `/dev`"
+    `allowed_paths: ["/dev"]` grants access to every device node — `/dev/null`, `/dev/console`, `/dev/mem` on Linux — and a tool that opens a file descriptor against an unexpected device can hang the workflow or leak data. Pick the tightest sub-directory you actually need (`/dev/null` if you only want to discard output) instead of the whole tree.
+
+### State redaction
+
+Sensitive state values (API keys, passwords, tokens) can be flagged so they never land in a persisted artefact:
+
+```yaml
+state:
+  api_key: "..."
+  password: "..."
+  user_id: 42
+state_schema:
+  api_key: { redact: true }
+  password: { redact: true }
+  "*token*": { redact: true }
+```
+
+Or, for a deployment-wide baseline, set `AGENTLOOM_REDACT_STATE_KEYS=api_key,password,*token*` — the env-var policy is merged with the YAML one.
+
+Redaction is applied at every persistence boundary: checkpoint files (both the runtime state snapshot and the workflow definition's literal `state:` block), webhook `body_template` rendering, and the opt-in prompt-capture span event. The in-memory state stays plaintext so a step that legitimately interpolates `{state.api_key}` against the provider keeps working — only persisted copies carry a stable `<REDACTED:sha256=...>` sentinel.
+
+!!! note "Resume contract"
+    A redacted checkpoint cannot be resumed with the original secret value. If a workflow pauses on `approval_gate` before consuming the secret, plan to re-inject it on resume (CLI `--state api_key=...`) or do not flag the key as `redact: true`. The trade-off is intentional: secrets never touch disk in plaintext.
+
 ### Attachment size limit
 
 All attachments are limited to **20 MB** per file. Larger files are rejected before being sent to the provider.
