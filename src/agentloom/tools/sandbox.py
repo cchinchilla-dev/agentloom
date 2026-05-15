@@ -7,8 +7,10 @@ all operations pass through without validation.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import shlex
+import socket
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -57,6 +59,78 @@ _DANGEROUS_EXECUTABLES = frozenset(
 # ftp://, data://, dict://) must be explicitly opted in via
 # ``allowed_schemes``.
 _DEFAULT_ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+
+# Networks denied by default for outbound webhook delivery when the workflow
+# does not declare an explicit sandbox. Covers loopback, link-local (AWS /
+# Azure / GCP metadata service all live in 169.254.169.254), RFC 1918, and the
+# carrier-grade NAT range. Bypassable per workflow via
+# ``SandboxConfig.allow_internal_webhook_targets``.
+_DEFAULT_DENY_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fe80::/10"),
+    ipaddress.ip_network("fc00::/7"),
+)
+
+
+def _host_is_internal(hostname: str) -> bool:
+    """Return ``True`` when *hostname* resolves to an internal address.
+
+    Best-effort: skips DNS resolution and only inspects the literal token
+    so a workflow can't smuggle ``169.254.169.254`` past the deny-list by
+    using ``http://metadata.aws/`` (the destination still needs DNS resolution
+    at HTTP time, but the literal host is what users typically configure).
+    A hostname that looks like a name but resolves locally via ``/etc/hosts``
+    is also caught when DNS lookup is permitted.
+    """
+    if not hostname:
+        return False
+    lower = hostname.lower()
+    if lower == "localhost" or lower.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(lower)
+    except ValueError:
+        try:
+            resolved = socket.gethostbyname(lower)
+            ip = ipaddress.ip_address(resolved)
+        except (OSError, ValueError):
+            return False
+    for net in _DEFAULT_DENY_NETWORKS:
+        if ip.version != net.version:
+            continue
+        if ip in net:
+            return True
+    return False
+
+
+def default_deny_webhook_target(url: str) -> str | None:
+    """Return a reason if *url* should be blocked by the default deny-list.
+
+    Used by ``send_webhook`` when the workflow has no explicit
+    ``ToolSandbox`` — keeps loopback / metadata / RFC 1918 hosts off-limits
+    so the SSRF surface stays closed by default. Returns ``None`` when the
+    URL is acceptable.
+    """
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _DEFAULT_ALLOWED_SCHEMES:
+        return f"URL scheme {scheme!r} is not allowed for webhook delivery"
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        return f"URL {url!r} has no hostname"
+    if _host_is_internal(hostname):
+        return (
+            f"Hostname {hostname!r} resolves to an internal address; "
+            f"set sandbox.allow_internal_webhook_targets=true to opt in"
+        )
+    return None
 
 
 def _looks_like_path(token: str) -> bool:
@@ -122,6 +196,7 @@ class ToolSandbox:
         max_write_bytes: int | None = None,
         danger_opt_in: list[str] | None = None,
         command_cwd: str | None = None,
+        allow_internal_webhook_targets: bool = False,
     ) -> None:
         self.enabled = enabled
         self._allowed_commands = set(allowed_commands or [])
@@ -138,6 +213,7 @@ class ToolSandbox:
         self._max_write_bytes = max_write_bytes
         self._danger_opt_in = {e.lower() for e in (danger_opt_in or [])}
         self._command_cwd = Path(command_cwd).resolve() if command_cwd else None
+        self.allow_internal_webhook_targets = allow_internal_webhook_targets
 
     def _paths_for_read(self) -> list[Path]:
         return self._allowed_paths + self._readable_paths
@@ -299,6 +375,41 @@ class ToolSandbox:
                     f"Domain {hostname!r} not in allowed domains. "
                     f"Allowed: {sorted(self._allowed_domains)}",
                 )
+
+    def validate_webhook_url(self, url: str) -> None:
+        """Validate a webhook destination URL.
+
+        When the sandbox is enabled, applies the same allowlist as
+        ``validate_network`` (schemes, domains). When the sandbox is
+        disabled, applies the default deny-list so loopback / link-local /
+        RFC 1918 / non-http(s) destinations are blocked unless the workflow
+        explicitly opts in via ``allow_internal_webhook_targets``.
+
+        Raises:
+            SandboxViolationError: If the destination is blocked.
+        """
+        if self.enabled:
+            self.validate_network(url)
+            if self.allow_internal_webhook_targets:
+                return
+            parsed = urlparse(url)
+            hostname = (parsed.hostname or "").lower()
+            if hostname and _host_is_internal(hostname):
+                raise SandboxViolationError(
+                    "webhook",
+                    f"Webhook destination {hostname!r} resolves to an internal "
+                    f"address; set sandbox.allow_internal_webhook_targets=true "
+                    f"to opt in",
+                )
+            return
+
+        # Sandbox disabled — apply the default deny-list unless the workflow
+        # explicitly authorises internal targets.
+        if self.allow_internal_webhook_targets:
+            return
+        reason = default_deny_webhook_target(url)
+        if reason is not None:
+            raise SandboxViolationError("webhook", reason)
 
     def validate_write_size(self, size: int, tool_name: str = "file_write") -> None:
         """Validate that a write payload does not exceed the size limit.

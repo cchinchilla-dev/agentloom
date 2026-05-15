@@ -591,3 +591,74 @@ class TestValidatePathSurfacesViolationOnUnresolvable:
         # synthesize a violation for the disabled case.
         sandbox = ToolSandbox(enabled=False)
         sandbox.validate_path("/tmp/x\x00/etc/passwd")
+
+
+class TestValidateWebhookUrl:
+    """Webhook destination gate.
+
+    Enabled sandbox applies the standard allowlist (schemes, domains).
+    Disabled sandbox applies the default deny-list (loopback, link-local,
+    RFC 1918, non-http(s)) so workflows that omit a sandbox config still
+    can't ship state to internal services. The opt-in flag
+    ``allow_internal_webhook_targets`` exists for in-cluster notifications.
+    """
+
+    def test_enabled_sandbox_enforces_allowed_domains(self) -> None:
+        sandbox = ToolSandbox(
+            enabled=True,
+            allow_network=True,
+            allowed_domains=["api.openai.com"],
+            allowed_schemes=["https"],
+        )
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url(
+                "http://169.254.169.254/latest/meta-data/iam/security-credentials/role"
+            )
+
+    def test_enabled_sandbox_rejects_loopback_even_when_allowed_domains_empty(
+        self,
+    ) -> None:
+        sandbox = ToolSandbox(enabled=True, allow_network=True)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://127.0.0.1:8080/hook")
+
+    def test_disabled_sandbox_blocks_loopback_by_default(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://127.0.0.1:8080/hook")
+
+    def test_disabled_sandbox_blocks_link_local_metadata(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url(
+                "http://169.254.169.254/latest/meta-data/iam/security-credentials/role"
+            )
+
+    def test_disabled_sandbox_blocks_rfc1918(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        for url in (
+            "http://10.0.0.1/x",
+            "http://172.16.0.5/x",
+            "http://192.168.1.1/x",
+        ):
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_webhook_url(url)
+
+    def test_disabled_sandbox_blocks_non_http_schemes(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        for url in ("file:///etc/passwd", "gopher://example.com/x", "dict://x/y"):
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_webhook_url(url)
+
+    def test_disabled_sandbox_allows_public_https(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        sandbox.validate_webhook_url("https://hooks.slack.com/services/T00/B00/abc")
+
+    def test_opt_in_unblocks_internal(self) -> None:
+        sandbox = ToolSandbox(enabled=False, allow_internal_webhook_targets=True)
+        sandbox.validate_webhook_url("http://127.0.0.1:8080/hook")
+
+    def test_bare_localhost_name_blocked(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://localhost:8080/x")

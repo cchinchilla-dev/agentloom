@@ -186,6 +186,14 @@ class SandboxConfig(BaseModel):
 
     When enabled, shell commands are validated against an allowlist
     and file operations are restricted to allowed paths.
+
+    Webhook delivery (``approval_gate.notify.url``) always passes through
+    the sandbox: when ``enabled`` is true, the URL must satisfy
+    ``allow_network`` / ``allowed_schemes`` / ``allowed_domains``; when
+    ``enabled`` is false, a built-in deny-list still blocks loopback,
+    link-local, and RFC 1918 destinations. Workflows that genuinely need to
+    notify an in-cluster service can opt out via
+    ``allow_internal_webhook_targets``.
     """
 
     enabled: bool = False
@@ -198,6 +206,7 @@ class SandboxConfig(BaseModel):
     allowed_schemes: list[str] = Field(default_factory=lambda: ["http", "https"])
     max_write_bytes: int | None = None
     danger_opt_in: list[str] = Field(default_factory=list)
+    allow_internal_webhook_targets: bool = False
 
 
 class WorkflowConfig(BaseModel):

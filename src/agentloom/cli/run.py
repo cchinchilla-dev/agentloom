@@ -156,6 +156,7 @@ async def _run_async(
         allowed_schemes=sandbox_cfg.allowed_schemes,
         max_write_bytes=sandbox_cfg.max_write_bytes,
         danger_opt_in=sandbox_cfg.danger_opt_in,
+        allow_internal_webhook_targets=sandbox_cfg.allow_internal_webhook_targets,
     )
     tool_registry = ToolRegistry()
     register_builtins(tool_registry, sandbox=sandbox)

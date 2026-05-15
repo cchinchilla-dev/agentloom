@@ -11,6 +11,8 @@ import httpx
 
 from agentloom.core.models import WebhookConfig
 from agentloom.core.templates import SafeFormatDict, build_template_vars
+from agentloom.exceptions import SandboxViolationError
+from agentloom.tools.sandbox import ToolSandbox, default_deny_webhook_target
 
 
 @runtime_checkable
@@ -74,6 +76,7 @@ async def send_webhook(
     observer: WebhookObserver | None = None,
     *,
     deadline_s: float = _DEFAULT_DEADLINE_S,
+    sandbox: ToolSandbox | None = None,
 ) -> None:
     """POST a webhook notification with best-effort retry, deadline-bounded.
 
@@ -81,10 +84,40 @@ async def send_webhook(
     webhook storm can never block a workflow for the 28 s of the raw retry
     schedule. Never raises — timeouts and errors are logged so the calling
     step can still pause even if the webhook endpoint is misbehaving.
+
+    When *sandbox* is provided, ``ToolSandbox.validate_webhook_url`` gates the
+    destination — same allowlist as ``validate_network`` when the sandbox is
+    enabled, default deny-list (loopback / link-local / RFC 1918) when it is
+    not. A blocked URL is logged and emitted as a
+    ``status="sandbox_blocked"`` observer breadcrumb; the workflow's pause
+    or completion is unaffected.
     """
     import time
 
     import anyio
+
+    blocked_reason: str | None = None
+    if sandbox is not None:
+        try:
+            sandbox.validate_webhook_url(config.url)
+        except SandboxViolationError as exc:
+            blocked_reason = str(exc)
+    else:
+        blocked_reason = default_deny_webhook_target(config.url)
+
+    if blocked_reason is not None:
+        logger.warning(
+            "Webhook delivery to %s blocked by sandbox: %s (step=%s, run=%s)",
+            config.url,
+            blocked_reason,
+            context.step_id,
+            context.run_id,
+        )
+        if observer:
+            observer.on_webhook_delivery(
+                context.step_id, context.workflow_name, "sandbox_blocked", 0.0
+            )
+        return
 
     async def _inner() -> None:
         payload = _build_payload(config, context)
