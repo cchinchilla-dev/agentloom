@@ -569,3 +569,25 @@ class TestLooksLikePath:
         assert _looks_like_path("foo/bar") is True
         assert _looks_like_path("/abs/path") is True
         assert _looks_like_path("./rel") is True
+
+
+class TestValidatePathSurfacesViolationOnUnresolvable:
+    """Null-byte and other ``Path.resolve()`` failures raise ``SandboxViolationError``.
+
+    Previously the raw ``ValueError`` / ``OSError`` leaked through, so
+    callers that caught only ``SandboxViolationError`` missed the case
+    and surfaced it as an internal error instead of a sandbox refusal.
+    """
+
+    def test_null_byte_path_raises_sandbox_violation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(enabled=True, allowed_paths=[tmp])
+            with pytest.raises(SandboxViolationError) as excinfo:
+                sandbox.validate_path("/tmp/x\x00/etc/passwd")
+            assert "Cannot resolve path" in str(excinfo.value)
+
+    def test_disabled_sandbox_does_not_validate_null_byte(self) -> None:
+        # When the sandbox is off the validate call is a no-op; we don't
+        # synthesize a violation for the disabled case.
+        sandbox = ToolSandbox(enabled=False)
+        sandbox.validate_path("/tmp/x\x00/etc/passwd")

@@ -237,12 +237,22 @@ class ToolSandbox:
         the opened file descriptor's real path before trusting it.
 
         Raises:
-            SandboxViolationError: If the path is outside allowed directories.
+            SandboxViolationError: If the path is outside allowed directories,
+                or if it cannot be resolved (null bytes, oversized components,
+                OS-level rejection — wrapped here so callers only need to
+                handle one exception class).
         """
         if not self.enabled:
             return
 
-        resolved = Path(path).resolve()
+        try:
+            resolved = Path(path).resolve()
+        except (ValueError, OSError) as exc:
+            raise SandboxViolationError(
+                tool_name,
+                f"Cannot resolve path {path!r}: {exc}",
+            ) from exc
+
         paths = self._paths_for_write() if writable else self._paths_for_read()
 
         if not self._is_within(resolved, paths):
