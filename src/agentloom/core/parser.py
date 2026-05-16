@@ -146,7 +146,6 @@ class WorkflowParser:
             parallel: list[str] = []
             for sid in owners:
                 ancestors_of_sid: set[str] = set()
-                # collect transitive predecessors
                 stack = [sid]
                 seen_pred = {sid}
                 while stack:
