@@ -27,6 +27,8 @@ _ALLOWED_NODES = (
     ast.And,
     ast.Or,
     ast.Not,
+    ast.USub,
+    ast.UAdd,
     ast.Eq,
     ast.NotEq,
     ast.Lt,
@@ -115,9 +117,18 @@ def _reject_subscript(slice_node: ast.AST, expr_str: str) -> None:
         for sub in (slice_node.lower, slice_node.upper, slice_node.step):
             if sub is None:
                 continue
+            if isinstance(sub, ast.UnaryOp) and isinstance(
+                sub.op, (ast.UAdd, ast.USub)
+            ):
+                operand = sub.operand
+                if isinstance(operand, ast.Constant) and isinstance(
+                    operand.value, int
+                ):
+                    continue
             if not (isinstance(sub, ast.Constant) and isinstance(sub.value, int)):
                 raise SecurityError(
-                    "Slice bounds must be integer constants in router expressions.",
+                    "Slice bounds must be integer constants (optionally with "
+                    "a leading +/-) in router expressions.",
                     expression=expr_str,
                 )
         return
@@ -241,9 +252,58 @@ class RouterStep(BaseStep):
         # through ``state.X``.
         namespace: dict[str, Any] = {}
 
+        def _wrap(value: Any) -> Any:
+            """Wrap nested containers so dot/subscript chains keep working."""
+            if isinstance(value, dict):
+                return _DictProxy(value)
+            if isinstance(value, list):
+                return _ListProxy(value)
+            return value
+
+        class _DictProxy:
+            """Proxy supporting both ``proxy.key`` and ``proxy['key']``."""
+
+            __slots__ = ("_data",)
+
+            def __init__(self, data: dict[str, Any]) -> None:
+                object.__setattr__(self, "_data", data)
+
+            def __getattr__(self, name: str) -> Any:
+                return _wrap(self._data.get(name))
+
+            def __getitem__(self, key: Any) -> Any:
+                if isinstance(key, str):
+                    return _wrap(self._data.get(key))
+                return _wrap(self._data[key])
+
+        class _ListProxy:
+            """Proxy supporting ``proxy[i]`` and ``proxy[i:j]``."""
+
+            __slots__ = ("_data",)
+
+            def __init__(self, data: list[Any]) -> None:
+                object.__setattr__(self, "_data", data)
+
+            def __getitem__(self, key: Any) -> Any:
+                value = self._data[key]
+                if isinstance(value, list):
+                    return _ListProxy(value)
+                return _wrap(value)
+
+            def __len__(self) -> int:
+                return len(self._data)
+
+            def __iter__(self) -> Any:
+                return iter(_wrap(v) for v in self._data)
+
         class _StateProxy:
             def __getattr__(self, name: str) -> Any:
-                return state_snapshot.get(name)
+                return _wrap(state_snapshot.get(name))
+
+            def __getitem__(self, key: Any) -> Any:
+                if isinstance(key, str):
+                    return _wrap(state_snapshot.get(key))
+                return _wrap(state_snapshot[key])
 
         namespace["state"] = _StateProxy()
 

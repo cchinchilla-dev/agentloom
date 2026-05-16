@@ -393,3 +393,67 @@ class TestRouterNamespaceDoesNotFlattenStateKeys:
 
         with pytest.raises(StepError):
             await step.execute(context)
+
+
+class TestRouterStateProxyContract:
+    """Every grammar the validator accepts must also resolve at runtime."""
+
+    @pytest.mark.parametrize(
+        "state,expr,want",
+        [
+            ({"user": {"name": "alice"}}, "state.user.name == 'alice'", "match"),
+            ({"user": {"name": "alice"}}, "state['user']['name'] == 'alice'", "match"),
+            (
+                {"items": [{"label": "a"}, {"label": "b"}]},
+                "state.items[0].label == 'a'",
+                "match",
+            ),
+            ({"items": [10, 20, 30, 40]}, "len(state.items) == 4", "match"),
+        ],
+    )
+    async def test_validator_accepted_grammars_resolve_at_runtime(
+        self, state: dict, expr: str, want: str
+    ) -> None:
+        step = RouterStep()
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="r",
+                type=StepType.ROUTER,
+                conditions=[Condition(expression=expr, target=want)],
+                default="other",
+            ),
+            state_manager=StateManager(initial_state=state),
+        )
+        result = await step.execute(ctx)
+        assert result.output == want
+
+
+class TestSliceUnaryNegativeStep:
+    """``state['items'][::-1]`` and friends — slice bounds accept unary ±."""
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "state['items'][::-1]",
+            "state['items'][-2:]",
+            "state['items'][:-1]",
+            "state['items'][1:-1]",
+        ],
+    )
+    def test_negative_step_or_bound_accepted(self, expr: str) -> None:
+        from agentloom.steps.router import _validate_expression
+
+        _validate_expression(expr)
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "state['items'][:len('x')]",
+            "state['items'][lookup:]",
+        ],
+    )
+    def test_non_constant_slice_bound_still_refused(self, expr: str) -> None:
+        from agentloom.steps.router import _validate_expression
+
+        with pytest.raises(SecurityError):
+            _validate_expression(expr)

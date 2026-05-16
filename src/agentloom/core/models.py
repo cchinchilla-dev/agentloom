@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agentloom.resilience.retry import DEFAULT_RETRYABLE_STATUS_CODES
 
@@ -253,7 +253,16 @@ class StateKeyConfig(BaseModel):
 
 
 class WorkflowDefinition(BaseModel):
-    """Complete workflow definition — the top-level schema for YAML files."""
+    """Complete workflow definition — the top-level schema for YAML files.
+
+    Unknown top-level keys are refused at parse time (``extra="forbid"``).
+    A common silent failure mode pre-fix was a typo like ``stat_schema:``
+    instead of ``state_schema:`` — Pydantic's default would have dropped
+    the unknown key, leaving the redaction policy empty and shipping
+    every flagged secret to disk in plaintext.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     version: str = "1.0"

@@ -192,3 +192,33 @@ class TestInternalAttributesNotReachableViaTemplate:
         vars = build_template_vars({"x": 1})
         rendered = "{state._strict}".format_map(SafeFormatDict(vars))
         assert rendered == ""
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "{state.__dict__}",
+            "{state._DotAccessDict__data}",
+            "{state._DotAccessDict__strict}",
+            "{state.user.__dict__}",
+            "{state.user._DotAccessDict__data}",
+        ],
+    )
+    def test_python_internals_path_refused(self, expr: str) -> None:
+        vars = build_template_vars(
+            {"user": {"name": "alice", "_password": "secret"}}
+        )
+        rendered = expr.format_map(SafeFormatDict(vars))
+        assert rendered == ""
+        assert "alice" not in rendered
+        assert "secret" not in rendered
+        assert "_DotAccessDict__data" not in rendered
+
+    def test_isinstance_and_str_still_work(self) -> None:
+        from agentloom.core.templates import DotAccessDict, DotAccessList
+
+        d = DotAccessDict({"x": 1})
+        assert isinstance(d, DotAccessDict)
+        assert str(d) == "{'x': 1}"
+        lst = DotAccessList([1, 2])
+        assert isinstance(lst, DotAccessList)
+        assert str(lst) == "[1, 2]"

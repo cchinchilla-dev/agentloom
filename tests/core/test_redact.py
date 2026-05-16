@@ -213,3 +213,48 @@ class TestEngineResumeWarnsOnSentinels:
         )
         for r in caplog.records:  # type: ignore[attr-defined]
             assert "redacted" not in r.getMessage()
+
+
+class TestWorkflowDefinitionRejectsUnknownKeys:
+    """``WorkflowDefinition`` uses ``extra="forbid"`` so a typo in
+    ``state_schema:`` (or any other top-level field) fails loud at parse
+    time instead of silently dropping the field.
+    """
+
+    def test_typo_in_state_schema_raises(self) -> None:
+        from pydantic import ValidationError
+
+        from agentloom.core.models import WorkflowConfig, WorkflowDefinition
+
+        with pytest.raises(ValidationError):
+            WorkflowDefinition(
+                name="t",
+                config=WorkflowConfig(provider="mock", model="x"),
+                state={"api_key": "sk"},
+                stat_schema={"api_key": {"redact": True}},  # type: ignore[arg-type]
+                steps=[],
+            )
+
+    def test_arbitrary_unknown_top_level_key_raises(self) -> None:
+        from pydantic import ValidationError
+
+        from agentloom.core.models import WorkflowConfig, WorkflowDefinition
+
+        with pytest.raises(ValidationError):
+            WorkflowDefinition(
+                name="t",
+                config=WorkflowConfig(provider="mock", model="x"),
+                random_field_that_does_not_exist=True,  # type: ignore[arg-type]
+                steps=[],
+            )
+
+
+class TestDoubleRedactionStable:
+    """Idempotency: already-redacted value preserved byte-for-byte."""
+
+    def test_already_redacted_value_unchanged(self) -> None:
+        policy = RedactionPolicy(["k"])
+        once = redact_state({"k": "secret"}, policy)
+        twice = redact_state(once, policy)
+        assert is_redacted(twice["k"])
+        assert twice["k"] == once["k"]

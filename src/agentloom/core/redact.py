@@ -135,10 +135,21 @@ def _walk(
             key_str = k if isinstance(k, str) else str(k)
             path = f"{prefix}.{key_str}" if prefix else key_str
             if policy.matches(key_str) or policy.matches(path):
-                if isinstance(v, list):
-                    result[k] = [_stable_sentinel(item) for item in v]
+                # Idempotency: if the value is already a sentinel from a
+                # previous redaction pass (e.g. resume-then-checkpoint),
+                # preserve it exactly. Hashing a sentinel string would
+                # produce a different hash each cycle and break diffing.
+                if is_redacted(v):
+                    result[k] = v
+                elif isinstance(v, list):
+                    result[k] = [
+                        iv if is_redacted(iv) else _stable_sentinel(iv) for iv in v
+                    ]
                 elif isinstance(v, dict):
-                    result[k] = {ik: _stable_sentinel(iv) for ik, iv in v.items()}
+                    result[k] = {
+                        ik: (iv if is_redacted(iv) else _stable_sentinel(iv))
+                        for ik, iv in v.items()
+                    }
                 else:
                     result[k] = _stable_sentinel(v)
             else:
