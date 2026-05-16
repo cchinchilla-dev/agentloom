@@ -231,10 +231,19 @@ class WorkflowEngine:
         # return a flagged key in structured output), and any other
         # workflow-definition field whose key name matches the policy
         # (e.g. a step-level ``notify.headers.api_key``).
+        #
+        # ``state_schema`` is intentionally lifted out before the walk:
+        # its leaves are the policy *metadata* itself (``redact: true``),
+        # not user state. Redacting them would rewrite the bool flag into
+        # a sentinel string that breaks ``WorkflowDefinition.model_validate``
+        # on resume.
         persisted_state = redact_state(state_snapshot, self._redaction_policy)
         workflow_dump = self.workflow.model_dump()
         if self._redaction_policy:
+            preserved_schema = workflow_dump.pop("state_schema", None)
             workflow_dump = redact_state(workflow_dump, self._redaction_policy)
+            if preserved_schema is not None:
+                workflow_dump["state_schema"] = preserved_schema
         step_results_dump = {k: v.model_dump() for k, v in step_results.items()}
         if self._redaction_policy:
             step_results_dump = redact_state(step_results_dump, self._redaction_policy)

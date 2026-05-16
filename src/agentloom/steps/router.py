@@ -273,6 +273,17 @@ class RouterStep(BaseStep):
                     return _wrap(self._data.get(key))
                 return _wrap(self._data[key])
 
+            def __len__(self) -> int:
+                return len(self._data)
+
+            def __iter__(self) -> Any:
+                # Yield keys (mapping protocol). Used by ``for k in
+                # state.user`` and as the surface ``len()`` works against.
+                return iter(self._data)
+
+            def __contains__(self, key: Any) -> bool:
+                return key in self._data
+
         class _ListProxy:
             """Proxy supporting ``proxy[i]`` and ``proxy[i:j]``."""
 

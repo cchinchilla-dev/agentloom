@@ -469,11 +469,28 @@ class ToolSandbox:
         Raises:
             SandboxViolationError: If the destination is blocked.
         """
+        # Scheme gate is always-on for webhooks, regardless of sandbox
+        # state or ``allowed_schemes``. A workflow that legitimately
+        # widens ``allowed_schemes`` (for an attachment fetch, for
+        # example) must not accidentally widen the webhook surface —
+        # webhook delivery is hard-coded to ``http`` / ``https``.
+        parsed = urlparse(url)
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in _DEFAULT_ALLOWED_SCHEMES:
+            raise SandboxViolationError(
+                "webhook",
+                f"URL scheme {scheme!r} is not allowed for webhook delivery",
+            )
+
         if self.enabled:
+            # ``validate_network`` enforces ``allowed_domains`` (and
+            # would also re-check the scheme against the workflow's
+            # ``allowed_schemes`` — but we already refused anything
+            # outside http/https above, so widening allowed_schemes
+            # cannot reopen the webhook surface).
             self.validate_network(url)
             if self.allow_internal_webhook_targets:
                 return
-            parsed = urlparse(url)
             hostname = (parsed.hostname or "").lower()
             if hostname and _host_is_internal(hostname):
                 raise SandboxViolationError(
@@ -483,18 +500,6 @@ class ToolSandbox:
                     f"to opt in",
                 )
             return
-
-        # Sandbox disabled — the scheme deny is still authoritative; the
-        # opt-in waives only the internal-host check. Without this split,
-        # ``allow_internal_webhook_targets=true`` accidentally let
-        # ``file:///etc/passwd`` and ``data:...`` through.
-        parsed = urlparse(url)
-        scheme = (parsed.scheme or "").lower()
-        if scheme not in _DEFAULT_ALLOWED_SCHEMES:
-            raise SandboxViolationError(
-                "webhook",
-                f"URL scheme {scheme!r} is not allowed for webhook delivery",
-            )
 
         if self.allow_internal_webhook_targets:
             return

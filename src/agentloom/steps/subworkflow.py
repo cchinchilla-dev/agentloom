@@ -52,7 +52,14 @@ class SubworkflowStep(BaseStep):
                 if pattern not in sub_workflow.state_schema:
                     sub_workflow.state_schema[pattern] = StateKeyConfig(redact=True)
 
-        sub_workflow.config.sandbox = context.sandbox_config
+        # Sandbox inheritance: parent overrides child ONLY when the
+        # parent itself has the sandbox enabled. Without this guard, a
+        # parent running with the default ``enabled=False`` would wipe
+        # out a child workflow that declared a stricter sandbox of its
+        # own — a child loosening parent restrictions is the threat
+        # model, child *tightening* its own surface should not regress.
+        if context.sandbox_config.enabled:
+            sub_workflow.config.sandbox = context.sandbox_config
 
         engine = WorkflowEngine(
             workflow=sub_workflow,
