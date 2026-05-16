@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agentloom.resilience.retry import DEFAULT_RETRYABLE_STATUS_CODES
 
@@ -217,7 +217,15 @@ class WorkflowConfig(BaseModel):
     max_retries: int = 3
     budget_usd: float | None = None
     timeout: float | None = None
-    max_concurrent_steps: int = 10
+    # ``ge=1`` catches both ``0`` (which makes ``anyio.CapacityLimiter(0)``
+    # block every ``start_soon`` and deadlocks the workflow with no timeout)
+    # and negatives (which used to surface as a cryptic
+    # ``total_tokens must be >= 0`` from the fallback result construction).
+    # ``le=1024`` is a sanity ceiling: workflows needing more concurrency
+    # per layer can either split layers or open an issue — past this point
+    # the layer-loop scheduling overhead dominates and individual provider
+    # rate limits will be the real bottleneck.
+    max_concurrent_steps: int = Field(default=10, ge=1, le=1024)
     stream: bool = False
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
@@ -284,6 +292,30 @@ class WorkflowDefinition(BaseModel):
     state: dict[str, Any] = Field(default_factory=dict)
     state_schema: dict[str, StateKeyConfig] = Field(default_factory=dict)
     steps: list[StepDefinition]
+
+    @model_validator(mode="after")
+    def _validate_step_ids_unique(self) -> WorkflowDefinition:
+        """Refuse duplicate ``id:`` values across the top-level step list.
+
+        Until 0.4.0 the parser accepted two steps with the same ``id``
+        silently; only one would surface in ``final_state.steps`` after
+        execution and the other was lost without warning. A workflow author
+        who renamed a step and forgot to rename a reference could ship a
+        workflow where steps shadow each other — typically caught only when
+        the missing step's output went unused downstream and the run came
+        back with garbled state.
+        """
+        seen: dict[str, int] = {}
+        dups: list[tuple[str, list[int]]] = []
+        for i, s in enumerate(self.steps):
+            if s.id in seen:
+                dups.append((s.id, [seen[s.id], i]))
+            else:
+                seen[s.id] = i
+        if dups:
+            msg = "; ".join(f"id={d[0]!r} at indices {d[1]}" for d in dups)
+            raise ValueError(f"Duplicate step ids: {msg}")
+        return self
 
     def get_step(self, step_id: str) -> StepDefinition | None:
         """Get a step by its ID."""
