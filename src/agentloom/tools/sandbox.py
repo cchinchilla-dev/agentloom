@@ -113,14 +113,32 @@ def _host_is_internal(hostname: str) -> bool:
 
     Inspects the literal host first so a workflow can't smuggle
     ``169.254.169.254`` past the deny-list by using
-    ``http://metadata.aws/``. Falls back to a best-effort DNS lookup so a
-    hostname that resolves locally via ``/etc/hosts`` is also caught.
+    ``http://metadata.aws/``. Falls back to ``socket.getaddrinfo`` so a
+    hostname that resolves to an internal IPv4 OR IPv6 address (via DNS,
+    ``/etc/hosts``, or a split-horizon AAAA record) is caught.
+    ``gethostbyname`` would have returned only the first IPv4 result and
+    missed an attacker-controlled AAAA-only loopback record.
+
     Trailing dot is normalised — most resolvers strip it before
-    delivering the request, so it must not bypass the gate.
+    delivering the request, so it must not bypass the gate. Percent-
+    encoded characters and IDN homographs are decoded so a workflow
+    cannot write ``http://%6c%6f%63%61%6c%68%6f%73%74/`` or use a
+    Cyrillic look-alike (``http://lоcalhost/``) to slip past the literal
+    string check.
     """
     if not hostname:
         return False
-    lower = hostname.lower().rstrip(".")
+    try:
+        from urllib.parse import unquote
+
+        decoded = unquote(hostname)
+    except Exception:  # pragma: no cover — unquote is total in practice
+        decoded = hostname
+    try:
+        decoded = decoded.encode("idna").decode("ascii")
+    except (UnicodeError, UnicodeDecodeError):
+        pass
+    lower = decoded.lower().rstrip(".")
     if not lower:
         return False
     if lower == "localhost" or lower.endswith(".localhost"):
@@ -131,10 +149,26 @@ def _host_is_internal(hostname: str) -> bool:
     except ValueError:
         pass
     try:
-        resolved = socket.gethostbyname(lower)
-        return _ip_is_internal(ipaddress.ip_address(resolved))
+        records = socket.getaddrinfo(
+            lower,
+            None,
+            type=socket.SOCK_STREAM,
+        )
     except (OSError, ValueError):
         return False
+    for family, _, _, _, sockaddr in records:
+        try:
+            if family == socket.AF_INET:
+                ip_addr = ipaddress.ip_address(sockaddr[0])
+            elif family == socket.AF_INET6:
+                ip_addr = ipaddress.ip_address(sockaddr[0])
+            else:
+                continue
+        except (ValueError, IndexError):
+            continue
+        if _ip_is_internal(ip_addr):
+            return True
+    return False
 
 
 def default_deny_webhook_target(url: str) -> str | None:
@@ -160,20 +194,33 @@ def default_deny_webhook_target(url: str) -> str | None:
     return None
 
 
-def _looks_like_path(token: str) -> bool:
-    """Heuristic: does *token* look like a path argument?
+def _extract_path_candidates(token: str) -> list[str]:
+    """Extract every path-shaped fragment from a command argument.
 
-    We treat any token containing ``/`` or matching ``.``/``..`` as a path.
-    Flag-style arguments (``-n``, ``--flag``) and bare identifiers
-    (``hello``) are not validated.
+    GNU-style utilities accept paths inside flag values: ``tee
+    --output=/etc/passwd``, ``dd of=/dev/sda``, ``cp -t /etc/ src``. The
+    pre-fix heuristic skipped every token starting with ``-``, so these
+    forms slipped past the directory allowlist.
     """
     if not token:
-        return False
+        return []
+    if "=" in token:
+        _, _, value = token.partition("=")
+        if value and (value in (".", "..") or "/" in value):
+            return [value]
+        return []
     if token.startswith("-"):
-        return False
+        return []
     if token in (".", ".."):
-        return True
-    return "/" in token
+        return [token]
+    if "/" in token:
+        return [token]
+    return []
+
+
+def _looks_like_path(token: str) -> bool:
+    """Backwards-compatible thin wrapper around :func:`_extract_path_candidates`."""
+    return bool(_extract_path_candidates(token))
 
 
 class ToolSandbox:
@@ -317,15 +364,16 @@ class ToolSandbox:
         if all_paths:
             base = self._command_cwd or (Path(cwd).resolve() if cwd else Path.cwd())
             for token in tokens[1:]:
-                if not _looks_like_path(token):
-                    continue
-                candidate = Path(token)
-                resolved = (candidate if candidate.is_absolute() else base / candidate).resolve()
-                if not self._is_within(resolved, all_paths):
-                    raise SandboxViolationError(
-                        "shell_command",
-                        f"Path argument {str(resolved)!r} not within allowed directories",
-                    )
+                for candidate_str in _extract_path_candidates(token):
+                    candidate = Path(candidate_str)
+                    resolved = (
+                        candidate if candidate.is_absolute() else base / candidate
+                    ).resolve()
+                    if not self._is_within(resolved, all_paths):
+                        raise SandboxViolationError(
+                            "shell_command",
+                            f"Path argument {str(resolved)!r} not within allowed directories",
+                        )
 
     def validate_path(self, path: str, *, writable: bool = False, tool_name: str = "file") -> None:
         """Validate a file path is within allowed directories.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -745,3 +746,64 @@ class TestValidateWebhookUrl:
         )
         with pytest.raises(SandboxViolationError):
             sandbox.validate_webhook_url("http://127.0.0.1/hook")
+
+    def test_percent_encoded_hostname_decoded_before_check(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url(
+                "http://%6c%6f%63%61%6c%68%6f%73%74:8080/x"
+            )
+
+    def test_aaaa_only_dns_caught_via_getaddrinfo(self, monkeypatch: Any) -> None:
+        import socket as _socket
+
+        def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
+            return [
+                (
+                    _socket.AF_INET6,
+                    _socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("::1", 0, 0, 0),
+                ),
+            ]
+
+        monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://attacker-aaaa-only.example/x")
+
+
+class TestValidateCommandFlagEmbeddedPath:
+    """``--key=value`` / ``of=path`` style flags carry paths that the
+    original ``_looks_like_path`` skipped entirely.
+    """
+
+    def test_double_dash_flag_with_path_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(
+                enabled=True,
+                allowed_commands=["tee"],
+                allowed_paths=[tmp],
+            )
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_command("tee --output=/etc/passwd")
+
+    def test_dd_style_flag_with_path_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(
+                enabled=True,
+                allowed_commands=["dd"],
+                allowed_paths=[tmp],
+            )
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_command("dd of=/etc/passwd")
+
+    def test_flag_with_path_inside_allowlist_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(
+                enabled=True,
+                allowed_commands=["tee"],
+                allowed_paths=[tmp],
+            )
+            sandbox.validate_command(f"tee --output={tmp}/log")
