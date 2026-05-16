@@ -472,7 +472,11 @@ class WorkflowEngine:
                     if step_result and step_result.status == StepStatus.SUCCESS:
                         self._completed_steps.add(step_id)
                     elif step_result and step_result.status == StepStatus.PAUSED:
-                        paused_step_id = paused_step_id or step_id
+                        # ``error`` carries the qualified ``parent.child`` path
+                        # when the pause came from inside a subworkflow; fall
+                        # back to the local id for ordinary approval gates.
+                        qualified = step_result.error or step_id
+                        paused_step_id = paused_step_id or qualified
 
                 if paused_step_id is not None:
                     raise PauseRequestedError(paused_step_id)
@@ -835,13 +839,27 @@ class WorkflowEngine:
             except BudgetExceededError:
                 raise
 
-            except PauseRequestedError:
+            except PauseRequestedError as pause_err:
                 # Record the pause and return normally instead of re-raising.
                 # Re-raising would cancel sibling tasks that are already
                 # mid-flight against their providers, leading to double-billing
                 # on resume. The engine's post-layer pass detects PAUSED results
                 # and halts further layers without cancelling in-flight work.
-                paused_result = StepResult(step_id=step_id, status=StepStatus.PAUSED)
+                # ``pause_err.step_id`` may be a qualified path (``sub.gate``)
+                # when the pause originated inside a subworkflow — stash it on
+                # the result so the post-layer pass can re-emit the full path
+                # to the parent's checkpoint hint instead of just the local
+                # subworkflow step id.
+                qualified_path = (
+                    pause_err.step_id
+                    if pause_err.step_id and pause_err.step_id != step_id
+                    else None
+                )
+                paused_result = StepResult(
+                    step_id=step_id,
+                    status=StepStatus.PAUSED,
+                    error=qualified_path,
+                )
                 await self.state.set_step_result(step_id, paused_result)
                 if self.observer:
                     self.observer.on_step_end(

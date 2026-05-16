@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from agentloom.core.results import StepResult, StepStatus, WorkflowStatus
-from agentloom.exceptions import StepError
+from agentloom.exceptions import PauseRequestedError, StepError
 from agentloom.steps.base import BaseStep, StepContext
 
 
@@ -36,8 +36,41 @@ class SubworkflowStep(BaseStep):
                 "Subworkflow step requires 'workflow_path' or 'workflow_inline'",
             )
 
+        # State propagation contract:
+        #
+        # * Default (``isolated_state: False``): the child engine sees a copy
+        #   of the parent's state. This was the pre-0.5.0 behaviour — kept
+        #   for compatibility because several existing workflows depend on
+        #   it implicitly.
+        # * ``isolated_state: True``: the child sees only its own ``state:``
+        #   block plus whatever the parent step explicitly passes via
+        #   ``input:``. The child's own ``state:`` from the inline /
+        #   referenced YAML is preserved by ``WorkflowParser``; we merge
+        #   ``input:`` on top so the parent can seed specific keys without
+        #   leaking the rest of its state.
         parent_state = await context.state_manager.get_state_snapshot()
-        child_state = StateManager(initial_state=parent_state)
+        if step.isolated_state:
+            seed = dict(sub_workflow.state)
+            seed.update(step.input)
+            child_state = StateManager(initial_state=seed)
+        else:
+            child_state = StateManager(initial_state=parent_state)
+
+        # Resume hand-off: when the parent was paused inside this subworkflow
+        # (e.g. ``sub.gate``), the CLI ``resume --approve`` stored the
+        # decision under ``_approval.<this_step_id>.<child_step_id>``. The
+        # child engine's approval-gate executor looks it up under the
+        # unqualified ``_approval.<child_step_id>``, so we strip the prefix
+        # here. Without this rewrite the child would block again on resume
+        # — there'd be no way to ever complete a nested gate. Applies to
+        # both isolated and non-isolated modes; the parent's approval
+        # bookkeeping is metadata, not user state.
+        parent_approvals = parent_state.get("_approval", {})
+        if isinstance(parent_approvals, dict):
+            nested = parent_approvals.get(step.id)
+            if isinstance(nested, dict):
+                for child_step_id, decision in nested.items():
+                    await child_state.set(f"_approval.{child_step_id}", decision)
 
         # Inherit the parent's security posture into the child workflow:
         # without this, a parent that redacts ``api_key`` writes the
@@ -74,6 +107,15 @@ class SubworkflowStep(BaseStep):
 
         try:
             result = await engine.run()
+        except PauseRequestedError as pause:
+            # Defensive: child engines today return a paused
+            # ``WorkflowResult`` rather than re-raising, but third-party
+            # engines or future refactors might propagate the exception —
+            # treat it symmetrically with the result-based path below.
+            qualified = (
+                f"{step.id}.{pause.step_id}" if pause.step_id else step.id
+            )
+            raise PauseRequestedError(qualified, str(pause)) from pause
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
             return StepResult(
@@ -83,10 +125,34 @@ class SubworkflowStep(BaseStep):
                 duration_ms=duration,
             )
 
+        # Child engines absorb their own ``PauseRequestedError`` and return
+        # a paused ``WorkflowResult`` (so they can persist their own
+        # checkpoint without cancelling sibling tasks). Surface the pause
+        # to the parent here with a fully-qualified ``parent.child`` step
+        # id so ``agentloom resume <parent_run_id> --approve`` lands on the
+        # gate inside the child. Pre-0.5.0 the parent treated this as a
+        # generic exception, marked the subworkflow FAILED, and left no
+        # resume path at all.
+        if result.status == WorkflowStatus.PAUSED:
+            inner_paused_id: str | None = None
+            for inner_id, inner_res in result.step_results.items():
+                if inner_res.status == StepStatus.PAUSED:
+                    inner_paused_id = inner_res.error or inner_id
+                    break
+            qualified = f"{step.id}.{inner_paused_id}" if inner_paused_id else step.id
+            raise PauseRequestedError(qualified, str(result.error or ""))
+
         duration = (time.monotonic() - start) * 1000
 
-        # TODO: selective merge — right now dumps entire child state back
+        # Surface only the keys the parent asked for. ``return_keys: null``
+        # (default) keeps today's behaviour of dumping the entire child
+        # final state — workflows that want encapsulation set
+        # ``return_keys: [result]`` (or similar) to drop the rest at the
+        # boundary. Missing keys are simply omitted; we don't raise so the
+        # child can choose not to emit some optional keys.
         child_final = result.final_state
+        if step.return_keys is not None:
+            child_final = {k: child_final[k] for k in step.return_keys if k in child_final}
         if step.output:
             await context.state_manager.set(step.output, child_final)
 

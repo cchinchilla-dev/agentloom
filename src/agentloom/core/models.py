@@ -152,6 +152,18 @@ class StepDefinition(BaseModel):
     # Subworkflow fields
     workflow_path: str | None = None
     workflow_inline: dict[str, Any] | None = None
+    # Opt-in to fresh-state isolation. With ``isolated_state: false`` (the
+    # default for backwards compatibility), parent state propagates DOWN
+    # into the child and the child's entire final state propagates UP as
+    # the parent's ``output:`` value — handy for trivial helper
+    # subworkflows but leaky for anything resembling encapsulation.
+    # ``isolated_state: true`` seeds the child only from the child's own
+    # ``state:`` block plus the explicit ``input:`` mapping below, and
+    # only the keys listed in ``return_keys`` (default: all top-level
+    # keys the child wrote) surface back through ``output:``.
+    isolated_state: bool = False
+    input: dict[str, Any] = Field(default_factory=dict)
+    return_keys: list[str] | None = None
 
     # Approval gate fields (timeout enforced by callback server — #42)
     timeout_seconds: int | None = None
