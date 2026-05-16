@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -12,6 +13,7 @@ from typing import Any
 import anyio
 
 from agentloom.checkpointing.base import BaseCheckpointer, CheckpointData
+from agentloom.core.dag import DAG
 from agentloom.core.models import StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.redact import RedactionPolicy, is_redacted, redact_state
@@ -52,6 +54,31 @@ def _extract_pause_error(exc: BaseException) -> PauseRequestedError | None:
             found = _extract_pause_error(inner)
             if found is not None:
                 return found
+    return None
+
+
+def _closest_failed_ancestor(
+    target: str, failed: set[str], dag: DAG
+) -> str | None:
+    """Find the closest ancestor of *target* present in *failed*.
+
+    BFS backward through the DAG's predecessor edges. Returns the first
+    failed step encountered, or ``None`` if no failed ancestor is reachable
+    (defensive: the caller only invokes this when *target* is a transitive
+    successor of *failed*, so a hit is expected). Used by the cascade-skip
+    block to attribute each SKIPPED dependent to the nearest failure it
+    can name, instead of a generic "upstream failure" without context.
+    """
+    visited: set[str] = {target}
+    queue: deque[str] = deque([target])
+    while queue:
+        node = queue.popleft()
+        for pred in dag.predecessors(node):
+            if pred in failed:
+                return pred
+            if pred not in visited:
+                visited.add(pred)
+                queue.append(pred)
     return None
 
 
@@ -363,8 +390,13 @@ class WorkflowEngine:
         )
 
         try:
-            # Track which steps are skipped (not activated by router)
+            # Track which steps are skipped (not activated by router OR
+            # cascaded behind a failed upstream). ``skip_reasons`` carries the
+            # explanatory message for steps cascaded behind a failure so the
+            # operator can audit the chain — success-cascade entries stay
+            # silent because "branch not activated" is normal flow control.
             skipped_steps: set[str] = set()
+            skip_reasons: dict[str, str] = {}
             activated_targets: set[str] | None = None
 
             for layer_idx, layer in enumerate(layers):
@@ -393,7 +425,11 @@ class WorkflowEngine:
                     if step_id in skipped_steps:
                         await self.state.set_step_result(
                             step_id,
-                            StepResult(step_id=step_id, status=StepStatus.SKIPPED),
+                            StepResult(
+                                step_id=step_id,
+                                status=StepStatus.SKIPPED,
+                                error=skip_reasons.get(step_id),
+                            ),
                         )
                         continue
                     # If a router has been evaluated, only activate its target
@@ -440,6 +476,43 @@ class WorkflowEngine:
 
                 if paused_step_id is not None:
                     raise PauseRequestedError(paused_step_id)
+
+                # Cascade-skip dependents of any step that ended FAILED in this
+                # layer. Applies uniformly to routers (AST error, no-match-no-
+                # default, evaluator exception) and regular steps that exhausted
+                # retries — both leave downstream branches unable to make
+                # meaningful progress, and letting them run wastes tokens and
+                # can fire side-effect tools / webhooks against partial state.
+                # Opt out per-workflow via ``config.on_step_failure: continue``
+                # for best-effort fan-outs that explicitly want today's
+                # swallow-and-continue behaviour.
+                if self.workflow.config.on_step_failure == "skip_downstream":
+                    failed_in_layer: set[str] = set()
+                    for step_id in active_steps:
+                        step_result = await self.state.get_step_result(step_id)
+                        if step_result and step_result.status == StepStatus.FAILED:
+                            failed_in_layer.add(step_id)
+                    if failed_in_layer:
+                        direct_children: set[str] = set()
+                        for fid in failed_in_layer:
+                            direct_children.update(dag.successors(fid))
+                        for descendant in dag.transitive_successors(direct_children):
+                            if descendant in skipped_steps:
+                                continue
+                            skipped_steps.add(descendant)
+                            # Attribute the skip to the closest known failed
+                            # ancestor (BFS backward). Transitive descendants
+                            # may sit several hops below the failure; naming
+                            # the nearest is the most actionable for the
+                            # operator.
+                            upstream = _closest_failed_ancestor(
+                                descendant, failed_in_layer, dag
+                            )
+                            skip_reasons.setdefault(
+                                descendant,
+                                f"skipped due to upstream failure: "
+                                f"{upstream or ', '.join(sorted(failed_in_layer))}",
+                            )
 
                 activated_targets_for_next = set()
                 for step_id in active_steps:
