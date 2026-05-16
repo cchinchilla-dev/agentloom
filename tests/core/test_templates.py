@@ -202,6 +202,17 @@ class TestInternalAttributesNotReachableViaTemplate:
         assert not hasattr(lst, "_data")
         assert not hasattr(lst, "_strict")
 
+    def test_list_wrapper_blocks_mangled_storage_name(self) -> None:
+        # Symmetric guard: ``__getattribute__`` on DotAccessList also
+        # refuses ``_DotAccessList__data`` / ``__dict__``.
+        from agentloom.core.templates import DotAccessList
+
+        lst = DotAccessList([1, 2, 3])
+        with pytest.raises(AttributeError):
+            _ = lst._DotAccessList__data
+        with pytest.raises(AttributeError):
+            _ = lst.__dict__
+
     @pytest.mark.parametrize(
         "expr",
         [

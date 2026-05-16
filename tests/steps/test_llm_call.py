@@ -263,6 +263,57 @@ class TestLLMCallStep:
         assert call.args[2]["prompt"] == "Hi world"
         assert call.args[2]["system_prompt"] == "System world"
 
+    async def test_capture_prompts_redacts_against_policy(self, step: LLMCallStep) -> None:
+        # With a redaction policy on the context, the captured span event
+        # is re-rendered against the redacted state so secret values
+        # never reach the trace backend. The wire still gets plaintext.
+        from unittest.mock import MagicMock
+
+        from agentloom.core.redact import RedactionPolicy, is_redacted
+        from tests.conftest import MockProvider
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+
+        observer = MagicMock()
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="answer",
+                type=StepType.LLM_CALL,
+                prompt="Auth Bearer {state.api_key} for {state.user}",
+                system_prompt="System key {state.api_key}",
+            ),
+            state_manager=StateManager(
+                initial_state={"api_key": "sk-do-not-trace", "user": "alice"}
+            ),
+            provider_gateway=gw,
+            workflow_config=WorkflowConfig(provider="mock", model="mock-model"),
+            workflow_model="mock-model",
+            observer=observer,
+            capture_prompts=True,
+            redaction_policy=RedactionPolicy(["api_key"]),
+        )
+        result = await step.execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+        # Captured event renders the sentinel for the flagged key, the
+        # plaintext for the other one.
+        observer.attach_step_event.assert_called_once()
+        payload = observer.attach_step_event.call_args.args[2]
+        assert "sk-do-not-trace" not in payload["prompt"]
+        assert "sk-do-not-trace" not in payload["system_prompt"]
+        assert "alice" in payload["prompt"]
+        # The sentinel itself appears in the redacted prompt.
+        sentinel_marker = "<REDACTED:sha256="
+        assert sentinel_marker in payload["prompt"]
+        assert sentinel_marker in payload["system_prompt"]
+        # ``is_redacted`` recognises the substituted token.
+        # (Strip the prompt down to just the sentinel for the check.)
+        for line in (payload["prompt"], payload["system_prompt"]):
+            start = line.find(sentinel_marker)
+            end = line.find(">", start) + 1
+            assert is_redacted(line[start:end])
+
     async def test_system_prompt_rendered(self, step: LLMCallStep) -> None:
         from tests.conftest import MockProvider
 

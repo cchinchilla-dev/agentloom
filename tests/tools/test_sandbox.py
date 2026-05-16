@@ -803,3 +803,162 @@ class TestValidateCommandFlagEmbeddedPath:
                 allowed_paths=[tmp],
             )
             sandbox.validate_command(f"tee --output={tmp}/log")
+
+
+class TestSandboxHelperEdges:
+    """Edges of the helper functions that the main tests don't exercise."""
+
+    def test_default_deny_target_rejects_url_without_hostname(self) -> None:
+        from agentloom.tools.sandbox import default_deny_webhook_target
+
+        reason = default_deny_webhook_target("http:///path")
+        assert reason is not None and "no hostname" in reason
+
+    def test_default_deny_target_allows_public_https(self) -> None:
+        from agentloom.tools.sandbox import default_deny_webhook_target
+
+        # Hits the ``return None`` tail when nothing is wrong.
+        assert default_deny_webhook_target("https://hooks.example.com/x") is None
+
+    def test_host_is_internal_empty_returns_false(self) -> None:
+        from agentloom.tools.sandbox import _host_is_internal
+
+        assert _host_is_internal("") is False
+
+    def test_host_is_internal_dot_only_returns_false(self) -> None:
+        from agentloom.tools.sandbox import _host_is_internal
+
+        # ``.`` strips to empty after ``rstrip('.')``.
+        assert _host_is_internal(".") is False
+
+    def test_host_is_internal_unresolvable_returns_false(self) -> None:
+        from agentloom.tools.sandbox import _host_is_internal
+
+        # ``getaddrinfo`` raises for a clearly bogus name; the helper
+        # falls back to ``False`` so the sandbox doesn't over-block.
+        assert _host_is_internal("nonexistent.invalid.example.test") is False
+
+    def test_ip_is_internal_cgnat_via_explicit_deny_list(self) -> None:
+        # 100.64/10 isn't covered by ``ipaddress.is_private`` on Python
+        # 3.12, so the explicit ``_DEFAULT_DENY_NETWORKS`` fallback is
+        # what catches it.
+        import ipaddress
+
+        from agentloom.tools.sandbox import _ip_is_internal
+
+        assert _ip_is_internal(ipaddress.ip_address("100.64.0.1")) is True
+
+    def test_extract_path_candidates_flag_with_empty_value(self) -> None:
+        from agentloom.tools.sandbox import _extract_path_candidates
+
+        # ``--key=`` (empty value) and ``--key=bare`` (no slash) yield
+        # nothing — only path-shaped values are extracted.
+        assert _extract_path_candidates("--output=") == []
+        assert _extract_path_candidates("--name=alice") == []
+
+    def test_extract_path_candidates_bare_dotdot_returns_self(self) -> None:
+        from agentloom.tools.sandbox import _extract_path_candidates
+
+        assert _extract_path_candidates("..") == [".."]
+
+    def test_extract_path_candidates_empty_token(self) -> None:
+        from agentloom.tools.sandbox import _extract_path_candidates
+
+        assert _extract_path_candidates("") == []
+
+
+class TestValidateWebhookUrlEnabledSandboxBranches:
+    """Cover the enabled-sandbox path where ``allow_internal_webhook_targets``
+    is False and the internal-host check fires after ``validate_network``."""
+
+    def test_enabled_sandbox_with_opt_in_skips_internal_check(self) -> None:
+        # Opt-in branch: validate_network passes, opt-in returns early
+        # before the internal-host gate.
+        sandbox = ToolSandbox(
+            enabled=True,
+            allow_network=True,
+            allow_internal_webhook_targets=True,
+        )
+        sandbox.validate_webhook_url("http://127.0.0.1/hook")
+
+    def test_enabled_sandbox_url_without_hostname_passes_internal_check(
+        self,
+    ) -> None:
+        # URL with no hostname (``http://``) skips the internal-host
+        # block since there's nothing to classify — the upstream
+        # ``validate_network`` already accepted it.
+        sandbox = ToolSandbox(enabled=True, allow_network=True)
+        # ``http:///path`` has empty hostname; passes the internal check.
+        sandbox.validate_webhook_url("http:///path")
+
+    def test_default_deny_target_rejects_non_http_scheme(self) -> None:
+        # ``default_deny_webhook_target`` is also called directly by
+        # ``send_webhook`` when no sandbox is provided. Cover the
+        # scheme-deny branch via the direct entry point.
+        from agentloom.tools.sandbox import default_deny_webhook_target
+
+        reason = default_deny_webhook_target("ftp://example.com/x")
+        assert reason is not None and "scheme 'ftp'" in reason
+
+    def test_host_is_internal_resolves_ipv4_record(self, monkeypatch: Any) -> None:
+        # AAAA-only case is already covered; pin the IPv4 path too so a
+        # future refactor doesn't quietly skip ``AF_INET`` records.
+        import socket as _socket
+
+        def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
+            return [
+                (
+                    _socket.AF_INET,
+                    _socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("127.0.0.1", 0),
+                ),
+            ]
+
+        monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
+        from agentloom.tools.sandbox import _host_is_internal
+
+        assert _host_is_internal("host-with-a-record.example") is True
+
+    def test_host_is_internal_returns_false_on_getaddrinfo_error(self, monkeypatch: Any) -> None:
+        # Defence: ``getaddrinfo`` raises ``OSError`` for unresolvable
+        # hostnames; the helper falls back to ``False`` so the sandbox
+        # doesn't over-block public names the resolver couldn't reach.
+        def boom(*_args: object, **_kwargs: object):
+            raise OSError("no such host")
+
+        monkeypatch.setattr("socket.getaddrinfo", boom)
+        from agentloom.tools.sandbox import _host_is_internal
+
+        assert _host_is_internal("unresolvable.test") is False
+
+    def test_host_is_internal_skips_unknown_socket_family(self, monkeypatch: Any) -> None:
+        # An exotic address family (Unix, IPX, ...) skips classification
+        # rather than crashing.
+        import socket as _socket
+
+        def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
+            return [
+                (_socket.AF_UNIX, _socket.SOCK_STREAM, 0, "", ("/tmp/sock",)),
+            ]
+
+        monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
+        from agentloom.tools.sandbox import _host_is_internal
+
+        assert _host_is_internal("exotic.example") is False
+
+    def test_host_is_internal_skips_malformed_sockaddr(self, monkeypatch: Any) -> None:
+        # ``ipaddress.ip_address`` raising on a malformed sockaddr is
+        # caught and the loop moves on.
+        import socket as _socket
+
+        def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
+            return [
+                (_socket.AF_INET, _socket.SOCK_STREAM, 0, "", ("not-an-ip", 0)),
+            ]
+
+        monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
+        from agentloom.tools.sandbox import _host_is_internal
+
+        assert _host_is_internal("malformed.example") is False
