@@ -14,7 +14,7 @@ import anyio
 from agentloom.checkpointing.base import BaseCheckpointer, CheckpointData
 from agentloom.core.models import StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
-from agentloom.core.redact import RedactionPolicy, redact_state
+from agentloom.core.redact import RedactionPolicy, is_redacted, redact_state
 from agentloom.core.results import (
     StepResult,
     StepStatus,
@@ -266,6 +266,22 @@ class WorkflowEngine:
                 the human decision on re-execution.
         """
         workflow = WorkflowDefinition.model_validate(checkpoint_data.workflow_definition)
+
+        # Detect redacted state keys carried in the checkpoint. Sentinels were
+        # written by ``_save_checkpoint`` on the way to disk, so on the way
+        # back any downstream step that references such a key will receive
+        # the sentinel literal — not the original plaintext. Surface a single
+        # warning that lists the affected keys so the operator notices.
+        redacted_keys = [k for k, v in checkpoint_data.state.items() if is_redacted(v)]
+        if redacted_keys:
+            logger.warning(
+                "Resuming run '%s' with redacted state keys %s: subsequent steps "
+                "that reference these will receive the redaction sentinel, not "
+                "the original value. Re-inject the plaintext before resuming, "
+                "or remove ``redact: true`` from the workflow's state_schema.",
+                checkpoint_data.run_id,
+                redacted_keys,
+            )
 
         # Restore state manager with completed step results via the public API
         # so internal state, snapshots, and locking remain consistent.

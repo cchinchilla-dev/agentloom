@@ -101,23 +101,40 @@ def redact_state(state: dict[str, Any], policy: RedactionPolicy) -> dict[str, An
 
     Non-string values are still redacted — the sentinel is built from the
     string form of the value so ints / dicts get masked just like
-    strings.
+    strings. Non-string dict keys are coerced to ``str`` before pattern
+    matching so a state dict deserialized from JSON with int keys does
+    not crash ``fnmatch``.
+
+    A self-referential state dict no longer infinite-loops: ``_walk``
+    tracks visited container ids and substitutes a literal
+    ``"<cycle>"`` sentinel the second time around. The plaintext is
+    never recorded in any output, including the cycle marker.
     """
     if not policy:
         return state
-    return _walk(state, policy, prefix="")
+    return _walk(state, policy, prefix="", seen=set())
 
 
-def _walk(value: Any, policy: RedactionPolicy, *, prefix: str) -> Any:
+_CYCLE_SENTINEL = "<cycle>"
+
+
+def _walk(
+    value: Any,
+    policy: RedactionPolicy,
+    *,
+    prefix: str,
+    seen: set[int],
+) -> Any:
+    if isinstance(value, (dict, list)):
+        if id(value) in seen:
+            return _CYCLE_SENTINEL
+        seen = seen | {id(value)}
     if isinstance(value, dict):
-        result: dict[str, Any] = {}
+        result: dict[Any, Any] = {}
         for k, v in value.items():
-            path = f"{prefix}.{k}" if prefix else k
-            if policy.matches(k) or policy.matches(path):
-                # Element-wise redaction for lists so structure stays
-                # intact in the persisted artefact (otherwise a list of
-                # secrets would render as a single sentinel string and
-                # break consumers that expect a list).
+            key_str = k if isinstance(k, str) else str(k)
+            path = f"{prefix}.{key_str}" if prefix else key_str
+            if policy.matches(key_str) or policy.matches(path):
                 if isinstance(v, list):
                     result[k] = [_stable_sentinel(item) for item in v]
                 elif isinstance(v, dict):
@@ -125,10 +142,10 @@ def _walk(value: Any, policy: RedactionPolicy, *, prefix: str) -> Any:
                 else:
                     result[k] = _stable_sentinel(v)
             else:
-                result[k] = _walk(v, policy, prefix=path)
+                result[k] = _walk(v, policy, prefix=path, seen=seen)
         return result
     if isinstance(value, list):
-        return [_walk(item, policy, prefix=prefix) for item in value]
+        return [_walk(item, policy, prefix=prefix, seen=seen) for item in value]
     return value
 
 

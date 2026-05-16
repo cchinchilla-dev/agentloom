@@ -111,3 +111,105 @@ class TestIsRedacted:
         assert not is_redacted("<REDACTED:other>")
         assert not is_redacted(42)
         assert not is_redacted(None)
+
+
+class TestCycleSafe:
+    """``_walk`` must not infinite-loop on self-referential state."""
+
+    def test_self_reference_does_not_infinite_loop(self) -> None:
+        d: dict[str, object] = {"a": 1, "secret": "sk-x"}
+        d["self"] = d
+        out = redact_state(d, RedactionPolicy(["secret"]))
+        assert out["a"] == 1
+        assert is_redacted(out["secret"])
+        assert out["self"] == "<cycle>"
+
+    def test_list_cycle_does_not_infinite_loop(self) -> None:
+        lst: list[object] = [1, 2]
+        lst.append(lst)
+        d = {"items": lst, "secret": "x"}
+        out = redact_state(d, RedactionPolicy(["secret"]))
+        assert out["items"][:2] == [1, 2]
+        assert out["items"][2] == "<cycle>"
+
+
+class TestNonStringKeys:
+    """``fnmatch.fnmatchcase`` requires str args.
+
+    State deserialized from JSON / pickle / tool output can carry int or
+    tuple keys; coerce to ``str`` before matching so a non-string key
+    does not crash the entire checkpoint write.
+    """
+
+    def test_int_key_matched_via_str_coercion(self) -> None:
+        out = redact_state({1: "numeric-keyed"}, RedactionPolicy(["1"]))
+        assert is_redacted(out[1])
+
+    def test_tuple_key_does_not_crash(self) -> None:
+        out = redact_state({(1, 2): "tuple"}, RedactionPolicy(["api_key"]))
+        assert out[(1, 2)] == "tuple"
+
+
+class TestEngineResumeWarnsOnSentinels:
+    """``WorkflowEngine.from_checkpoint`` surfaces redacted keys on resume."""
+
+    async def test_warns_when_state_carries_redaction_sentinel(
+        self, caplog: object
+    ) -> None:
+        import logging
+        from unittest.mock import MagicMock
+
+        from agentloom.checkpointing.base import CheckpointData
+        from agentloom.core.engine import WorkflowEngine
+
+        caplog.set_level(logging.WARNING, logger="agentloom.engine")  # type: ignore[attr-defined]
+        sentinel = redact_state({"api_key": "sk-real"}, RedactionPolicy(["api_key"]))[
+            "api_key"
+        ]
+        cp = CheckpointData(
+            workflow_name="resume-test",
+            run_id="r1",
+            workflow_definition={
+                "name": "resume-test",
+                "version": "1.0",
+                "config": {"provider": "mock", "model": "x"},
+                "state": {"api_key": sentinel},
+                "steps": [{"id": "s1", "type": "llm_call", "prompt": "hi"}],
+            },
+            state={"api_key": sentinel, "user": "alice"},
+        )
+        checkpointer = MagicMock()
+        engine = await WorkflowEngine.from_checkpoint(
+            checkpoint_data=cp, checkpointer=checkpointer
+        )
+        messages = [r.getMessage() for r in caplog.records]  # type: ignore[attr-defined]
+        assert any("api_key" in m and "redacted" in m for m in messages), messages
+        snapshot = await engine.state.get_state_snapshot()
+        assert snapshot["api_key"] == sentinel
+        assert snapshot["user"] == "alice"
+
+    async def test_no_warning_when_no_sentinels(self, caplog: object) -> None:
+        import logging
+        from unittest.mock import MagicMock
+
+        from agentloom.checkpointing.base import CheckpointData
+        from agentloom.core.engine import WorkflowEngine
+
+        caplog.set_level(logging.WARNING, logger="agentloom.engine")  # type: ignore[attr-defined]
+        cp = CheckpointData(
+            workflow_name="resume-clean",
+            run_id="r2",
+            workflow_definition={
+                "name": "resume-clean",
+                "version": "1.0",
+                "config": {"provider": "mock", "model": "x"},
+                "state": {"user": "alice"},
+                "steps": [{"id": "s1", "type": "llm_call", "prompt": "hi"}],
+            },
+            state={"user": "alice"},
+        )
+        await WorkflowEngine.from_checkpoint(
+            checkpoint_data=cp, checkpointer=MagicMock()
+        )
+        for r in caplog.records:  # type: ignore[attr-defined]
+            assert "redacted" not in r.getMessage()
