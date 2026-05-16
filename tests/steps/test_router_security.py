@@ -301,3 +301,95 @@ class TestDotAccessDictDoesNotLeakInternals:
         d = DotAccessDict({"_intentionally_private": "user-data"})
         assert d["_intentionally_private"] == "user-data"
         assert d._intentionally_private == "user-data"
+
+
+class TestRejectsSubscriptIndirection:
+    """Subscript slices must be literal int or str — variables and
+    arithmetic / conditional / call expressions are refused outright.
+
+    Without this gate, an attacker who controls a state value can use it
+    as the subscript key (``creds[lookup]``) to reach a dunder / private
+    attribute the AST validator would otherwise block on the constant
+    form (``creds['_secret']``).
+    """
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "x[lookup]",
+            "x['_' + 'secret']",
+            "x['_sec' + 'ret']",
+            "x['_secret' if True else 'x']",
+            "x['_' + str(1)]",
+            "x[len('abc')]",
+        ],
+    )
+    def test_non_constant_slice_refused(self, expr: str) -> None:
+        ns = {"x": {"_secret": "GHOST"}, "lookup": "_secret"}
+        with pytest.raises(SecurityError):
+            evaluate_expression(expr, ns)
+
+    @pytest.mark.parametrize(
+        "expr,want",
+        [
+            ("state['user']", "alice"),
+            ("state['items'][0]", 1),
+            ("state['nested']['key']", "value"),
+        ],
+    )
+    def test_constant_subscripts_keep_working(
+        self, expr: str, want: object
+    ) -> None:
+        from agentloom.core.templates import DotAccessDict
+
+        ns = {
+            "state": DotAccessDict(
+                {"user": "alice", "items": [1, 2, 3], "nested": {"key": "value"}}
+            )
+        }
+        assert evaluate_expression(expr, ns) == want
+
+
+class TestRouterNamespaceDoesNotFlattenStateKeys:
+    """Top-level state keys are NOT exposed as bare names in router predicates.
+
+    Pre-fix the engine did ``namespace.update(state_snapshot)`` so a state
+    key named ``len`` would shadow the builtin, and arbitrary keys
+    (``creds``, ``lookup``) became reachable without the ``state.`` prefix.
+    """
+
+    async def test_state_key_does_not_shadow_safe_builtin(self) -> None:
+        step = RouterStep()
+        context = StepContext(
+            step_definition=StepDefinition(
+                id="route",
+                type=StepType.ROUTER,
+                conditions=[
+                    Condition(expression="len(state.items) == 3", target="ok"),
+                ],
+                default="fallback",
+            ),
+            state_manager=StateManager(
+                initial_state={"len": "shadowed", "items": [1, 2, 3]}
+            ),
+        )
+        result = await step.execute(context)
+        assert result.output == "ok"
+
+    async def test_bare_state_name_not_resolvable(self) -> None:
+        step = RouterStep()
+        context = StepContext(
+            step_definition=StepDefinition(
+                id="route",
+                type=StepType.ROUTER,
+                conditions=[
+                    Condition(expression="severity == 'high'", target="hot"),
+                ],
+                default="cold",
+            ),
+            state_manager=StateManager(initial_state={"severity": "high"}),
+        )
+        from agentloom.exceptions import StepError
+
+        with pytest.raises(StepError):
+            await step.execute(context)

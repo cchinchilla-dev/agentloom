@@ -158,21 +158,37 @@ class TestFormatSpecOnContainers:
         assert format(lst, "") == repr([1, 2, 3])
 
     def test_dict_format_spec_non_empty_forwards_to_data(self) -> None:
-        # A non-empty spec hits the explicit ``return format(self._data, ...)``
-        # path. Use a string-formattable underlying scalar.
+        # A non-empty spec hits the explicit ``return format(self.__data, ...)``
+        # path. ``dict`` itself doesn't accept format specs, so cover the
+        # branch by replacing the name-mangled storage slot with a string-like
+        # value that DOES accept the spec.
         d = DotAccessDict({"x": "hi"})
-        # Spec ">5" right-aligns in 5 chars — repr-style strings don't accept
-        # this spec, so we wrap a list/dict body with a spec the underlying
-        # type accepts: empty string. Instead, exercise the branch via
-        # ``__format__`` directly with an empty-string sentinel that still
-        # passes the truthy guard? No — empty falls through to else. We need
-        # a non-empty spec that ``dict.__format__`` accepts: there is none.
-        # Cover the branch by stubbing ``self._data`` with a value that
-        # supports the spec.
-        d._data = "hi"  # type: ignore[assignment]
+        object.__setattr__(d, "_DotAccessDict__data", "hi")
         assert format(d, ">5") == "   hi"
 
     def test_list_format_spec_non_empty_forwards_to_data(self) -> None:
         lst = DotAccessList([1])
-        lst._data = "abc"  # type: ignore[assignment]
+        object.__setattr__(lst, "_DotAccessList__data", "abc")
         assert format(lst, ">5") == "  abc"
+
+
+class TestInternalAttributesNotReachableViaTemplate:
+    """The wrapper's private storage must not surface through ``str.format_map``.
+
+    Pre-fix, a template containing ``{state._data}`` rendered the entire
+    underlying state dict because ``_data`` was a plain instance attribute
+    that ``__getattr__`` never blocked. Name-mangling (``__data`` →
+    ``_DotAccessDict__data``) makes that storage unreachable via the
+    short attribute name that format syntax supports.
+    """
+
+    def test_state_dot_underscore_data_renders_empty(self) -> None:
+        vars = build_template_vars({"user": {"name": "alice", "_password": "secret"}})
+        rendered = "{state._data}".format_map(SafeFormatDict(vars))
+        assert rendered == ""
+        assert "secret" not in rendered
+
+    def test_state_dot_underscore_strict_renders_empty(self) -> None:
+        vars = build_template_vars({"x": 1})
+        rendered = "{state._strict}".format_map(SafeFormatDict(vars))
+        assert rendered == ""

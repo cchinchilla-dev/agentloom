@@ -84,15 +84,49 @@ def _reject_attribute(attr: str, expr_str: str) -> None:
 
 
 def _reject_subscript(slice_node: ast.AST, expr_str: str) -> None:
-    """Apply the dunder/blocklist check to string-constant subscripts.
+    """Restrict subscript slices to literal int / str keys.
 
-    Without this, ``state['__class__']`` and ``state['_secret']`` reach
-    ``DotAccessDict.__getitem__`` and bypass the attribute-only guard.
-    Numeric and non-constant slices are left alone (list indexing, slicing,
-    variable subscripts).
+    Two checks combined into one gate:
+
+    * **String constants** go through ``_reject_attribute`` so
+      ``state['__class__']`` and ``state['_secret']`` are blocked exactly
+      like their attribute-syntax twins.
+    * **Non-constant slices** — variables, arithmetic (``'_' + 'secret'``),
+      conditionals, calls — are refused outright because the validator
+      cannot determine the resulting key at parse time, leaving subscript
+      indirection as an end-run around the dunder gate.
+
+    Integer constants pass through (list indexing, ``state['items'][0]``).
+    Constant int/int/None slices (``state['items'][1:5]``) are permitted
+    when every bound is also an integer constant.
     """
-    if isinstance(slice_node, ast.Constant) and isinstance(slice_node.value, str):
-        _reject_attribute(slice_node.value, expr_str)
+    if isinstance(slice_node, ast.Constant):
+        if isinstance(slice_node.value, str):
+            _reject_attribute(slice_node.value, expr_str)
+            return
+        if isinstance(slice_node.value, int) and not isinstance(slice_node.value, bool):
+            return
+        raise SecurityError(
+            f"Subscript key must be a literal int or str "
+            f"(got constant of type {type(slice_node.value).__name__}).",
+            expression=expr_str,
+        )
+    if isinstance(slice_node, ast.Slice):
+        for sub in (slice_node.lower, slice_node.upper, slice_node.step):
+            if sub is None:
+                continue
+            if not (isinstance(sub, ast.Constant) and isinstance(sub.value, int)):
+                raise SecurityError(
+                    "Slice bounds must be integer constants in router expressions.",
+                    expression=expr_str,
+                )
+        return
+    raise SecurityError(
+        f"Subscript key must be a literal int or str "
+        f"(got {type(slice_node).__name__}). Indirection through variables, "
+        f"arithmetic, conditionals, or calls is not allowed.",
+        expression=expr_str,
+    )
 
 
 def _validate_expression(expr_str: str) -> ast.Expression:
@@ -197,8 +231,15 @@ class RouterStep(BaseStep):
 
         state_snapshot = await context.state_manager.get_state_snapshot()
 
+        # Router predicates address state through ``state.X`` only. Earlier
+        # versions also flattened every top-level state key into the
+        # namespace as a bare name, which let a workflow shadow safe
+        # builtins (``len``, ``str``) by naming a state key the same, and
+        # broadened the validator's attack surface by exposing arbitrary
+        # variables that downstream subscript / indirection probes could
+        # combine. The flat surface is dropped here — all reads now go
+        # through ``state.X``.
         namespace: dict[str, Any] = {}
-        namespace.update(state_snapshot)
 
         class _StateProxy:
             def __getattr__(self, name: str) -> Any:
