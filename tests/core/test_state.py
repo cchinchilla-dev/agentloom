@@ -318,3 +318,105 @@ class TestCheckpoint:
         nested_path = tmp_path / "sub" / "dir" / "checkpoint.json"
         await sm.save_checkpoint(nested_path)
         assert nested_path.exists()
+
+
+class TestAtomicUpdate:
+    """#056 regression — ``StateManager.update`` is atomic across read/modify/write.
+
+    The legacy ``get`` then ``set`` pattern drops the lock between the two
+    awaits and collapses parallel writers to 1. The new ``update(key, fn)``
+    primitive holds the lock for the full callback invocation; under 50
+    parallel writers it must produce final 50, not final 1.
+    """
+
+    async def test_update_is_atomic_under_50_parallel_writers(self) -> None:
+        import anyio
+
+        sm = StateManager(initial_state={"counter": 0})
+
+        async def bump() -> None:
+            await sm.update("counter", lambda c: (c or 0) + 1)
+
+        async with anyio.create_task_group() as tg:
+            for _ in range(50):
+                tg.start_soon(bump)
+        assert await sm.get("counter") == 50
+
+    async def test_update_returns_new_value(self) -> None:
+        sm = StateManager(initial_state={"counter": 10})
+        new = await sm.update("counter", lambda c: c * 2)
+        assert new == 20
+        assert await sm.get("counter") == 20
+
+    async def test_update_initialises_missing_key_with_none_seed(self) -> None:
+        sm = StateManager()
+        result = await sm.update("new_key", lambda c: 7 if c is None else c + 1)
+        assert result == 7
+        assert await sm.get("new_key") == 7
+
+    async def test_get_then_set_remains_racy(self) -> None:
+        """Regression net: we must NOT accidentally over-lock ``get`` + ``set``.
+
+        The contract is documented as racy — anyone needing atomicity must
+        switch to ``update``. If this assertion ever starts failing (i.e.
+        ``get`` + ``set`` becomes atomic), revisit the lock granularity:
+        an unintentional widening makes every read serialise with the
+        write queue and tanks throughput in busy workflows.
+        """
+        import anyio
+
+        sm = StateManager(initial_state={"counter": 0})
+
+        async def bump_via_get_set() -> None:
+            cur = await sm.get("counter")
+            await anyio.sleep(0.001)
+            await sm.set("counter", cur + 1)
+
+        async with anyio.create_task_group() as tg:
+            for _ in range(50):
+                tg.start_soon(bump_via_get_set)
+        assert await sm.get("counter") < 50
+
+
+class TestDottedScalarOverwriteRefused:
+    """#056/F52 regression — dotted write must not silently replace a scalar.
+
+    Pre-0.5.0, writing ``user.name`` when ``state.user`` was a string
+    replaced the string with a fresh dict and lost the original value
+    with no warning. Now ``_set_nested`` raises ``StateWriteError`` so
+    the workflow author either picks a different output key or
+    explicitly overwrites ``user`` at the parent path first.
+    """
+
+    async def test_refuses_overwrite_of_scalar_parent(self) -> None:
+        from agentloom.exceptions import StateWriteError
+
+        sm = StateManager(initial_state={"user": "alice"})
+        with pytest.raises(StateWriteError) as exc_info:
+            await sm.set("user.name", "bob")
+        msg = str(exc_info.value)
+        assert "user" in msg and "str" in msg
+        # The original scalar must survive the refusal.
+        assert await sm.get("user") == "alice"
+
+    async def test_auto_creates_intermediate_when_missing(self) -> None:
+        sm = StateManager()
+        await sm.set("user.name", "bob")
+        assert await sm.get("user.name") == "bob"
+
+    async def test_traverses_existing_dict_intermediate(self) -> None:
+        sm = StateManager(initial_state={"user": {"id": 1}})
+        await sm.set("user.name", "bob")
+        assert await sm.get("user.name") == "bob"
+        assert await sm.get("user.id") == 1
+
+    async def test_refusal_mentions_traversed_prefix(self) -> None:
+        from agentloom.exceptions import StateWriteError
+
+        sm = StateManager(initial_state={"user": {"profile": "guest"}})
+        with pytest.raises(StateWriteError) as exc_info:
+            await sm.set("user.profile.name", "bob")
+        # The message should point at ``user.profile`` (the scalar that
+        # would be overwritten), not just ``user``.
+        assert "user.profile" in str(exc_info.value)
+
