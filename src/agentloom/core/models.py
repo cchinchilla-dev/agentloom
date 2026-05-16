@@ -221,6 +221,19 @@ class WorkflowConfig(BaseModel):
     stream: bool = False
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
+    # When a step (or a router) ends in FAILED, ``skip_downstream`` marks every
+    # transitive dependent as SKIPPED so they don't fire side-effect tools,
+    # webhooks, or LLM calls against partial state. ``continue`` preserves the
+    # pre-0.5.0 behaviour (dependents still run) for best-effort fan-outs that
+    # explicitly want to swallow failures.
+    on_step_failure: Literal["skip_downstream", "continue"] = "skip_downstream"
+
+    # When ``True``, two or more parallel-eligible steps writing the same
+    # ``output:`` key abort at parse time. When ``False`` (default), the parser
+    # only emits a warning — silent last-writer-wins is the pre-0.5.0
+    # behaviour that several workflows already depend on, so opt-in only.
+    strict_outputs: bool = False
+
     # MockProvider configuration (used only when provider == "mock")
     responses_file: str | None = None
     latency_model: Literal["constant", "normal", "replay"] = "constant"
