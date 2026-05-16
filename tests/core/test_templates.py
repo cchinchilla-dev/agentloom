@@ -183,14 +183,14 @@ class TestInternalAttributesNotReachableViaTemplate:
     """
 
     def test_state_dot_underscore_data_renders_empty(self) -> None:
-        vars = build_template_vars({"user": {"name": "alice", "_password": "secret"}})
-        rendered = "{state._data}".format_map(SafeFormatDict(vars))
+        tvars = build_template_vars({"user": {"name": "alice", "_password": "secret"}})
+        rendered = "{state._data}".format_map(SafeFormatDict(tvars))
         assert rendered == ""
         assert "secret" not in rendered
 
     def test_state_dot_underscore_strict_renders_empty(self) -> None:
-        vars = build_template_vars({"x": 1})
-        rendered = "{state._strict}".format_map(SafeFormatDict(vars))
+        tvars = build_template_vars({"x": 1})
+        rendered = "{state._strict}".format_map(SafeFormatDict(tvars))
         assert rendered == ""
 
     def test_list_wrapper_short_attribute_not_reachable(self) -> None:
@@ -213,10 +213,8 @@ class TestInternalAttributesNotReachableViaTemplate:
         ],
     )
     def test_python_internals_path_refused(self, expr: str) -> None:
-        vars = build_template_vars(
-            {"user": {"name": "alice", "_password": "secret"}}
-        )
-        rendered = expr.format_map(SafeFormatDict(vars))
+        tvars = build_template_vars({"user": {"name": "alice", "_password": "secret"}})
+        rendered = expr.format_map(SafeFormatDict(tvars))
         assert rendered == ""
         assert "alice" not in rendered
         assert "secret" not in rendered

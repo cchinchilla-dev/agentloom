@@ -153,9 +153,7 @@ class TestNonStringKeys:
 class TestEngineResumeWarnsOnSentinels:
     """``WorkflowEngine.from_checkpoint`` surfaces redacted keys on resume."""
 
-    async def test_warns_when_state_carries_redaction_sentinel(
-        self, caplog: object
-    ) -> None:
+    async def test_warns_when_state_carries_redaction_sentinel(self, caplog: object) -> None:
         import logging
         from unittest.mock import MagicMock
 
@@ -163,9 +161,7 @@ class TestEngineResumeWarnsOnSentinels:
         from agentloom.core.engine import WorkflowEngine
 
         caplog.set_level(logging.WARNING, logger="agentloom.engine")  # type: ignore[attr-defined]
-        sentinel = redact_state({"api_key": "sk-real"}, RedactionPolicy(["api_key"]))[
-            "api_key"
-        ]
+        sentinel = redact_state({"api_key": "sk-real"}, RedactionPolicy(["api_key"]))["api_key"]
         cp = CheckpointData(
             workflow_name="resume-test",
             run_id="r1",
@@ -179,9 +175,7 @@ class TestEngineResumeWarnsOnSentinels:
             state={"api_key": sentinel, "user": "alice"},
         )
         checkpointer = MagicMock()
-        engine = await WorkflowEngine.from_checkpoint(
-            checkpoint_data=cp, checkpointer=checkpointer
-        )
+        engine = await WorkflowEngine.from_checkpoint(checkpoint_data=cp, checkpointer=checkpointer)
         messages = [r.getMessage() for r in caplog.records]  # type: ignore[attr-defined]
         assert any("api_key" in m and "redacted" in m for m in messages), messages
         snapshot = await engine.state.get_state_snapshot()
@@ -208,9 +202,7 @@ class TestEngineResumeWarnsOnSentinels:
             },
             state={"user": "alice"},
         )
-        await WorkflowEngine.from_checkpoint(
-            checkpoint_data=cp, checkpointer=MagicMock()
-        )
+        await WorkflowEngine.from_checkpoint(checkpoint_data=cp, checkpointer=MagicMock())
         for r in caplog.records:  # type: ignore[attr-defined]
             assert "redacted" not in r.getMessage()
 
@@ -303,9 +295,7 @@ class TestRedactionContainerCoverage:
         class Creds(BaseModel):
             api_key: str
 
-        out = redact_state(
-            {"creds": Creds(api_key="sk-leak")}, RedactionPolicy(["creds"])
-        )
+        out = redact_state({"creds": Creds(api_key="sk-leak")}, RedactionPolicy(["creds"]))
         assert is_redacted(out["creds"])
 
 

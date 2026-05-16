@@ -113,9 +113,9 @@ class WorkflowEngine:
         # workflow-level ``state_schema:`` declarations with the
         # ``AGENTLOOM_REDACT_STATE_KEYS`` env var so a deployment-wide
         # baseline (env) can coexist with per-workflow overrides (YAML).
-        self._redaction_policy = RedactionPolicy(
-            workflow.redaction_patterns()
-        ).merge(RedactionPolicy.from_env())
+        self._redaction_policy = RedactionPolicy(workflow.redaction_patterns()).merge(
+            RedactionPolicy.from_env()
+        )
 
         # Wire observer into gateway for circuit breaker events
         if observer and provider_gateway:

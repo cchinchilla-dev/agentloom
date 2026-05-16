@@ -247,9 +247,7 @@ class TestRejectsSubscriptDunderBypass:
             ("state['nested']['key']", "value"),
         ],
     )
-    def test_non_blocked_subscript_keeps_working(
-        self, expr: str, expected: object
-    ) -> None:
+    def test_non_blocked_subscript_keeps_working(self, expr: str, expected: object) -> None:
         from agentloom.core.templates import DotAccessDict
 
         ns = {
@@ -337,9 +335,7 @@ class TestRejectsSubscriptIndirection:
             ("state['nested']['key']", "value"),
         ],
     )
-    def test_constant_subscripts_keep_working(
-        self, expr: str, want: object
-    ) -> None:
+    def test_constant_subscripts_keep_working(self, expr: str, want: object) -> None:
         from agentloom.core.templates import DotAccessDict
 
         ns = {
@@ -399,9 +395,7 @@ class TestRouterNamespaceDoesNotFlattenStateKeys:
                 ],
                 default="fallback",
             ),
-            state_manager=StateManager(
-                initial_state={"len": "shadowed", "items": [1, 2, 3]}
-            ),
+            state_manager=StateManager(initial_state={"len": "shadowed", "items": [1, 2, 3]}),
         )
         result = await step.execute(context)
         assert result.output == "ok"

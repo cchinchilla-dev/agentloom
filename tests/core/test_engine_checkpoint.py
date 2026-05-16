@@ -394,9 +394,7 @@ class TestCheckpointStateRedaction:
     block carried inside ``workflow_definition``.
     """
 
-    async def test_state_keys_are_redacted_in_persisted_file(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_state_keys_are_redacted_in_persisted_file(self, tmp_path: Path) -> None:
         from agentloom.core.models import StateKeyConfig
 
         wf = WorkflowDefinition(
@@ -451,11 +449,7 @@ class TestCheckpointStateRedaction:
             config=WorkflowConfig(provider="mock", model="mock-model"),
             state={"api_key": "sk-yaml-seed"},
             state_schema={"api_key": StateKeyConfig(redact=True)},
-            steps=[
-                StepDefinition(
-                    id="noop", type=StepType.LLM_CALL, prompt="hi", output="ans"
-                )
-            ],
+            steps=[StepDefinition(id="noop", type=StepType.LLM_CALL, prompt="hi", output="ans")],
         )
         provider = MockProvider()
         gw = ProviderGateway()
@@ -475,11 +469,7 @@ class TestCheckpointStateRedaction:
             name="no-redact",
             config=WorkflowConfig(provider="mock", model="mock-model"),
             state={"api_key": "plain"},
-            steps=[
-                StepDefinition(
-                    id="noop", type=StepType.LLM_CALL, prompt="hi", output="ans"
-                )
-            ],
+            steps=[StepDefinition(id="noop", type=StepType.LLM_CALL, prompt="hi", output="ans")],
         )
         provider = MockProvider()
         gw = ProviderGateway()
@@ -502,9 +492,7 @@ class TestCheckpointStateRedaction:
             state={"user": "alice"},
             state_schema={"api_key": StateKeyConfig(redact=True)},
             steps=[
-                StepDefinition(
-                    id="extract", type=StepType.LLM_CALL, prompt="hi", output="data"
-                )
+                StepDefinition(id="extract", type=StepType.LLM_CALL, prompt="hi", output="data")
             ],
         )
         provider = MockProvider()
@@ -525,9 +513,7 @@ class TestCheckpointStateRedaction:
         raw = next(tmp_path.glob("*.json")).read_text()
         assert "sk-leaked-via-step-output" not in raw
 
-    async def test_workflow_definition_fields_redacted(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_workflow_definition_fields_redacted(self, tmp_path: Path) -> None:
         from agentloom.core.models import StateKeyConfig, WebhookConfig
 
         wf = WorkflowDefinition(
@@ -574,11 +560,7 @@ class TestCheckpointStateRedaction:
             config=WorkflowConfig(provider="mock", model="x"),
             state={"api_key": "sk-final-state-leak", "user": "alice"},
             state_schema={"api_key": StateKeyConfig(redact=True)},
-            steps=[
-                StepDefinition(
-                    id="noop", type=StepType.LLM_CALL, prompt="hi", output="ans"
-                )
-            ],
+            steps=[StepDefinition(id="noop", type=StepType.LLM_CALL, prompt="hi", output="ans")],
         )
         provider = MockProvider()
         gw = ProviderGateway()

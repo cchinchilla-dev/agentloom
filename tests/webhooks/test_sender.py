@@ -225,19 +225,13 @@ class TestSandboxGate:
 
     @respx.mock
     @pytest.mark.anyio()
-    async def test_opt_in_unblocks_internal(
-        self, wh_context: WebhookContext
-    ) -> None:
+    async def test_opt_in_unblocks_internal(self, wh_context: WebhookContext) -> None:
         from agentloom.tools.sandbox import ToolSandbox
 
-        respx.post("http://127.0.0.1:18642/captured").mock(
-            return_value=httpx.Response(200)
-        )
+        respx.post("http://127.0.0.1:18642/captured").mock(return_value=httpx.Response(200))
         sandbox = ToolSandbox(enabled=False, allow_internal_webhook_targets=True)
         config = WebhookConfig(url="http://127.0.0.1:18642/captured")
         observer = MagicMock()
-        await send_webhook(
-            config, wh_context, observer=observer, sandbox=sandbox, deadline_s=10.0
-        )
+        await send_webhook(config, wh_context, observer=observer, sandbox=sandbox, deadline_s=10.0)
         observer.on_webhook_delivery.assert_called_once()
         assert observer.on_webhook_delivery.call_args[0][2] == "success"

@@ -7,6 +7,7 @@ all operations pass through without validation.
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import re
 import shlex
@@ -134,10 +135,8 @@ def _host_is_internal(hostname: str) -> bool:
         decoded = unquote(hostname)
     except Exception:  # pragma: no cover — unquote is total in practice
         decoded = hostname
-    try:
+    with contextlib.suppress(UnicodeError, UnicodeDecodeError):
         decoded = decoded.encode("idna").decode("ascii")
-    except (UnicodeError, UnicodeDecodeError):
-        pass
     lower = decoded.lower().rstrip(".")
     if not lower:
         return False
@@ -157,13 +156,10 @@ def _host_is_internal(hostname: str) -> bool:
     except (OSError, ValueError):
         return False
     for family, _, _, _, sockaddr in records:
+        if family not in (socket.AF_INET, socket.AF_INET6):
+            continue
         try:
-            if family == socket.AF_INET:
-                ip_addr = ipaddress.ip_address(sockaddr[0])
-            elif family == socket.AF_INET6:
-                ip_addr = ipaddress.ip_address(sockaddr[0])
-            else:
-                continue
+            ip_addr = ipaddress.ip_address(sockaddr[0])
         except (ValueError, IndexError):
             continue
         if _ip_is_internal(ip_addr):

@@ -19,6 +19,7 @@ import fnmatch
 import hashlib
 import os
 import re
+from collections.abc import Mapping
 from typing import Any
 
 # Pattern that matches the sentinel surface so consumers can detect a
@@ -55,15 +56,12 @@ class RedactionPolicy:
         """Return ``True`` when *key* (or any of its dotted prefixes)
         matches one of the configured glob patterns.
         """
-        for pattern in self._patterns:
-            if fnmatch.fnmatchcase(key, pattern):
-                return True
-        return False
+        return any(fnmatch.fnmatchcase(key, pattern) for pattern in self._patterns)
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> RedactionPolicy:
-        env = env if env is not None else os.environ
-        raw = env.get(ENV_VAR, "")
+    def from_env(cls, env: Mapping[str, str] | None = None) -> RedactionPolicy:
+        source: Mapping[str, str] = env if env is not None else os.environ
+        raw = source.get(ENV_VAR, "")
         patterns = [p.strip() for p in raw.split(",") if p.strip()]
         return cls(patterns)
 
@@ -112,7 +110,12 @@ def redact_state(state: dict[str, Any], policy: RedactionPolicy) -> dict[str, An
     """
     if not policy:
         return state
-    return _walk(state, policy, prefix="", seen=set())
+    walked = _walk(state, policy, prefix="", seen=set())
+    # ``_walk`` is typed ``Any`` because it recurses across heterogeneous
+    # container types; at the top level the input is a dict so the result
+    # is too.
+    assert isinstance(walked, dict)
+    return walked
 
 
 _CYCLE_SENTINEL = "<cycle>"
@@ -142,9 +145,7 @@ def _walk(
                 if is_redacted(v):
                     result[k] = v
                 elif isinstance(v, list):
-                    result[k] = [
-                        iv if is_redacted(iv) else _stable_sentinel(iv) for iv in v
-                    ]
+                    result[k] = [iv if is_redacted(iv) else _stable_sentinel(iv) for iv in v]
                 elif isinstance(v, dict):
                     result[k] = {
                         ik: (iv if is_redacted(iv) else _stable_sentinel(iv))

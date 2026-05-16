@@ -117,13 +117,9 @@ def _reject_subscript(slice_node: ast.AST, expr_str: str) -> None:
         for sub in (slice_node.lower, slice_node.upper, slice_node.step):
             if sub is None:
                 continue
-            if isinstance(sub, ast.UnaryOp) and isinstance(
-                sub.op, (ast.UAdd, ast.USub)
-            ):
+            if isinstance(sub, ast.UnaryOp) and isinstance(sub.op, (ast.UAdd, ast.USub)):
                 operand = sub.operand
-                if isinstance(operand, ast.Constant) and isinstance(
-                    operand.value, int
-                ):
+                if isinstance(operand, ast.Constant) and isinstance(operand.value, int):
                     continue
             if not (isinstance(sub, ast.Constant) and isinstance(sub.value, int)):
                 raise SecurityError(
@@ -264,6 +260,7 @@ class RouterStep(BaseStep):
             """Proxy supporting both ``proxy.key`` and ``proxy['key']``."""
 
             __slots__ = ("_data",)
+            _data: dict[str, Any]
 
             def __init__(self, data: dict[str, Any]) -> None:
                 object.__setattr__(self, "_data", data)
@@ -280,6 +277,7 @@ class RouterStep(BaseStep):
             """Proxy supporting ``proxy[i]`` and ``proxy[i:j]``."""
 
             __slots__ = ("_data",)
+            _data: list[Any]
 
             def __init__(self, data: list[Any]) -> None:
                 object.__setattr__(self, "_data", data)

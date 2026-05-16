@@ -606,9 +606,7 @@ class TestValidatePathSurfacesViolationOnUnresolvable:
                 sandbox.validate_path(a)
 
     @pytest.mark.parametrize("bad_input", [None, 42, b"/tmp/bytes"])
-    def test_non_string_input_wraps_to_sandbox_violation(
-        self, bad_input: object
-    ) -> None:
+    def test_non_string_input_wraps_to_sandbox_violation(self, bad_input: object) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             sandbox = ToolSandbox(enabled=True, allowed_paths=[tmp])
             with pytest.raises(SandboxViolationError):
@@ -750,9 +748,7 @@ class TestValidateWebhookUrl:
     def test_percent_encoded_hostname_decoded_before_check(self) -> None:
         sandbox = ToolSandbox(enabled=False)
         with pytest.raises(SandboxViolationError):
-            sandbox.validate_webhook_url(
-                "http://%6c%6f%63%61%6c%68%6f%73%74:8080/x"
-            )
+            sandbox.validate_webhook_url("http://%6c%6f%63%61%6c%68%6f%73%74:8080/x")
 
     def test_aaaa_only_dns_caught_via_getaddrinfo(self, monkeypatch: Any) -> None:
         import socket as _socket
