@@ -80,6 +80,17 @@ class ValidationError(AgentLoomError):
     """Workflow or step definition validation error."""
 
 
+class StateWriteError(AgentLoomError):
+    """Refused state write: dotted path would silently overwrite a scalar.
+
+    Raised by ``StateManager.set`` (and the underlying ``_set_nested``) when
+    a dotted key writes through an intermediate segment whose existing value
+    is a non-container scalar. The pre-0.5.0 behaviour replaced the scalar
+    with an empty dict and continued, which silently lost data; this error
+    surfaces it instead.
+    """
+
+
 class WorkflowTimeoutError(AgentLoomError):
     """Workflow exceeded its maximum execution time."""
 

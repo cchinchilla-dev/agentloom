@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from typing import Any
 import anyio
 
 from agentloom.core.results import StepResult, StepStatus
+from agentloom.exceptions import StateWriteError
 
 _SEGMENT_RE = re.compile(r"^([^\[]*)((?:\[-?\d+\])*)$")
 _INDEX_RE = re.compile(r"\[(-?\d+)\]")
@@ -67,6 +69,37 @@ class StateManager:
         """Set a value in the workflow state."""
         async with self._lock:
             self._set_nested(self._state, key, value)
+
+    async def update(self, key: str, fn: Callable[[Any], Any]) -> Any:
+        """Atomic read-modify-write on a single state key.
+
+        Holds the state lock across the full ``fn(current)`` invocation, so
+        compound updates like "fetch the counter, add one, write it back"
+        no longer collapse under concurrency. Without this primitive, the
+        natural ``cur = await sm.get('counter'); await sm.set('counter',
+        cur + 1)`` pattern drops the lock between the two awaits — anything
+        that yields (a tool call, an ``await anyio.sleep(0)``) lets another
+        writer race and the slower writer overwrites the faster one's
+        result. 50 parallel ``update(key, +1)`` calls produce final 50;
+        the equivalent ``get`` + ``set`` pair produces final 1 deterministically.
+
+        ``fn`` MUST be synchronous and side-effect-free — it runs while the
+        lock is held, so any blocking call would stall every other state
+        operation in the workflow. For an async transformation, compute the
+        new value outside the lock and pass a lambda that returns the
+        already-computed value; this still races if the new value depends
+        on the current state, in which case use ``update`` with a sync
+        function instead.
+
+        Returns the new value (also what ``fn`` returned). If the key does
+        not exist yet, ``fn`` receives ``None``; the caller chooses whether
+        to treat that as the seed or refuse it.
+        """
+        async with self._lock:
+            current = self._resolve_key(self._state, key, None)
+            new_value = fn(current)
+            self._set_nested(self._state, key, new_value)
+            return new_value
 
     async def get_state_snapshot(self) -> dict[str, Any]:
         """Return a copy of the current state."""
@@ -181,10 +214,17 @@ class StateManager:
         Creates intermediate dicts for missing string segments, but does not
         create or resize lists.  For integer path segments the list and indexed
         element must already exist; otherwise ``IndexError`` is raised.
+
+        Refuses to silently overwrite a scalar with a dict: writing to
+        ``user.name`` when ``state.user = "alice"`` (a string) used to
+        replace the string with ``{"name": ...}`` and lose the original
+        value without warning. Such writes now raise ``StateWriteError``
+        so the workflow author either picks a different output key or
+        explicitly overwrites the scalar at the parent path first.
         """
         parts = _parse_path(key)
         current: Any = data
-        for part in parts[:-1]:
+        for i, part in enumerate(parts[:-1]):
             if isinstance(part, int):
                 if isinstance(current, list) and -len(current) <= part < len(current):
                     current = current[part]
@@ -196,8 +236,15 @@ class StateManager:
                         f"before writing to indexed paths."
                     )
             else:
-                if part not in current or not isinstance(current[part], (dict, list)):
+                if part not in current:
                     current[part] = {}
+                elif not isinstance(current[part], (dict, list)):
+                    traversed = ".".join(str(p) for p in parts[: i + 1])
+                    raise StateWriteError(
+                        f"Cannot write to {key!r}: intermediate {traversed!r} is a "
+                        f"{type(current[part]).__name__} (value={current[part]!r}), "
+                        f"not a dict. Refusing to silently overwrite the scalar."
+                    )
                 current = current[part]
             if not isinstance(current, (dict, list)):
                 raise TypeError(
