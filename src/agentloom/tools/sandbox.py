@@ -79,35 +79,62 @@ _DEFAULT_DENY_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...
 )
 
 
-def _host_is_internal(hostname: str) -> bool:
-    """Return ``True`` when *hostname* resolves to an internal address.
+def _ip_is_internal(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Classify *ip* against the internal-host categories.
 
-    Best-effort: skips DNS resolution and only inspects the literal token
-    so a workflow can't smuggle ``169.254.169.254`` past the deny-list by
-    using ``http://metadata.aws/`` (the destination still needs DNS resolution
-    at HTTP time, but the literal host is what users typically configure).
-    A hostname that looks like a name but resolves locally via ``/etc/hosts``
-    is also caught when DNS lookup is permitted.
+    Uses ``ipaddress``'s built-in flags so IPv4-mapped IPv6 forms
+    (``::ffff:127.0.0.1``, ``::ffff:169.254.169.254``), the unspecified
+    addresses (``0.0.0.0`` / ``::``), and any reserved-range edge case
+    inherit the deny-list automatically — the prior network-containment
+    iteration missed all of these because the literal IPv6 ``::ffff:x``
+    address doesn't match an IPv4 network.
     """
-    if not hostname:
-        return False
-    lower = hostname.lower()
-    if lower == "localhost" or lower.endswith(".localhost"):
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if (
+        ip.is_loopback
+        or ip.is_link_local
+        or ip.is_private
+        or ip.is_reserved
+        or ip.is_unspecified
+        or ip.is_multicast
+    ):
         return True
-    try:
-        ip = ipaddress.ip_address(lower)
-    except ValueError:
-        try:
-            resolved = socket.gethostbyname(lower)
-            ip = ipaddress.ip_address(resolved)
-        except (OSError, ValueError):
-            return False
     for net in _DEFAULT_DENY_NETWORKS:
         if ip.version != net.version:
             continue
         if ip in net:
             return True
     return False
+
+
+def _host_is_internal(hostname: str) -> bool:
+    """Return ``True`` when *hostname* resolves to an internal address.
+
+    Inspects the literal host first so a workflow can't smuggle
+    ``169.254.169.254`` past the deny-list by using
+    ``http://metadata.aws/``. Falls back to a best-effort DNS lookup so a
+    hostname that resolves locally via ``/etc/hosts`` is also caught.
+    Trailing dot is normalised — most resolvers strip it before
+    delivering the request, so it must not bypass the gate.
+    """
+    if not hostname:
+        return False
+    lower = hostname.lower().rstrip(".")
+    if not lower:
+        return False
+    if lower == "localhost" or lower.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(lower)
+        return _ip_is_internal(ip)
+    except ValueError:
+        pass
+    try:
+        resolved = socket.gethostbyname(lower)
+        return _ip_is_internal(ipaddress.ip_address(resolved))
+    except (OSError, ValueError):
+        return False
 
 
 def default_deny_webhook_target(url: str) -> str | None:
@@ -323,7 +350,13 @@ class ToolSandbox:
 
         try:
             resolved = Path(path).resolve()
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, RuntimeError, TypeError) as exc:
+            # ``ValueError`` covers null bytes; ``OSError`` covers ENAMETOOLONG
+            # / EACCES and similar; ``RuntimeError`` is raised by Path.resolve
+            # on symlink loops; ``TypeError`` catches non-string callers
+            # (``None`` / ``int`` / ``bytes``). All four collapse into a
+            # single ``SandboxViolationError`` so callers only need one
+            # except clause.
             raise SandboxViolationError(
                 tool_name,
                 f"Cannot resolve path {path!r}: {exc}",
@@ -379,11 +412,15 @@ class ToolSandbox:
     def validate_webhook_url(self, url: str) -> None:
         """Validate a webhook destination URL.
 
-        When the sandbox is enabled, applies the same allowlist as
-        ``validate_network`` (schemes, domains). When the sandbox is
-        disabled, applies the default deny-list so loopback / link-local /
-        RFC 1918 / non-http(s) destinations are blocked unless the workflow
-        explicitly opts in via ``allow_internal_webhook_targets``.
+        Two independent gates apply, in order:
+
+        1. **Scheme gate** — always-on. Non-``http``/``https`` schemes are
+           refused regardless of opt-in flags.
+        2. **Internal-host gate** — fires unless the workflow explicitly
+           opts out via ``allow_internal_webhook_targets``. Blocks
+           loopback, link-local (incl. cloud metadata at
+           ``169.254.169.254``), RFC 1918, CGNAT, IPv4-mapped IPv6 forms,
+           and the unspecified addresses ``0.0.0.0`` / ``::``.
 
         Raises:
             SandboxViolationError: If the destination is blocked.
@@ -403,8 +440,18 @@ class ToolSandbox:
                 )
             return
 
-        # Sandbox disabled — apply the default deny-list unless the workflow
-        # explicitly authorises internal targets.
+        # Sandbox disabled — the scheme deny is still authoritative; the
+        # opt-in waives only the internal-host check. Without this split,
+        # ``allow_internal_webhook_targets=true`` accidentally let
+        # ``file:///etc/passwd`` and ``data:...`` through.
+        parsed = urlparse(url)
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in _DEFAULT_ALLOWED_SCHEMES:
+            raise SandboxViolationError(
+                "webhook",
+                f"URL scheme {scheme!r} is not allowed for webhook delivery",
+            )
+
         if self.allow_internal_webhook_targets:
             return
         reason = default_deny_webhook_target(url)

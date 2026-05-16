@@ -592,6 +592,27 @@ class TestValidatePathSurfacesViolationOnUnresolvable:
         sandbox = ToolSandbox(enabled=False)
         sandbox.validate_path("/tmp/x\x00/etc/passwd")
 
+    def test_symlink_loop_wraps_to_sandbox_violation(self) -> None:
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            a = os.path.join(tmp, "loop_a")
+            b = os.path.join(tmp, "loop_b")
+            os.symlink(b, a)
+            os.symlink(a, b)
+            sandbox = ToolSandbox(enabled=True, allowed_paths=[tmp])
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_path(a)
+
+    @pytest.mark.parametrize("bad_input", [None, 42, b"/tmp/bytes"])
+    def test_non_string_input_wraps_to_sandbox_violation(
+        self, bad_input: object
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(enabled=True, allowed_paths=[tmp])
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_path(bad_input)  # type: ignore[arg-type]
+
 
 class TestValidateWebhookUrl:
     """Webhook destination gate.
@@ -662,3 +683,65 @@ class TestValidateWebhookUrl:
         sandbox = ToolSandbox(enabled=False)
         with pytest.raises(SandboxViolationError):
             sandbox.validate_webhook_url("http://localhost:8080/x")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://[::ffff:169.254.169.254]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:10.0.0.1]/",
+            "http://[::ffff:192.168.1.1]/",
+        ],
+    )
+    def test_ipv4_mapped_ipv6_blocked(self, url: str) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url(url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://0.0.0.0:6379/",
+            "http://[::]:8080/",
+        ],
+    )
+    def test_unspecified_addresses_blocked(self, url: str) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url(url)
+
+    def test_trailing_dot_hostname_normalised(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://127.0.0.1./")
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://localhost./")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/passwd",
+            "data:text/html,whatever",
+            "javascript:alert(1)",
+            "gopher://example.com/x",
+            "ftp://example.com/x",
+        ],
+    )
+    def test_opt_in_does_not_disable_scheme_deny(self, url: str) -> None:
+        sandbox = ToolSandbox(enabled=False, allow_internal_webhook_targets=True)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url(url)
+
+    def test_opt_in_allows_legitimate_internal_target(self) -> None:
+        sandbox = ToolSandbox(enabled=False, allow_internal_webhook_targets=True)
+        sandbox.validate_webhook_url("http://127.0.0.1:8081/notify")
+
+    def test_enabled_sandbox_with_opt_in_still_blocks_non_allowed_scheme(self) -> None:
+        sandbox = ToolSandbox(
+            enabled=True,
+            allow_network=True,
+            allow_internal_webhook_targets=True,
+            allowed_schemes=["https"],
+        )
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://127.0.0.1/hook")
