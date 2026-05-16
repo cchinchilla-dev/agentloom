@@ -236,6 +236,20 @@ class StateManager:
                         f"before writing to indexed paths."
                     )
             else:
+                if not isinstance(current, dict):
+                    # The path expects a string segment here (e.g. ``user.name``)
+                    # but the intermediate is a list — writing ``foo.bar`` when
+                    # ``state.foo`` is ``[...]`` is the same class of "wrong-
+                    # type intermediate" as the scalar-overwrite case below, so
+                    # raise the same exception for a uniform contract instead
+                    # of leaking a generic ``TypeError`` to the caller.
+                    traversed = ".".join(str(p) for p in parts[:i])
+                    raise StateWriteError(
+                        f"Cannot write to {key!r}: intermediate {traversed!r} is a "
+                        f"{type(current).__name__}, not a dict. Use an integer "
+                        f"index to traverse a list, or rebuild the parent path "
+                        f"explicitly."
+                    )
                 if part not in current:
                     current[part] = {}
                 elif not isinstance(current[part], (dict, list)):
@@ -263,7 +277,16 @@ class StateManager:
                 )
         else:
             if not isinstance(current, dict):
-                raise TypeError(
-                    f"Cannot set key '{last}' on {type(current).__name__} in path '{key}'"
+                # Same shape as the in-loop wrong-type intermediate check —
+                # ``users.name`` where ``state.users`` is a list lands here
+                # because the final segment expects a dict. Raise
+                # ``StateWriteError`` for the uniform "refused write through
+                # wrong-type intermediate" contract; callers that catch only
+                # the dedicated exception now see this case too.
+                traversed = ".".join(str(p) for p in parts[:-1])
+                raise StateWriteError(
+                    f"Cannot write to {key!r}: parent path {traversed!r} resolves "
+                    f"to a {type(current).__name__}, not a dict. Use an integer "
+                    f"index to traverse a list, or rebuild the parent path first."
                 )
             current[last] = value

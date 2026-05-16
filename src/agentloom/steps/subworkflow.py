@@ -160,6 +160,23 @@ class SubworkflowStep(BaseStep):
             StepStatus.SUCCESS if result.status == WorkflowStatus.SUCCESS else StepStatus.FAILED
         )
 
+        # When the child workflow ended FAILED, surface the underlying error
+        # on the parent's step result. Without this, the parent's cascade-
+        # skip block (engine.py) would point dependents at ``upstream
+        # failure: sub`` while ``sub`` itself reported ``error=None`` — the
+        # operator would have to crack open the child's step_results to
+        # figure out what actually broke. Prefer ``result.error`` (the
+        # child's surfaced error string) and fall back to the first failed
+        # child step's error so something always lands here.
+        child_error: str | None = None
+        if status == StepStatus.FAILED:
+            child_error = result.error
+            if not child_error:
+                for inner in result.step_results.values():
+                    if inner.status == StepStatus.FAILED and inner.error:
+                        child_error = f"child step '{inner.step_id}': {inner.error}"
+                        break
+
         from agentloom.core.results import TokenUsage
 
         total_prompt = sum(r.token_usage.prompt_tokens for r in result.step_results.values())
@@ -176,6 +193,7 @@ class SubworkflowStep(BaseStep):
             step_id=step.id,
             status=status,
             output=child_final,
+            error=child_error,
             duration_ms=duration,
             cost_usd=result.total_cost_usd,
             token_usage=token_usage,

@@ -499,6 +499,58 @@ steps:
         chk_data = await chk.load(eng.run_id)
         assert chk_data.paused_step_id == "sub.gate"
 
+    async def test_failed_child_workflow_surfaces_error_on_parent_step(self) -> None:
+        """When the child workflow ends FAILED, the parent's subworkflow
+        ``StepResult.error`` must name the underlying child failure so the
+        cascade-skip block's ``skipped due to upstream failure: sub`` message
+        is actually useful — operators should be able to ask ``why did sub
+        fail?`` and get an answer from the parent result alone, without
+        opening the child's checkpoint.
+        """
+        from agentloom.core.engine import WorkflowEngine
+        from agentloom.core.models import RetryConfig
+        from agentloom.core.parser import WorkflowParser
+        from agentloom.core.results import WorkflowStatus
+
+        # ``from_dict`` keeps this test off the ``from_yaml`` path because
+        # the inline definition exceeds the OS path-length budget that
+        # ``Path(path_or_str).exists()`` probes inside ``from_yaml``.
+        wf = WorkflowParser.from_dict(
+            {
+                "name": "parent",
+                "config": {"provider": "mock", "model": "x"},
+                "steps": [
+                    {
+                        "id": "sub",
+                        "type": "subworkflow",
+                        "workflow_inline": {
+                            "name": "gated",
+                            "config": {"provider": "mock", "model": "x"},
+                            "steps": [
+                                {
+                                    "id": "doomed",
+                                    "type": "tool",
+                                    "tool_name": "does_not_exist",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        )
+        # Reduce retries to keep this test fast.
+        wf.steps[0].retry = RetryConfig(max_retries=0)
+        eng = WorkflowEngine(workflow=wf)
+        result = await eng.run()
+
+        assert result.status == WorkflowStatus.FAILED
+        sub_result = result.step_results["sub"]
+        assert sub_result.status == StepStatus.FAILED
+        # The parent's step error must reference the underlying failure —
+        # either the child workflow's surfaced error or the named child step.
+        assert sub_result.error is not None
+        assert "doomed" in sub_result.error or "does_not_exist" in sub_result.error
+
     async def test_subworkflow_pause_resume_round_trip(self) -> None:
         """End-to-end: pause at sub.gate, resume --approve, child gate finishes."""
         import tempfile

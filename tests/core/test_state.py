@@ -251,9 +251,16 @@ class TestArrayIndexPaths:
         with pytest.raises(TypeError, match="Expected dict or list"):
             await sm.set("items[0].name", "x")
 
-    async def test_set_string_key_on_list_raises_type_error(self) -> None:
+    async def test_set_string_key_on_list_raises_state_write_error(self) -> None:
+        # 0.5.0 reclassified this error: writing a dotted string segment onto
+        # a list intermediate is the same shape of "wrong-type intermediate"
+        # as the scalar-overwrite refusal, so it raises ``StateWriteError``
+        # uniformly. Pre-0.5.0 callers that caught only ``TypeError`` would
+        # have missed this case.
+        from agentloom.exceptions import StateWriteError
+
         sm = StateManager(initial_state={"data": [1, 2]})
-        with pytest.raises(TypeError, match="Cannot set key"):
+        with pytest.raises(StateWriteError, match="not a dict"):
             await sm.set("data.foo", "x")
 
 
@@ -420,3 +427,20 @@ class TestDottedScalarOverwriteRefused:
         # would be overwritten), not just ``user``.
         assert "user.profile" in str(exc_info.value)
 
+    async def test_refuses_traversal_through_list_intermediate(self) -> None:
+        """Symmetric to the scalar refusal — a list intermediate with a
+        string next-segment is the same "wrong-type intermediate" footgun.
+
+        Pre-fix this leaked a generic ``TypeError("Cannot set key 'name' on
+        list ...")``; now ``StateWriteError`` is raised so callers that
+        catch the dedicated exception class don't miss the case.
+        """
+        from agentloom.exceptions import StateWriteError
+
+        sm = StateManager(initial_state={"users": [{"id": 1}]})
+        with pytest.raises(StateWriteError) as exc_info:
+            await sm.set("users.name", "bob")
+        msg = str(exc_info.value)
+        assert "users" in msg and "list" in msg
+        # Original list survives the refusal.
+        assert await sm.get("users") == [{"id": 1}]
