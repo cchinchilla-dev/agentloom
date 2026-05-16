@@ -70,6 +70,7 @@ class ApprovalGateStep(BaseStep):
 
     async def _send_notification(self, context: StepContext) -> None:
         """Fire the webhook notification (best-effort, never raises)."""
+        from agentloom.tools.sandbox import ToolSandbox
         from agentloom.webhooks.sender import WebhookContext, send_webhook
 
         step = context.step_definition
@@ -84,5 +85,20 @@ class ApprovalGateStep(BaseStep):
             step_id=step.id,
             workflow_name=context.workflow_name,
             state=state_snapshot,
+            redaction_policy=context.redaction_policy,
         )
-        await send_webhook(notify, wh_context, observer=context.observer)
+
+        # Build a ToolSandbox from the workflow's declared sandbox config so
+        # the webhook URL is gated by the same allowlist/deny-list as every
+        # other network operation. Without this, ``notify.url`` reaches
+        # loopback / link-local / RFC 1918 destinations regardless of
+        # ``allowed_domains`` and the SSRF surface stays open.
+        sandbox_cfg = context.sandbox_config
+        sandbox = ToolSandbox(
+            enabled=sandbox_cfg.enabled,
+            allow_network=sandbox_cfg.allow_network,
+            allowed_domains=sandbox_cfg.allowed_domains,
+            allowed_schemes=sandbox_cfg.allowed_schemes,
+            allow_internal_webhook_targets=sandbox_cfg.allow_internal_webhook_targets,
+        )
+        await send_webhook(notify, wh_context, observer=context.observer, sandbox=sandbox)

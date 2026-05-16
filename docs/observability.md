@@ -268,6 +268,8 @@ The `chat <model>` span — emitted once per fallback attempt by the gateway —
 
 Full prompt content is **not** captured by default — size and secrets concerns. Set `config.capture_prompts: true` in the workflow YAML to opt in: each `llm_call` span then carries an `agentloom.prompt.captured` OTel event with the rendered `prompt` and `system_prompt`. Event payloads avoid the attribute-size cap and stay easy to filter at the OTel collector. Off by default; opt-in for debugging or trusted environments.
 
+When a redaction policy is configured (see [State redaction](providers.md#state-redaction)), the captured copy is re-rendered against the redacted state — a flagged `{state.api_key}` becomes a `<REDACTED:sha256=...>` sentinel in the span event, while the request actually sent to the provider keeps the plaintext value. Same policy, same patterns, single source of truth: declare it once in `state_schema:` (or `AGENTLOOM_REDACT_STATE_KEYS`) and every persistence boundary — checkpoint, webhook body, span event — honours it.
+
 ### Provider name translation
 
 AgentLoom's internal provider names map to the canonical OTel registry values: `google` → `gcp.gemini`, others (`openai`, `anthropic`, `ollama`) match the registry as-is. Custom values (`ollama`, `mock`) ride the spec's "vendor extension" allowance. The bundled Grafana dashboard queries Prometheus metrics (not span attributes), so dashboard panels are unaffected by attribute renames.

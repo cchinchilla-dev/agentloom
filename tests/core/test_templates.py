@@ -44,11 +44,14 @@ class TestDotAccessDict:
         d = DotAccessDict({"a": 1})
         assert "1" in f"{d}"
 
-    def test_private_attr_raises(self) -> None:
+    def test_private_attr_returns_empty_non_strict(self) -> None:
+        # Previously private attrs delegated to ``object.__getattribute__``,
+        # which let ``d['_data']`` reach the wrapper's underlying dict via
+        # ``__getitem__`` → ``__getattr__``. Every dynamic lookup now goes
+        # through the same data-only path: a missing key renders empty
+        # under non-strict and raises ``TemplateError`` under strict.
         d = DotAccessDict({"a": 1})
-        # Private attrs delegate to object.__getattribute__
-        with __import__("pytest").raises(AttributeError):
-            _ = d._nonexistent
+        assert d._nonexistent == ""
 
     def test_int_key_returns_empty(self) -> None:
         d = DotAccessDict({"a": 1})
@@ -155,21 +158,85 @@ class TestFormatSpecOnContainers:
         assert format(lst, "") == repr([1, 2, 3])
 
     def test_dict_format_spec_non_empty_forwards_to_data(self) -> None:
-        # A non-empty spec hits the explicit ``return format(self._data, ...)``
-        # path. Use a string-formattable underlying scalar.
+        # A non-empty spec hits the explicit ``return format(self.__data, ...)``
+        # path. ``dict`` itself doesn't accept format specs, so cover the
+        # branch by replacing the name-mangled storage slot with a string-like
+        # value that DOES accept the spec.
         d = DotAccessDict({"x": "hi"})
-        # Spec ">5" right-aligns in 5 chars — repr-style strings don't accept
-        # this spec, so we wrap a list/dict body with a spec the underlying
-        # type accepts: empty string. Instead, exercise the branch via
-        # ``__format__`` directly with an empty-string sentinel that still
-        # passes the truthy guard? No — empty falls through to else. We need
-        # a non-empty spec that ``dict.__format__`` accepts: there is none.
-        # Cover the branch by stubbing ``self._data`` with a value that
-        # supports the spec.
-        d._data = "hi"  # type: ignore[assignment]
+        object.__setattr__(d, "_DotAccessDict__data", "hi")
         assert format(d, ">5") == "   hi"
 
     def test_list_format_spec_non_empty_forwards_to_data(self) -> None:
         lst = DotAccessList([1])
-        lst._data = "abc"  # type: ignore[assignment]
+        object.__setattr__(lst, "_DotAccessList__data", "abc")
         assert format(lst, ">5") == "  abc"
+
+
+class TestInternalAttributesNotReachableViaTemplate:
+    """The wrapper's private storage must not surface through ``str.format_map``.
+
+    Pre-fix, a template containing ``{state._data}`` rendered the entire
+    underlying state dict because ``_data`` was a plain instance attribute
+    that ``__getattr__`` never blocked. Name-mangling (``__data`` →
+    ``_DotAccessDict__data``) makes that storage unreachable via the
+    short attribute name that format syntax supports.
+    """
+
+    def test_state_dot_underscore_data_renders_empty(self) -> None:
+        tvars = build_template_vars({"user": {"name": "alice", "_password": "secret"}})
+        rendered = "{state._data}".format_map(SafeFormatDict(tvars))
+        assert rendered == ""
+        assert "secret" not in rendered
+
+    def test_state_dot_underscore_strict_renders_empty(self) -> None:
+        tvars = build_template_vars({"x": 1})
+        rendered = "{state._strict}".format_map(SafeFormatDict(tvars))
+        assert rendered == ""
+
+    def test_list_wrapper_short_attribute_not_reachable(self) -> None:
+        # The DotAccessList wrapper's storage is name-mangled too — the
+        # short ``_data`` attribute is no longer reachable via ``getattr``.
+        from agentloom.core.templates import DotAccessList
+
+        lst = DotAccessList([1, 2, 3])
+        assert not hasattr(lst, "_data")
+        assert not hasattr(lst, "_strict")
+
+    def test_list_wrapper_blocks_mangled_storage_name(self) -> None:
+        # Symmetric guard: ``__getattribute__`` on DotAccessList also
+        # refuses ``_DotAccessList__data`` / ``__dict__``.
+        from agentloom.core.templates import DotAccessList
+
+        lst = DotAccessList([1, 2, 3])
+        with pytest.raises(AttributeError):
+            _ = lst._DotAccessList__data
+        with pytest.raises(AttributeError):
+            _ = lst.__dict__
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "{state.__dict__}",
+            "{state._DotAccessDict__data}",
+            "{state._DotAccessDict__strict}",
+            "{state.user.__dict__}",
+            "{state.user._DotAccessDict__data}",
+        ],
+    )
+    def test_python_internals_path_refused(self, expr: str) -> None:
+        tvars = build_template_vars({"user": {"name": "alice", "_password": "secret"}})
+        rendered = expr.format_map(SafeFormatDict(tvars))
+        assert rendered == ""
+        assert "alice" not in rendered
+        assert "secret" not in rendered
+        assert "_DotAccessDict__data" not in rendered
+
+    def test_isinstance_and_str_still_work(self) -> None:
+        from agentloom.core.templates import DotAccessDict, DotAccessList
+
+        d = DotAccessDict({"x": 1})
+        assert isinstance(d, DotAccessDict)
+        assert str(d) == "{'x': 1}"
+        lst = DotAccessList([1, 2])
+        assert isinstance(lst, DotAccessList)
+        assert str(lst) == "[1, 2]"

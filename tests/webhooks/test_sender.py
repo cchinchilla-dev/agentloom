@@ -157,3 +157,81 @@ class TestSendWebhook:
         observer.on_webhook_delivery.assert_called_once()
         args = observer.on_webhook_delivery.call_args[0]
         assert args[2] == "timeout"
+
+
+class TestSandboxGate:
+    """Webhook sender consults the sandbox before issuing the POST.
+
+    Without this gate, ``approval_gate.notify.url`` reaches loopback /
+    link-local / RFC 1918 destinations regardless of the sandbox's
+    ``allowed_domains``, opening an SSRF surface to cloud metadata
+    services and in-cluster daemons.
+    """
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_disabled_sandbox_blocks_loopback_by_default(
+        self, wh_context: WebhookContext
+    ) -> None:
+        config = WebhookConfig(url="http://127.0.0.1:18642/captured")
+        observer = MagicMock()
+        await send_webhook(config, wh_context, observer=observer)
+        observer.on_webhook_delivery.assert_called_once()
+        assert observer.on_webhook_delivery.call_args[0][2] == "sandbox_blocked"
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_disabled_sandbox_blocks_link_local_metadata(
+        self, wh_context: WebhookContext
+    ) -> None:
+        config = WebhookConfig(
+            url="http://169.254.169.254/latest/meta-data/iam/security-credentials/role"
+        )
+        observer = MagicMock()
+        await send_webhook(config, wh_context, observer=observer)
+        observer.on_webhook_delivery.assert_called_once()
+        assert observer.on_webhook_delivery.call_args[0][2] == "sandbox_blocked"
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_enabled_sandbox_enforces_allowed_domains(
+        self, wh_context: WebhookContext
+    ) -> None:
+        from agentloom.tools.sandbox import ToolSandbox
+
+        sandbox = ToolSandbox(
+            enabled=True,
+            allow_network=True,
+            allowed_domains=["api.openai.com"],
+            allowed_schemes=["https"],
+        )
+        config = WebhookConfig(
+            url="http://169.254.169.254/latest/meta-data/iam/security-credentials/role"
+        )
+        observer = MagicMock()
+        await send_webhook(config, wh_context, observer=observer, sandbox=sandbox)
+        observer.on_webhook_delivery.assert_called_once()
+        assert observer.on_webhook_delivery.call_args[0][2] == "sandbox_blocked"
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_public_https_passes_through(self, wh_context: WebhookContext) -> None:
+        respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(200))
+        config = WebhookConfig(url="https://hooks.example.com/wh")
+        observer = MagicMock()
+        await send_webhook(config, wh_context, observer=observer, deadline_s=10.0)
+        observer.on_webhook_delivery.assert_called_once()
+        assert observer.on_webhook_delivery.call_args[0][2] == "success"
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_opt_in_unblocks_internal(self, wh_context: WebhookContext) -> None:
+        from agentloom.tools.sandbox import ToolSandbox
+
+        respx.post("http://127.0.0.1:18642/captured").mock(return_value=httpx.Response(200))
+        sandbox = ToolSandbox(enabled=False, allow_internal_webhook_targets=True)
+        config = WebhookConfig(url="http://127.0.0.1:18642/captured")
+        observer = MagicMock()
+        await send_webhook(config, wh_context, observer=observer, sandbox=sandbox, deadline_s=10.0)
+        observer.on_webhook_delivery.assert_called_once()
+        assert observer.on_webhook_delivery.call_args[0][2] == "success"

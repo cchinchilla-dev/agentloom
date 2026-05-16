@@ -27,6 +27,8 @@ _ALLOWED_NODES = (
     ast.And,
     ast.Or,
     ast.Not,
+    ast.USub,
+    ast.UAdd,
     ast.Eq,
     ast.NotEq,
     ast.Lt,
@@ -83,6 +85,57 @@ def _reject_attribute(attr: str, expr_str: str) -> None:
         )
 
 
+def _reject_subscript(slice_node: ast.AST, expr_str: str) -> None:
+    """Restrict subscript slices to literal int / str keys.
+
+    Two checks combined into one gate:
+
+    * **String constants** go through ``_reject_attribute`` so
+      ``state['__class__']`` and ``state['_secret']`` are blocked exactly
+      like their attribute-syntax twins.
+    * **Non-constant slices** — variables, arithmetic (``'_' + 'secret'``),
+      conditionals, calls — are refused outright because the validator
+      cannot determine the resulting key at parse time, leaving subscript
+      indirection as an end-run around the dunder gate.
+
+    Integer constants pass through (list indexing, ``state['items'][0]``).
+    Constant int/int/None slices (``state['items'][1:5]``) are permitted
+    when every bound is also an integer constant.
+    """
+    if isinstance(slice_node, ast.Constant):
+        if isinstance(slice_node.value, str):
+            _reject_attribute(slice_node.value, expr_str)
+            return
+        if isinstance(slice_node.value, int) and not isinstance(slice_node.value, bool):
+            return
+        raise SecurityError(
+            f"Subscript key must be a literal int or str "
+            f"(got constant of type {type(slice_node.value).__name__}).",
+            expression=expr_str,
+        )
+    if isinstance(slice_node, ast.Slice):
+        for sub in (slice_node.lower, slice_node.upper, slice_node.step):
+            if sub is None:
+                continue
+            if isinstance(sub, ast.UnaryOp) and isinstance(sub.op, (ast.UAdd, ast.USub)):
+                operand = sub.operand
+                if isinstance(operand, ast.Constant) and isinstance(operand.value, int):
+                    continue
+            if not (isinstance(sub, ast.Constant) and isinstance(sub.value, int)):
+                raise SecurityError(
+                    "Slice bounds must be integer constants (optionally with "
+                    "a leading +/-) in router expressions.",
+                    expression=expr_str,
+                )
+        return
+    raise SecurityError(
+        f"Subscript key must be a literal int or str "
+        f"(got {type(slice_node).__name__}). Indirection through variables, "
+        f"arithmetic, conditionals, or calls is not allowed.",
+        expression=expr_str,
+    )
+
+
 def _validate_expression(expr_str: str) -> ast.Expression:
     """Parse and validate that an expression only uses allowed constructs.
 
@@ -110,6 +163,8 @@ def _validate_expression(expr_str: str) -> ast.Expression:
             )
         if isinstance(node, ast.Attribute):
             _reject_attribute(node.attr, expr_str)
+        if isinstance(node, ast.Subscript):
+            _reject_subscript(node.slice, expr_str)
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
                 if node.func.id not in _ALLOWED_FUNCTIONS:
@@ -171,6 +226,92 @@ def evaluate_expression(expr_str: str, namespace: dict[str, Any]) -> Any:
     return eval(code, safe_globals)
 
 
+def _wrap(value: Any) -> Any:
+    """Wrap nested containers so router dot / subscript chains keep working.
+
+    Lifted out of ``RouterStep.execute`` so the proxy classes can be
+    constructed and unit-tested directly. The router runtime calls this
+    helper for every value crossing the state boundary.
+    """
+    if isinstance(value, dict):
+        return _DictProxy(value)
+    if isinstance(value, list):
+        return _ListProxy(value)
+    return value
+
+
+class _DictProxy:
+    """Proxy supporting both ``proxy.key`` and ``proxy['key']``."""
+
+    __slots__ = ("_data",)
+    _data: dict[Any, Any]
+
+    def __init__(self, data: dict[Any, Any]) -> None:
+        object.__setattr__(self, "_data", data)
+
+    def __getattr__(self, name: str) -> Any:
+        return _wrap(self._data.get(name))
+
+    def __getitem__(self, key: Any) -> Any:
+        if isinstance(key, str):
+            return _wrap(self._data.get(key))
+        return _wrap(self._data[key])
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __iter__(self) -> Any:
+        # Yield keys (mapping protocol). Reachable via Python-level
+        # consumers iterating a proxy returned from the router
+        # namespace; the router AST grammar itself doesn't emit `for`
+        # loops.
+        return iter(self._data)
+
+    def __contains__(self, key: Any) -> bool:
+        return key in self._data
+
+
+class _ListProxy:
+    """Proxy supporting ``proxy[i]`` and ``proxy[i:j]``."""
+
+    __slots__ = ("_data",)
+    _data: list[Any]
+
+    def __init__(self, data: list[Any]) -> None:
+        object.__setattr__(self, "_data", data)
+
+    def __getitem__(self, key: Any) -> Any:
+        value = self._data[key]
+        if isinstance(value, list):
+            return _ListProxy(value)
+        return _wrap(value)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __iter__(self) -> Any:
+        return iter(_wrap(v) for v in self._data)
+
+
+def _build_state_proxy(state_snapshot: dict[Any, Any]) -> Any:
+    """Build the ``state`` proxy the router namespace exposes.
+
+    Factored out so tests can construct the proxy directly without
+    going through ``RouterStep.execute``.
+    """
+
+    class _StateProxy:
+        def __getattr__(self, name: str) -> Any:
+            return _wrap(state_snapshot.get(name))
+
+        def __getitem__(self, key: Any) -> Any:
+            if isinstance(key, str):
+                return _wrap(state_snapshot.get(key))
+            return _wrap(state_snapshot[key])
+
+    return _StateProxy()
+
+
 class RouterStep(BaseStep):
     """Evaluates conditions and returns the target step ID to activate."""
 
@@ -183,14 +324,17 @@ class RouterStep(BaseStep):
 
         state_snapshot = await context.state_manager.get_state_snapshot()
 
+        # Router predicates address state through ``state.X`` only. Earlier
+        # versions also flattened every top-level state key into the
+        # namespace as a bare name, which let a workflow shadow safe
+        # builtins (``len``, ``str``) by naming a state key the same, and
+        # broadened the validator's attack surface by exposing arbitrary
+        # variables that downstream subscript / indirection probes could
+        # combine. The flat surface is dropped here — all reads now go
+        # through ``state.X``.
         namespace: dict[str, Any] = {}
-        namespace.update(state_snapshot)
 
-        class _StateProxy:
-            def __getattr__(self, name: str) -> Any:
-                return state_snapshot.get(name)
-
-        namespace["state"] = _StateProxy()
+        namespace["state"] = _build_state_proxy(state_snapshot)
 
         steps_data = state_snapshot.get("steps", {})
 

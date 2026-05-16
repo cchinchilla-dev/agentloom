@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -569,3 +570,406 @@ class TestLooksLikePath:
         assert _looks_like_path("foo/bar") is True
         assert _looks_like_path("/abs/path") is True
         assert _looks_like_path("./rel") is True
+
+
+class TestValidatePathSurfacesViolationOnUnresolvable:
+    """Null-byte and other ``Path.resolve()`` failures raise ``SandboxViolationError``.
+
+    Previously the raw ``ValueError`` / ``OSError`` leaked through, so
+    callers that caught only ``SandboxViolationError`` missed the case
+    and surfaced it as an internal error instead of a sandbox refusal.
+    """
+
+    def test_null_byte_path_raises_sandbox_violation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(enabled=True, allowed_paths=[tmp])
+            with pytest.raises(SandboxViolationError) as excinfo:
+                sandbox.validate_path("/tmp/x\x00/etc/passwd")
+            assert "Cannot resolve path" in str(excinfo.value)
+
+    def test_disabled_sandbox_does_not_validate_null_byte(self) -> None:
+        # When the sandbox is off the validate call is a no-op; we don't
+        # synthesize a violation for the disabled case.
+        sandbox = ToolSandbox(enabled=False)
+        sandbox.validate_path("/tmp/x\x00/etc/passwd")
+
+    def test_runtime_error_wraps_to_sandbox_violation(self, monkeypatch: Any) -> None:
+        # ``Path.resolve()`` raises ``RuntimeError`` on symlink loops on
+        # Python < 3.13. Python 3.13 rewrote ``pathlib`` and no longer
+        # raises in non-strict mode, so the symlink-loop trigger isn't
+        # portable as a black-box test. Patch the ``Path`` symbol in
+        # ``sandbox`` AFTER constructing the sandbox (so ``__init__``
+        # processes ``allowed_paths`` with the real Path), then exercise
+        # the defensive ``RuntimeError`` branch in ``validate_path``.
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(enabled=True, allowed_paths=[tmp])
+
+            class _BoomPath:
+                def __init__(self, _path: object) -> None:
+                    pass
+
+                def resolve(self) -> _BoomPath:
+                    raise RuntimeError("Symlink loop from '...'")
+
+            monkeypatch.setattr("agentloom.tools.sandbox.Path", _BoomPath)
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_path("/tmp/whatever")
+
+    @pytest.mark.parametrize("bad_input", [None, 42, b"/tmp/bytes"])
+    def test_non_string_input_wraps_to_sandbox_violation(self, bad_input: object) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(enabled=True, allowed_paths=[tmp])
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_path(bad_input)  # type: ignore[arg-type]
+
+
+class TestValidateWebhookUrl:
+    """Webhook destination gate.
+
+    Enabled sandbox applies the standard allowlist (schemes, domains).
+    Disabled sandbox applies the default deny-list (loopback, link-local,
+    RFC 1918, non-http(s)) so workflows that omit a sandbox config still
+    can't ship state to internal services. The opt-in flag
+    ``allow_internal_webhook_targets`` exists for in-cluster notifications.
+    """
+
+    def test_enabled_sandbox_enforces_allowed_domains(self) -> None:
+        sandbox = ToolSandbox(
+            enabled=True,
+            allow_network=True,
+            allowed_domains=["api.openai.com"],
+            allowed_schemes=["https"],
+        )
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url(
+                "http://169.254.169.254/latest/meta-data/iam/security-credentials/role"
+            )
+
+    def test_enabled_sandbox_rejects_loopback_even_when_allowed_domains_empty(
+        self,
+    ) -> None:
+        sandbox = ToolSandbox(enabled=True, allow_network=True)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://127.0.0.1:8080/hook")
+
+    def test_disabled_sandbox_blocks_loopback_by_default(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://127.0.0.1:8080/hook")
+
+    def test_disabled_sandbox_blocks_link_local_metadata(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url(
+                "http://169.254.169.254/latest/meta-data/iam/security-credentials/role"
+            )
+
+    def test_disabled_sandbox_blocks_rfc1918(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        for url in (
+            "http://10.0.0.1/x",
+            "http://172.16.0.5/x",
+            "http://192.168.1.1/x",
+        ):
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_webhook_url(url)
+
+    def test_disabled_sandbox_blocks_non_http_schemes(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        for url in ("file:///etc/passwd", "gopher://example.com/x", "dict://x/y"):
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_webhook_url(url)
+
+    def test_disabled_sandbox_allows_public_https(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        sandbox.validate_webhook_url("https://hooks.slack.com/services/T00/B00/abc")
+
+    def test_opt_in_unblocks_internal(self) -> None:
+        sandbox = ToolSandbox(enabled=False, allow_internal_webhook_targets=True)
+        sandbox.validate_webhook_url("http://127.0.0.1:8080/hook")
+
+    def test_bare_localhost_name_blocked(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://localhost:8080/x")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://[::ffff:169.254.169.254]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:10.0.0.1]/",
+            "http://[::ffff:192.168.1.1]/",
+        ],
+    )
+    def test_ipv4_mapped_ipv6_blocked(self, url: str) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url(url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://0.0.0.0:6379/",
+            "http://[::]:8080/",
+        ],
+    )
+    def test_unspecified_addresses_blocked(self, url: str) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url(url)
+
+    def test_trailing_dot_hostname_normalised(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://127.0.0.1./")
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://localhost./")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/passwd",
+            "data:text/html,whatever",
+            "javascript:alert(1)",
+            "gopher://example.com/x",
+            "ftp://example.com/x",
+        ],
+    )
+    def test_opt_in_does_not_disable_scheme_deny(self, url: str) -> None:
+        sandbox = ToolSandbox(enabled=False, allow_internal_webhook_targets=True)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url(url)
+
+    def test_opt_in_allows_legitimate_internal_target(self) -> None:
+        sandbox = ToolSandbox(enabled=False, allow_internal_webhook_targets=True)
+        sandbox.validate_webhook_url("http://127.0.0.1:8081/notify")
+
+    def test_enabled_sandbox_with_opt_in_still_blocks_non_allowed_scheme(self) -> None:
+        sandbox = ToolSandbox(
+            enabled=True,
+            allow_network=True,
+            allow_internal_webhook_targets=True,
+            allowed_schemes=["https"],
+        )
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://127.0.0.1/hook")
+
+    def test_percent_encoded_hostname_decoded_before_check(self) -> None:
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://%6c%6f%63%61%6c%68%6f%73%74:8080/x")
+
+    def test_aaaa_only_dns_caught_via_getaddrinfo(self, monkeypatch: Any) -> None:
+        import socket as _socket
+
+        def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
+            return [
+                (
+                    _socket.AF_INET6,
+                    _socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("::1", 0, 0, 0),
+                ),
+            ]
+
+        monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
+        sandbox = ToolSandbox(enabled=False)
+        with pytest.raises(SandboxViolationError):
+            sandbox.validate_webhook_url("http://attacker-aaaa-only.example/x")
+
+
+class TestValidateCommandFlagEmbeddedPath:
+    """``--key=value`` / ``of=path`` style flags carry paths that the
+    original ``_looks_like_path`` skipped entirely.
+    """
+
+    def test_double_dash_flag_with_path_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(
+                enabled=True,
+                allowed_commands=["tee"],
+                allowed_paths=[tmp],
+            )
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_command("tee --output=/etc/passwd")
+
+    def test_dd_style_flag_with_path_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(
+                enabled=True,
+                allowed_commands=["dd"],
+                allowed_paths=[tmp],
+            )
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_command("dd of=/etc/passwd")
+
+    def test_flag_with_path_inside_allowlist_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(
+                enabled=True,
+                allowed_commands=["tee"],
+                allowed_paths=[tmp],
+            )
+            sandbox.validate_command(f"tee --output={tmp}/log")
+
+
+class TestSandboxHelperEdges:
+    """Edges of the helper functions that the main tests don't exercise."""
+
+    def test_default_deny_target_rejects_url_without_hostname(self) -> None:
+        from agentloom.tools.sandbox import default_deny_webhook_target
+
+        reason = default_deny_webhook_target("http:///path")
+        assert reason is not None and "no hostname" in reason
+
+    def test_default_deny_target_allows_public_https(self) -> None:
+        from agentloom.tools.sandbox import default_deny_webhook_target
+
+        # Hits the ``return None`` tail when nothing is wrong.
+        assert default_deny_webhook_target("https://hooks.example.com/x") is None
+
+    def test_host_is_internal_empty_returns_false(self) -> None:
+        from agentloom.tools.sandbox import _host_is_internal
+
+        assert _host_is_internal("") is False
+
+    def test_host_is_internal_dot_only_returns_false(self) -> None:
+        from agentloom.tools.sandbox import _host_is_internal
+
+        # ``.`` strips to empty after ``rstrip('.')``.
+        assert _host_is_internal(".") is False
+
+    def test_host_is_internal_unresolvable_returns_false(self) -> None:
+        from agentloom.tools.sandbox import _host_is_internal
+
+        # ``getaddrinfo`` raises for a clearly bogus name; the helper
+        # falls back to ``False`` so the sandbox doesn't over-block.
+        assert _host_is_internal("nonexistent.invalid.example.test") is False
+
+    def test_ip_is_internal_cgnat_via_explicit_deny_list(self) -> None:
+        # 100.64/10 isn't covered by ``ipaddress.is_private`` on Python
+        # 3.12, so the explicit ``_DEFAULT_DENY_NETWORKS`` fallback is
+        # what catches it.
+        import ipaddress
+
+        from agentloom.tools.sandbox import _ip_is_internal
+
+        assert _ip_is_internal(ipaddress.ip_address("100.64.0.1")) is True
+
+    def test_extract_path_candidates_flag_with_empty_value(self) -> None:
+        from agentloom.tools.sandbox import _extract_path_candidates
+
+        # ``--key=`` (empty value) and ``--key=bare`` (no slash) yield
+        # nothing — only path-shaped values are extracted.
+        assert _extract_path_candidates("--output=") == []
+        assert _extract_path_candidates("--name=alice") == []
+
+    def test_extract_path_candidates_bare_dotdot_returns_self(self) -> None:
+        from agentloom.tools.sandbox import _extract_path_candidates
+
+        assert _extract_path_candidates("..") == [".."]
+
+    def test_extract_path_candidates_empty_token(self) -> None:
+        from agentloom.tools.sandbox import _extract_path_candidates
+
+        assert _extract_path_candidates("") == []
+
+
+class TestValidateWebhookUrlEnabledSandboxBranches:
+    """Cover the enabled-sandbox path where ``allow_internal_webhook_targets``
+    is False and the internal-host check fires after ``validate_network``."""
+
+    def test_enabled_sandbox_with_opt_in_skips_internal_check(self) -> None:
+        # Opt-in branch: validate_network passes, opt-in returns early
+        # before the internal-host gate.
+        sandbox = ToolSandbox(
+            enabled=True,
+            allow_network=True,
+            allow_internal_webhook_targets=True,
+        )
+        sandbox.validate_webhook_url("http://127.0.0.1/hook")
+
+    def test_enabled_sandbox_url_without_hostname_passes_internal_check(
+        self,
+    ) -> None:
+        # URL with no hostname (``http://``) skips the internal-host
+        # block since there's nothing to classify — the upstream
+        # ``validate_network`` already accepted it.
+        sandbox = ToolSandbox(enabled=True, allow_network=True)
+        # ``http:///path`` has empty hostname; passes the internal check.
+        sandbox.validate_webhook_url("http:///path")
+
+    def test_default_deny_target_rejects_non_http_scheme(self) -> None:
+        # ``default_deny_webhook_target`` is also called directly by
+        # ``send_webhook`` when no sandbox is provided. Cover the
+        # scheme-deny branch via the direct entry point.
+        from agentloom.tools.sandbox import default_deny_webhook_target
+
+        reason = default_deny_webhook_target("ftp://example.com/x")
+        assert reason is not None and "scheme 'ftp'" in reason
+
+    def test_host_is_internal_resolves_ipv4_record(self, monkeypatch: Any) -> None:
+        # AAAA-only case is already covered; pin the IPv4 path too so a
+        # future refactor doesn't quietly skip ``AF_INET`` records.
+        import socket as _socket
+
+        def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
+            return [
+                (
+                    _socket.AF_INET,
+                    _socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("127.0.0.1", 0),
+                ),
+            ]
+
+        monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
+        from agentloom.tools.sandbox import _host_is_internal
+
+        assert _host_is_internal("host-with-a-record.example") is True
+
+    def test_host_is_internal_returns_false_on_getaddrinfo_error(self, monkeypatch: Any) -> None:
+        # Defence: ``getaddrinfo`` raises ``OSError`` for unresolvable
+        # hostnames; the helper falls back to ``False`` so the sandbox
+        # doesn't over-block public names the resolver couldn't reach.
+        def boom(*_args: object, **_kwargs: object):
+            raise OSError("no such host")
+
+        monkeypatch.setattr("socket.getaddrinfo", boom)
+        from agentloom.tools.sandbox import _host_is_internal
+
+        assert _host_is_internal("unresolvable.test") is False
+
+    def test_host_is_internal_skips_unknown_socket_family(self, monkeypatch: Any) -> None:
+        # An exotic address family (Unix, IPX, ...) skips classification
+        # rather than crashing.
+        import socket as _socket
+
+        def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
+            return [
+                (_socket.AF_UNIX, _socket.SOCK_STREAM, 0, "", ("/tmp/sock",)),
+            ]
+
+        monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
+        from agentloom.tools.sandbox import _host_is_internal
+
+        assert _host_is_internal("exotic.example") is False
+
+    def test_host_is_internal_skips_malformed_sockaddr(self, monkeypatch: Any) -> None:
+        # ``ipaddress.ip_address`` raising on a malformed sockaddr is
+        # caught and the loop moves on.
+        import socket as _socket
+
+        def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
+            return [
+                (_socket.AF_INET, _socket.SOCK_STREAM, 0, "", ("not-an-ip", 0)),
+            ]
+
+        monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
+        from agentloom.tools.sandbox import _host_is_internal
+
+        assert _host_is_internal("malformed.example") is False

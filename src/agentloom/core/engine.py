@@ -14,6 +14,7 @@ import anyio
 from agentloom.checkpointing.base import BaseCheckpointer, CheckpointData
 from agentloom.core.models import StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
+from agentloom.core.redact import RedactionPolicy, is_redacted, redact_state
 from agentloom.core.results import (
     StepResult,
     StepStatus,
@@ -108,6 +109,14 @@ class WorkflowEngine:
         self._completed_steps: set[str] = set()
         self._checkpoint_created_at = datetime.now(UTC).isoformat()
 
+        # Build the redaction policy once at startup — combines the
+        # workflow-level ``state_schema:`` declarations with the
+        # ``AGENTLOOM_REDACT_STATE_KEYS`` env var so a deployment-wide
+        # baseline (env) can coexist with per-workflow overrides (YAML).
+        self._redaction_policy = RedactionPolicy(workflow.redaction_patterns()).merge(
+            RedactionPolicy.from_env()
+        )
+
         # Wire observer into gateway for circuit breaker events
         if observer and provider_gateway:
             set_obs = getattr(provider_gateway, "set_observer", None)
@@ -164,7 +173,7 @@ class WorkflowEngine:
     async def _finalize_result(self, result: WorkflowResult, workflow_name: str) -> None:
         """Common post-construction wiring for every terminal ``WorkflowResult``.
 
-        Centralises three concerns that previously only ran on the success
+        Centralises four concerns that previously only ran on the success
         path:
           * stamp ``run_id`` so trace-correlation works across all outcomes
             (failure / budget_exceeded / paused traces are otherwise
@@ -173,8 +182,23 @@ class WorkflowEngine:
             keeps working on non-success terminations too
           * write the per-run history record so ``agentloom history``
             shows every execution, not only successful ones
+          * apply the redaction policy to ``final_state`` and
+            ``step_results`` so callers that dump the result (``agentloom
+            run --json``, programmatic ``result.model_dump_json()``) see
+            sentinels for flagged keys — the in-memory state stays
+            plaintext for step composition, but the moment the result
+            crosses the process boundary the same persistence-gate the
+            checkpoint enjoys applies here too.
         """
         result.run_id = self.run_id
+        if self._redaction_policy:
+            result.final_state = redact_state(result.final_state, self._redaction_policy)
+            redacted_step_results: dict[str, StepResult] = {}
+            for step_id, step_result in result.step_results.items():
+                dumped = step_result.model_dump()
+                dumped = redact_state(dumped, self._redaction_policy)
+                redacted_step_results[step_id] = StepResult.model_validate(dumped)
+            result.step_results = redacted_step_results
         self._attach_quality_emitter(result, workflow_name)
         await self._write_run_history(result)
 
@@ -197,12 +221,39 @@ class WorkflowEngine:
             if result.status == StepStatus.SUCCESS
         )
 
+        # Apply the redaction policy on the way to disk. The in-memory
+        # ``self.state`` stays plaintext so a subsequent step that
+        # interpolates ``{state.api_key}`` keeps working; only the
+        # serialized snapshot carries the sentinel. Redaction is applied
+        # uniformly to every surface that lands in the checkpoint JSON:
+        # the runtime snapshot, the literal ``state:`` seed inside the
+        # workflow definition, the step result outputs (an LLM call may
+        # return a flagged key in structured output), and any other
+        # workflow-definition field whose key name matches the policy
+        # (e.g. a step-level ``notify.headers.api_key``).
+        #
+        # ``state_schema`` is intentionally lifted out before the walk:
+        # its leaves are the policy *metadata* itself (``redact: true``),
+        # not user state. Redacting them would rewrite the bool flag into
+        # a sentinel string that breaks ``WorkflowDefinition.model_validate``
+        # on resume.
+        persisted_state = redact_state(state_snapshot, self._redaction_policy)
+        workflow_dump = self.workflow.model_dump()
+        if self._redaction_policy:
+            preserved_schema = workflow_dump.pop("state_schema", None)
+            workflow_dump = redact_state(workflow_dump, self._redaction_policy)
+            if preserved_schema is not None:
+                workflow_dump["state_schema"] = preserved_schema
+        step_results_dump = {k: v.model_dump() for k, v in step_results.items()}
+        if self._redaction_policy:
+            step_results_dump = redact_state(step_results_dump, self._redaction_policy)
+
         data = CheckpointData(
             workflow_name=self.workflow.name,
             run_id=self.run_id,
-            workflow_definition=self.workflow.model_dump(),
-            state=state_snapshot,
-            step_results={k: v.model_dump() for k, v in step_results.items()},
+            workflow_definition=workflow_dump,
+            state=persisted_state,
+            step_results=step_results_dump,
             completed_steps=completed_steps,
             status=status,
             paused_step_id=paused_step_id,
@@ -243,6 +294,22 @@ class WorkflowEngine:
                 the human decision on re-execution.
         """
         workflow = WorkflowDefinition.model_validate(checkpoint_data.workflow_definition)
+
+        # Detect redacted state keys carried in the checkpoint. Sentinels were
+        # written by ``_save_checkpoint`` on the way to disk, so on the way
+        # back any downstream step that references such a key will receive
+        # the sentinel literal — not the original plaintext. Surface a single
+        # warning that lists the affected keys so the operator notices.
+        redacted_keys = [k for k, v in checkpoint_data.state.items() if is_redacted(v)]
+        if redacted_keys:
+            logger.warning(
+                "Resuming run '%s' with redacted state keys %s: subsequent steps "
+                "that reference these will receive the redaction sentinel, not "
+                "the original value. Re-inject the plaintext before resuming, "
+                "or remove ``redact: true`` from the workflow's state_schema.",
+                checkpoint_data.run_id,
+                redacted_keys,
+            )
 
         # Restore state manager with completed step results via the public API
         # so internal state, snapshots, and locking remain consistent.
@@ -562,6 +629,7 @@ class WorkflowEngine:
             workflow_model=self.workflow.config.model,
             workflow_provider=self.workflow.config.provider,
             sandbox_config=self.workflow.config.sandbox,
+            redaction_policy=self._redaction_policy,
             observer=self.observer,
             stream=should_stream,
             on_stream_chunk=self._stream_callback,

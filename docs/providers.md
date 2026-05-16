@@ -151,6 +151,72 @@ usage.billable_completion_tokens  # completion + reasoning
 
 URL-based attachments (`fetch: local`) are protected against Server-Side Request Forgery. The engine blocks requests to private and reserved IP ranges (RFC 1918, loopback, link-local) before any network call is made.
 
+### Webhook destination gate
+
+Approval-gate webhooks (`approval_gate.notify.url`) pass through two independent gates:
+
+1. **Scheme gate** — always on. Non-`http`/`https` schemes (`file://`, `data:`, `javascript:`, `gopher://`, ...) are refused regardless of opt-in flags.
+2. **Internal-host gate** — always on unless the workflow explicitly opts out. Blocks loopback (`127.0.0.0/8`, `::1`, `localhost`, `*.localhost`), link-local (`169.254.0.0/16` — covers AWS / GCP / Azure metadata service at `169.254.169.254`; `fe80::/10`), RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT (`100.64/10`), ULA (`fc00::/7`), the unspecified addresses (`0.0.0.0`, `::`), multicast, and reserved ranges. IPv4-mapped IPv6 forms (`::ffff:127.0.0.1`) are normalised first so they hit the same flags.
+
+Hostname classification uses `getaddrinfo` so both A and AAAA records are inspected — an attacker can't smuggle a loopback target through an AAAA-only DNS response. Percent-encoded and IDN hostnames are decoded before the literal-string check.
+
+When the sandbox is enabled, the URL must additionally satisfy `allow_network`, `allowed_schemes`, and `allowed_domains`. Workflows that genuinely need to notify an in-cluster service can waive **only** the internal-host gate via:
+
+```yaml
+config:
+  sandbox:
+    allow_internal_webhook_targets: true
+```
+
+The opt-in does NOT widen the scheme gate — `file://` and friends stay refused. A blocked webhook is logged and emitted as a `status="sandbox_blocked"` observer breadcrumb; the approval gate itself still pauses normally because pause and notify are independent.
+
+### Router expression boundary
+
+Router conditions are AST-validated against an allowlist (`==`, `and`/`or`, safe builtins like `len`). Dunder and underscored attributes are rejected on both `state.foo` and `state['foo']` so a workflow author who seeds state with `_secret` cannot accidentally surface it through a router predicate. Subscript slices must be literal int/str — variables (`state[lookup]`), arithmetic (`state['_' + 'secret']`), conditionals, and calls are refused because the validator cannot determine the resulting key at parse time. Numeric slicing with optional unary `±` bounds works (`state['items'][::-1]`, `state['items'][-2:]`). A single method call on a state value (`state.severity.strip()`, `state.label.lower()`) is permitted; chained calls (`state.severity.strip().lower()`) are refused today because the validator requires call receivers to be a name / attribute / subscript chain, not another call. `eval`, `__import__`, comprehensions, lambdas, and starred unpacking remain blocked.
+
+State is reachable from a router predicate **only** through the `state.X` (or `state['X']`) surface — top-level state keys are not exposed as bare names, so a state key called `len` cannot shadow the safe builtin.
+
+### Allowed paths
+
+`sandbox.allowed_paths` grants both read and write access to a directory tree; `readable_paths` and `writable_paths` narrow it down per direction. Resolved paths must live inside an allowed prefix, and the resolution itself is wrapped — null bytes, oversized components, symlink loops, OS-level rejections, and non-string callers all surface as `SandboxViolationError` (not the raw `ValueError` / `OSError` / `RuntimeError` / `TypeError`).
+
+Command argument validation also covers flag-embedded paths: `tee --output=/etc/passwd`, `dd of=/dev/sda`, and similar `--key=value` / `key=value` forms have their value side validated against the allowlist, not just bare positional tokens.
+
+!!! warning "Avoid mounting `/dev`"
+    `allowed_paths: ["/dev"]` grants access to every device node — `/dev/null`, `/dev/console`, `/dev/mem` on Linux — and a tool that opens a file descriptor against an unexpected device can hang the workflow or leak data. Pick the tightest sub-directory you actually need (`/dev/null` if you only want to discard output) instead of the whole tree.
+
+### State redaction
+
+Sensitive state values (API keys, passwords, tokens) can be flagged so they never land in a persisted artefact:
+
+```yaml
+state:
+  api_key: "..."
+  password: "..."
+  user_id: 42
+state_schema:
+  api_key: { redact: true }
+  password: { redact: true }
+  "*token*": { redact: true }
+```
+
+Or, for a deployment-wide baseline, set `AGENTLOOM_REDACT_STATE_KEYS=api_key,password,*token*` — the env-var policy is merged with the YAML one.
+
+Redaction is applied at every persistence boundary:
+
+- **Checkpoint files**: the runtime state snapshot, the literal `state:` block in `workflow_definition`, every `step_results[id].output` value (an LLM call that returns a structured payload), and any step-level config field whose key matches the policy (`notify.headers.api_key`, `tool_args.api_key`, ...).
+- **`WorkflowResult.final_state`**: what `agentloom run --json` echoes to stdout and what `result.model_dump_json()` returns to Python callers.
+- **Webhook `body_template` rendering**.
+- **Opt-in `capture_prompts` span event**: re-rendered against the redacted state so the trace backend sees the sentinel.
+- **Subworkflows**: the parent's redaction patterns are merged into the child's `state_schema` at dispatch, so a parent's `redact: true` survives the parent/child boundary. The parent's sandbox config is also forwarded (a child cannot loosen what the parent locked).
+
+The in-memory state stays plaintext so a step that legitimately interpolates `{state.api_key}` against the provider keeps working — only the persistence layer sees the stable `<REDACTED:sha256=...>` sentinel. Redaction is idempotent: a second pass over an already-redacted value preserves it byte-for-byte (so diffing across resume cycles is stable).
+
+`WorkflowDefinition` uses `extra="forbid"` so a typo in `state_schema:` (e.g. `stat_schema:`) fails at parse time instead of silently shipping the secret to disk.
+
+!!! note "Resume contract"
+    A redacted checkpoint cannot be resumed with the original secret value. If a workflow pauses on `approval_gate` before consuming the secret, plan to re-inject it on resume (CLI `--state api_key=...`) or do not flag the key as `redact: true`. `WorkflowEngine.from_checkpoint` logs a warning that lists every state key whose loaded value is a sentinel.
+
 ### Attachment size limit
 
 All attachments are limited to **20 MB** per file. Larger files are rejected before being sent to the provider.

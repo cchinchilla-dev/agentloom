@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agentloom.resilience.retry import DEFAULT_RETRYABLE_STATUS_CODES
 
@@ -186,6 +186,14 @@ class SandboxConfig(BaseModel):
 
     When enabled, shell commands are validated against an allowlist
     and file operations are restricted to allowed paths.
+
+    Webhook delivery (``approval_gate.notify.url``) always passes through
+    the sandbox: when ``enabled`` is true, the URL must satisfy
+    ``allow_network`` / ``allowed_schemes`` / ``allowed_domains``; when
+    ``enabled`` is false, a built-in deny-list still blocks loopback,
+    link-local, and RFC 1918 destinations. Workflows that genuinely need to
+    notify an in-cluster service can opt out via
+    ``allow_internal_webhook_targets``.
     """
 
     enabled: bool = False
@@ -198,6 +206,7 @@ class SandboxConfig(BaseModel):
     allowed_schemes: list[str] = Field(default_factory=lambda: ["http", "https"])
     max_write_bytes: int | None = None
     danger_opt_in: list[str] = Field(default_factory=list)
+    allow_internal_webhook_targets: bool = False
 
 
 class WorkflowConfig(BaseModel):
@@ -223,14 +232,44 @@ class WorkflowConfig(BaseModel):
     )
 
 
+class StateKeyConfig(BaseModel):
+    """Per-key state metadata, currently used only for redaction.
+
+    YAML usage::
+
+        state:
+          api_key: "..."
+        state_schema:
+          api_key: { redact: true }
+
+    Glob keys are supported (``"*token*"``); ``redact: true`` causes the
+    value to be replaced with a stable ``<REDACTED:sha256=...>`` sentinel
+    in every persisted artefact (checkpoint, run history, OTel span event,
+    webhook body). The in-memory state stays plaintext so steps that
+    legitimately need the secret keep working.
+    """
+
+    redact: bool = False
+
+
 class WorkflowDefinition(BaseModel):
-    """Complete workflow definition — the top-level schema for YAML files."""
+    """Complete workflow definition — the top-level schema for YAML files.
+
+    Unknown top-level keys are refused at parse time (``extra="forbid"``).
+    A common silent failure mode pre-fix was a typo like ``stat_schema:``
+    instead of ``state_schema:`` — Pydantic's default would have dropped
+    the unknown key, leaving the redaction policy empty and shipping
+    every flagged secret to disk in plaintext.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     version: str = "1.0"
     description: str = ""
     config: WorkflowConfig = Field(default_factory=WorkflowConfig)
     state: dict[str, Any] = Field(default_factory=dict)
+    state_schema: dict[str, StateKeyConfig] = Field(default_factory=dict)
     steps: list[StepDefinition]
 
     def get_step(self, step_id: str) -> StepDefinition | None:
@@ -243,3 +282,7 @@ class WorkflowDefinition(BaseModel):
     def step_ids(self) -> list[str]:
         """Return all step IDs in definition order."""
         return [s.id for s in self.steps]
+
+    def redaction_patterns(self) -> list[str]:
+        """Glob patterns flagged ``redact: true`` in the state schema."""
+        return [key for key, cfg in self.state_schema.items() if cfg.redact]
