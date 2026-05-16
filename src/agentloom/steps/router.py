@@ -85,6 +85,24 @@ def _reject_attribute(attr: str, expr_str: str) -> None:
         )
 
 
+def _safe_receiver(node: ast.AST) -> bool:
+    """Whether ``node`` is a safe receiver for an attribute call.
+
+    The base case is the original allow-set: ``Name | Attribute | Subscript``.
+    The recursive case extends it to another ``ast.Call`` whose ``func`` is
+    itself an attribute on a safe receiver — this is what permits chains
+    like ``state.x.strip().lower()``. The dunder/blocklist check on each
+    ``Attribute.attr`` still runs via the outer ``ast.walk`` traversal, so
+    widening the receiver does not enlarge the attack surface: every link
+    in the chain must clear ``_reject_attribute``.
+    """
+    if isinstance(node, ast.Name | ast.Attribute | ast.Subscript):
+        return True
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        return _safe_receiver(node.func.value)
+    return False
+
+
 def _reject_subscript(slice_node: ast.AST, expr_str: str) -> None:
     """Restrict subscript slices to literal int / str keys.
 
@@ -175,15 +193,17 @@ def _validate_expression(expr_str: str) -> ast.Expression:
                     )
             elif isinstance(node.func, ast.Attribute):
                 # Attribute calls are allowed only if the attribute name passed
-                # the dunder/blocklist check above (ast.walk visits children).
-                # Still, reject any call whose receiver is not a plain
-                # Name/Attribute/Subscript chain — e.g. calls on literals,
-                # calls on calls, etc. — since those are not idiomatic router
-                # predicates and widen the attack surface.
-                receiver = node.func.value
-                if not isinstance(receiver, ast.Name | ast.Attribute | ast.Subscript):
+                # the dunder/blocklist check above (ast.walk visits children)
+                # AND the receiver chain bottoms out on a safe base
+                # (Name/Attribute/Subscript). ``_safe_receiver`` recurses
+                # through nested ``ast.Call`` receivers so chains like
+                # ``state.x.strip().lower()`` are accepted — every link is
+                # still gated by ``_reject_attribute``. Calls on literals
+                # (``''.join(...)``, ``(1).bit_length()``) are still refused.
+                if not _safe_receiver(node.func.value):
                     raise SecurityError(
-                        "Attribute calls are only allowed on names, attributes, or subscripts.",
+                        "Attribute calls require a name/attribute/subscript "
+                        "receiver, or a safe chained method call on one.",
                         expression=expr_str,
                     )
             else:
