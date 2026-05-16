@@ -349,6 +349,36 @@ class TestRejectsSubscriptIndirection:
         }
         assert evaluate_expression(expr, ns) == want
 
+    def test_constant_of_invalid_type_refused(self) -> None:
+        # Constants of other primitive types (None, bool, float, bytes)
+        # are not sensible keys and would be a sign of indirection abuse
+        # if accepted.
+        for expr in (
+            "x[None]",
+            "x[True]",
+            "x[1.5]",
+        ):
+            with pytest.raises(SecurityError):
+                evaluate_expression(expr, {"x": {0: "v"}})
+
+    def test_slice_bounds_must_be_int_constants(self) -> None:
+        # ``items[0:2]`` is fine; ``items[lookup:2]`` is not. Slices with
+        # non-integer-constant bounds are refused at validation.
+        from agentloom.core.templates import DotAccessDict
+
+        ns = {
+            "state": DotAccessDict({"items": [1, 2, 3]}),
+            "lookup": "_secret",
+        }
+        try:
+            evaluate_expression("state['items'][0:2]", ns)
+        except SecurityError:
+            pytest.fail("constant-bound slice was wrongly refused")
+        except Exception:
+            pass  # runtime may not support DotAccessList slicing
+        with pytest.raises(SecurityError):
+            evaluate_expression("state['items'][lookup:2]", ns)
+
 
 class TestRouterNamespaceDoesNotFlattenStateKeys:
     """Top-level state keys are NOT exposed as bare names in router predicates.

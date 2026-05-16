@@ -193,6 +193,15 @@ class TestInternalAttributesNotReachableViaTemplate:
         rendered = "{state._strict}".format_map(SafeFormatDict(vars))
         assert rendered == ""
 
+    def test_list_wrapper_short_attribute_not_reachable(self) -> None:
+        # The DotAccessList wrapper's storage is name-mangled too — the
+        # short ``_data`` attribute is no longer reachable via ``getattr``.
+        from agentloom.core.templates import DotAccessList
+
+        lst = DotAccessList([1, 2, 3])
+        assert not hasattr(lst, "_data")
+        assert not hasattr(lst, "_strict")
+
     @pytest.mark.parametrize(
         "expr",
         [
