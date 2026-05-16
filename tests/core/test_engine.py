@@ -481,6 +481,222 @@ class TestRouterSkipCascade:
         assert result.step_results["review_b"].status == StepStatus.SKIPPED
 
 
+class TestFailureCascade:
+    """#054 regression — FAILED steps and routers must skip their dependents.
+
+    Pre-0.5.0 a router that failed AST validation (or any other reason) left
+    ``activated_targets`` empty, the layer filter did no skipping, and every
+    downstream branch ran in parallel against partial state. Real workflows
+    shipped Slack notifications, Jira tickets, and approval requests off
+    runs that should have aborted. The cascade-skip block in
+    ``engine.run()`` now skips dependents of any FAILED step (router or
+    otherwise) under the default ``on_step_failure: skip_downstream``
+    policy, and ``continue`` preserves today's behaviour for fan-outs that
+    deliberately want it.
+    """
+
+    async def test_failed_router_skips_all_direct_branches(
+        self, mock_gateway: ProviderGateway
+    ) -> None:
+        """Router fails AST validation; both branches must be SKIPPED."""
+        from agentloom.core.models import (
+            Condition,
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+
+        workflow = WorkflowDefinition(
+            name="failed-router",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={"severity": "high"},
+            steps=[
+                StepDefinition(
+                    id="classify",
+                    type=StepType.ROUTER,
+                    conditions=[
+                        # __class__ trips the dunder guard → router FAILED
+                        Condition(
+                            expression="state.severity.__class__ == 1",
+                            target="alert",
+                        ),
+                    ],
+                    default="noop",
+                ),
+                StepDefinition(
+                    id="alert", type=StepType.LLM_CALL, depends_on=["classify"], prompt="alert"
+                ),
+                StepDefinition(
+                    id="noop", type=StepType.LLM_CALL, depends_on=["classify"], prompt="noop"
+                ),
+            ],
+        )
+        engine = WorkflowEngine(workflow=workflow, provider_gateway=mock_gateway)
+        result = await engine.run()
+
+        assert result.status == WorkflowStatus.FAILED
+        assert result.step_results["classify"].status == StepStatus.FAILED
+        assert result.step_results["alert"].status == StepStatus.SKIPPED
+        assert result.step_results["noop"].status == StepStatus.SKIPPED
+        # The reason must name the upstream failure so operators can audit.
+        for branch in ("alert", "noop"):
+            assert "classify" in (result.step_results[branch].error or "")
+
+    async def test_failed_router_skips_transitive_descendants(
+        self, mock_gateway: ProviderGateway
+    ) -> None:
+        """router fail → {A,B} → joinA/joinB: all four descendants SKIPPED."""
+        from agentloom.core.models import (
+            Condition,
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+
+        workflow = WorkflowDefinition(
+            name="cascade-transitive",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={"x": "y"},
+            steps=[
+                StepDefinition(
+                    id="route",
+                    type=StepType.ROUTER,
+                    conditions=[
+                        Condition(expression="state.x.__class__ == 1", target="A"),
+                    ],
+                    default="B",
+                ),
+                StepDefinition(id="A", type=StepType.LLM_CALL, depends_on=["route"], prompt="A"),
+                StepDefinition(id="B", type=StepType.LLM_CALL, depends_on=["route"], prompt="B"),
+                StepDefinition(id="joinA", type=StepType.LLM_CALL, depends_on=["A"], prompt="ja"),
+                StepDefinition(id="joinB", type=StepType.LLM_CALL, depends_on=["B"], prompt="jb"),
+            ],
+        )
+        engine = WorkflowEngine(workflow=workflow, provider_gateway=mock_gateway)
+        result = await engine.run()
+
+        for sid in ("A", "B", "joinA", "joinB"):
+            assert result.step_results[sid].status == StepStatus.SKIPPED, sid
+
+    async def test_router_no_match_no_default_cascade_skip(
+        self, mock_gateway: ProviderGateway
+    ) -> None:
+        from agentloom.core.models import (
+            Condition,
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+
+        workflow = WorkflowDefinition(
+            name="no-match",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={"x": "miss"},
+            steps=[
+                StepDefinition(
+                    id="route",
+                    type=StepType.ROUTER,
+                    conditions=[Condition(expression="state.x == 'hit'", target="a")],
+                ),
+                StepDefinition(id="a", type=StepType.LLM_CALL, depends_on=["route"], prompt="a"),
+            ],
+        )
+        engine = WorkflowEngine(workflow=workflow, provider_gateway=mock_gateway)
+        result = await engine.run()
+
+        assert result.step_results["route"].status == StepStatus.FAILED
+        assert result.step_results["a"].status == StepStatus.SKIPPED
+
+    async def test_failed_step_cascades_skip_to_dependents(
+        self, mock_gateway: ProviderGateway
+    ) -> None:
+        """A non-router step failing (after retries) must skip its dependents.
+
+        Forces the failure via a router whose body succeeds (so the cascade
+        path here is the regular failed-step path, not the failed-router
+        path tested above): we use a tool step pointing at a missing tool.
+        """
+        from agentloom.core.models import (
+            RetryConfig,
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+
+        workflow = WorkflowDefinition(
+            name="step-failure",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={},
+            steps=[
+                StepDefinition(
+                    id="fetch",
+                    type=StepType.TOOL,
+                    tool_name="does_not_exist",
+                    # Skip the 3x retry default so the test stays fast.
+                    retry=RetryConfig(max_retries=0),
+                ),
+                StepDefinition(
+                    id="analyse",
+                    type=StepType.LLM_CALL,
+                    depends_on=["fetch"],
+                    prompt="analyse",
+                ),
+            ],
+        )
+        engine = WorkflowEngine(workflow=workflow, provider_gateway=mock_gateway)
+        result = await engine.run()
+
+        assert result.step_results["fetch"].status == StepStatus.FAILED
+        assert result.step_results["analyse"].status == StepStatus.SKIPPED
+        assert "fetch" in (result.step_results["analyse"].error or "")
+
+    async def test_on_step_failure_continue_preserves_legacy_behaviour(
+        self, mock_gateway: ProviderGateway
+    ) -> None:
+        """Opt-out: dependents still run (and likely fail) under ``continue``."""
+        from agentloom.core.models import (
+            RetryConfig,
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+
+        workflow = WorkflowDefinition(
+            name="continue-policy",
+            config=WorkflowConfig(
+                provider="mock",
+                model="mock-model",
+                on_step_failure="continue",
+            ),
+            state={},
+            steps=[
+                StepDefinition(
+                    id="fetch",
+                    type=StepType.TOOL,
+                    tool_name="does_not_exist",
+                    retry=RetryConfig(max_retries=0),
+                ),
+                StepDefinition(
+                    id="analyse",
+                    type=StepType.LLM_CALL,
+                    depends_on=["fetch"],
+                    prompt="analyse",
+                ),
+            ],
+        )
+        engine = WorkflowEngine(workflow=workflow, provider_gateway=mock_gateway)
+        result = await engine.run()
+
+        # ``analyse`` ran (and either succeeded or failed for some other
+        # reason), but was NOT cascade-skipped.
+        assert result.step_results["analyse"].status != StepStatus.SKIPPED
+
+
 class TestBudgetPreDispatchGate:
     """Prior-exhausted budget must stop further step dispatch before the call."""
 
