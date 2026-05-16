@@ -593,17 +593,28 @@ class TestValidatePathSurfacesViolationOnUnresolvable:
         sandbox = ToolSandbox(enabled=False)
         sandbox.validate_path("/tmp/x\x00/etc/passwd")
 
-    def test_symlink_loop_wraps_to_sandbox_violation(self) -> None:
-        import os
+    def test_runtime_error_wraps_to_sandbox_violation(self, monkeypatch: Any) -> None:
+        # ``Path.resolve()`` raises ``RuntimeError`` on symlink loops on
+        # Python < 3.13. Python 3.13 rewrote ``pathlib`` and no longer
+        # raises in non-strict mode, so the symlink-loop trigger isn't
+        # portable as a black-box test. Patch the ``Path`` symbol in
+        # ``sandbox`` AFTER constructing the sandbox (so ``__init__``
+        # processes ``allowed_paths`` with the real Path), then exercise
+        # the defensive ``RuntimeError`` branch in ``validate_path``.
 
         with tempfile.TemporaryDirectory() as tmp:
-            a = os.path.join(tmp, "loop_a")
-            b = os.path.join(tmp, "loop_b")
-            os.symlink(b, a)
-            os.symlink(a, b)
             sandbox = ToolSandbox(enabled=True, allowed_paths=[tmp])
+
+            class _BoomPath:
+                def __init__(self, _path: object) -> None:
+                    pass
+
+                def resolve(self) -> _BoomPath:
+                    raise RuntimeError("Symlink loop from '...'")
+
+            monkeypatch.setattr("agentloom.tools.sandbox.Path", _BoomPath)
             with pytest.raises(SandboxViolationError):
-                sandbox.validate_path(a)
+                sandbox.validate_path("/tmp/whatever")
 
     @pytest.mark.parametrize("bad_input", [None, 42, b"/tmp/bytes"])
     def test_non_string_input_wraps_to_sandbox_violation(self, bad_input: object) -> None:

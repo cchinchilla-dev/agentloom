@@ -520,6 +520,66 @@ class TestRouterProxyRuntimeEdges:
         result = await step.execute(ctx)
         assert result.output == "ok"
 
+    async def test_dict_proxy_len_via_router_predicate(self) -> None:
+        # ``len(state.user)`` hits ``_DictProxy.__len__`` when the state
+        # value is a dict, not a list.
+        step = RouterStep()
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="r",
+                type=StepType.ROUTER,
+                conditions=[Condition(expression="len(state.user) == 3", target="ok")],
+                default="other",
+            ),
+            state_manager=StateManager(
+                initial_state={"user": {"name": "alice", "email": "a@x.com", "role": "admin"}}
+            ),
+        )
+        result = await step.execute(ctx)
+        assert result.output == "ok"
+
+    async def test_dict_proxy_in_operator_via_router_predicate(self) -> None:
+        # ``'name' in state.user`` hits ``_DictProxy.__contains__``.
+        step = RouterStep()
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="r",
+                type=StepType.ROUTER,
+                conditions=[Condition(expression="'name' in state.user", target="ok")],
+                default="other",
+            ),
+            state_manager=StateManager(initial_state={"user": {"name": "alice", "role": "admin"}}),
+        )
+        result = await step.execute(ctx)
+        assert result.output == "ok"
+
+    def test_dict_proxy_iter_unit_level(self) -> None:
+        # ``__iter__`` is the mapping protocol's third leg. The router
+        # grammar doesn't naturally produce a ``for k in state.user``
+        # form, so cover it directly via the module-level helper.
+        from agentloom.steps.router import _DictProxy
+
+        proxy = _DictProxy({"name": "alice", "role": "admin"})
+        assert sorted(iter(proxy)) == ["name", "role"]
+
+    def test_dict_proxy_numeric_subscript_falls_through(self) -> None:
+        # Non-string subscripts on a dict-shaped state fall through to
+        # ``self._data[key]`` — defensive branch that the validator
+        # rejects but the runtime still handles cleanly.
+        from agentloom.steps.router import _DictProxy
+
+        proxy = _DictProxy({1: "numeric-key-value"})
+        assert proxy[1] == "numeric-key-value"
+
+    def test_state_proxy_numeric_subscript_falls_through(self) -> None:
+        # Same defensive fall-through on ``_StateProxy``. The grammar
+        # only emits string-constant subscripts on ``state``, but the
+        # runtime branch exists for completeness.
+        from agentloom.steps.router import _build_state_proxy
+
+        proxy = _build_state_proxy({1: "numeric"})
+        assert proxy[1] == "numeric"
+
     async def test_list_proxy_returns_nested_listproxy(self) -> None:
         # ``state.items[0][1]`` exercises the
         # ``isinstance(value, list): return _ListProxy(value)`` branch.
@@ -576,36 +636,31 @@ class TestRouterProxyRuntimeEdges:
 
 
 class TestRouterProxyUnitLevel:
-    """Direct unit-level coverage of proxy ``__getitem__`` numeric branches
-    that the validator's grammar doesn't naturally exercise (it accepts
-    literal int subscripts on lists, not on the top-level state mapping).
-    """
+    """Direct unit-level coverage of the now module-level proxy classes."""
 
-    def test_dict_proxy_numeric_subscript_returns_raw_dict_value(self) -> None:
-        # Building a ``_DictProxy`` directly to exercise the
-        # ``return _wrap(self._data[key])`` fallback for non-string keys.
-        from agentloom.steps.router import RouterStep
+    def test_dict_proxy_attribute_access(self) -> None:
+        from agentloom.steps.router import _DictProxy
 
-        # _DictProxy is defined inside RouterStep.execute, so reach it
-        # via a state with a mapping whose key is an int. The state
-        # snapshot is built by ``get_state_snapshot``; routers receive a
-        # plain dict, so we drive this via the underlying proxy at
-        # construction time. Easiest: through the StateProxy subscript.
-        ctx = StepContext(
-            step_definition=StepDefinition(
-                id="r",
-                type=StepType.ROUTER,
-                conditions=[
-                    Condition(expression="state.items[1] == 'b'", target="ok"),
-                ],
-                default="other",
-            ),
-            state_manager=StateManager(initial_state={"items": ["a", "b", "c"]}),
-        )
-        # We use the public flow because the inner classes are not
-        # importable. The router predicate ``state.items[1]`` exercises
-        # ``_ListProxy.__getitem__`` with an int key — which already
-        # returns ``_wrap(value)`` for non-list values.
-        import anyio
+        p = _DictProxy({"name": "alice"})
+        assert p.name == "alice"
 
-        anyio.run(RouterStep().execute, ctx)
+    def test_dict_proxy_missing_key_returns_none_wrapped(self) -> None:
+        # ``self._data.get(name)`` returns ``None`` for missing — the
+        # proxy passes it through ``_wrap`` which leaves scalars alone.
+        from agentloom.steps.router import _DictProxy
+
+        assert _DictProxy({"a": 1}).missing is None
+
+    def test_list_proxy_len_and_iter(self) -> None:
+        from agentloom.steps.router import _ListProxy
+
+        p = _ListProxy([1, 2, 3])
+        assert len(p) == 3
+        assert list(iter(p)) == [1, 2, 3]
+
+    def test_state_proxy_attribute_access(self) -> None:
+        from agentloom.steps.router import _build_state_proxy
+
+        p = _build_state_proxy({"user": {"name": "alice"}})
+        assert p.user.name == "alice"
+        assert p["user"]["name"] == "alice"

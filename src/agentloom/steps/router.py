@@ -226,6 +226,92 @@ def evaluate_expression(expr_str: str, namespace: dict[str, Any]) -> Any:
     return eval(code, safe_globals)
 
 
+def _wrap(value: Any) -> Any:
+    """Wrap nested containers so router dot / subscript chains keep working.
+
+    Lifted out of ``RouterStep.execute`` so the proxy classes can be
+    constructed and unit-tested directly. The router runtime calls this
+    helper for every value crossing the state boundary.
+    """
+    if isinstance(value, dict):
+        return _DictProxy(value)
+    if isinstance(value, list):
+        return _ListProxy(value)
+    return value
+
+
+class _DictProxy:
+    """Proxy supporting both ``proxy.key`` and ``proxy['key']``."""
+
+    __slots__ = ("_data",)
+    _data: dict[Any, Any]
+
+    def __init__(self, data: dict[Any, Any]) -> None:
+        object.__setattr__(self, "_data", data)
+
+    def __getattr__(self, name: str) -> Any:
+        return _wrap(self._data.get(name))
+
+    def __getitem__(self, key: Any) -> Any:
+        if isinstance(key, str):
+            return _wrap(self._data.get(key))
+        return _wrap(self._data[key])
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __iter__(self) -> Any:
+        # Yield keys (mapping protocol). Reachable via Python-level
+        # consumers iterating a proxy returned from the router
+        # namespace; the router AST grammar itself doesn't emit `for`
+        # loops.
+        return iter(self._data)
+
+    def __contains__(self, key: Any) -> bool:
+        return key in self._data
+
+
+class _ListProxy:
+    """Proxy supporting ``proxy[i]`` and ``proxy[i:j]``."""
+
+    __slots__ = ("_data",)
+    _data: list[Any]
+
+    def __init__(self, data: list[Any]) -> None:
+        object.__setattr__(self, "_data", data)
+
+    def __getitem__(self, key: Any) -> Any:
+        value = self._data[key]
+        if isinstance(value, list):
+            return _ListProxy(value)
+        return _wrap(value)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __iter__(self) -> Any:
+        return iter(_wrap(v) for v in self._data)
+
+
+def _build_state_proxy(state_snapshot: dict[Any, Any]) -> Any:
+    """Build the ``state`` proxy the router namespace exposes.
+
+    Factored out so tests can construct the proxy directly without
+    going through ``RouterStep.execute``.
+    """
+
+    class _StateProxy:
+        def __getattr__(self, name: str) -> Any:
+            return _wrap(state_snapshot.get(name))
+
+        def __getitem__(self, key: Any) -> Any:
+            if isinstance(key, str):
+                return _wrap(state_snapshot.get(key))
+            return _wrap(state_snapshot[key])
+
+    return _StateProxy()
+
+
 class RouterStep(BaseStep):
     """Evaluates conditions and returns the target step ID to activate."""
 
@@ -248,73 +334,7 @@ class RouterStep(BaseStep):
         # through ``state.X``.
         namespace: dict[str, Any] = {}
 
-        def _wrap(value: Any) -> Any:
-            """Wrap nested containers so dot/subscript chains keep working."""
-            if isinstance(value, dict):
-                return _DictProxy(value)
-            if isinstance(value, list):
-                return _ListProxy(value)
-            return value
-
-        class _DictProxy:
-            """Proxy supporting both ``proxy.key`` and ``proxy['key']``."""
-
-            __slots__ = ("_data",)
-            _data: dict[str, Any]
-
-            def __init__(self, data: dict[str, Any]) -> None:
-                object.__setattr__(self, "_data", data)
-
-            def __getattr__(self, name: str) -> Any:
-                return _wrap(self._data.get(name))
-
-            def __getitem__(self, key: Any) -> Any:
-                if isinstance(key, str):
-                    return _wrap(self._data.get(key))
-                return _wrap(self._data[key])
-
-            def __len__(self) -> int:
-                return len(self._data)
-
-            def __iter__(self) -> Any:
-                # Yield keys (mapping protocol). Used by ``for k in
-                # state.user`` and as the surface ``len()`` works against.
-                return iter(self._data)
-
-            def __contains__(self, key: Any) -> bool:
-                return key in self._data
-
-        class _ListProxy:
-            """Proxy supporting ``proxy[i]`` and ``proxy[i:j]``."""
-
-            __slots__ = ("_data",)
-            _data: list[Any]
-
-            def __init__(self, data: list[Any]) -> None:
-                object.__setattr__(self, "_data", data)
-
-            def __getitem__(self, key: Any) -> Any:
-                value = self._data[key]
-                if isinstance(value, list):
-                    return _ListProxy(value)
-                return _wrap(value)
-
-            def __len__(self) -> int:
-                return len(self._data)
-
-            def __iter__(self) -> Any:
-                return iter(_wrap(v) for v in self._data)
-
-        class _StateProxy:
-            def __getattr__(self, name: str) -> Any:
-                return _wrap(state_snapshot.get(name))
-
-            def __getitem__(self, key: Any) -> Any:
-                if isinstance(key, str):
-                    return _wrap(state_snapshot.get(key))
-                return _wrap(state_snapshot[key])
-
-        namespace["state"] = _StateProxy()
+        namespace["state"] = _build_state_proxy(state_snapshot)
 
         steps_data = state_snapshot.get("steps", {})
 
