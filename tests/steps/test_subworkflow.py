@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from agentloom.core.models import StepDefinition, StepType, WorkflowConfig
@@ -243,3 +245,83 @@ class TestSubworkflowFailurePaths:
         )
         result = await SubworkflowStep().execute(ctx)
         assert result.status == StepStatus.FAILED
+
+
+class TestSubworkflowInheritsSecurityPosture:
+    """Subworkflow must inherit the parent's redaction policy AND sandbox."""
+
+    async def test_child_inherits_parent_redaction_policy(self, tmp_path: Any) -> None:
+        from agentloom.checkpointing.file import FileCheckpointer
+        from agentloom.core.engine import WorkflowEngine
+        from agentloom.core.models import (
+            StateKeyConfig,
+            WorkflowDefinition,
+        )
+
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, priority=0)
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+
+        parent = WorkflowDefinition(
+            name="parent",
+            config=WorkflowConfig(provider="mock", model="x"),
+            state={"api_key": "sk-parent-secret"},
+            state_schema={"api_key": StateKeyConfig(redact=True)},
+            steps=[
+                StepDefinition(
+                    id="sub",
+                    type=StepType.SUBWORKFLOW,
+                    workflow_inline={
+                        "name": "child",
+                        "config": {"provider": "mock", "model": "x"},
+                        "steps": [
+                            {
+                                "id": "noop",
+                                "type": "llm_call",
+                                "prompt": "hi",
+                                "output": "ans",
+                            }
+                        ],
+                    },
+                ),
+            ],
+        )
+        engine = WorkflowEngine(workflow=parent, provider_gateway=gw, checkpointer=cp)
+        await engine.run()
+
+        for f in tmp_path.glob("*.json"):
+            assert "sk-parent-secret" not in f.read_text(), f.name
+
+    async def test_child_inherits_parent_sandbox_config(self) -> None:
+        from agentloom.core.models import SandboxConfig
+
+        gateway = ProviderGateway()
+        gateway.register(MockProvider(), priority=0)
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="sub",
+                type=StepType.SUBWORKFLOW,
+                workflow_inline={
+                    "name": "child",
+                    "config": {"provider": "mock", "model": "x"},
+                    "steps": [
+                        {
+                            "id": "noop",
+                            "type": "llm_call",
+                            "prompt": "hi",
+                        }
+                    ],
+                },
+            ),
+            state_manager=StateManager(),
+            provider_gateway=gateway,
+            sandbox_config=SandboxConfig(
+                enabled=True,
+                allowed_commands=["echo"],
+                allowed_domains=["api.openai.com"],
+                allowed_schemes=["https"],
+            ),
+        )
+        result = await SubworkflowStep().execute(ctx)
+        assert result.status == StepStatus.SUCCESS

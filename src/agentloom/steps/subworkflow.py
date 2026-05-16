@@ -39,6 +39,21 @@ class SubworkflowStep(BaseStep):
         parent_state = await context.state_manager.get_state_snapshot()
         child_state = StateManager(initial_state=parent_state)
 
+        # Inherit the parent's security posture into the child workflow:
+        # without this, a parent that redacts ``api_key`` writes the
+        # secret in plaintext to the child checkpoint, and a parent that
+        # locks the sandbox to ``allowed_domains=["api.openai.com"]`` is
+        # bypassed by a subworkflow whose own config defaults to
+        # ``sandbox.enabled=false``.
+        from agentloom.core.models import StateKeyConfig
+
+        if context.redaction_policy:
+            for pattern in context.redaction_policy.patterns:
+                if pattern not in sub_workflow.state_schema:
+                    sub_workflow.state_schema[pattern] = StateKeyConfig(redact=True)
+
+        sub_workflow.config.sandbox = context.sandbox_config
+
         engine = WorkflowEngine(
             workflow=sub_workflow,
             state_manager=child_state,

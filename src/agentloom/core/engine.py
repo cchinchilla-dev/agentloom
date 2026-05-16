@@ -173,7 +173,7 @@ class WorkflowEngine:
     async def _finalize_result(self, result: WorkflowResult, workflow_name: str) -> None:
         """Common post-construction wiring for every terminal ``WorkflowResult``.
 
-        Centralises three concerns that previously only ran on the success
+        Centralises four concerns that previously only ran on the success
         path:
           * stamp ``run_id`` so trace-correlation works across all outcomes
             (failure / budget_exceeded / paused traces are otherwise
@@ -182,8 +182,23 @@ class WorkflowEngine:
             keeps working on non-success terminations too
           * write the per-run history record so ``agentloom history``
             shows every execution, not only successful ones
+          * apply the redaction policy to ``final_state`` and
+            ``step_results`` so callers that dump the result (``agentloom
+            run --json``, programmatic ``result.model_dump_json()``) see
+            sentinels for flagged keys — the in-memory state stays
+            plaintext for step composition, but the moment the result
+            crosses the process boundary the same persistence-gate the
+            checkpoint enjoys applies here too.
         """
         result.run_id = self.run_id
+        if self._redaction_policy:
+            result.final_state = redact_state(result.final_state, self._redaction_policy)
+            redacted_step_results: dict[str, StepResult] = {}
+            for step_id, step_result in result.step_results.items():
+                dumped = step_result.model_dump()
+                dumped = redact_state(dumped, self._redaction_policy)
+                redacted_step_results[step_id] = StepResult.model_validate(dumped)
+            result.step_results = redacted_step_results
         self._attach_quality_emitter(result, workflow_name)
         await self._write_run_history(result)
 
@@ -209,23 +224,27 @@ class WorkflowEngine:
         # Apply the redaction policy on the way to disk. The in-memory
         # ``self.state`` stays plaintext so a subsequent step that
         # interpolates ``{state.api_key}`` keeps working; only the
-        # serialized snapshot carries the sentinel. The workflow definition
-        # is dumped too — its ``state:`` block carries the literal YAML seed
-        # so it needs the same treatment, otherwise the secret reappears
-        # under ``workflow_definition.state``.
+        # serialized snapshot carries the sentinel. Redaction is applied
+        # uniformly to every surface that lands in the checkpoint JSON:
+        # the runtime snapshot, the literal ``state:`` seed inside the
+        # workflow definition, the step result outputs (an LLM call may
+        # return a flagged key in structured output), and any other
+        # workflow-definition field whose key name matches the policy
+        # (e.g. a step-level ``notify.headers.api_key``).
         persisted_state = redact_state(state_snapshot, self._redaction_policy)
         workflow_dump = self.workflow.model_dump()
-        if self._redaction_policy and "state" in workflow_dump:
-            workflow_dump["state"] = redact_state(
-                workflow_dump["state"], self._redaction_policy
-            )
+        if self._redaction_policy:
+            workflow_dump = redact_state(workflow_dump, self._redaction_policy)
+        step_results_dump = {k: v.model_dump() for k, v in step_results.items()}
+        if self._redaction_policy:
+            step_results_dump = redact_state(step_results_dump, self._redaction_policy)
 
         data = CheckpointData(
             workflow_name=self.workflow.name,
             run_id=self.run_id,
             workflow_definition=workflow_dump,
             state=persisted_state,
-            step_results={k: v.model_dump() for k, v in step_results.items()},
+            step_results=step_results_dump,
             completed_steps=completed_steps,
             status=status,
             paused_step_id=paused_step_id,
