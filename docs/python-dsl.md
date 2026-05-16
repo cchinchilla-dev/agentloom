@@ -174,3 +174,38 @@ print(result.status)            # success
 print(result.final_state)       # {"user_message": "...", "response": "..."}
 print(result.total_cost_usd)    # 0.002
 ```
+
+## State contract — atomic updates
+
+`StateManager.set` and `StateManager.get` each take the state lock individually, but the natural `cur = await sm.get('counter'); await sm.set('counter', cur + 1)` pattern drops the lock between the two awaits. Anything that yields control between them (a tool call, an `await anyio.sleep(0)`) lets another writer race, and the slower writer overwrites the faster one's result — 50 parallel counter bumps deterministically collapse to 1.
+
+Use `StateManager.update(key, fn)` for compound read-modify-write. It holds the lock across the full `fn(current)` invocation:
+
+```python
+# Atomic — 50 parallel bumps land 50 increments.
+async def bump(sm: StateManager) -> None:
+    await sm.update("counter", lambda c: (c or 0) + 1)
+
+# Racy — collapses under any concurrency. Documented as such.
+async def bump_racy(sm: StateManager) -> None:
+    cur = await sm.get("counter")
+    await anyio.sleep(0)
+    await sm.set("counter", cur + 1)
+```
+
+`fn` must be **synchronous and side-effect-free** — it runs while the lock is held, so a blocking call stalls every other state operation. For async transformations, compute the new value outside the lock and pass a lambda that returns the already-computed value (this still races on read-modify-write, so for that case use `update` with a sync function).
+
+If the key does not exist yet, `fn` receives `None`; the caller chooses how to seed it.
+
+### Dotted writes refuse to overwrite scalars
+
+Writing `output: "user.name"` when `state.user` was a scalar (`"alice"`) used to silently replace the string with `{"name": ...}` and lose the original value. The current contract raises `StateWriteError` with a message naming the traversed prefix and the existing type — pick a different output key, or overwrite `user` at the parent path first.
+
+```python
+sm = StateManager(initial_state={"user": "alice"})
+await sm.set("user.name", "bob")
+# StateWriteError: Cannot write to 'user.name': intermediate 'user' is a str
+# (value='alice'), not a dict. Refusing to silently overwrite the scalar.
+```
+
+Missing intermediates still auto-create as dicts (`set("user.name", "bob")` on an empty state works), and existing dict / list intermediates traverse unchanged.
