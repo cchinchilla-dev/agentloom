@@ -8,6 +8,7 @@ and webhook payloads.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 logger = logging.getLogger("agentloom.templates")
 
@@ -18,6 +19,39 @@ class TemplateError(KeyError):
     Subclasses ``KeyError`` so ``str.format_map`` behavior is preserved —
     callers using ``format_map`` see it as the expected exception type.
     """
+
+
+class _MissingDotAccess:
+    """Sentinel returned by non-strict ``DotAccessDict`` / ``DotAccessList``
+    when a key is missing.
+
+    Used so that a chained reference like ``{state.x.y.z}`` whose first
+    segment is missing renders as ``""`` instead of bottoming out into
+    ``AttributeError: 'str' object has no attribute 'y'``. Every further
+    attribute / index access returns the same sentinel; ``__str__`` and
+    ``__format__`` render as the empty string regardless of the format
+    spec so a stray ``:.20`` on a missing dict path is also benign.
+    """
+
+    __slots__ = ()
+
+    def __getattr__(self, _name: str) -> _MissingDotAccess:
+        return self
+
+    def __getitem__(self, _key: Any) -> _MissingDotAccess:
+        return self
+
+    def __str__(self) -> str:
+        return ""
+
+    def __format__(self, _spec: str) -> str:
+        return ""
+
+    def __bool__(self) -> bool:
+        return False
+
+
+_MISSING = _MissingDotAccess()
 
 
 # Attribute names that ``str.format_map`` template syntax can reach but
@@ -70,7 +104,12 @@ class DotAccessDict:
             if strict:
                 raise TemplateError(f"state.{name}")
             logger.warning("Template variable 'state.%s' not found, rendering as empty", name)
-            return ""
+            # ``_MissingDotAccess`` instead of plain ``""`` so a deeper
+            # chain like ``{state.x.y.z}`` continues to bottom out at the
+            # empty string rather than raising
+            # ``AttributeError: 'str' object has no attribute 'y'`` when
+            # the format machinery reaches for the next segment.
+            return _MISSING
         value = data[name]
         if isinstance(value, dict):
             return DotAccessDict(value, strict=strict)
@@ -91,9 +130,22 @@ class DotAccessDict:
 
     def __format__(self, format_spec: str) -> str:
         data = object.__getattribute__(self, "_DotAccessDict__data")
-        if format_spec:
+        if not format_spec:
+            return str(data)
+        # ``dict`` has no ``__format__`` that honours a non-empty spec, so
+        # ``format(dict, ".20")`` raises ``TypeError: unsupported format
+        # string passed to dict.__format__``. Catch and fall back to the
+        # plain ``str(...)`` rendering so a workflow author who wrote
+        # ``{state.user:.20}`` against a dict value sees the dict's str
+        # form (which they can still pin) rather than an opaque crash.
+        try:
             return format(data, format_spec)
-        return str(data)
+        except TypeError:
+            logger.warning(
+                "Template format spec %r ignored on non-scalar dict; rendering as str(...)",
+                format_spec,
+            )
+            return str(data)
 
 
 class DotAccessList:
@@ -134,9 +186,16 @@ class DotAccessList:
 
     def __format__(self, format_spec: str) -> str:
         data = object.__getattribute__(self, "_DotAccessList__data")
-        if format_spec:
+        if not format_spec:
+            return str(data)
+        try:
             return format(data, format_spec)
-        return str(data)
+        except TypeError:
+            logger.warning(
+                "Template format spec %r ignored on non-scalar list; rendering as str(...)",
+                format_spec,
+            )
+            return str(data)
 
 
 class SafeFormatDict(dict[str, object]):
