@@ -57,9 +57,7 @@ def _extract_pause_error(exc: BaseException) -> PauseRequestedError | None:
     return None
 
 
-def _closest_failed_ancestor(
-    target: str, failed: set[str], dag: DAG
-) -> str | None:
+def _closest_failed_ancestor(target: str, failed: set[str], dag: DAG) -> str | None:
     """Find the closest ancestor of *target* present in *failed*.
 
     BFS backward through the DAG's predecessor edges. Returns the first
@@ -509,9 +507,7 @@ class WorkflowEngine:
                             # may sit several hops below the failure; naming
                             # the nearest is the most actionable for the
                             # operator.
-                            upstream = _closest_failed_ancestor(
-                                descendant, failed_in_layer, dag
-                            )
+                            upstream = _closest_failed_ancestor(descendant, failed_in_layer, dag)
                             skip_reasons.setdefault(
                                 descendant,
                                 f"skipped due to upstream failure: "

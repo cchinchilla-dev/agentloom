@@ -112,9 +112,7 @@ class SubworkflowStep(BaseStep):
             # ``WorkflowResult`` rather than re-raising, but third-party
             # engines or future refactors might propagate the exception —
             # treat it symmetrically with the result-based path below.
-            qualified = (
-                f"{step.id}.{pause.step_id}" if pause.step_id else step.id
-            )
+            qualified = f"{step.id}.{pause.step_id}" if pause.step_id else step.id
             raise PauseRequestedError(qualified, str(pause)) from pause
         except Exception as e:
             duration = (time.monotonic() - start) * 1000

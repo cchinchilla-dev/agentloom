@@ -712,9 +712,7 @@ class TestRouterChainedSafeCalls:
             severity = "  Critical  "
 
         assert (
-            evaluate_expression(
-                "'critical' in state.severity.strip().lower()", {"state": State()}
-            )
+            evaluate_expression("'critical' in state.severity.strip().lower()", {"state": State()})
             is True
         )
 
