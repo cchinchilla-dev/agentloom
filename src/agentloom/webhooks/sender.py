@@ -54,7 +54,16 @@ def _build_payload(config: WebhookConfig, context: WebhookContext) -> str:
     """Render the webhook payload as a JSON string.
 
     If ``config.body_template`` is set, template variables are resolved
-    from the workflow state.  Otherwise a default payload is generated.
+    from the workflow state. Otherwise a default payload is generated.
+
+    Unlike ``tool_step._resolve_args`` (whose narrower placeholder regex
+    keeps raw JSON / HTML in ``tool_args`` literals untouched), this path
+    runs ``str.format_map`` unconditionally — ``body_template`` is, by
+    construction, the author's deliberate template. A literal-JSON body
+    therefore needs to be expressed with ``{{`` / ``}}`` escapes (or
+    delivered through ``tool_step`` with ``template: false``); the
+    placeholder grammar is identical to the one documented in
+    ``docs/workflow-yaml.md``.
     """
     if config.body_template:
         rendered_state = (

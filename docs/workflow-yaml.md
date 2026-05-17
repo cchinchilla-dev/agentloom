@@ -300,6 +300,46 @@ Executes a registered tool with author-chosen arguments — the workflow author 
 !!! info "Argument resolution"
     String values starting with `state.` are resolved from workflow state. Other values are passed as literals.
 
+#### Placeholder grammar in `tool_args`
+
+`tool_args` values may also embed `{state.foo}` / `{state[items][0]}` / `{name}` placeholders that get rendered against state via the shared template engine. AgentLoom recognises a placeholder only when the brace is followed by `state.`, `state[`, or an identifier that ends in `}`, `:`, or `!`:
+
+```yaml
+tool_args:
+  greeting: "hello {state.user.name}"            # rendered
+  formatted: "cost: {total:.2f}"                 # rendered (format spec)
+  raw_inline: '{"k": [1,2,3], "v": true}'        # passed through unchanged
+  raw_html: "<style>.x { color: red; }</style>"  # passed through unchanged
+```
+
+If a value happens to look like a placeholder but you need it passed through verbatim, use the per-key escape hatch:
+
+```yaml
+tool_args:
+  body:
+    value: '{"key": "{state.user}"}'             # literal, not rendered
+    template: false
+```
+
+Workflows written before 0.5.0 that relied on `{` triggering template expansion on raw JSON / HTML strings would have failed at runtime (`Max string recursion exceeded` or `Invalid format specifier`) — the narrowed grammar removes that footgun.
+
+#### Missing keys in templates
+
+The template engine renders missing state references as the empty string in non-strict mode (default), including when the reference chains through several segments:
+
+| Template                       | State                  | Renders as       |
+| ------------------------------ | ---------------------- | ---------------- |
+| `{state.missing}`              | `{}`                   | `""`             |
+| `{state.x.y.z}`                | `{}`                   | `""`             |
+| `{state.missing:.20}`          | `{}`                   | `""`             |
+| `{state.user:.20}`             | `{user: {name: alice}}`| `{'name': 'alice'}` (format spec ignored on non-scalar, warning logged) |
+| `{{state.x}}`                  | any                    | `{state.x}` (escaped braces)     |
+
+`strict_outputs: true` on the step (or `--strict` on the CLI for `llm_call`) turns these silent renders into a `TemplateError` at the first missing segment so workflow authors can catch typos.
+
+!!! warning "Unicode normalisation"
+    State dict lookup is byte-exact. A workflow that stores a key as NFD-form unicode (`café`) and references it as NFC (`café`) renders empty — there is no implicit normalisation step. If your workflow accepts user-supplied keys, normalise to NFC at the boundary (`unicodedata.normalize("NFC", key)`) before writing them to state.
+
 ### `subworkflow`
 
 Nests a workflow inside another. By default the child inherits parent state both ways — convenient for trivial helper subworkflows, leaky for anything resembling encapsulation. Set `isolated_state: true` to opt into a fresh state boundary.
