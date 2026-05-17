@@ -677,26 +677,24 @@ class TestRouterChainedSafeCalls:
     """
 
     @pytest.mark.parametrize(
-        "expr",
+        ("expr", "expected"),
         [
-            "state.x.strip().lower()",
-            "state.x.split(',')[0].strip()",
-            "state.x.lstrip().rstrip().lower()",
-            "state.x[1:5].lower()",
-            "'critical' in state.severity.strip().lower()",
+            ("state.x.strip().lower()", "hello, world"),
+            ("state.x.split(',')[0].strip()", "Hello"),
+            ("state.x.lstrip().rstrip().lower()", "hello, world"),
+            ("state.x[1:5].lower()", " hel"),
+            ("'critical' in state.severity.strip().lower()", True),
         ],
     )
-    def test_accepts_chained_safe_calls(self, expr: str) -> None:
-        # Build a namespace where every reference resolves to a string the
-        # chain can operate on.
+    def test_accepts_chained_safe_calls(self, expr: str, expected: object) -> None:
+        # Concrete expected values double as a sanity check on the eval
+        # semantics (str.strip / str.lower / list-subscript-then-method),
+        # not just the parse-time validator relaxation.
         class State:
             x = "  Hello, World  "
             severity = "Critical"
 
-        result = evaluate_expression(expr, {"state": State()})
-        # The exact value doesn't matter — we're asserting the parse + eval
-        # path completes, not the semantics of ``str.strip``.
-        assert result is not None or result is None  # tautology: must not raise
+        assert evaluate_expression(expr, {"state": State()}) == expected
 
     def test_chained_lower_strip_eq(self) -> None:
         class State:

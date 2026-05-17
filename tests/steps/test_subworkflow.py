@@ -591,6 +591,69 @@ steps:
         assert second.step_results["sub"].status == StepStatus.SUCCESS
 
 
+class TestSubworkflowApprovalRewriteWithDottedStepId:
+    """Subworkflow step ids that themselves contain a ``.`` must still resume.
+
+    ``WorkflowEngine.from_checkpoint`` injects approval decisions via
+    ``state_manager.set(f"_approval.{step_id}", decision)``, which splits
+    dots into nested dict keys. The rewrite that hands the decision down
+    to the child engine has to walk the path segment-by-segment instead
+    of doing a literal ``dict.get(step.id)`` lookup — otherwise a step
+    id like ``my.sub`` lands the decision under
+    ``{"my": {"sub": {...}}}`` but the rewrite would look for the literal
+    key ``"my.sub"`` and miss it, blocking the child gate again on resume.
+    """
+
+    async def test_dotted_step_id_resolves_nested_approval(self) -> None:
+        from agentloom.steps.subworkflow import SubworkflowStep
+
+        # Seed parent state with an approval decision nested under a
+        # two-segment step id (``parent.sub``) → child gate id ``gate``.
+        parent_state = StateManager(
+            initial_state={"_approval": {"parent": {"sub": {"gate": "approved"}}}}
+        )
+        captured_child_state: dict[str, Any] = {}
+
+        async def _capture_run(self: Any) -> Any:
+            from agentloom.core.results import WorkflowResult, WorkflowStatus
+
+            snap = await self.state.get_state_snapshot()
+            captured_child_state.update(snap)
+            return WorkflowResult(
+                workflow_name="child",
+                status=WorkflowStatus.SUCCESS,
+                step_results={},
+                final_state=snap,
+                total_duration_ms=0.0,
+            )
+
+        import pytest as _pytest
+
+        with _pytest.MonkeyPatch.context() as mp:
+            from agentloom.core.engine import WorkflowEngine
+
+            mp.setattr(WorkflowEngine, "run", _capture_run)
+            ctx = StepContext(
+                step_definition=StepDefinition(
+                    id="parent.sub",
+                    type=StepType.SUBWORKFLOW,
+                    workflow_inline={
+                        "name": "child",
+                        "config": {"provider": "mock", "model": "x"},
+                        "steps": [{"id": "gate", "type": "approval_gate"}],
+                    },
+                ),
+                state_manager=parent_state,
+                workflow_config=WorkflowConfig(),
+                workflow_model="mock-model",
+            )
+            await SubworkflowStep().execute(ctx)
+
+        # The child engine's state must carry the prefix-stripped decision
+        # under ``_approval.gate`` — not buried under ``_approval.parent.sub.gate``.
+        assert captured_child_state.get("_approval", {}).get("gate") == "approved"
+
+
 class TestSubworkflowDefensiveBranches:
     """Cover the defensive paths in ``SubworkflowStep.execute`` that today's
     child engines do not reach naturally — kept as forward-compat guards.

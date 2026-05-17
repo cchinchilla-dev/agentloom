@@ -136,29 +136,41 @@ class WorkflowParser:
             if s.output:
                 outputs.setdefault(s.output, []).append(s.id)
 
+        # Precompute transitive ancestors per owner once — used to test
+        # concurrency pairwise below. The naïve "any other owner in my
+        # ancestry → exempt me" filter is incorrect for the partial-chain
+        # case (owners ``[a, b, c]`` with ``a → b`` and ``c`` independent:
+        # ``b`` still overlaps with ``c`` and would silently overwrite under
+        # last-writer-wins, so dropping ``b`` because ``a`` is its ancestor
+        # would miss the real collision).
+        def _ancestors(sid: str) -> set[str]:
+            seen: set[str] = {sid}
+            stack = [sid]
+            while stack:
+                node = stack.pop()
+                for pred in dag.predecessors(node):
+                    if pred not in seen:
+                        seen.add(pred)
+                        stack.append(pred)
+            seen.discard(sid)
+            return seen
+
         collisions: list[tuple[str, list[str]]] = []
         for key, owners in outputs.items():
             if len(owners) < 2:
                 continue
-            # Filter to truly parallel pairs: drop owners that sit in each
-            # other's transitive ancestry. Anything left in ``parallel`` is
-            # reachable concurrently in the layer scheduler.
-            parallel: list[str] = []
-            for sid in owners:
-                ancestors_of_sid: set[str] = set()
-                stack = [sid]
-                seen_pred = {sid}
-                while stack:
-                    node = stack.pop()
-                    for pred in dag.predecessors(node):
-                        if pred not in seen_pred:
-                            seen_pred.add(pred)
-                            ancestors_of_sid.add(pred)
-                            stack.append(pred)
-                if not any(other in ancestors_of_sid for other in owners if other != sid):
-                    parallel.append(sid)
-            if len(parallel) >= 2:
-                collisions.append((key, sorted(parallel)))
+            ancestry = {sid: _ancestors(sid) for sid in owners}
+            concurrent: set[str] = set()
+            for i, a in enumerate(owners):
+                for b in owners[i + 1 :]:
+                    # A pair is concurrent iff neither sits in the other's
+                    # transitive ancestry — the layer scheduler can then run
+                    # them in either order (or the same layer).
+                    if a not in ancestry[b] and b not in ancestry[a]:
+                        concurrent.add(a)
+                        concurrent.add(b)
+            if len(concurrent) >= 2:
+                collisions.append((key, sorted(concurrent)))
 
         if not collisions:
             return

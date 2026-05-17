@@ -251,3 +251,31 @@ steps:
         with pytest.raises(ValidationError) as exc_info:
             WorkflowParser.from_yaml(yaml_str)
         assert "shared" in str(exc_info.value)
+
+    def test_warns_on_partial_chain_owners(self) -> None:
+        """Three owners with a partial dependency chain still collide.
+
+        Topology: ``a → b`` (b depends on a, sequential overwrite is
+        intentional) plus ``c`` independent of both. ``b`` and ``c`` can
+        still run concurrently and clobber each other under last-writer-
+        wins, so the warning must name them — even though ``b`` has ``a``
+        in its ancestry. Pre-fix the per-owner ancestry filter dropped
+        ``b`` outright and missed the (b, c) collision.
+        """
+        import warnings
+
+        yaml_str = """
+name: partial-chain
+config: {provider: mock, model: x}
+steps:
+  - {id: a, type: llm_call, prompt: x, output: shared}
+  - {id: b, type: llm_call, prompt: x, output: shared, depends_on: [a]}
+  - {id: c, type: llm_call, prompt: x, output: shared}
+"""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            WorkflowParser.from_yaml(yaml_str)
+            messages = [str(w.message) for w in caught if "shared" in str(w.message)]
+        # The collision set must include both ``b`` and ``c`` (the
+        # concurrent pair), not just ``a`` and ``c``.
+        assert any("'b'" in m and "'c'" in m for m in messages)

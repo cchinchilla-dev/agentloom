@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 from agentloom.core.results import StepResult, StepStatus, WorkflowStatus
 from agentloom.exceptions import PauseRequestedError, StepError
@@ -65,9 +66,21 @@ class SubworkflowStep(BaseStep):
         # — there'd be no way to ever complete a nested gate. Applies to
         # both isolated and non-isolated modes; the parent's approval
         # bookkeeping is metadata, not user state.
+        #
+        # Walking the path segment-by-segment (instead of ``dict.get(step.id)``
+        # on the literal key) keeps the rewrite correct when ``step.id``
+        # itself contains a ``.`` — the engine's ``from_checkpoint`` stores
+        # the decision via ``state_manager.set("_approval.<step.id>...")``
+        # which splits dots into nested dict keys, so a literal lookup on
+        # ``"my.sub"`` would miss ``{"my": {"sub": {...}}}``.
         parent_approvals = parent_state.get("_approval", {})
         if isinstance(parent_approvals, dict):
-            nested = parent_approvals.get(step.id)
+            nested: Any = parent_approvals
+            for segment in step.id.split("."):
+                if not isinstance(nested, dict):
+                    nested = None
+                    break
+                nested = nested.get(segment)
             if isinstance(nested, dict):
                 for child_step_id, decision in nested.items():
                     await child_state.set(f"_approval.{child_step_id}", decision)
