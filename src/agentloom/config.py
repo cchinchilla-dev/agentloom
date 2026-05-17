@@ -33,8 +33,19 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, object]] = {
         "env_key": "GOOGLE_API_KEY",
         "models": ["gemini-2.5-flash"],
     },
+    # Ollama discovery requires an explicit opt-in. Pre-0.5.0 Ollama was
+    # auto-registered as a global fallback (``env_key=""``) which meant
+    # every primary-provider failure (404 on a wrong model id, transient
+    # 5xx, etc.) triggered a secondary call to ``http://localhost:11434``
+    # and only then surfaced the error — adding 250 ms – 1 s of latency
+    # per failure to users who never ran Ollama, plus a confusing error
+    # chain ("Provider 'anthropic' failed: 404 ... / Provider 'ollama'
+    # failed: model not found"). The opt-in via
+    # ``AGENTLOOM_OLLAMA_FALLBACK`` keeps the path for users who do run
+    # Ollama while removing the surprise egress + diagnosis-noise tax
+    # for everyone else.
     "ollama": {
-        "env_key": "",
+        "env_key": "AGENTLOOM_OLLAMA_FALLBACK",
         "base_url": "http://localhost:11434",
         "is_fallback": True,
     },
@@ -92,16 +103,33 @@ def _apply_env_overrides(data: dict[str, object]) -> dict[str, object]:
 
 
 def discover_providers(default_provider: str) -> list[ProviderConfig]:
-    """Auto-discover providers from API-key env vars."""
+    """Auto-discover providers from API-key env vars.
+
+    Skip rule for ``env_key``:
+    * Providers whose ``env_key`` names an API key (``OPENAI_API_KEY``,
+      ``ANTHROPIC_API_KEY``, ``GOOGLE_API_KEY``) are skipped when the
+      key is missing — they cannot make calls without credentials.
+    * Ollama's ``env_key`` is the ``AGENTLOOM_OLLAMA_FALLBACK`` opt-in
+      flag. It's skipped by default (post-0.5.0 — no auto-fallback for
+      users who don't run Ollama), but registered when EITHER (a) the
+      flag is truthy in the environment, OR (b) the workflow has
+      explicitly named ``ollama`` as its primary provider. Without (b)
+      a workflow that says ``provider: ollama`` would silently end up
+      with no registered providers and an opaque "no provider for
+      ollama" error.
+    """
     providers: list[ProviderConfig] = []
 
     for name, defaults in _PROVIDER_DEFAULTS.items():
         env_key = str(defaults.get("env_key", ""))
         is_fallback = bool(defaults.get("is_fallback", False))
 
-        # Providers that require an API key are skipped when the key is absent.
         if env_key and not os.environ.get(env_key):
-            continue
+            # Ollama opt-in exception: when the workflow names ollama
+            # as the default provider, register it even without the
+            # flag. Other API-key-gated providers are skipped strictly.
+            if not (name == "ollama" and default_provider == "ollama"):
+                continue
 
         api_key = os.environ.get(env_key, "") if env_key else ""
         default_base = str(defaults.get("base_url", ""))
