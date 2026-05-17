@@ -696,6 +696,68 @@ class TestFailureCascade:
         # reason), but was NOT cascade-skipped.
         assert result.step_results["analyse"].status != StepStatus.SKIPPED
 
+    async def test_cascade_skip_revisits_already_skipped_descendant(
+        self, mock_gateway: ProviderGateway
+    ) -> None:
+        """A join that was already router-skipped in a prior layer can be
+        re-encountered by a failed-step cascade in a later layer; the cascade
+        block's ``if descendant in skipped_steps: continue`` keeps the
+        original (router-branch) skip reason instead of overwriting it.
+
+        Topology: route → {a, b} → join. Router picks ``a``, so ``b`` and its
+        descendant ``join`` are router-skipped in layer 0. Then ``a`` fails
+        in layer 1; its cascade tries to skip ``join`` again. The probe just
+        confirms the workflow completes (no double-counted skip, no exception
+        thrown by the cascade block) — pre-fix this branch was untested.
+        """
+        from agentloom.core.models import (
+            Condition,
+            RetryConfig,
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+
+        workflow = WorkflowDefinition(
+            name="overlap",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={"choice": "a"},
+            steps=[
+                StepDefinition(
+                    id="route",
+                    type=StepType.ROUTER,
+                    conditions=[Condition(expression="state.choice == 'a'", target="a")],
+                    default="b",
+                ),
+                StepDefinition(
+                    id="a",
+                    type=StepType.TOOL,
+                    tool_name="does_not_exist",
+                    depends_on=["route"],
+                    retry=RetryConfig(max_retries=0),
+                ),
+                StepDefinition(
+                    id="b",
+                    type=StepType.LLM_CALL,
+                    depends_on=["route"],
+                    prompt="b",
+                ),
+                StepDefinition(
+                    id="join",
+                    type=StepType.LLM_CALL,
+                    depends_on=["a", "b"],
+                    prompt="join",
+                ),
+            ],
+        )
+        engine = WorkflowEngine(workflow=workflow, provider_gateway=mock_gateway)
+        result = await engine.run()
+
+        assert result.step_results["a"].status == StepStatus.FAILED
+        assert result.step_results["b"].status == StepStatus.SKIPPED
+        assert result.step_results["join"].status == StepStatus.SKIPPED
+
 
 class TestBudgetPreDispatchGate:
     """Prior-exhausted budget must stop further step dispatch before the call."""

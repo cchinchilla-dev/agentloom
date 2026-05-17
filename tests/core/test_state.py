@@ -444,3 +444,19 @@ class TestDottedScalarOverwriteRefused:
         assert "users" in msg and "list" in msg
         # Original list survives the refusal.
         assert await sm.get("users") == [{"id": 1}]
+
+    async def test_refuses_string_segment_through_mid_loop_list(self) -> None:
+        """Three-segment path through a list intermediate trips the loop-body
+        refusal (line 246 — the ``not isinstance(current, dict)`` branch
+        inside the ``for part in parts[:-1]`` loop). The two-segment case
+        ``users.name`` exits the loop with ``current`` still the root dict
+        and trips the final-segment refusal instead; this test pins the
+        in-loop branch so both code paths are exercised."""
+        from agentloom.exceptions import StateWriteError
+
+        sm = StateManager(initial_state={"users": [{"id": 1}]})
+        with pytest.raises(StateWriteError) as exc_info:
+            await sm.set("users.profile.name", "bob")
+        msg = str(exc_info.value)
+        assert "users" in msg and "list" in msg
+        assert await sm.get("users") == [{"id": 1}]

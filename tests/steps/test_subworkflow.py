@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from agentloom.core.models import StepDefinition, StepType, WorkflowConfig
-from agentloom.core.results import StepStatus
+from agentloom.core.results import StepResult, StepStatus
 from agentloom.core.state import StateManager
 from agentloom.providers.gateway import ProviderGateway
 from agentloom.steps.base import StepContext
@@ -589,3 +589,91 @@ steps:
         second = await eng2.run()
         assert second.status == WorkflowStatus.SUCCESS
         assert second.step_results["sub"].status == StepStatus.SUCCESS
+
+
+class TestSubworkflowDefensiveBranches:
+    """Cover the defensive paths in ``SubworkflowStep.execute`` that today's
+    child engines do not reach naturally — kept as forward-compat guards.
+
+    * Child engines absorb their own ``PauseRequestedError`` and return a
+      ``WorkflowResult(status=PAUSED)``. A future refactor or a third-party
+      engine that re-raises instead would land in the ``except
+      PauseRequestedError`` arm — the test monkeypatches ``WorkflowEngine.run``
+      to raise, and confirms the qualified ``parent.child`` step id still
+      surfaces.
+    * The ``result.error or fallback`` chain inside the FAILED branch only
+      reaches the for-loop when ``result.error`` is empty AND a child step
+      has a non-empty error. Today's engine always populates
+      ``result.error`` from the first failed step, but a hand-built
+      ``WorkflowResult`` (replay, third-party engine, future refactor) can
+      land in the fallback — the test stubs that case directly.
+    """
+
+    async def test_defensive_pause_reraise_propagates_qualified_id(self, monkeypatch: Any) -> None:
+        from agentloom.core.engine import WorkflowEngine
+        from agentloom.exceptions import PauseRequestedError
+
+        async def fake_run(self: Any) -> Any:
+            raise PauseRequestedError("inner-gate")
+
+        monkeypatch.setattr(WorkflowEngine, "run", fake_run)
+
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="sub",
+                type=StepType.SUBWORKFLOW,
+                workflow_inline={
+                    "name": "child",
+                    "config": {"provider": "mock", "model": "x"},
+                    "steps": [{"id": "noop", "type": "llm_call", "prompt": "hi"}],
+                },
+            ),
+            state_manager=StateManager(),
+            workflow_config=WorkflowConfig(),
+            workflow_model="mock-model",
+        )
+        with pytest.raises(PauseRequestedError) as exc_info:
+            await SubworkflowStep().execute(ctx)
+        assert exc_info.value.step_id == "sub.inner-gate"
+
+    async def test_falls_back_to_inner_step_error_when_workflow_error_is_empty(
+        self, monkeypatch: Any
+    ) -> None:
+        from agentloom.core.engine import WorkflowEngine
+        from agentloom.core.results import (
+            WorkflowResult,
+            WorkflowStatus,
+        )
+
+        async def fake_run(self: Any) -> Any:
+            return WorkflowResult(
+                workflow_name="child",
+                status=WorkflowStatus.FAILED,
+                step_results={
+                    "inner": StepResult(step_id="inner", status=StepStatus.FAILED, error="boom"),
+                },
+                final_state={},
+                total_duration_ms=0.0,
+                error=None,
+            )
+
+        monkeypatch.setattr(WorkflowEngine, "run", fake_run)
+
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="sub",
+                type=StepType.SUBWORKFLOW,
+                workflow_inline={
+                    "name": "child",
+                    "config": {"provider": "mock", "model": "x"},
+                    "steps": [{"id": "inner", "type": "llm_call", "prompt": "x"}],
+                },
+            ),
+            state_manager=StateManager(),
+            workflow_config=WorkflowConfig(),
+            workflow_model="mock-model",
+        )
+        result = await SubworkflowStep().execute(ctx)
+        assert result.status == StepStatus.FAILED
+        assert result.error is not None
+        assert "inner" in result.error and "boom" in result.error
