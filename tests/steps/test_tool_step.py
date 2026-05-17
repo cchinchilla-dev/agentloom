@@ -236,3 +236,94 @@ class TestToolArgsTemplating:
             "direct": "/data/input.txt",
             "passthrough": "literal",
         }
+
+
+class TestPlaceholderTriggerNarrowed:
+    """Regression: ``_resolve_args`` only expands real placeholders.
+
+    The previous heuristic — any ``{`` in the value — fired ``format_map``
+    on raw JSON / HTML / code snippets that workflow authors routinely
+    pass through ``tool_args.content`` and ``tool_args.body``. Failures
+    surfaced as ``Max string recursion exceeded`` (nested braces) or
+    ``Invalid format specifier`` (colon in JSON). The regex now requires
+    a real ``{state.…}`` / ``{state[…]}`` / ``{<name>[}:!]`` shape so
+    raw payloads pass through unchanged.
+    """
+
+    def test_literal_json_content_passes_through_unchanged(self) -> None:
+        # F9 reproducer: ``content: |`` block carrying inline JSON.
+        json_content = '{\n  "k": [1, 2, 3],\n  "nested": {"v": true}\n}'
+        result = ToolStep._resolve_args({"content": json_content}, {})
+        assert result == {"content": json_content}
+
+    def test_literal_json_body_passes_through_unchanged(self) -> None:
+        # F57 reproducer: ``body:`` carrying inline JSON with a colon.
+        body = '{"k": [1,2,3], "nested": {"v": true}}'
+        result = ToolStep._resolve_args({"body": body}, {})
+        assert result == {"body": body}
+
+    def test_html_with_braces_passes_through(self) -> None:
+        html = "<style>.x { color: red; }</style>"
+        result = ToolStep._resolve_args({"content": html}, {})
+        assert result == {"content": html}
+
+    def test_lone_braces_pass_through(self) -> None:
+        # Mismatched / standalone braces never match the placeholder shape.
+        result = ToolStep._resolve_args({"raw": "a } b { c"}, {})
+        assert result == {"raw": "a } b { c"}
+
+    def test_state_dot_placeholder_still_renders(self) -> None:
+        result = ToolStep._resolve_args(
+            {"greet": "hello {state.name}"},
+            {"name": "Alice"},
+        )
+        assert result == {"greet": "hello Alice"}
+
+    def test_state_subscript_placeholder_still_renders(self) -> None:
+        # ``{state[items][0]}`` — the regex matches the ``{state[`` shape
+        # so subscript-form placeholders still trigger expansion.
+        result = ToolStep._resolve_args(
+            {"first": "got {state[items][0]}"},
+            {"items": ["A", "B"]},
+        )
+        assert result == {"first": "got A"}
+
+    def test_bare_placeholder_still_renders(self) -> None:
+        result = ToolStep._resolve_args({"greet": "hello {name}"}, {"name": "Bob"})
+        assert result == {"greet": "hello Bob"}
+
+    def test_format_spec_placeholder_still_renders(self) -> None:
+        result = ToolStep._resolve_args(
+            {"price": "cost: {total:.2f}"},
+            {"total": 1234.5678},
+        )
+        assert result == {"price": "cost: 1234.57"}
+
+    def test_conversion_flag_placeholder_still_renders(self) -> None:
+        result = ToolStep._resolve_args({"r": "value={n!r}"}, {"n": "x"})
+        assert result == {"r": "value='x'"}
+
+    def test_template_false_escape_hatch_disables_expansion(self) -> None:
+        # Even a string that looks like a placeholder is returned
+        # untouched when the caller flags it ``template: false``.
+        result = ToolStep._resolve_args(
+            {"content": {"value": "{state.foo}", "template": False}},
+            {"foo": "expanded"},
+        )
+        assert result == {"content": "{state.foo}"}
+
+    def test_template_false_with_non_string_value_passes_through(self) -> None:
+        # The escape hatch carries any payload, not just strings.
+        result = ToolStep._resolve_args(
+            {"data": {"value": [1, 2, 3], "template": False}},
+            {},
+        )
+        assert result == {"data": [1, 2, 3]}
+
+    def test_dict_without_template_false_passes_through_unchanged(self) -> None:
+        # A plain dict argument (no ``template: false`` marker) is not
+        # the escape hatch — it falls through to the existing
+        # "non-string value" path and reaches the tool verbatim.
+        payload = {"value": "x", "extra": 1}
+        result = ToolStep._resolve_args({"body": payload}, {})
+        assert result == {"body": payload}
