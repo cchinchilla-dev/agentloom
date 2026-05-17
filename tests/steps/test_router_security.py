@@ -266,13 +266,17 @@ class TestDotAccessDictDoesNotLeakInternals:
     ``object.__getattribute__`` and exposed the wrapper's own attribute.
     """
 
-    def test_subscript_underscored_missing_returns_empty(self) -> None:
+    def test_subscript_underscored_missing_renders_empty(self) -> None:
+        # Missing subscripts now return the ``_MissingDotAccess`` sentinel
+        # so chained access (``state['_data'].foo``) keeps rendering empty
+        # instead of raising on the next segment. The sentinel renders as
+        # ``""`` under ``str`` — the call ``format_map`` actually makes.
         from agentloom.core.templates import DotAccessDict
 
         d = DotAccessDict({"user": "alice"})
-        assert d["_data"] == ""
-        assert d["__class__"] == ""
-        assert d["__init__"] == ""
+        assert str(d["_data"]) == ""
+        assert str(d["__class__"]) == ""
+        assert str(d["__init__"]) == ""
 
     def test_subscript_underscored_present_returns_user_value(self) -> None:
         from agentloom.core.templates import DotAccessDict

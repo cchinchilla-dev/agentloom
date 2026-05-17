@@ -44,14 +44,16 @@ class TestDotAccessDict:
         d = DotAccessDict({"a": 1})
         assert "1" in f"{d}"
 
-    def test_private_attr_returns_empty_non_strict(self) -> None:
+    def test_private_attr_renders_empty_non_strict(self) -> None:
         # Previously private attrs delegated to ``object.__getattribute__``,
         # which let ``d['_data']`` reach the wrapper's underlying dict via
         # ``__getitem__`` → ``__getattr__``. Every dynamic lookup now goes
-        # through the same data-only path: a missing key renders empty
-        # under non-strict and raises ``TemplateError`` under strict.
+        # through the same data-only path: a missing key returns the
+        # ``_MissingDotAccess`` sentinel (so further chained accesses keep
+        # bottoming out) which renders as ``""`` under ``str``/``format``.
         d = DotAccessDict({"a": 1})
-        assert d._nonexistent == ""
+        assert str(d._nonexistent) == ""
+        assert format(d._nonexistent) == ""
 
     def test_int_key_returns_empty(self) -> None:
         d = DotAccessDict({"a": 1})
@@ -240,3 +242,102 @@ class TestInternalAttributesNotReachableViaTemplate:
         lst = DotAccessList([1, 2])
         assert isinstance(lst, DotAccessList)
         assert str(lst) == "[1, 2]"
+
+
+class TestMissingDeepKeyChain:
+    """Non-strict ``{state.x.y.z}`` with a missing intermediate renders
+    as the empty string instead of raising ``AttributeError``.
+
+    Pre-fix, ``DotAccessDict.__getattr__`` returned plain ``""`` on a
+    missing key; the format machinery then tried ``"".y`` and surfaced
+    ``AttributeError: 'str' object has no attribute 'y'`` — confusing,
+    and worse, retried 4× by ``is_retryable_exception``'s default.
+    """
+
+    def test_missing_first_segment_renders_empty(self) -> None:
+        tv = build_template_vars({"name": "alice"})
+        assert "{state.x.y.z}".format_map(SafeFormatDict(tv)) == ""
+
+    def test_missing_first_segment_with_format_spec_renders_empty(self) -> None:
+        # ``{state.missing.deep:.20}`` must not blow up on the format
+        # spec either — the sentinel renders to ``""`` regardless.
+        tv = build_template_vars({"x": 1})
+        assert "{state.missing.deep:.20}".format_map(SafeFormatDict(tv)) == ""
+
+    def test_missing_first_segment_with_index_renders_empty(self) -> None:
+        # Subscript chained off a missing key bottoms out the same way.
+        tv = build_template_vars({"x": 1})
+        assert "{state.missing[0]}".format_map(SafeFormatDict(tv)) == ""
+
+    def test_missing_segment_strict_raises_at_first_miss(self) -> None:
+        tv = build_template_vars({"name": "alice"}, strict=True)
+        with pytest.raises(TemplateError, match="state.x"):
+            "{state.x.y.z}".format_map(SafeFormatDict(tv, strict=True))
+
+    def test_sentinel_is_falsy(self) -> None:
+        # ``__bool__`` returns False so workflows can keep using truthy
+        # checks (``{state.flag and 'yes' or 'no'}`` patterns) without
+        # surprises when the underlying key is missing.
+        from agentloom.core.templates import _MISSING
+
+        assert bool(_MISSING) is False
+
+
+class TestFormatSpecOnNonScalar:
+    """``__format__`` falls back to ``str(...)`` when the underlying
+    value rejects the format spec (raises ``TypeError``)."""
+
+    def test_format_spec_on_dict_value_falls_back_to_str(self) -> None:
+        # ``{state.user:.20}`` where ``state.user`` is a dict: pre-fix
+        # raised ``TypeError: unsupported format string passed to
+        # dict.__format__``. Now falls back to ``str(dict)``.
+        tv = build_template_vars({"user": {"name": "alice"}})
+        rendered = "{state.user:.20}".format_map(SafeFormatDict(tv))
+        assert rendered == str({"name": "alice"})
+
+    def test_format_spec_on_list_value_falls_back_to_str(self) -> None:
+        tv = build_template_vars({"items": [1, 2, 3]})
+        rendered = "{state.items:.20}".format_map(SafeFormatDict(tv))
+        assert rendered == str([1, 2, 3])
+
+    def test_format_spec_on_scalar_leaf_still_works(self) -> None:
+        # The fallback is only triggered on TypeError; numeric leaves
+        # still get the precise float formatting.
+        tv = build_template_vars({"n": 1234.5678})
+        assert "{state.n:.2f}".format_map(SafeFormatDict(tv)) == "1234.57"
+
+
+class TestUnicodeAndEscapedBraces:
+    """Encoding / escaping corner cases pinned so behaviour does not
+    silently regress."""
+
+    def test_unicode_nfc_state_key_renders(self) -> None:
+        import unicodedata
+
+        key = unicodedata.normalize("NFC", "café")
+        tv = build_template_vars({key: "bonjour"})
+        rendered = ("{state." + key + "}").format_map(SafeFormatDict(tv))
+        assert rendered == "bonjour"
+
+    def test_unicode_nfc_vs_nfd_key_mismatch_renders_empty(self) -> None:
+        # F77: state dict lookup is byte-exact. A workflow that stores
+        # the key in NFD form but references it in NFC form (or vice
+        # versa) silently renders empty. Pin this behaviour and the doc
+        # callout that recommends normalising on input.
+        import unicodedata
+
+        nfd = unicodedata.normalize("NFD", "café")
+        nfc = unicodedata.normalize("NFC", "café")
+        assert nfd != nfc
+
+        tv = build_template_vars({nfd: "value-stored-nfd"})
+        rendered = ("{state." + nfc + "}").format_map(SafeFormatDict(tv))
+        assert rendered == ""
+
+    def test_escaped_braces_render_as_literal(self) -> None:
+        # ``{{`` / ``}}`` are the standard Python escape for a literal
+        # brace — neither path through the template engine should
+        # expand them. Pin so the placeholder regex / sentinel rewrite
+        # in #058/#059 does not regress the escape.
+        tv = build_template_vars({"x": 1})
+        assert "{{state.x}}".format_map(SafeFormatDict(tv)) == "{state.x}"

@@ -26,8 +26,13 @@ class TestDotAccessDict:
         assert d.user.name == "Bob"
 
     def test_missing_key_returns_empty_string(self) -> None:
+        # Missing key now returns the ``_MissingDotAccess`` sentinel so a
+        # chained ``{state.missing.deep}`` keeps rendering empty instead
+        # of raising ``AttributeError`` on the next segment. The sentinel
+        # still renders to ``""`` under ``str``/``format`` — that's what
+        # ``str.format_map`` actually calls.
         d = DotAccessDict({"name": "Alice"})
-        assert d.missing == ""
+        assert str(d.missing) == ""
 
     def test_str_representation(self) -> None:
         d = DotAccessDict({"a": 1})
