@@ -18,7 +18,12 @@ class TemplateError(KeyError):
 
     Subclasses ``KeyError`` so ``str.format_map`` behavior is preserved —
     callers using ``format_map`` see it as the expected exception type.
+    Non-retryable: a template typo never resolves itself, so the
+    resilience layer must skip retries instead of wasting 10–127 s on
+    backoff before the same failure resurfaces.
     """
+
+    is_retryable = False
 
 
 class _MissingDotAccess:

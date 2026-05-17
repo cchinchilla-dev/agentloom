@@ -70,6 +70,23 @@ class TestToolGet:
         with pytest.raises(KeyError, match="mock_tool"):
             registry.get("other_tool")
 
+    def test_missing_tool_raises_tool_not_found_error(self) -> None:
+        """The missing-tool path raises ``ToolNotFoundError`` (subclass
+        of ``KeyError`` for backwards compat) carrying the non-retryable
+        marker. Pre-0.5.0 a typo in a workflow's ``tool_name`` field
+        consumed the full retry budget."""
+        from agentloom.exceptions import ToolNotFoundError
+
+        registry = ToolRegistry()
+        registry.register(MockTool())
+        with pytest.raises(ToolNotFoundError) as excinfo:
+            registry.get("does_not_exist")
+        assert excinfo.value.is_retryable is False
+        assert excinfo.value.name == "does_not_exist"
+        assert "mock_tool" in excinfo.value.available
+        # Backwards compat: still catchable as KeyError.
+        assert isinstance(excinfo.value, KeyError)
+
 
 class TestToolList:
     """Test listing tools in the registry."""

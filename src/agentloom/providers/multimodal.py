@@ -386,10 +386,27 @@ async def resolve_attachments(
     * **Size limit** — downloads are streamed and aborted if they exceed
       :data:`MAX_ATTACHMENT_BYTES` (20 MB), preventing OOM.
     """
+    from agentloom.exceptions import AttachmentResolutionError
+
     cfg = sandbox or SandboxConfig()
     blocks: list[ContentBlock] = []
     for att in attachments:
-        block = await _resolve_single(att, cfg)
+        try:
+            block = await _resolve_single(att, cfg)
+        except AttachmentResolutionError:
+            # Already a permanent classification — propagate as-is.
+            raise
+        except ValueError as exc:
+            # Deterministic shape/policy refusal (unsupported type,
+            # size limit, empty source, unsupported URL passthrough).
+            # Wrap so the resilience layer sees ``is_retryable = False``
+            # — pre-0.5.0 these spent 10–127 s on retries that never
+            # succeed. ``PermissionError`` (sandbox blocks) and
+            # ``httpx.HTTPError`` (network 4xx/5xx) are intentionally
+            # NOT wrapped: the former is already terminal at the call
+            # site, and the latter goes through the status-code rule so
+            # genuine 5xx transients keep retrying.
+            raise AttachmentResolutionError(att.source or "<unknown>", str(exc)) from exc
         blocks.append(block)
     return blocks
 

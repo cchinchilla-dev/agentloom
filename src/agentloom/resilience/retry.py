@@ -58,15 +58,53 @@ def extract_status_code(exc: BaseException) -> int | None:
     return None
 
 
+def _has_permanent_marker(exc: BaseException) -> bool:
+    """Return True if *exc* (or anything in its cause chain) sets
+    ``is_retryable = False``.
+
+    Walks ``__cause__`` and ``__context__`` so a non-retryable error
+    wrapped by ``StepError`` (or any other classifier the engine adds for
+    step-id context) still surfaces as permanent. Pydantic
+    ``ValidationError`` is special-cased because it's outside the
+    AgentLoom class hierarchy and has no place to hang the attribute.
+    """
+    from pydantic import ValidationError as PydanticValidationError
+
+    seen: set[int] = set()
+    cursor: BaseException | None = exc
+    while cursor is not None and id(cursor) not in seen:
+        seen.add(id(cursor))
+        if getattr(cursor, "is_retryable", None) is False:
+            return True
+        if isinstance(cursor, PydanticValidationError):
+            return True
+        # ``__cause__`` (explicit ``raise … from``) takes precedence over
+        # ``__context__`` (implicit chain during exception handling) so
+        # operator-marked causality wins when both are set.
+        cursor = cursor.__cause__ or cursor.__context__
+    return False
+
+
 def is_retryable_exception(exc: BaseException, codes: list[int]) -> bool:
     """Return True if *exc* should trigger a retry under *codes*.
 
-    If *exc* exposes a status code via ``exc.status_code`` or
-    ``exc.response.status_code`` (covers ``ProviderError``,
-    ``RateLimitError``, and ``httpx.HTTPStatusError``), the code must be in
-    *codes*. Exceptions without a status code are retryable by default —
-    a network error or generic provider failure is treated as transient.
+    Decision order:
+
+    1. **Explicit permanent marker.** If *exc* (or any cause in its
+       chain) carries ``is_retryable = False`` — ``SandboxViolationError``,
+       ``AttachmentResolutionError``, ``ToolNotFoundError``,
+       ``TemplateError``, ``ValidationError``, Pydantic's
+       ``ValidationError`` — bail out immediately. Pre-0.5.0 the
+       resilience layer burned the full retry budget on these and added
+       10–127 s of backoff to a workflow that was never going to succeed.
+    2. **HTTP status code.** ``ProviderError``, ``RateLimitError``, and
+       ``httpx.HTTPStatusError`` expose a status either directly or via
+       ``exc.response.status_code``; the code must be in *codes*.
+    3. **Status-less default.** Network errors and generic provider
+       hiccups are treated as transient and retried.
     """
+    if _has_permanent_marker(exc):
+        return False
     code = extract_status_code(exc)
     if code is None:
         return True

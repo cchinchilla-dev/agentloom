@@ -68,7 +68,17 @@ class PromptMetadata(BaseModel):
 
 
 class StepResult(BaseModel):
-    """Result from executing a single step."""
+    """Result from executing a single step.
+
+    ``error_classification`` is set by the engine when a step ends
+    ``FAILED``: ``"permanent"`` for errors that carry ``is_retryable =
+    False`` (sandbox violation, tool-not-found, attachment resolution,
+    template typo, schema validation) and ``"transient"`` for failures
+    that exhausted the retry budget. Observability dashboards use this
+    to distinguish "we wasted 30 s retrying a permanent error" from "we
+    actually retried a transient one". ``None`` on success / paused /
+    skipped — only meaningful for failures.
+    """
 
     step_id: str
     status: StepStatus
@@ -82,6 +92,7 @@ class StepResult(BaseModel):
     attachment_count: int = 0
     time_to_first_token_ms: float | None = None
     prompt_metadata: PromptMetadata | None = None
+    error_classification: str | None = None
 
 
 class WorkflowStatus(StrEnum):
