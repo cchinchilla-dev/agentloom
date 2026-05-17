@@ -1,0 +1,2334 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Deterministic LLM workflow orchestration with native observability, resilience, and cost control.">
+      
+      
+      
+        <link rel="canonical" href="https://cchinchilla-dev.github.io/agentloom/observability/">
+      
+      
+        <link rel="prev" href="../testing-and-replay/">
+      
+      
+        <link rel="next" href="../deployment/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/logo_transparecy.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Observability - AgentLoom</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#observability" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="AgentLoom" class="md-header__button md-logo" aria-label="AgentLoom" data-md-component="logo">
+      
+  <img src="../images/logo_transparecy.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AgentLoom
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Observability
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/cchinchilla-dev/agentloom" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cchinchilla-dev/agentloom
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="AgentLoom" class="md-nav__button md-logo" aria-label="AgentLoom" data-md-component="logo">
+      
+  <img src="../images/logo_transparecy.png" alt="logo">
+
+    </a>
+    AgentLoom
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/cchinchilla-dev/agentloom" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cchinchilla-dev/agentloom
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../providers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Providers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../workflow-yaml/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflow YAML
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python-dsl/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python DSL
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graph-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Graph API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../testing-and-replay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing & Replay
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stack-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stack architecture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#grafana-dashboard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Grafana dashboard
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Grafana dashboard">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#dashboard-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dashboard variables
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 1 — Overview
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-2-workflow-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 2 — Workflow Performance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-3-step-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 3 — Step Analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-4-token-economics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 4 — Token Economics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-5-provider-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 5 — Provider Performance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-6-provider-reliability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 6 — Provider Reliability
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-7-detailed-breakdown" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 7 — Detailed Breakdown
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-8-cost-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 8 — Cost Analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-9-multi-modal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 9 — Multi-modal
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-10-streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 10 — Streaming
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#metrics-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metrics reference
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Metrics reference">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#workflow-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workflow metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#provider-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#token-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#streaming-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Streaming metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#span-schema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Span schema
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Span schema">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#attribute-conventions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Attribute conventions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workflow-level-attributes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workflow-level attributes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-level-attributes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step-level attributes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#inference-level-attributes-provider-span" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inference-level attributes (provider span)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#capture-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capture flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#provider-name-translation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider name translation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#quality-annotations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quality annotations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per-run-history-records" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-run history records
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stack-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stack architecture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#grafana-dashboard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Grafana dashboard
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Grafana dashboard">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#dashboard-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dashboard variables
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 1 — Overview
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-2-workflow-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 2 — Workflow Performance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-3-step-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 3 — Step Analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-4-token-economics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 4 — Token Economics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-5-provider-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 5 — Provider Performance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-6-provider-reliability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 6 — Provider Reliability
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-7-detailed-breakdown" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 7 — Detailed Breakdown
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-8-cost-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 8 — Cost Analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-9-multi-modal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 9 — Multi-modal
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-10-streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Row 10 — Streaming
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#metrics-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metrics reference
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Metrics reference">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#workflow-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workflow metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#provider-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#token-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#streaming-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Streaming metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#span-schema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Span schema
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Span schema">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#attribute-conventions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Attribute conventions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workflow-level-attributes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workflow-level attributes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-level-attributes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step-level attributes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#inference-level-attributes-provider-span" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inference-level attributes (provider span)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#capture-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capture flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#provider-name-translation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider name translation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#quality-annotations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quality annotations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per-run-history-records" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-run history records
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="observability">Observability<a class="headerlink" href="#observability" title="Permanent link">&para;</a></h1>
+<p>Every workflow step emits OpenTelemetry traces and Prometheus metrics out of the box. No external SaaS required — the full stack runs alongside your workloads.</p>
+<h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Start the observability stack</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>deploy<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Run a workflow (metrics are emitted automatically)</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>agentloom<span class="w"> </span>run<span class="w"> </span>examples/01_simple_qa.yaml
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1"># Access dashboards</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>open<span class="w"> </span>http://localhost:3000<span class="w">    </span><span class="c1"># Grafana (admin/admin)</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>open<span class="w"> </span>http://localhost:9090<span class="w">    </span><span class="c1"># Prometheus</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>open<span class="w"> </span>http://localhost:16686<span class="w">   </span><span class="c1"># Jaeger</span>
+</code></pre></div>
+<h2 id="stack-architecture">Stack architecture<a class="headerlink" href="#stack-architecture" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>CLI (agentloom run)
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  |
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>  +-- OTel SDK --&gt; OTel Collector (:4317 gRPC)
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>  |                    |
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>  |                    +-- Prometheus exporter (:8889) --&gt; Prometheus (:9090)
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>  |                    +-- OTLP exporter --&gt; Jaeger (:16686)
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>  |
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>  +-- Observer --&gt; MetricsManager --&gt; OTel gauges / counters / histograms
+</code></pre></div>
+<p>Each CLI invocation is an ephemeral process that creates its own <code>MeterProvider</code>. The OTel Collector aggregates metrics and exposes them to Prometheus with a 30-minute expiration window (<code>metric_expiration: 30m</code>), so data remains visible after the CLI exits.</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Port</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OTel Collector</td>
+<td>4317 (gRPC), 8889 (Prometheus)</td>
+<td>Receives OTel data, exports to Prometheus + Jaeger</td>
+</tr>
+<tr>
+<td>Prometheus</td>
+<td>9090</td>
+<td>Time-series storage, PromQL queries</td>
+</tr>
+<tr>
+<td>Jaeger</td>
+<td>16686</td>
+<td>Distributed tracing UI</td>
+</tr>
+<tr>
+<td>Grafana</td>
+<td>3000</td>
+<td>Dashboard visualization</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="grafana-dashboard">Grafana dashboard<a class="headerlink" href="#grafana-dashboard" title="Permanent link">&para;</a></h2>
+<p>The dashboard is auto-provisioned at startup. Navigate to <strong>Dashboards &gt; AgentLoom</strong> or go directly to <code>http://localhost:3000/d/agentloom-main</code>.</p>
+<h3 id="dashboard-variables">Dashboard variables<a class="headerlink" href="#dashboard-variables" title="Permanent link">&para;</a></h3>
+<p>Use the dropdown selectors at the top of the dashboard to filter:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Label</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>$workflow</code></td>
+<td>Workflow</td>
+<td><code>.*</code></td>
+<td>Filter panels by workflow name</td>
+</tr>
+<tr>
+<td><code>$provider</code></td>
+<td>Provider</td>
+<td><code>.*</code></td>
+<td>Filter panels by provider</td>
+</tr>
+</tbody>
+</table>
+<h3 id="row-1-overview">Row 1 — Overview<a class="headerlink" href="#row-1-overview" title="Permanent link">&para;</a></h3>
+<p>Seven stat panels showing high-level aggregates:</p>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>Type</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Total Runs</strong></td>
+<td>stat</td>
+<td>Total workflow executions across all workflows</td>
+</tr>
+<tr>
+<td><strong>Success Rate</strong></td>
+<td>gauge</td>
+<td>Percentage of successful runs (green &gt;= 95%, orange &gt;= 80%, red &lt; 80%)</td>
+</tr>
+<tr>
+<td><strong>Failed</strong></td>
+<td>stat</td>
+<td>Count of failed workflow runs</td>
+</tr>
+<tr>
+<td><strong>Total Tokens</strong></td>
+<td>stat</td>
+<td>Sum of all tokens consumed (input + output)</td>
+</tr>
+<tr>
+<td><strong>Est. Cost</strong></td>
+<td>stat</td>
+<td>Estimated total cost in USD</td>
+</tr>
+<tr>
+<td><strong>Providers</strong></td>
+<td>stat</td>
+<td>Number of distinct providers that have handled requests</td>
+</tr>
+<tr>
+<td><strong>Step Types</strong></td>
+<td>stat</td>
+<td>Number of distinct step types executed</td>
+</tr>
+</tbody>
+</table>
+<h3 id="row-2-workflow-performance">Row 2 — Workflow Performance<a class="headerlink" href="#row-2-workflow-performance" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>Type</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Workflow Runs</strong></td>
+<td>timeseries</td>
+<td>Cumulative success vs failed runs over time</td>
+</tr>
+<tr>
+<td><strong>Workflow Duration (p50/p95/p99)</strong></td>
+<td>timeseries</td>
+<td>Latency percentiles per workflow</td>
+</tr>
+</tbody>
+</table>
+<h3 id="row-3-step-analysis">Row 3 — Step Analysis<a class="headerlink" href="#row-3-step-analysis" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>Type</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Step Executions</strong></td>
+<td>timeseries</td>
+<td>Cumulative step success vs failure count over time</td>
+</tr>
+<tr>
+<td><strong>Step Duration (p50/p95/p99)</strong></td>
+<td>timeseries</td>
+<td>Per-step-type latency percentiles</td>
+</tr>
+</tbody>
+</table>
+<h3 id="row-4-token-economics">Row 4 — Token Economics<a class="headerlink" href="#row-4-token-economics" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>Type</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Tokens</strong></td>
+<td>timeseries</td>
+<td>Cumulative input vs output token count per provider/model</td>
+</tr>
+<tr>
+<td><strong>Tokens by Provider</strong></td>
+<td>bar gauge</td>
+<td>Horizontal bars showing total tokens per provider/model</td>
+</tr>
+<tr>
+<td><strong>Token Split</strong></td>
+<td>pie chart</td>
+<td>Ratio of prompt tokens to completion tokens</td>
+</tr>
+</tbody>
+</table>
+<h3 id="row-5-provider-performance">Row 5 — Provider Performance<a class="headerlink" href="#row-5-provider-performance" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>Type</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Provider Latency (p50/p95/p99)</strong></td>
+<td>timeseries</td>
+<td>Per-provider response time percentiles</td>
+</tr>
+<tr>
+<td><strong>Provider Calls</strong></td>
+<td>timeseries</td>
+<td>Cumulative call count per provider</td>
+</tr>
+</tbody>
+</table>
+<h3 id="row-6-provider-reliability">Row 6 — Provider Reliability<a class="headerlink" href="#row-6-provider-reliability" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>Type</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Provider Errors</strong></td>
+<td>timeseries</td>
+<td>Cumulative error count per provider</td>
+</tr>
+<tr>
+<td><strong>Provider Availability</strong></td>
+<td>gauge</td>
+<td>Uptime percentage over last hour (green &gt;= 99%, orange &gt;= 95%, red &lt; 95%)</td>
+</tr>
+<tr>
+<td><strong>Circuit Breaker</strong></td>
+<td>stat</td>
+<td>Current circuit breaker state per provider</td>
+</tr>
+</tbody>
+</table>
+<details class="info">
+<summary>Circuit breaker state values</summary>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Label</th>
+<th>Color</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>CLOSED</td>
+<td>Green</td>
+<td>Normal — requests pass through</td>
+</tr>
+<tr>
+<td>1</td>
+<td>OPEN</td>
+<td>Red</td>
+<td>Tripped — requests rejected immediately</td>
+</tr>
+<tr>
+<td>2</td>
+<td>HALF-OPEN</td>
+<td>Yellow</td>
+<td>Recovery probe — one test request allowed</td>
+</tr>
+</tbody>
+</table>
+<p>State transitions: CLOSED -&gt; OPEN after 5 consecutive failures. OPEN -&gt; HALF-OPEN after 60s timeout. HALF-OPEN -&gt; CLOSED on success, back to OPEN on failure.</p>
+</details>
+<h3 id="row-7-detailed-breakdown">Row 7 — Detailed Breakdown<a class="headerlink" href="#row-7-detailed-breakdown" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>Type</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Workflow Runs Summary</strong></td>
+<td>table</td>
+<td>Per-workflow, per-status run counts</td>
+</tr>
+<tr>
+<td><strong>Provider Call Details</strong></td>
+<td>table</td>
+<td>Per-provider, per-model call counts</td>
+</tr>
+</tbody>
+</table>
+<h3 id="row-8-cost-analysis">Row 8 — Cost Analysis<a class="headerlink" href="#row-8-cost-analysis" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>Type</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Cumulative Cost</strong></td>
+<td>timeseries</td>
+<td>Running total cost in USD</td>
+</tr>
+<tr>
+<td><strong>Token Cost</strong></td>
+<td>timeseries</td>
+<td>Estimated cost based on cumulative token volume per provider/model</td>
+</tr>
+<tr>
+<td><strong>Budget Remaining</strong></td>
+<td>timeseries</td>
+<td>Remaining budget per workflow (green line)</td>
+</tr>
+<tr>
+<td><strong>Avg Cost/Run</strong></td>
+<td>stat</td>
+<td>Mean cost per workflow execution</td>
+</tr>
+<tr>
+<td><strong>Avg Tokens/Run</strong></td>
+<td>stat</td>
+<td>Mean token consumption per workflow execution</td>
+</tr>
+<tr>
+<td><strong>Avg Duration/Run</strong></td>
+<td>stat</td>
+<td>Mean wall-clock time per workflow execution</td>
+</tr>
+<tr>
+<td><strong>Token Input/Output Ratio</strong></td>
+<td>stat</td>
+<td>Ratio of output tokens to input tokens</td>
+</tr>
+</tbody>
+</table>
+<h3 id="row-9-multi-modal">Row 9 — Multi-modal<a class="headerlink" href="#row-9-multi-modal" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>Type</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Attachments</strong></td>
+<td>timeseries</td>
+<td>Attachment count by type (image, pdf, audio)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="row-10-streaming">Row 10 — Streaming<a class="headerlink" href="#row-10-streaming" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>Type</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Stream Responses</strong></td>
+<td>timeseries</td>
+<td>Cumulative streaming response count</td>
+</tr>
+<tr>
+<td><strong>Time to First Token (p50/p95/p99)</strong></td>
+<td>timeseries</td>
+<td>TTFT latency percentiles</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="metrics-reference">Metrics reference<a class="headerlink" href="#metrics-reference" title="Permanent link">&para;</a></h2>
+<p>All metrics are prefixed with <code>agentloom_</code>.</p>
+<h3 id="workflow-metrics">Workflow metrics<a class="headerlink" href="#workflow-metrics" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workflow_runs_total</code></td>
+<td>counter</td>
+<td>workflow, status</td>
+<td>Workflow execution count</td>
+</tr>
+<tr>
+<td><code>workflow_duration_seconds</code></td>
+<td>histogram</td>
+<td>workflow</td>
+<td>End-to-end workflow latency</td>
+</tr>
+<tr>
+<td><code>cost_usd_total</code></td>
+<td>counter</td>
+<td>—</td>
+<td>Estimated USD cost</td>
+</tr>
+<tr>
+<td><code>budget_remaining_usd</code></td>
+<td>gauge</td>
+<td>workflow</td>
+<td>Remaining budget per workflow</td>
+</tr>
+</tbody>
+</table>
+<h3 id="step-metrics">Step metrics<a class="headerlink" href="#step-metrics" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>step_executions_total</code></td>
+<td>counter</td>
+<td>step_type, status, stream</td>
+<td>Step execution count</td>
+</tr>
+<tr>
+<td><code>step_duration_seconds</code></td>
+<td>histogram</td>
+<td>step_type, stream</td>
+<td>Per-step latency</td>
+</tr>
+</tbody>
+</table>
+<h3 id="provider-metrics">Provider metrics<a class="headerlink" href="#provider-metrics" title="Permanent link">&para;</a></h3>
+<p>AgentLoom-specific counters live alongside the canonical OTel GenAI client histogram. The histogram replaces the previous <code>provider_latency_seconds</code> — distributions are required by the spec.</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentloom_provider_calls_total</code></td>
+<td>counter</td>
+<td>provider, model, stream</td>
+<td>Provider API call count</td>
+</tr>
+<tr>
+<td><code>gen_ai.client.operation.duration</code></td>
+<td>histogram (s)</td>
+<td>gen_ai.operation.name, gen_ai.provider.name, stream</td>
+<td>OTel canonical operation duration</td>
+</tr>
+<tr>
+<td><code>agentloom_provider_errors_total</code></td>
+<td>counter</td>
+<td>provider, error_type</td>
+<td>Provider error count</td>
+</tr>
+<tr>
+<td><code>agentloom_circuit_breaker_state</code></td>
+<td>gauge</td>
+<td>provider</td>
+<td>Circuit breaker state (0/1/2)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="token-metrics">Token metrics<a class="headerlink" href="#token-metrics" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gen_ai.client.token.usage</code></td>
+<td>histogram (<code>{token}</code>)</td>
+<td>gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model, gen_ai.token.type</td>
+<td>OTel canonical per-call token observations. <code>gen_ai.token.type</code> is <code>input</code> / <code>output</code> / <code>reasoning</code> (reasoning is an AgentLoom extension to the spec's <code>input</code>/<code>output</code> enum)</td>
+</tr>
+<tr>
+<td><code>agentloom_attachments_total</code></td>
+<td>counter</td>
+<td>step_type</td>
+<td>Attachment count by step type</td>
+</tr>
+</tbody>
+</table>
+<h3 id="streaming-metrics">Streaming metrics<a class="headerlink" href="#streaming-metrics" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agentloom_stream_responses_total</code></td>
+<td>counter</td>
+<td>provider, model</td>
+<td>Streaming response count (no OTel equivalent — kept AgentLoom-specific)</td>
+</tr>
+<tr>
+<td><code>gen_ai.client.operation.time_to_first_chunk</code></td>
+<td>histogram (s)</td>
+<td>gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model</td>
+<td>OTel canonical streaming TTFT</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="span-schema">Span schema<a class="headerlink" href="#span-schema" title="Permanent link">&para;</a></h2>
+<p>AgentLoom emits a three-level span hierarchy: <strong>workflow → step → provider call</strong> (and <strong>tool call</strong> when a step invokes a registered tool). Every span / attribute / metric name is centralised in <code>agentloom.observability.schema</code> so downstream consumers (Grafana dashboards, AgentTest, Jaeger plugins) parse a stable contract.</p>
+<h3 id="hierarchy">Hierarchy<a class="headerlink" href="#hierarchy" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>workflow:&lt;workflow_name&gt;                   # AgentLoom orchestration
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>└── step:&lt;step_id&gt;                         # AgentLoom orchestration
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    └── chat &lt;model&gt;                       # OTel GenAI inference span — one per fallback attempt
+</code></pre></div>
+<p>A failed primary provider followed by a successful fallback shows up as two sibling <code>chat &lt;model&gt;</code> spans under the same <code>step:*</code> parent — useful for debugging fallback latency.</p>
+<h3 id="attribute-conventions">Attribute conventions<a class="headerlink" href="#attribute-conventions" title="Permanent link">&para;</a></h3>
+<p>Inference spans follow the <strong>canonical OTel GenAI registry</strong> (May 2026 spec). Workflow / step orchestration spans use AgentLoom-specific names.</p>
+<table>
+<thead>
+<tr>
+<th>Namespace</th>
+<th>Source</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gen_ai.*</code></td>
+<td>OpenTelemetry GenAI registry (canonical names)</td>
+<td><code>gen_ai.operation.name</code>, <code>gen_ai.provider.name</code>, <code>gen_ai.request.model</code>, <code>gen_ai.request.temperature</code>, <code>gen_ai.request.max_tokens</code>, <code>gen_ai.request.stream</code>, <code>gen_ai.response.model</code>, <code>gen_ai.response.finish_reasons</code> (array), <code>gen_ai.response.time_to_first_chunk</code>, <code>gen_ai.usage.input_tokens</code>, <code>gen_ai.usage.output_tokens</code>, <code>gen_ai.usage.reasoning.output_tokens</code></td>
+</tr>
+<tr>
+<td><code>error.*</code></td>
+<td>OTel general semantic conventions</td>
+<td><code>error.type</code> (set on errored inference spans alongside <code>step.error</code>)</td>
+</tr>
+<tr>
+<td><code>workflow.*</code> / <code>step.*</code></td>
+<td>AgentLoom orchestration metadata</td>
+<td><code>workflow.run_id</code>, <code>workflow.status</code>, <code>step.id</code>, <code>step.type</code>, <code>step.duration_ms</code>, <code>step.cost_usd</code></td>
+</tr>
+<tr>
+<td><code>tool.*</code></td>
+<td>Tool-call details</td>
+<td><code>tool.name</code>, <code>tool.args_hash</code>, <code>tool.success</code></td>
+</tr>
+<tr>
+<td><code>agentloom.*</code></td>
+<td>AgentLoom-specific (no OTel equivalent)</td>
+<td><code>agentloom.prompt.hash</code>, <code>agentloom.approval_gate.decision</code>, <code>agentloom.webhook.status</code>, <code>agentloom.recording.provider</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="workflow-level-attributes">Workflow-level attributes<a class="headerlink" href="#workflow-level-attributes" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workflow.name</code></td>
+<td>Workflow identifier</td>
+</tr>
+<tr>
+<td><code>workflow.run_id</code></td>
+<td>Per-execution UUID — correlate Jaeger traces with checkpoints / external systems</td>
+</tr>
+<tr>
+<td><code>workflow.status</code></td>
+<td>Final status (<code>success</code> / <code>failed</code> / <code>paused</code> / <code>budget_exceeded</code> / <code>timeout</code>)</td>
+</tr>
+<tr>
+<td><code>workflow.duration_ms</code></td>
+<td>End-to-end execution time</td>
+</tr>
+<tr>
+<td><code>workflow.total_tokens</code>, <code>workflow.total_cost_usd</code></td>
+<td>Aggregates across all steps</td>
+</tr>
+</tbody>
+</table>
+<h3 id="step-level-attributes">Step-level attributes<a class="headerlink" href="#step-level-attributes" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>step.id</code>, <code>step.type</code>, <code>step.status</code></td>
+<td>Step identification</td>
+</tr>
+<tr>
+<td><code>step.duration_ms</code>, <code>step.cost_usd</code></td>
+<td>Per-step latency / spend</td>
+</tr>
+<tr>
+<td><code>step.stream</code>, <code>step.attachments</code></td>
+<td>Streaming flag, attachment count</td>
+</tr>
+<tr>
+<td><code>gen_ai.operation.name</code>, <code>gen_ai.provider.name</code>, <code>gen_ai.request.model</code></td>
+<td>Operation type (<code>chat</code> for <code>llm_call</code>), provider (e.g. <code>openai</code>, <code>gcp.gemini</code>), model</td>
+</tr>
+<tr>
+<td><code>gen_ai.usage.input_tokens</code>, <code>gen_ai.usage.output_tokens</code></td>
+<td>Visible token counts</td>
+</tr>
+<tr>
+<td><code>gen_ai.usage.reasoning.output_tokens</code></td>
+<td>Chain-of-thought tokens (o-series, Gemini 2.5+ thinking) — emitted only when non-zero</td>
+</tr>
+<tr>
+<td><code>gen_ai.response.finish_reasons</code></td>
+<td>Array of provider-supplied stop reasons (e.g. <code>["stop"]</code>)</td>
+</tr>
+<tr>
+<td><code>gen_ai.response.time_to_first_chunk</code></td>
+<td>Streaming-only, in seconds</td>
+</tr>
+<tr>
+<td><code>agentloom.prompt.hash</code>, <code>agentloom.prompt.length_chars</code></td>
+<td>Prompt fingerprint for correlating failures with the prompt that caused them</td>
+</tr>
+<tr>
+<td><code>agentloom.prompt.template_id</code>, <code>agentloom.prompt.template_vars</code></td>
+<td>Template provenance</td>
+</tr>
+</tbody>
+</table>
+<h3 id="inference-level-attributes-provider-span">Inference-level attributes (provider span)<a class="headerlink" href="#inference-level-attributes-provider-span" title="Permanent link">&para;</a></h3>
+<p>The <code>chat &lt;model&gt;</code> span — emitted once per fallback attempt by the gateway — carries the full set of GenAI inference attributes. A single <code>step:*</code> may have multiple sibling provider spans when fallback fires.</p>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gen_ai.operation.name</code></td>
+<td>Always <code>chat</code> for <code>llm_call</code>; future operation types follow the OTel registry (<code>embeddings</code>, <code>execute_tool</code>, <code>invoke_agent</code>, …)</td>
+</tr>
+<tr>
+<td><code>gen_ai.provider.name</code></td>
+<td>Canonical OTel value (e.g. <code>openai</code>, <code>anthropic</code>, <code>gcp.gemini</code>) translated from AgentLoom's internal provider name</td>
+</tr>
+<tr>
+<td><code>gen_ai.request.model</code>, <code>gen_ai.response.model</code></td>
+<td>Requested model and the model the provider actually responded with (may differ when the provider auto-resolves a version, e.g. <code>gpt-4o-mini</code> → <code>gpt-4o-mini-2024-07-18</code>)</td>
+</tr>
+<tr>
+<td><code>gen_ai.request.temperature</code>, <code>gen_ai.request.max_tokens</code></td>
+<td>Sampling controls passed through to the provider</td>
+</tr>
+<tr>
+<td><code>gen_ai.request.stream</code></td>
+<td><code>true</code> for streaming calls — distinguishes streaming vs non-streaming inference at the inference span level</td>
+</tr>
+<tr>
+<td><code>gen_ai.usage.input_tokens</code>, <code>gen_ai.usage.output_tokens</code>, <code>gen_ai.usage.reasoning.output_tokens</code></td>
+<td>Token counts</td>
+</tr>
+<tr>
+<td><code>gen_ai.response.finish_reasons</code></td>
+<td>Array of stop reasons</td>
+</tr>
+<tr>
+<td><code>gen_ai.response.time_to_first_chunk</code></td>
+<td>Streaming-only</td>
+</tr>
+<tr>
+<td><code>error.type</code></td>
+<td>Set on errored attempts (OTel general convention, alongside the AgentLoom-specific <code>step.error</code>)</td>
+</tr>
+<tr>
+<td><code>agentloom.provider.attempt</code>, <code>agentloom.provider.attempt_outcome</code></td>
+<td>Fallback attempt index (0-indexed) and outcome (<code>ok</code> / <code>error</code>) — debugging fallback behaviour</td>
+</tr>
+</tbody>
+</table>
+<h3 id="capture-flags">Capture flags<a class="headerlink" href="#capture-flags" title="Permanent link">&para;</a></h3>
+<p>Full prompt content is <strong>not</strong> captured by default — size and secrets concerns. Set <code>config.capture_prompts: true</code> in the workflow YAML to opt in: each <code>llm_call</code> span then carries an <code>agentloom.prompt.captured</code> OTel event with the rendered <code>prompt</code> and <code>system_prompt</code>. Event payloads avoid the attribute-size cap and stay easy to filter at the OTel collector. Off by default; opt-in for debugging or trusted environments.</p>
+<p>When a redaction policy is configured (see <a href="../providers/#state-redaction">State redaction</a>), the captured copy is re-rendered against the redacted state — a flagged <code>{state.api_key}</code> becomes a <code>&lt;REDACTED:sha256=...&gt;</code> sentinel in the span event, while the request actually sent to the provider keeps the plaintext value. Same policy, same patterns, single source of truth: declare it once in <code>state_schema:</code> (or <code>AGENTLOOM_REDACT_STATE_KEYS</code>) and every persistence boundary — checkpoint, webhook body, span event — honours it.</p>
+<h3 id="provider-name-translation">Provider name translation<a class="headerlink" href="#provider-name-translation" title="Permanent link">&para;</a></h3>
+<p>AgentLoom's internal provider names map to the canonical OTel registry values: <code>google</code> → <code>gcp.gemini</code>, others (<code>openai</code>, <code>anthropic</code>, <code>ollama</code>) match the registry as-is. Custom values (<code>ollama</code>, <code>mock</code>) ride the spec's "vendor extension" allowance. The bundled Grafana dashboard queries Prometheus metrics (not span attributes), so dashboard panels are unaffected by attribute renames.</p>
+<h3 id="quality-annotations">Quality annotations<a class="headerlink" href="#quality-annotations" title="Permanent link">&para;</a></h3>
+<p>Workflow spans capture latency, tokens, and cost — but not output <em>correctness</em>. The <code>WorkflowResult.annotate()</code> API attaches post-hoc quality scores so evaluators or human reviewers can correlate execution performance with output quality.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">result</span><span class="o">.</span><span class="n">annotate</span><span class="p">(</span><span class="s2">&quot;answer&quot;</span><span class="p">,</span> <span class="n">quality_score</span><span class="o">=</span><span class="mf">4.5</span><span class="p">,</span> <span class="n">source</span><span class="o">=</span><span class="s2">&quot;human_feedback&quot;</span><span class="p">,</span> <span class="n">rubric</span><span class="o">=</span><span class="s2">&quot;helpfulness&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>Each annotation produces a standalone <code>quality:&lt;target&gt;</code> OTel span carrying:</p>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workflow.run_id</code></td>
+<td>The original run id — group quality spans with the run by joining here</td>
+</tr>
+<tr>
+<td><code>workflow.name</code></td>
+<td>Workflow name for filtering</td>
+</tr>
+<tr>
+<td><code>agentloom.quality.target</code></td>
+<td>The annotation target (<code>"answer"</code>, <code>"step:review"</code>, ...)</td>
+</tr>
+<tr>
+<td><code>agentloom.quality.score</code></td>
+<td>Numeric score</td>
+</tr>
+<tr>
+<td><code>agentloom.quality.source</code></td>
+<td>Producer (<code>"human_feedback"</code>, <code>"llm_judge"</code>, <code>"regex"</code>, ...)</td>
+</tr>
+<tr>
+<td><code>agentloom.quality.metadata.&lt;key&gt;</code></td>
+<td>Free-form metadata, flattened so each key is queryable in Jaeger</td>
+</tr>
+</tbody>
+</table>
+<p>The workflow span is already closed by the time <code>result.annotate()</code> runs, so retroactive attribute attachment isn't possible — standalone spans keyed by <code>workflow.run_id</code> are the workaround. The engine wires its tracing context onto the result before returning, so <code>result.annotate(...)</code> <strong>auto-publishes the span</strong> the moment it's called — no extra plumbing required to see the annotation in Jaeger. Offline / replay scenarios that construct a <code>WorkflowResult</code> without a tracer fall back to data-only annotations; <code>agentloom.observability.quality.emit_quality_annotations(result, tracing)</code> is available for batch evaluators that need to push annotations through a tracer assembled later.</p>
+<p>In Grafana / Jaeger, a query like <code>workflow.run_id="&lt;id&gt;" AND name=~"quality:.*"</code> lists every annotation attached to a run; <code>agentloom.quality.score &lt; 3</code> surfaces low-quality outputs across runs to diagnose regressions.</p>
+<h3 id="per-run-history-records">Per-run history records<a class="headerlink" href="#per-run-history-records" title="Permanent link">&para;</a></h3>
+<p>The engine writes a JSON record to <code>./agentloom_runs/&lt;run_id&gt;.json</code> after every workflow execution (success or failure). Records are intentionally small and self-contained so post-hoc debugging never requires replaying the workflow:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;_schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">&quot;run_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;abc123def456&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-05-02T18:34:18+00:00&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="nt">&quot;agentloom_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.5.0&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="nt">&quot;python_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;3.12.13&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="nt">&quot;workflow_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;simple-qa&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span><span class="nt">&quot;workflow_hash&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sha256:...&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">  </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;success&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">  </span><span class="nt">&quot;providers_used&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;openai/gpt-4o-mini&quot;</span><span class="p">],</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">  </span><span class="nt">&quot;total_cost_usd&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.012</span><span class="p">,</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">  </span><span class="nt">&quot;total_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">320</span><span class="p">,</span>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">  </span><span class="nt">&quot;steps_executed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">  </span><span class="nt">&quot;duration_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3200</span><span class="p">,</span>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">  </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="p">}</span>
+</code></pre></div>
+<p>Override the directory via the <code>AGENTLOOM_RUNS_DIR</code> env var or the <code>runs_dir</code> argument on <code>RunHistoryWriter</code>. Disk I/O happens in a worker thread so the write doesn't block the event loop, and any failure (broken directory, permissions) is logged at debug and swallowed — history is best-effort, never load-bearing.</p>
+<p>Inspect records via the CLI:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>agentloom<span class="w"> </span><span class="nb">history</span><span class="w">                                  </span><span class="c1"># most recent 20 runs, table format</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>agentloom<span class="w"> </span><span class="nb">history</span><span class="w"> </span>--workflow<span class="w"> </span>simple-qa<span class="w">             </span><span class="c1"># filter by workflow</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>agentloom<span class="w"> </span><span class="nb">history</span><span class="w"> </span>--provider<span class="w"> </span>openai<span class="w">                </span><span class="c1"># filter by provider prefix</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>agentloom<span class="w"> </span><span class="nb">history</span><span class="w"> </span>--since<span class="w"> </span><span class="m">2026</span>-05-01<span class="w">               </span><span class="c1"># date filter (UTC midnight anchor)</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>agentloom<span class="w"> </span><span class="nb">history</span><span class="w"> </span>--since<span class="w"> </span><span class="m">2026</span>-05-01<span class="w"> </span>--until<span class="w"> </span><span class="m">2026</span>-05-02<span class="w">   </span><span class="c1"># date range</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>agentloom<span class="w"> </span><span class="nb">history</span><span class="w"> </span>--min-cost<span class="w"> </span><span class="m">0</span>.10<span class="w">                  </span><span class="c1"># cost filters</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>agentloom<span class="w"> </span><span class="nb">history</span><span class="w"> </span>--max-cost<span class="w"> </span><span class="m">1</span>.00
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>agentloom<span class="w"> </span><span class="nb">history</span><span class="w"> </span>--json<span class="w">                           </span><span class="c1"># machine-readable</span>
+</code></pre></div>
+<p><code>--since</code> / <code>--until</code> accept <code>YYYY-MM-DD</code> (anchored at UTC midnight) or full ISO 8601. <code>--min-cost</code> / <code>--max-cost</code> operate on <code>total_cost_usd</code>. Filters compose, so <code>--workflow simple-qa --since 2026-05-01 --max-cost 0.10</code> lists every cheap run of <code>simple-qa</code> since May 1st. The table columns (<code>TIMESTAMP</code>, <code>RUN ID</code>, <code>WORKFLOW</code>, <code>STATUS</code>, <code>COST USD</code>, <code>DUR MS</code>) are stable — downstream <code>grep</code> / <code>awk</code> scripts can rely on the layout. <code>agentloom history</code> is distinct from <code>agentloom runs</code>: <code>runs</code> lists checkpointed-resumable executions from the configured checkpointer, while <code>history</code> lists every execution regardless of checkpointing.</p>
+<hr />
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<details class="question">
+<summary>Panels show 'No data'</summary>
+<p>Metrics are ephemeral — each CLI run exports data, then the process exits. The OTel Collector retains metrics for 30 minutes (<code>metric_expiration</code>).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Verify metrics reach Prometheus</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>curl<span class="w"> </span>-s<span class="w"> </span><span class="s1">&#39;http://localhost:9090/api/v1/query?query=agentloom_workflow_runs_total&#39;</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Run a workflow to generate fresh data</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>agentloom<span class="w"> </span>run<span class="w"> </span>examples/01_simple_qa.yaml
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1"># Run the circuit breaker demo for reliability panels</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>agentloom<span class="w"> </span>run<span class="w"> </span>examples/16_circuit_breaker_demo.yaml
+</code></pre></div>
+</details>
+<details class="question">
+<summary>Timeseries panels show flat lines</summary>
+<p>Each CLI invocation is a short-lived process that creates ephemeral counters. Timeseries panels show cumulative totals — run several workflows to see the values increase over time. Metrics expire from Prometheus after 30 minutes, so run workflows periodically.</p>
+</details>
+<details class="question">
+<summary>Circuit Breaker shows OPEN unexpectedly</summary>
+<p>If you ran <code>16_circuit_breaker_demo.yaml</code>, it intentionally trips the circuit breaker with a non-existent model. The OPEN state persists in Prometheus for 30 minutes. Run a successful workflow against the same provider to reset it, or wait for the metric to expire.</p>
+</details>
+<details class="question">
+<summary>Traces not appearing in Jaeger</summary>
+<p>Check that the OTel Collector is running and accepting gRPC on port 4317:
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>ps
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>docker<span class="w"> </span>compose<span class="w"> </span>logs<span class="w"> </span>otel-collector
+</code></pre></div></p>
+</details>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../testing-and-replay/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Testing &amp; Replay">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Testing & Replay
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../deployment/" class="md-footer__link md-footer__link--next" aria-label="Next: Deployment">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Deployment
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "content.code.copy", "content.tabs.link", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

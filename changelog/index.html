@@ -1,0 +1,1571 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Deterministic LLM workflow orchestration with native observability, resilience, and cost control.">
+      
+      
+      
+        <link rel="canonical" href="https://cchinchilla-dev.github.io/agentloom/changelog/">
+      
+      
+        <link rel="prev" href="../contributing/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/logo_transparecy.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Changelog - AgentLoom</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#changelog" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="AgentLoom" class="md-header__button md-logo" aria-label="AgentLoom" data-md-component="logo">
+      
+  <img src="../images/logo_transparecy.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AgentLoom
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Changelog
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/cchinchilla-dev/agentloom" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cchinchilla-dev/agentloom
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="AgentLoom" class="md-nav__button md-logo" aria-label="AgentLoom" data-md-component="logo">
+      
+  <img src="../images/logo_transparecy.png" alt="logo">
+
+    </a>
+    AgentLoom
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/cchinchilla-dev/agentloom" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cchinchilla-dev/agentloom
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../providers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Providers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../workflow-yaml/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflow YAML
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python-dsl/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python DSL
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graph-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Graph API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../testing-and-replay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing & Replay
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unreleased
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Unreleased">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#breaking-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Breaking changes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#security" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#040-2026-04-15" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.4.0 - 2026-04-15
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.4.0 - 2026-04-15">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#030-2026-04-12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.3.0 - 2026-04-12
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.3.0 - 2026-04-12">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#020-2026-03-30" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.2.0 - 2026-03-30
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.2.0 - 2026-03-30">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#012-2026-03-26" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.1.2 - 2026-03-26
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.1.2 - 2026-03-26">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#011-2026-03-22" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.1.1 - 2026-03-22
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.1.1 - 2026-03-22">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fixed_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#010-2026-03-19" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.1.0 - 2026-03-19
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.1.0 - 2026-03-19">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#known-limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known Limitations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#design-decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design Decisions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unreleased
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Unreleased">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#breaking-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Breaking changes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#security" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#040-2026-04-15" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.4.0 - 2026-04-15
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.4.0 - 2026-04-15">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#030-2026-04-12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.3.0 - 2026-04-12
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.3.0 - 2026-04-12">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#020-2026-03-30" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.2.0 - 2026-03-30
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.2.0 - 2026-03-30">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#012-2026-03-26" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.1.2 - 2026-03-26
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.1.2 - 2026-03-26">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#011-2026-03-22" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.1.1 - 2026-03-22
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.1.1 - 2026-03-22">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fixed_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#010-2026-03-19" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.1.0 - 2026-03-19
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.1.0 - 2026-03-19">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#known-limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known Limitations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#design-decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design Decisions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="changelog">Changelog<a class="headerlink" href="#changelog" title="Permanent link">&para;</a></h1>
+<p>All notable changes to this project will be documented in this file.</p>
+<p>The format is based on <a href="https://keepachangelog.com/en/1.1.0/">Keep a Changelog</a>,
+and this project adheres to <a href="https://semver.org/spec/v2.0.0.html">Semantic Versioning</a>.</p>
+<h2 id="unreleased"><a href="https://github.com/cchinchilla-dev/agentloom/compare/v0.4.0...HEAD">Unreleased</a><a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h3 id="added">Added<a class="headerlink" href="#added" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Native tool / function calling across providers (#116). New <code>tools</code>, <code>tool_choice</code>, and <code>max_tool_iterations</code> fields on <code>llm_call</code>; the LLM step dispatches via the existing <code>ToolRegistry</code>, feeds results back, and re-prompts until the model stops asking (capped by <code>max_tool_iterations</code>, default 5). Each adapter translates the unified <code>ToolDefinition</code> list to its native shape (OpenAI / Ollama / Anthropic / Google). Parallel tool calls dispatch concurrently and preserve order; failures are reported back as text so the model can recover. Sandbox (#105), budget (#108), and per-step retry (#106) apply unchanged. <code>MockProvider</code> recordings accept a list of turns per step so offline replay drives the loop end-to-end; <code>examples/35_tool_calling.yaml</code> ships a ReAct-style example. The OpenAI-shaped parser also handles Ollama-compat responses (no <code>type</code> field, <code>arguments</code> as a decoded dict) — without this Ollama tool calling silently dropped every call.</li>
+<li>Per-run experiment metadata logging (#77). Every workflow execution now writes a self-contained JSON record (<code>run_id</code>, ISO timestamp, AgentLoom version, Python version, workflow <code>sha256</code> hash, list of <code>provider/model</code> pairs used, status, total cost, total tokens, step count, duration) to <code>./agentloom_runs/&lt;run_id&gt;.json</code>. Override the directory via the <code>runs_dir</code> constructor argument on <code>RunHistoryWriter</code> or the <code>AGENTLOOM_RUNS_DIR</code> env var. Disk I/O happens in a worker thread so the write does not block the event loop. Records carry a <code>_schema_version: 1</code> field; failures during the write are logged and swallowed so a broken history directory cannot prevent the engine from returning the result. New <code>agentloom history</code> CLI subcommand lists records most-recent-first and accepts <code>--workflow</code>, <code>--provider</code>, <code>--since YYYY-MM-DD</code>, <code>--until YYYY-MM-DD</code>, <code>--min-cost</code>, <code>--max-cost</code>, <code>--limit</code>, and <code>--json</code> filters — covering the full filter surface (date, workflow, cost, provider) called for in the original issue.</li>
+<li>Quality annotations attachable to <code>WorkflowResult</code> (#59). New <code>WorkflowResult.annotate(target, quality_score=..., source=..., **metadata)</code> method appends a typed <code>QualityAnnotation</code> (<code>target</code>, <code>quality_score</code>, <code>source</code>, <code>metadata</code>) to the result so evaluators, human reviewers, or downstream scoring code can record output quality after the run completes. <strong>The annotation is auto-emitted as an OTel span</strong> the moment <code>annotate()</code> runs whenever the engine returned the result with a tracing context attached (the default for any workflow run with observability enabled) — <code>result.annotate("answer", quality_score=4.5, source="human_feedback")</code> becomes immediately visible in Jaeger with no additional plumbing on the caller side. Each annotation is published as a standalone <code>quality:&lt;target&gt;</code> span (the workflow span has already closed, so retroactive attribute attachment is not viable). Quality spans carry <code>workflow.run_id</code> and <code>workflow.name</code> plus <code>agentloom.quality.score</code>, <code>agentloom.quality.source</code>, <code>agentloom.quality.target</code>, and free-form <code>agentloom.quality.metadata.*</code> attributes — Jaeger / Tempo can group quality spans with the original trace by run_id, and dashboards can filter for <code>agentloom.quality.score &lt; threshold</code> to surface regressions. Offline / replay paths that build a <code>WorkflowResult</code> without a live tracer keep working — <code>annotate()</code> still records the data on the result, the OTel emission just no-ops. The <code>agentloom.observability.quality.emit_quality_annotation</code> / <code>emit_quality_annotations</code> helpers remain available for callers that build annotations outside the engine flow (e.g. batch evaluators reading historical results from disk).</li>
+<li>OTel span and metric schema centralization with GenAI semantic conventions (#125). The schema is a clean break — no compatibility shims for pre-#125 attribute or metric names. New <code>agentloom.observability.schema</code> module is the single source of truth for span / attribute / metric names; downstream consumers (Grafana, AgentTest, Jaeger plugins) parse a stable contract instead of grepping for ad-hoc strings. <strong>Metrics renamed and retyped</strong> to match the OTel GenAI registry: <code>agentloom_tokens_total</code> (counter) → <code>gen_ai.client.token.usage</code> (histogram, <code>{token}</code> unit) with <code>gen_ai.token.type</code> attribute (<code>input</code> / <code>output</code> / <code>reasoning</code>); <code>agentloom_provider_latency_seconds</code> (histogram) → <code>gen_ai.client.operation.duration</code> (histogram, <code>s</code>) with <code>gen_ai.operation.name</code> + <code>gen_ai.provider.name</code> attributes; <code>agentloom_time_to_first_token_seconds</code> → <code>gen_ai.client.operation.time_to_first_chunk</code>. AgentLoom-specific metrics (<code>agentloom_workflow_*</code>, <code>agentloom_step_*</code>, <code>agentloom_provider_calls_total</code>, <code>agentloom_cost_usd_total</code>, <code>agentloom_circuit_breaker_state</code>, <code>agentloom_budget_remaining_usd</code>, HITL / mock / recording counters) keep their <code>agentloom_</code> prefix — they have no OTel equivalent. The bundled Grafana dashboard is updated to query the new metric / label names. The legacy <code>Observer.on_provider_call</code> hook (which duplicated the metric emission already done by <code>on_provider_call_end</code>) is removed; the engine no longer fires it. The <code>tokens: int</code> positional argument on <code>on_step_end</code> is removed — callers now pass <code>prompt_tokens</code> / <code>completion_tokens</code> as kwargs. Span attributes follow the <strong>canonical OTel GenAI registry</strong> as of the May 2026 spec — <code>gen_ai.provider.name</code> (the deprecated <code>gen_ai.system</code> is <strong>not</strong> emitted), <code>gen_ai.operation.name</code>, <code>gen_ai.request.model</code>, <code>gen_ai.request.temperature</code>, <code>gen_ai.request.max_tokens</code>, <code>gen_ai.request.stream</code>, <code>gen_ai.response.model</code>, <code>gen_ai.response.finish_reasons</code> (array of strings, per spec), <code>gen_ai.response.time_to_first_chunk</code>, <code>gen_ai.usage.input_tokens</code>, <code>gen_ai.usage.output_tokens</code>, <code>gen_ai.usage.reasoning.output_tokens</code>. Errored inference spans also emit the OTel general-conventions attribute <code>error.type</code> alongside the AgentLoom-specific <code>step.error</code> so OTel-aware consumers (Jaeger error filters, Tempo) light up. Inference spans use the canonical name template <code>"{operation_name} {model}"</code> (e.g. <code>"chat gpt-4o-mini"</code>); workflow / step orchestration spans keep the AgentLoom-specific <code>workflow:*</code> / <code>step:*</code> names. AgentLoom-specific fields stay under <code>workflow.*</code> / <code>step.*</code> / <code>tool.*</code> / <code>agentloom.*</code> namespaces. Provider names are translated from AgentLoom internal names to OTel registry values via <code>to_genai_provider_name</code> (e.g. <code>google</code> → <code>gcp.gemini</code>). Notable additions:</li>
+<li><strong>Provider-level child spans</strong> — gateway emits one <code>provider:&lt;name&gt;</code> span per fallback attempt nested under the parent step span, on both <code>complete()</code> and <code>stream()</code> paths, so the latency split between LLM API time and step orchestration overhead (and across fallback attempts) is visible in Jaeger.</li>
+<li><strong>Prompt metadata capture</strong> — <code>agentloom.prompt.hash</code>, <code>agentloom.prompt.length_chars</code>, <code>agentloom.prompt.template_id</code>, <code>agentloom.prompt.template_vars</code> land on <code>llm_call</code> spans by default. Full prompt content stays off; opt in via <code>config.capture_prompts: true</code> in the workflow YAML for debugging or trusted environments. Captured prompts ride as an <code>agentloom.prompt.captured</code> span event (not an attribute, to avoid blowing the attribute-size budget).</li>
+<li><strong><code>workflow.run_id</code> propagation</strong> — every workflow / step / provider span inherits the per-execution UUID, so external systems can correlate traces with checkpoints.</li>
+<li><strong>Reasoning tokens span attribute</strong> — emitted under <code>gen_ai.usage.reasoning.output_tokens</code> (the canonical OTel registry name, available since the spec added it for o-series / Claude thinking / Gemini thinking). The earlier <code>step.reasoning_tokens</code> (#127) and the transitional <code>agentloom.gen_ai.usage.reasoning_tokens</code> are gone.</li>
+<li><strong><code>MetricName</code> drift detection</strong> — the schema's <code>MetricName</code> constants now match exactly what <code>metrics.py</code> emits, and a regression test (<code>test_metric_names_match_emissions</code>) scans the source for <code>agentloom_*</code> literals so any drift becomes a CI failure rather than silent dashboard breakage.</li>
+<li>Engine collaborator protocols and shared retry primitives (#112). New <code>agentloom.core.protocols</code> module exposes <code>StateManagerProtocol</code>, <code>GatewayProtocol</code>, <code>ToolRegistryProtocol</code>, <code>ObserverProtocol</code>, <code>CheckpointerProtocol</code>, and <code>StreamCallbackProtocol</code> as <code>@runtime_checkable</code> <code>typing.Protocol</code> shapes — <code>StepContext</code> collaborator fields stay typed as <code>Any</code> plus a comment naming the protocol (the <code>checkpointer</code> field stays on the concrete <code>BaseCheckpointer</code> carried over from #111 to keep Pydantic v2 forward-ref resolution happy). Call sites that import the protocols still get type-checker coverage. <code>agentloom.resilience</code> re-exports <code>compute_backoff</code>, <code>is_retryable_exception</code>, and <code>DEFAULT_RETRYABLE_STATUS_CODES</code> so the engine and <code>retry_with_policy</code> share a single source of truth for retry waveforms and retryability rules.</li>
+<li><code>RetryConfig.retryable_status_codes</code> (#112) — workflow YAML field, default <code>[429, 500, 502, 503, 504]</code>. Step retries now bail out immediately on permanent failures (4xx not in the list) instead of consuming the retry budget; status-less exceptions (network errors, generic provider failures) stay retried as transient. Configurable per step under <code>retry.retryable_status_codes</code>.</li>
+<li>Reasoning / extended-thinking tracking across providers (#127). <code>TokenUsage</code> gains a <code>reasoning_tokens</code> field plus a <code>billable_completion_tokens</code> property; <code>ProviderResponse</code> gains a <code>reasoning_content</code> field for providers that expose the chain-of-thought trace. A new <code>ThinkingConfig</code> submodel on <code>StepDefinition.thinking</code> lets workflow authors activate provider-side reasoning from YAML (<code>enabled</code>, <code>budget_tokens</code>, <code>level</code>, <code>capture_reasoning</code>); the step layer forwards the config object under a single <code>thinking_config</code> kwarg and each adapter translates it to its own request shape. Token metrics emit a third <code>direction="reasoning"</code> observation when reasoning tokens are non-zero, and the step span carries the canonical OTel <code>gen_ai.usage.reasoning.output_tokens</code> attribute (renamed from the original <code>step.reasoning_tokens</code> via the OTel GenAI alignment in #125). Per-provider coverage:</li>
+<li><strong>OpenAI o-series</strong> — parses <code>completion_tokens_details.reasoning_tokens</code> from chat-completion and streaming responses; o1 / o3 / o4-mini infer reasoning from the model name (<code>thinking_config</code> is accepted for YAML uniformity but not forwarded to the wire).</li>
+<li><strong>Anthropic</strong> — concatenates <code>type="thinking"</code> content blocks into <code>reasoning_content</code>; <code>ThinkingConfig</code> translates to the <code>thinking: {type: "enabled", budget_tokens}</code> payload, and an explicit raw <code>thinking={...}</code> kwarg still wins for advanced callers. Documented limitation: Anthropic rolls thinking tokens into <code>output_tokens</code> rather than exposing a separate field, so <code>reasoning_tokens</code> stays <code>0</code> for this provider — cost is automatically correct because <code>output_tokens</code> already includes the thinking volume, but the visible-vs-thinking split is unavailable from the wire.</li>
+<li><strong>Google Gemini 2.5+</strong> — parses <code>usageMetadata.thoughtsTokenCount</code> (defensive against the field's intermittent absence on <code>gemini-3-flash-preview</code>); <code>ThinkingConfig</code> translates to <code>generationConfig.thinkingConfig</code> (<code>thinkingBudget</code>, <code>thinkingLevel</code>, <code>includeThoughts</code>); thought summary parts (<code>thought=true</code>) are split into <code>reasoning_content</code> keeping <code>content</code> clean.</li>
+<li><strong>Ollama 0.9+</strong> — parses <code>message.thinking</code> into <code>reasoning_content</code>, with a regex fallback that strips legacy inline <code>&lt;think&gt;...&lt;/think&gt;</code> tags from <code>content</code>. <code>ThinkingConfig</code> translates to the top-level <code>think</code> request param (<code>&lt;level&gt;</code> if set, else <code>true</code>). Documented limitation: Ollama does not split <code>eval_count</code> between thinking and visible tokens, so <code>reasoning_tokens</code> stays <code>0</code> for this provider; cost is unaffected (local models are free).</li>
+</ul>
+<h3 id="changed">Changed<a class="headerlink" href="#changed" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>DAG.topological_sort</code> switched from a sorted-list-as-priority-queue (O(V² log V)) to <code>heapq.heapify</code> + <code>heappop</code>/<code>heappush</code> (O((V+E) log V)) (#112). Same deterministic ordering — nodes still come out by alphabetical id at each layer — so existing workflows produce identical execution plans. Notable for runs with hundreds of steps.</li>
+<li><code>WorkflowEngine</code> no longer carries dead <code>BudgetExceededError</code> / <code>WorkflowTimeoutError</code> handlers (#112). Anyio wraps both into <code>ExceptionGroup</code>, and the engine already unwraps them via the catch-all branch — the dedicated handlers were unreachable. Behaviour is unchanged; the resulting workflow status mapping (<code>BUDGET_EXCEEDED</code>, <code>TIMEOUT</code>) still applies.</li>
+</ul>
+<h3 id="breaking-changes">Breaking changes<a class="headerlink" href="#breaking-changes" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Recording file format bumped to v2 with a versioned envelope (#107). JSON files written by <code>RecordingProvider</code> (and consumed by <code>MockProvider</code> / <code>agentloom replay</code>) now carry a top-level <code>_version: 2</code> key alongside the captured entries (which sit at the top level themselves, keyed by <code>step_id</code> or request hash). The reader treats any top-level key starting with <code>_</code> as metadata and ignores it, so v1 recordings load without errors. <strong>However</strong>, the request-hash algorithm changed in 0.5.0 — it now mixes model + temperature + max_tokens + extra alongside messages — so v1 recordings keyed only by the legacy messages-only hash will not match under 0.5.0+ and need to be regenerated. v1 recordings keyed by <code>step_id</code> continue to replay unchanged. Streaming responses are now keyed under the same hash as <code>complete()</code> calls and persist the joined chunk content in the same entry shape (<code>content</code>, <code>usage</code>, <code>cost_usd</code>, <code>latency_ms</code>, <code>finish_reason</code>), so a recording captures both modes uniformly.</li>
+</ul>
+<h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Harden gateway resilience: stream cancellation no longer trips the circuit breaker, circuit-breaker check now precedes the rate limiter in <code>complete()</code>, retry backoff jitter is centralized in <code>_jittered_backoff</code>, <code>RateLimiter</code> validates <code>max_rpm &gt;= 1</code> / <code>max_tpm &gt;= 1</code> and fails fast when <code>token_count &gt; max_tpm</code>, and <code>CircuitBreaker.state</code> is a pure read with the half-open transition isolated in <code>_maybe_transition_to_half_open()</code> (#106).</li>
+<li>Record/replay correctness — <code>anyio.Lock</code> around <code>_recorded</code> writes plus per-call flush, streaming captures persist chunks under the same key as <code>complete()</code>, <code>prompt_hash</code> now includes model/temperature/max_tokens/extra and uses <code>model_dump()</code> for Pydantic-aware hashing (#107).</li>
+<li>Normalize provider adapters — central <code>providers/_http.py</code> helper with <code>validate_extra_kwargs</code> + <code>raise_for_status</code>; each provider declares its own kwargs allowlist; HTTP 429 now becomes <code>RateLimitError</code> with <code>Retry-After</code> parsed; the gateway passes <code>RateLimitError</code> to <code>CircuitBreaker.call(exclude=...)</code> so rate-limit responses do not trip the breaker; pricing prefix-match runs longest-first; <code>OllamaProvider</code> honours <code>OLLAMA_BASE_URL</code>; the Google adapter warns when streaming responses lack <code>usageMetadata</code> (#109).</li>
+<li>Bound the gateway candidate cache with LRU eviction so long-lived workflows do not accumulate stale provider/model entries — default 1024 entries, override via <code>AGENTLOOM_CANDIDATE_CACHE_MAX</code> env var (#109).</li>
+<li>DAG correctness — skip propagation closes over transitive successors via <code>dag.transitive_successors</code>; pause requests no longer raise inside <code>_execute_step</code> and instead surface after the layer finishes; pre-dispatch budget gate rejects steps before they consume more budget; cycle detection switched to an iterative algorithm so deeply chained DAGs no longer hit <code>RecursionError</code>; <code>_set_nested</code> now reports auto-expansion of intermediate lists with a clear message (#108).</li>
+<li>Template hardening — opt-in strict mode for template rendering: <code>SafeFormatDict(strict=True)</code> and <code>DotAccessDict(strict=True)</code> raise <code>TemplateError</code> on missing keys; default behaviour (warn + render empty) is unchanged. <code>__format__</code> now honours <code>format_spec</code>. <code>ToolStep._resolve_args</code> renders <code>{state.x}</code> substitutions consistently with <code>llm_call</code> (#110).</li>
+<li>State and approval-gate cleanup — the unsafe <code>state_manager.{set_sync,get_sync}</code> accessors are renamed to <code>_set_sync_unsafe</code> / <code>_get_sync_unsafe</code> (legacy names removed in this release); approval-gate UX moved out of the step body into the CLI rendering layer for consistency (#110).</li>
+<li>Subworkflow observability + checkpointer propagation — <code>SubworkflowStep</code> forwards <code>observer</code>, <code>checkpointer</code>, <code>on_stream_chunk</code>, and <code>run_id</code> to the child engine; checkpoint JSON serialization is moved off the event loop into a worker thread; the <code>NoopObserver</code> now implements every hook; observer hooks accept <code>**kwargs</code> for forward-compat; webhook deliveries get a configurable deadline (default 5s) with status <code>timeout</code>; <code>StepContext.checkpointer</code> is now plumbed through (#111).</li>
+<li>Bound the metrics gauge dictionaries <code>_circuit_states</code> and <code>_budget_remaining</code> with LRU eviction so long-running deployments cannot grow per-provider or per-workflow cardinality without bound (#111).</li>
+<li>Cost calculation for reasoning models — <code>calculate_cost()</code> now sums <code>completion_tokens + reasoning_tokens</code> against the output rate, so workflows using OpenAI o-series, Gemini 2.5+ thinking, or Anthropic extended thinking are no longer undercharged. Budget enforcement and Prometheus cost metrics inherit the fix transitively (#127).</li>
+<li>Pricing table refresh — <code>pricing.yaml</code> extended to ~70 entries covering OpenAI GPT-5/5.1/5.2/5.3/5.4/5.5 family (with <code>*-codex</code>, <code>*-mini</code>, <code>*-nano</code>, <code>*-pro</code> tiers), GPT-4.1 family, the full o-series including <code>o1-pro</code> / <code>o3-pro</code> / <code>o3-deep-research</code> / <code>o4-mini-deep-research</code>; Anthropic adds <code>claude-opus-4-7</code>, <code>claude-3-7-sonnet</code>, <code>claude-opus-3</code>, <code>claude-haiku-3</code>, plus undated aliases (<code>claude-sonnet-4-5</code>, <code>claude-opus-4-1</code>, <code>claude-sonnet-4-0</code>, etc.) so callers pinning to a family name resolve correctly without the date suffix; Google adds <code>gemini-3-pro</code>, <code>gemini-3-pro-preview</code>, <code>gemini-3.1-pro-preview</code>, <code>gemini-3.1-flash-image-preview</code>, <code>gemini-3.1-flash-lite-preview</code>, <code>gemini-2.0-flash-lite</code>. The longest-prefix lookup in <code>calculate_cost()</code> keeps dated entries authoritative when both alias and dated form are present (#127).</li>
+<li>Relax router AST validator to accept chained safe method calls. Until 0.5.0 the validator refused any <code>ast.Call</code> whose receiver was itself a call, so the natural <code>state.x.strip().lower() == "value"</code> predicate failed AST validation with <code>SecurityError: Attribute calls are only allowed on names, attributes, or subscripts</code>. Seven official example YAMLs were affected (<code>05_content_moderation</code>, <code>06_lead_qualification</code>, <code>07_incident_triage</code>, <code>09_fraud_detection</code>, <code>11_insurance_claims</code>, <code>12_log_analysis</code>, <code>14_custom_tools_decorator</code>). A new recursive <code>_safe_receiver</code> helper accepts a chain as long as every link is an attribute on a <code>Name | Attribute | Subscript</code> base — and every link still passes through <code>_reject_attribute</code>, so the dunder/blocklist filter blocks <code>state.x.lower().__class__</code> and <code>''.join(['a','b'])</code> exactly as before. Regression suite in <code>tests/steps/test_router_security.py::TestRouterChainedSafeCalls</code> covers both the positive expansions (chained <code>.strip().lower()</code>, slice-then-method, membership-after-chain) and the negative boundary (calls on literals, dunder after safe chain, disallowed builtins).</li>
+<li>Cascade-skip dependents when a router or step ends in FAILED. When a router step failed for any reason (AST error, no-match-no-default, evaluator exception) every downstream branch still executed against partial state — examples were observed shipping Slack notifications, Jira tickets, and approval webhooks off runs that should have aborted. Same defect on non-router steps: a step that exhausted retries left its dependents to run with empty state. The engine layer-loop now collects FAILED steps in each layer, computes <code>dag.transitive_successors</code> of their direct children, and marks the closure as <code>SKIPPED</code> with an <code>error</code> field naming the closest failed ancestor (BFS backward through the DAG) so the operator can audit the chain. New <code>config.on_step_failure: "skip_downstream" | "continue"</code> knob — default <code>skip_downstream</code> for the new safe behaviour, <code>continue</code> for fan-outs that explicitly want today's swallow-and-continue semantics. Regression suite at <code>tests/core/test_engine.py::TestFailureCascade</code> covers failed router → direct children, failed router → transitive descendants, no-match-no-default cascade, non-router step failure cascade, and the <code>continue</code> opt-out.</li>
+<li>Parse-time invariants on workflow definitions. Three footguns became hard errors: (a) duplicate step ids — <code>WorkflowDefinition</code> gains a <code>@model_validator(mode="after")</code> that refuses two steps with the same <code>id</code> and names both source indices (<code>id='a' at indices [0, 1]</code>), closing the silent-shadowing path where one of the two steps was lost from <code>final_state.steps</code>; (b) <code>config.max_concurrent_steps</code> carries <code>Field(default=10, ge=1, le=1024)</code> — <code>0</code> (which deadlocked <code>anyio.CapacityLimiter(0)</code>) and negatives (which surfaced as cryptic <code>total_tokens must be &gt;= 0</code>) now raise a clean Pydantic error at parse time; (c) parallel-eligible steps writing the same <code>output:</code> key emit a <code>UserWarning</code> listing both step ids — promote to a parse error via <code>config.strict_outputs: true</code>. Sequential overwrite via <code>depends_on</code> is exempt (intentional pattern). Regression suite at <code>tests/core/test_parser.py::TestParseTimeInvariants</code>.</li>
+<li>Atomic <code>StateManager.update</code> primitive and dotted-write scalar refusal. The natural <code>cur = await sm.get('counter'); await sm.set('counter', cur + 1)</code> pattern collapsed 50 parallel writers to 1 because the lock dropped between the two awaits. The new <code>update(key, fn)</code> method holds the state lock across the full callback invocation, so 50 parallel <code>update('counter', lambda c: c + 1)</code> produces final 50 deterministically. <code>fn</code> must be synchronous and side-effect-free (it runs under the lock); for async transformations, compute outside the lock and pass a lambda that returns the already-computed value. The legacy <code>get</code> + <code>set</code> pair stays intentionally racy (over-locking would serialise every read against the write queue) — documented in the new docstring. Separately, <code>_set_nested</code> now refuses to silently overwrite a scalar intermediate: writing <code>output: "user.name"</code> when <code>state.user</code> was the string <code>"alice"</code> used to replace the string with <code>{"name": ...}</code> and lose the original value; it now raises a new <code>StateWriteError</code> naming the traversed prefix and the existing type. Auto-creation of missing intermediates is unchanged, so <code>set("user.name", "bob")</code> on an empty state still works. List intermediates with a string next-segment (e.g. <code>data.foo</code> when <code>state.data</code> is a list — write through the list with a dict-style key) now raise <code>StateWriteError</code> too, uniformly with the scalar-refusal contract; pre-0.5.0 this surfaced as a generic <code>TypeError</code> so callers that catch only the dedicated exception no longer miss the case. Regression suite at <code>tests/core/test_state.py::TestAtomicUpdate</code> (50 parallel writers + intentionally-racy <code>get</code> + <code>set</code> regression net) and <code>TestDottedScalarOverwriteRefused</code> (scalar, list intermediate, traversed-prefix message).</li>
+<li>Subworkflow state isolation and cross-boundary pause propagation. Two related boundary defects in subworkflow semantics: (a) child engines saw a full copy of parent state by default and the child's entire final state propagated back up through the parent's <code>output:</code> key, with no way to encapsulate — <code>parent_secret</code> declared on the parent leaked into the child's prompt rendering and round-tripped back in the parent's recorded output; (b) when a subworkflow contained an <code>approval_gate</code>, the <code>PauseRequestedError</code> raised by the child engine surfaced as a generic exception at the parent boundary, the parent reported <code>failed</code> instead of <code>paused</code>, and <code>agentloom resume &lt;run_id&gt; --approve</code> had no resume path because no parent-level pause was checkpointed. Fixes: new opt-in <code>StepDefinition.isolated_state: bool = False</code> (default keeps the pre-0.5.0 leaky behaviour for backwards compatibility) — when <code>true</code>, the child receives a fresh <code>StateManager</code> seeded only from its own declared <code>state:</code> plus the new explicit <code>input: {...}</code> mapping; new <code>return_keys: list[str] | None</code> filter drops everything except the named keys when the child's final state propagates back. <code>SubworkflowStep</code> detects <code>WorkflowResult.status == PAUSED</code> and re-raises <code>PauseRequestedError</code> with a qualified <code>parent.child</code> step id (e.g. <code>sub.gate</code>); the engine's <code>_execute_step</code> PAUSED handler now preserves the qualified path on the <code>StepResult.error</code> field so the post-layer pass re-emits it for the parent checkpoint. The resume path strips the parent-step prefix when re-entering the subworkflow so the child engine sees <code>_approval.&lt;local_id&gt;</code> as expected. Regression suite at <code>tests/steps/test_subworkflow.py::TestSubworkflowStateIsolation</code> (parent-key hiding, return-keys filtering, default-leaky preserved) and <code>TestSubworkflowPausePropagation</code> (pause-at-<code>sub.gate</code> checkpoint, full resume round trip).</li>
+</ul>
+<h3 id="security">Security<a class="headerlink" href="#security" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Router AST validator and <code>DotAccessDict</code> runtime defence (#050). <code>state['__class__']</code>, <code>state['_data']</code>, <code>state['_secret']</code> previously bypassed the attribute-only guard in <code>_validate_expression</code> and reached <code>DotAccessDict.__getitem__('_x')</code>, which delegated to <code>object.__getattribute__</code> and returned the wrapper's raw underlying dict — leaking every user-seeded <code>_secret</code> / <code>_token</code> / <code>_internal</code> key. Two re-audit passes broadened the fix surface to: (a) <code>_reject_subscript</code> applies the same <code>_reject_attribute</code> check to <code>ast.Subscript</code> slices when the slice is an <code>ast.Constant</code> of type <code>str</code>; (b) non-constant slices — variables (<code>state[lookup]</code>), arithmetic (<code>state['_' + 'secret']</code>), conditionals, calls (<code>state[str(1)]</code>) — are refused outright; (c) integer-constant slices and <code>Slice</code> nodes with integer-constant or unary-<code>±</code> integer bounds remain accepted (<code>state['items'][::-1]</code>, <code>state['items'][-2:]</code>); (d) the router namespace no longer flattens state keys as bare names (<code>namespace.update(state_snapshot)</code> is dropped) so a state key called <code>len</code> cannot shadow the safe builtin, and arbitrary state keys are reachable only via the documented <code>state.X</code> prefix; (e) <code>DotAccessDict</code> / <code>DotAccessList</code> use name-mangled storage (<code>__data</code> → <code>_DotAccessDict__data</code>) AND override <code>__getattribute__</code> to refuse <code>__dict__</code> plus the mangled storage names so <code>{state._data}</code>, <code>{state.__dict__}</code>, and <code>{state._DotAccessDict__data}</code> no longer reach the raw underlying dict via <code>str.format_map</code>; (f) <code>DotAccessDict.__getattr__</code> no longer falls back to <code>object.__getattribute__</code> for any dynamic lookup; (g) the router runtime proxy wraps nested dict / list values in <code>_DictProxy</code> / <code>_ListProxy</code> that support both attribute and string-subscript access so the grammars the validator accepts (<code>state.user.name</code>, <code>state['user']['name']</code>, <code>state.items[0].label</code>) all resolve at runtime.</li>
+<li><code>approval_gate.notify.url</code> passes through the workflow sandbox before the POST (#051). <code>webhooks/sender.send_webhook</code> accepts an optional <code>sandbox: ToolSandbox | None</code> and consults <code>ToolSandbox.validate_webhook_url</code> ahead of every delivery attempt; the approval-gate step builds the sandbox from <code>StepContext.sandbox_config</code> so the gate's notification surface is gated by the same allowlist as every other network operation. When the workflow declares <code>config.sandbox.enabled: true</code>, the destination must satisfy <code>allow_network</code>, <code>allowed_schemes</code>, and <code>allowed_domains</code>. When the sandbox is <strong>disabled</strong>, a built-in deny-list still blocks loopback, link-local (including cloud metadata at <code>169.254.169.254</code>), RFC 1918 / 100.64/10 CGNAT, link-local IPv6, unique-local IPv6, multicast, reserved ranges, and any non-<code>http</code>/<code>https</code> scheme. Two re-audit passes closed seven additional bypass classes: (a) IPv4-mapped IPv6 forms — <code>http://[::ffff:169.254.169.254]/</code>, <code>http://[::ffff:127.0.0.1]/</code> — normalised via <code>IPv6Address.ipv4_mapped</code> before the deny-list check; (b) the unspecified addresses <code>0.0.0.0</code> and <code>::</code>, which connect to localhost on most platforms; (c) trailing-dot hostnames (<code>http://127.0.0.1./</code>) which httpx and most resolvers accept but <code>ipaddress.ip_address</code> would otherwise reject — stripped before classification; (d) the <code>allow_internal_webhook_targets=true</code> opt-in is now split from the scheme deny, so a workflow that authorises in-cluster destinations still cannot send <code>file://</code>, <code>data:</code>, or <code>javascript:</code> webhooks; (e) percent-encoded and IDN homograph hostnames (<code>http://%6c%6f%63%61%6c%68%6f%73%74/</code>, <code>http://lоcalhost/</code>) are URL-decoded and IDNA-normalised before the literal-string check; (f) DNS resolution upgraded from <code>socket.gethostbyname</code> (single IPv4 result) to <code>socket.getaddrinfo</code> so an AAAA-only or split-horizon DNS response cannot smuggle a loopback target through the gate; (g) command-argument validation now extracts the value side of <code>--key=path</code> and <code>key=path</code> flag forms (<code>tee --output=/etc/passwd</code>, <code>dd of=/dev/sda</code>) — the prior <code>_looks_like_path</code> heuristic skipped every token starting with <code>-</code>. The host-classification path uses <code>ipaddress</code>'s stdlib flags (<code>is_loopback</code>, <code>is_link_local</code>, <code>is_private</code>, <code>is_reserved</code>, <code>is_unspecified</code>, <code>is_multicast</code>) on top of the explicit network list so reserved ranges the older containment-only check missed are caught automatically. Workflows that genuinely need to notify an in-cluster service can waive <strong>only</strong> the internal-host gate via <code>sandbox.allow_internal_webhook_targets: true</code> (also a new field on <code>SandboxConfig</code>); the scheme gate stays authoritative. A blocked URL is logged with the resolved hostname + reason and is emitted to the observer as <code>on_webhook_delivery(step_id, workflow_name, "sandbox_blocked", 0.0)</code>; the workflow's pause itself is unaffected because the pause and the notification are independent.</li>
+<li><code>ToolSandbox.validate_path</code> wraps <code>ValueError</code> / <code>OSError</code> / <code>RuntimeError</code> / <code>TypeError</code> (#051). Null-byte paths, oversized components, symlink loops (which raise <code>RuntimeError</code> from <code>Path.resolve</code>), and non-string callers (<code>None</code> / <code>int</code> / <code>bytes</code>, which raise <code>TypeError</code>) all surface as a single <code>SandboxViolationError</code> with the original path in the message — callers that catch only the sandbox exception class no longer miss the case.</li>
+<li>State-value redaction policy for persisted artefacts (#052). New <code>agentloom.core.redact</code> module ships <code>RedactionPolicy</code> (glob patterns, env-var merge), <code>redact_state(state, policy)</code>, and a stable <code>&lt;REDACTED:sha256=...&gt;</code> sentinel; a workflow author declares per-key redaction via <code>state_schema:</code> in YAML (<code>state_schema: {api_key: {redact: true}, "*token*": {redact: true}}</code>) or deployment-wide via <code>AGENTLOOM_REDACT_STATE_KEYS=api_key,password,*token*</code>, and the engine merges the two into a single policy at construction time. After two re-audit passes the policy applies at every persistence boundary uniformly: <code>WorkflowEngine._save_checkpoint</code> redacts the runtime state snapshot, the literal <code>state:</code> block inside <code>workflow_definition</code>, every <code>step_results[id].output</code> (LLM calls that return structured payloads), and any step-level config field whose key matches the policy (<code>notify.headers.api_key</code>, <code>tool_args.api_key</code>, ...); <code>WorkflowResult.final_state</code> and <code>step_results</code> are redacted before the result crosses the process boundary so <code>agentloom run --json</code> and <code>result.model_dump_json()</code> see sentinels; the webhook sender redacts <code>body_template</code> rendering; <code>llm_call</code>'s opt-in <code>capture_prompts</code> span event is re-rendered against the redacted state. Subworkflows inherit the parent's redaction policy AND sandbox config — without inheritance a parent that locked down <code>api_key: {redact: true}</code> would have written the secret in plaintext via the child's checkpoint, and a parent's <code>sandbox.enabled=true</code> would have been bypassed by a child whose own config defaults to disabled. The in-memory state stays plaintext so a step that legitimately interpolates <code>{state.api_key}</code> against <code>api.openai.com</code> keeps working — only persisted copies are masked. The sentinel is hash-stable (sha256 of the value's string form, truncated to 16 hex chars) and redaction is idempotent: a second pass over an already-redacted value preserves it byte-for-byte so diffing across resume cycles stays consistent. <code>WorkflowDefinition</code> uses <code>extra="forbid"</code> so a typo (<code>stat_schema:</code> instead of <code>state_schema:</code>) fails at parse time instead of silently shipping the secret. The re-audit also identified three robustness gaps that are now closed: (a) circular state (a self-referential dict, or a list that contains itself) no longer triggers <code>RecursionError</code> — <code>_walk</code> tracks visited container ids and substitutes a literal <code>"&lt;cycle&gt;"</code> marker on the second visit; (b) non-string dict keys (int / tuple, common after JSON deserialisation) are coerced to <code>str</code> before <code>fnmatch</code> so they don't crash the entire checkpoint write; (c) <code>WorkflowEngine.from_checkpoint</code> logs an explicit warning listing the redacted keys it detects on resume — the redacted values are not magically restored, so a downstream step that references one receives the sentinel literal, and the warning surfaces this contract to the operator. Resume contract is documented: a redacted checkpoint cannot be resumed with the original secret. Lists of secrets collapse to a list of sentinels (one per element) so consumers that read shape don't break; nested dicts redact element-wise.</li>
+<li>Harden router expression sandbox against dunder access and type bypass (GHSA-c37m-mv4j-972v, #104)</li>
+<li>Closes <a href="https://github.com/cchinchilla-dev/agentloom/security/advisories/GHSA-c37m-mv4j-972v">GHSA-c37m-mv4j-972v</a>: router conditions accepted arbitrary code via <code>type</code>/<code>__class__</code>/<code>__subclasses__()</code>/<code>__call__</code> chains. All three published payloads now raise <code>SecurityError</code> at parse time.</li>
+<li>Reject <code>ast.Attribute</code> with <code>_</code>-prefix names; block <code>mro</code> / <code>format_map</code> / <code>__class__</code> traversal</li>
+<li>Reject <code>ast.Name</code> with <code>_</code>-prefix; reject <code>kwargs</code> and starred args in <code>Call</code></li>
+<li>Drop <code>type</code> from safe-builtins (was usable as <code>type(x).__mro__[1].__subclasses__()</code>)</li>
+<li>New <code>SecurityError</code> exception raised by the AST validator</li>
+<li>Regression tests in <code>tests/steps/test_router_security.py</code>, including verbatim payloads from the advisory</li>
+<li>Harden tool sandbox against meta-executable, path, and url-scheme bypasses (#105)</li>
+<li>Denylist of meta-executables (<code>env</code>, <code>sh</code>, <code>bash</code>, <code>python</code>, <code>python3</code>, <code>xargs</code>, <code>eval</code>, <code>exec</code>, ...) gated behind explicit <code>danger_opt_in</code></li>
+<li>Validate relative path arguments against the configured cwd (no <code>../</code> escapes)</li>
+<li>URL schemes restricted to <code>http</code> / <code>https</code> by default; <code>file://</code>, <code>gopher://</code>, <code>ftp://</code> rejected unless listed in <code>allowed_schemes</code></li>
+<li>Shell-op regex now catches process substitution (<code>&lt;(...)</code>, <code>&gt;(...)</code>)</li>
+<li>New <code>SandboxConfig</code> fields: <code>allowed_schemes</code> (default <code>["http", "https"]</code>), <code>danger_opt_in</code> (<code>list[str]</code>, default <code>[]</code>)</li>
+<li><strong>Behavior change:</strong> workflows that legitimately invoke <code>bash</code>, <code>python</code>, etc. must list each meta-executable explicitly in <code>danger_opt_in</code> — e.g. <code>danger_opt_in: ["bash", "python"]</code>. The opt-in is per-binary, not a global flag, so adding <code>bash</code> does not also enable <code>python</code>.</li>
+</ul>
+<h2 id="040-2026-04-15"><a href="https://github.com/cchinchilla-dev/agentloom/compare/v0.3.0...v0.4.0">0.4.0</a> - 2026-04-15<a class="headerlink" href="#040-2026-04-15" title="Permanent link">&para;</a></h2>
+<h3 id="added_1">Added<a class="headerlink" href="#added_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>agentloom replay &lt;workflow.yaml&gt; --recording &lt;file.json&gt;</code> subcommand — re-executes a workflow against recorded responses with no API calls (#61)</li>
+<li>YAML-configured MockProvider — <code>provider: mock</code> with <code>responses_file</code>, <code>latency_model</code>, <code>latency_ms</code> fields on <code>WorkflowConfig</code> (#76)</li>
+<li>Production <code>MockProvider</code> and <code>RecordingProvider</code> for deterministic replay and offline evaluation (#76)</li>
+<li><code>MockProvider</code> loads responses from a JSON file, keyed by <code>step_id</code> or SHA-256 prompt hash</li>
+<li>Latency models: <code>constant</code>, <code>normal</code> (gaussian with seed), <code>replay</code> (uses recorded <code>latency_ms</code>)</li>
+<li><code>RecordingProvider</code> wraps any provider, captures completions to JSON, flushes per-call</li>
+<li><code>agentloom run --mock-responses &lt;file&gt;</code> replays; <code>--record &lt;file&gt;</code> captures</li>
+<li>Webhook notifications for approval gates — outbound HTTP on pause (#42)</li>
+<li><code>WebhookConfig</code> on <code>StepDefinition.notify</code> with URL, custom headers, and body template</li>
+<li>Async webhook sender with 3-retry exponential backoff (best-effort, never blocks pause)</li>
+<li><code>agentloom callback-server</code> command — lightweight HTTP server for programmatic approve/reject</li>
+<li>Routes: <code>POST /approve/&lt;run_id&gt;</code>, <code>POST /reject/&lt;run_id&gt;</code>, <code>GET /pending</code></li>
+<li>Shared template utilities extracted to <code>core/templates.py</code></li>
+<li><code>StepContext</code> now carries <code>run_id</code> and <code>workflow_name</code> for webhook context</li>
+<li>Grafana dashboard "Human-in-the-Loop" row with approval gate and webhook panels</li>
+<li>Prometheus metrics: <code>approval_gates_total</code>, <code>webhook_deliveries_total</code>, <code>webhook_latency_seconds</code></li>
+<li>OTel span attributes: <code>approval_gate.decision</code>, <code>webhook.status</code>, <code>webhook.latency_s</code></li>
+<li>Example workflow (30), validation script, and K8s smoke job</li>
+<li>Approval gate step type — human-in-the-loop decision point (#41)</li>
+<li><code>StepType.APPROVAL_GATE</code> pauses the workflow and waits for human approval or rejection</li>
+<li>Decision injected via <code>_approval.&lt;step_id&gt;</code> state key on resume</li>
+<li><code>--approve</code> / <code>--reject</code> mutually exclusive flags on <code>agentloom resume</code></li>
+<li><code>timeout_seconds</code> and <code>on_timeout</code> schema fields (consumed by webhook callback server in #42)</li>
+<li>Example workflow (29), validation script, and K8s smoke job</li>
+<li>Workflow pause mechanism — foundation for human-in-the-loop (#40)</li>
+<li><code>PauseRequestedError</code> exception for step executors to signal a pause</li>
+<li><code>StepStatus.PAUSED</code> and <code>WorkflowStatus.PAUSED</code> status values</li>
+<li>Engine catches pause requests, saves checkpoint with <code>status=paused</code> and <code>paused_step_id</code>, and returns cleanly</li>
+<li>Resume from paused checkpoint skips completed steps and re-runs the paused step</li>
+<li>CLI treats paused workflows as non-error (exit code 0)</li>
+<li>Functional validation script (<code>scripts/validate_pause_resume.py</code>) and K8s smoke job</li>
+<li>Pluggable checkpoint backends with <code>BaseCheckpointer</code> protocol and <code>FileCheckpointer</code> default (JSON-to-disk) (#78)</li>
+<li><code>CheckpointData</code> Pydantic model with full workflow state serialization</li>
+<li>Engine integration: auto-generates <code>run_id</code>, saves checkpoint on completion/failure, graceful handling of I/O errors</li>
+<li><code>WorkflowEngine.from_checkpoint()</code> classmethod to reconstruct and resume from a checkpoint, skipping completed steps</li>
+<li><code>agentloom run --checkpoint</code> and <code>--checkpoint-dir</code> flags</li>
+<li><code>agentloom resume &lt;run_id&gt;</code> CLI command to resume paused or failed workflows</li>
+<li><code>agentloom runs</code> CLI command to list all checkpointed runs</li>
+<li>Example workflow (28) and documentation</li>
+</ul>
+<h2 id="030-2026-04-12"><a href="https://github.com/cchinchilla-dev/agentloom/compare/v0.2.0...v0.3.0">0.3.0</a> - 2026-04-12<a class="headerlink" href="#030-2026-04-12" title="Permanent link">&para;</a></h2>
+<h3 id="added_2">Added<a class="headerlink" href="#added_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Documentation site with mkdocs-material — getting started, architecture, providers, workflow YAML reference, Python DSL, graph API, examples, observability, deployment, contributing, and changelog pages. Auto-deployed to GitHub Pages on push to main (#72)</li>
+<li>Multi-modal input support for <code>llm_call</code> steps — images, PDFs, and audio via <code>attachments</code> field (#68)</li>
+<li>Provider-native formatting: OpenAI (images, audio), Anthropic (images, PDFs), Google (images, PDFs, audio), Ollama (images)</li>
+<li>URL fetching with <code>fetch: local</code> (default) or <code>fetch: provider</code> passthrough</li>
+<li>SSRF protection: blocks private/reserved IP ranges (RFC 1918, loopback, link-local)</li>
+<li>Sandbox integration: <code>allowed_domains</code>, <code>allow_network</code>, and <code>readable_paths</code> enforced for attachments</li>
+<li>Attachment size limit (20 MB default)</li>
+<li><code>attachment_count</code> in <code>StepResult</code>, OTel span attribute, and <code>agentloom_attachments_total</code> metric</li>
+<li>Grafana dashboard "Multi-modal" row with attachments panels</li>
+<li>Multi-modal workflow examples (19–24)</li>
+<li>Streaming support for LLM responses with real-time token output (#3)</li>
+<li><code>StreamResponse</code> accumulator with per-provider SSE/NDJSON parsing</li>
+<li>All 4 providers: OpenAI (SSE), Anthropic (SSE), Google (SSE), Ollama (NDJSON)</li>
+<li>Gateway <code>stream()</code> with circuit breaker + rate limiter integration</li>
+<li><code>config.stream: true</code> (workflow-level) and per-step <code>stream:</code> override</li>
+<li>CLI <code>--stream</code> flag for real-time terminal output</li>
+<li><code>time_to_first_token_ms</code> in <code>StepResult</code> and OTel span attributes</li>
+<li><code>agentloom_stream_responses_total</code> and <code>agentloom_time_to_first_token_seconds</code> metrics</li>
+<li>Grafana "Streaming" dashboard row with TTFT quantiles</li>
+<li>Streaming examples (25–26)</li>
+<li><code>AGENTLOOM_*</code> env var prefix for all configuration overrides (#5)</li>
+<li>YAML-based pricing table replacing hardcoded Python dict (#6)</li>
+<li>Provider auto-discovery moved from CLI hack to <code>config.discover_providers()</code></li>
+<li>Ollama e2e integration tests against a live Docker instance (5 smoke tests) (#71)</li>
+<li>CI workflow <code>e2e-ollama.yml</code> — weekly schedule, <code>release/**</code> branches, <code>e2e</code> label on PRs, manual dispatch</li>
+<li>Array index support in state paths (e.g., <code>state.items[0]</code>, <code>items[0].name</code>, <code>results[-1]</code>)</li>
+<li><code>_parse_path()</code> helper with regex-based bracket parsing in <code>StateManager</code></li>
+<li><code>_resolve_key()</code> and <code>_set_nested()</code> handle list indexing with bounds checking</li>
+<li><code>DotAccessList</code> wrapper for <code>str.format_map()</code> template rendering</li>
+<li><code>ToolStep._resolve_args()</code> refactored to reuse <code>StateManager._resolve_key()</code></li>
+<li>CLI, Docker, and K8s smoke tests; example workflow (27)</li>
+<li>First-class graph API for workflow DAG analysis and export (#75)</li>
+<li><code>WorkflowGraph</code> class with <code>from_workflow()</code> and <code>from_dag()</code> factories</li>
+<li><code>GraphNode</code> and <code>GraphEdge</code> frozen Pydantic models</li>
+<li>Path algorithms: <code>all_paths()</code>, <code>prime_paths()</code>, <code>critical_path()</code></li>
+<li>Export formats: <code>to_dict()</code>, <code>to_dot()</code> (Graphviz), <code>to_pnml()</code> (Petri Net), <code>to_mermaid()</code></li>
+<li>Optional <code>to_networkx()</code> via <code>pip install agentloom[graph]</code></li>
+<li>Properties: <code>nodes</code>, <code>edges</code>, <code>roots</code>, <code>leaves</code>, <code>layers</code></li>
+<li>Test coverage reporting via Codecov with 85% minimum threshold and README badge (#70)</li>
+</ul>
+<h2 id="020-2026-03-30"><a href="https://github.com/cchinchilla-dev/agentloom/compare/v0.1.2...v0.2.0">0.2.0</a> - 2026-03-30<a class="headerlink" href="#020-2026-03-30" title="Permanent link">&para;</a></h2>
+<h3 id="added_3">Added<a class="headerlink" href="#added_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Kubernetes manifests with Kustomize overlays for dev, staging, and production (#24)</li>
+<li>Helm chart with Job/CronJob modes and render-time input validation (#25)</li>
+<li>Terraform configuration for local kind cluster with full observability stack (#26)</li>
+<li>ArgoCD Application CRD with automated sync and Job immutability handling (#27)</li>
+<li>Docker CI/CD workflow for multi-arch GHCR publishing (#23)</li>
+<li>Infrastructure audit scripts for static and integration validation</li>
+<li>Infrastructure documentation (#28)</li>
+</ul>
+<h3 id="fixed_1">Fixed<a class="headerlink" href="#fixed_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Production NetworkPolicy OTel egress restricted to observability namespace</li>
+<li>Read-only filesystem audit check no longer false-passes when root FS is writable</li>
+<li>Terraform audit phase passes KUBECONFIG to all kubectl poll commands</li>
+<li>Removed duplicate kubeconform invocation that hung without stdin</li>
+<li>Terraform secret uses <code>string_data</code> instead of <code>data</code> for plaintext values</li>
+<li>GitHub Actions and image versions pinned to commit SHAs</li>
+</ul>
+<h2 id="012-2026-03-26"><a href="https://github.com/cchinchilla-dev/agentloom/compare/v0.1.1...v0.1.2">0.1.2</a> - 2026-03-26<a class="headerlink" href="#012-2026-03-26" title="Permanent link">&para;</a></h2>
+<h3 id="added_4">Added<a class="headerlink" href="#added_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Sandbox enforcement for built-in tools — command allowlist, path restrictions (read/write separation), network domain filtering, shell operator injection prevention, write size limits (#4)</li>
+<li><code>SandboxConfig</code> model in workflow YAML (<code>config.sandbox.*</code>)</li>
+<li><code>SandboxViolationError</code> exception</li>
+<li>Sandbox workflow examples (<code>17_sandbox_allowed</code>, <code>18_sandbox_blocked</code>)</li>
+</ul>
+<h3 id="fixed_2">Fixed<a class="headerlink" href="#fixed_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Step executors (<code>llm_call</code>, <code>router</code>, <code>tool_step</code>) now use <code>await get_state_snapshot()</code> instead of sync <code>.state</code> access (#8)</li>
+<li>Removed deprecated <code>gemini-2.0-flash</code> model</li>
+</ul>
+<h2 id="011-2026-03-22"><a href="https://github.com/cchinchilla-dev/agentloom/compare/v0.1.0...v0.1.1">0.1.1</a> - 2026-03-22<a class="headerlink" href="#011-2026-03-22" title="Permanent link">&para;</a></h2>
+<h3 id="fixed_3">Fixed<a class="headerlink" href="#fixed_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Rate limiter now accounts for response tokens, not just prompt tokens (#11)</li>
+<li>README header image uses absolute URLs for PyPI compatibility (#2)</li>
+</ul>
+<h2 id="010-2026-03-19"><a href="https://github.com/cchinchilla-dev/agentloom/releases/tag/v0.1.0">0.1.0</a> - 2026-03-19<a class="headerlink" href="#010-2026-03-19" title="Permanent link">&para;</a></h2>
+<p>First public release.</p>
+<h3 id="added_5">Added<a class="headerlink" href="#added_5" title="Permanent link">&para;</a></h3>
+<ul>
+<li>YAML and Python DSL workflow definitions (DAGs with sequential + parallel steps)</li>
+<li>Step types: <code>llm_call</code>, <code>tool</code>, <code>router</code> (conditional), <code>subworkflow</code></li>
+<li>Provider gateway with automatic fallback (OpenAI, Anthropic, Google, Ollama)</li>
+<li>Circuit breaker, rate limiter, and retry with exponential backoff per provider</li>
+<li>Budget enforcement (hard stop when USD limit exceeded)</li>
+<li>Cost tracking per step, model, and provider</li>
+<li>OpenTelemetry traces + Prometheus metrics (optional, <code>pip install agentloom[all]</code>)</li>
+<li>CLI commands: <code>run</code>, <code>validate</code>, <code>visualize</code> (ASCII + Mermaid), <code>info</code></li>
+<li>Checkpointing: save and resume workflow state to disk</li>
+<li>392 tests, mypy strict, ruff clean</li>
+</ul>
+<h3 id="known-limitations">Known Limitations<a class="headerlink" href="#known-limitations" title="Permanent link">&para;</a></h3>
+<ul>
+<li>~~No streaming support (falls back to full completion)~~ (fixed in Unreleased)</li>
+<li>Router expressions use first-match-wins, no priority ordering</li>
+<li>~~Rate limiter doesn't account for response tokens (only prompt tokens)~~ (fixed in 0.1.1)</li>
+<li>~~Provider discovery from env vars only, should be a config file~~ (fixed in Unreleased)</li>
+<li>~~Shell command tool has no sandboxing (FIXME in code)~~ (fixed in 0.1.2)</li>
+<li>~~File tools accept arbitrary paths (no path sanitization)~~ (fixed in 0.1.2)</li>
+<li>Router expressions use <code>eval()</code> — must be trusted input (not user-facing)</li>
+<li>~~Pricing table hardcoded in Python, should be YAML config~~ (fixed in Unreleased)</li>
+<li>No array index support in state paths (e.g., <code>state.items[0]</code>)</li>
+<li>~~Sync state access in step executors bypasses async lock~~ (fixed in 0.1.2)</li>
+<li>Budget enforcement is post-hoc — a single expensive step can overshoot before being stopped</li>
+<li><code>budget_remaining</code> metric only emitted to Prometheus, not OTel</li>
+<li>Checkpoint <code>save_checkpoint</code> uses blocking I/O inside async method</li>
+</ul>
+<h3 id="design-decisions">Design Decisions<a class="headerlink" href="#design-decisions" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>httpx over provider SDKs</strong> — keeps dependencies minimal (~5 core).
+  Trade-off: we maintain thin adapters instead of using official SDKs.</li>
+<li><strong>anyio over raw asyncio</strong> — structured concurrency via task groups.
+  Slightly less familiar but much safer for parallel step execution.</li>
+<li><strong>str.format_map over Jinja2</strong> — one fewer dependency; prompt templates
+  don't need loops or conditionals. SafeFormatDict handles missing keys.</li>
+<li><strong>Observability optional</strong> — core runs without opentelemetry or prometheus.
+  NoopSpan/NoopTracer pattern gives zero overhead when not installed.</li>
+<li><strong>Pydantic v2</strong> — validation and serialization worth the Rust compilation
+  trade-off. Could revisit for truly minimal environments.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../contributing/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Contributing">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Contributing
+              </div>
+            </div>
+          </a>
+        
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "content.code.copy", "content.tabs.link", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
