@@ -80,6 +80,22 @@ class ValidationError(AgentLoomError):
     """Workflow or step definition validation error."""
 
 
+class StateWriteError(AgentLoomError):
+    """Refused state write: dotted path traverses a wrong-type intermediate.
+
+    Raised by ``StateManager.set`` (and the underlying ``_set_nested``) when
+    a dotted key writes through an intermediate segment whose existing value
+    cannot accept the next segment: a scalar parent that the write would
+    silently overwrite with a dict (``set("user.name", ...)`` when
+    ``state.user`` is the string ``"alice"``), or a list parent traversed
+    with a string segment (``set("users.name", ...)`` when ``state.users``
+    is a list — the caller meant ``users[0].name``). The pre-0.5.0
+    behaviour replaced the scalar with an empty dict and continued, or
+    leaked a generic ``TypeError`` for the list case; this error surfaces
+    both uniformly.
+    """
+
+
 class WorkflowTimeoutError(AgentLoomError):
     """Workflow exceeded its maximum execution time."""
 

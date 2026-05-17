@@ -38,9 +38,11 @@ steps:                                      # at least one step required
 | `max_retries` | `int` | `3` | Retry attempts on failure |
 | `budget_usd` | `float` | `null` | Maximum spend in USD |
 | `timeout` | `float` | `null` | Workflow timeout in seconds |
-| `max_concurrent_steps` | `int` | `10` | Max parallel steps per layer |
+| `max_concurrent_steps` | `int` | `10` | Max parallel steps per layer. Bounded `1 ≤ N ≤ 1024` at parse time — values outside that range raise a Pydantic error instead of deadlocking the limiter or surfacing a cryptic `total_tokens must be >= 0`. |
 | `stream` | `bool` | `false` | Enable streaming by default |
 | `sandbox` | `object` | disabled | Security sandbox config |
+| `on_step_failure` | `string` | `skip_downstream` | Behaviour when a step (or router) ends in FAILED. `skip_downstream` (default) marks every transitive dependent as SKIPPED with an `error` field naming the closest failed ancestor; `continue` keeps the pre-0.5.0 best-effort behaviour where dependents still run against partial state. |
+| `strict_outputs` | `bool` | `false` | Promote the parallel-output collision warning to a parse error. Two parallel-eligible steps writing the same `output:` key normally trigger a `UserWarning` listing both step ids; set `strict_outputs: true` to refuse the workflow at parse time. Sequential overwrite via `depends_on` is exempt — it's an intentional pattern. |
 | `responses_file` | `string` | `null` | Mock provider recording path (when `provider: mock`) |
 | `latency_model` | `string` | `constant` | Mock latency mode: `constant` / `normal` / `replay` |
 | `latency_ms` | `float` | `0` | Mock provider simulated latency per call |
@@ -300,7 +302,7 @@ Executes a registered tool with author-chosen arguments — the workflow author 
 
 ### `subworkflow`
 
-Nests a workflow inside another. The child inherits the parent's state.
+Nests a workflow inside another. By default the child inherits parent state both ways — convenient for trivial helper subworkflows, leaky for anything resembling encapsulation. Set `isolated_state: true` to opt into a fresh state boundary.
 
 === "External file"
 
@@ -326,6 +328,42 @@ Nests a workflow inside another. The child inherits the parent's state.
             output: processed
       output: child_result
     ```
+
+=== "Isolated state"
+
+    ```yaml
+    - id: nested
+      type: subworkflow
+      isolated_state: true                          # child cannot read parent state
+      input:                                         # explicit seed for the child
+        topic: "{state.user_topic}"
+      return_keys: [classification, score]           # only these surface back via `output:`
+      workflow_inline:
+        name: classifier
+        state: { default_threshold: 0.75 }           # child's own state
+        steps:
+          - id: classify
+            type: llm_call
+            prompt: "Classify: {state.topic}"
+            output: classification
+      output: child_result
+    ```
+
+#### State contract
+
+| Setting | Child sees | Surfaces back |
+|---|---|---|
+| Default (`isolated_state: false`) | Full parent state + child's own `state:` block | The entire child final state under the parent's `output:` key |
+| `isolated_state: true`, no `return_keys` | Child's own `state:` block + `input:` mapping | The entire child final state under the parent's `output:` key |
+| `isolated_state: true` + `return_keys: [a, b]` | Child's own `state:` block + `input:` mapping | Only `a` and `b` from the child final state |
+
+#### Pause / resume through nested approval gates
+
+A `subworkflow` containing an `approval_gate` pauses the parent at a fully-qualified path like `sub.gate`. The parent workflow status becomes `paused` (not `failed`), the checkpoint records `paused_step_id: sub.gate`, and `agentloom resume <parent_run_id> --approve` continues through to the next layer after the gate clears — no separate child resume command needed.
+
+#### Step-id namespace across subworkflows
+
+Step ids inside `workflow_inline.steps` (or in a workflow referenced via `workflow_path`) live in the child's own namespace — a parent can have `id: classify` and the child can also have `id: classify` without collision. Duplicate-id validation is therefore *lazy*: the parent parse only checks its own top-level steps, and duplicates inside the child are caught when `SubworkflowStep` executes and re-parses the inline definition (raising `Invalid inline subworkflow: ... Duplicate step ids`). For workflows where you want eager validation of the entire nested tree, run `agentloom validate` on the child file separately before referencing it.
 
 ---
 

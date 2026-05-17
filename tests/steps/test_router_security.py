@@ -664,3 +664,80 @@ class TestRouterProxyUnitLevel:
         p = _build_state_proxy({"user": {"name": "alice"}})
         assert p.user.name == "alice"
         assert p["user"]["name"] == "alice"
+
+
+class TestRouterChainedSafeCalls:
+    """#053 regression — chained method calls on safe receivers must work.
+
+    Until 0.5.0 the validator refused any attribute call whose receiver was
+    itself a call, so ``state.x.strip().lower()`` failed AST validation and
+    broke 7 official example YAMLs. The recursive ``_safe_receiver`` check
+    accepts chains as long as every link is an attribute on a safe base
+    (Name/Attribute/Subscript) and clears the dunder/blocklist filter.
+    """
+
+    @pytest.mark.parametrize(
+        ("expr", "expected"),
+        [
+            ("state.x.strip().lower()", "hello, world"),
+            ("state.x.split(',')[0].strip()", "Hello"),
+            ("state.x.lstrip().rstrip().lower()", "hello, world"),
+            ("state.x[1:5].lower()", " hel"),
+            ("'critical' in state.severity.strip().lower()", True),
+        ],
+    )
+    def test_accepts_chained_safe_calls(self, expr: str, expected: object) -> None:
+        # Concrete expected values double as a sanity check on the eval
+        # semantics (str.strip / str.lower / list-subscript-then-method),
+        # not just the parse-time validator relaxation.
+        class State:
+            x = "  Hello, World  "
+            severity = "Critical"
+
+        assert evaluate_expression(expr, {"state": State()}) == expected
+
+    def test_chained_lower_strip_eq(self) -> None:
+        class State:
+            decision = "  APPROVE  "
+
+        assert (
+            evaluate_expression("state.decision.strip().lower() == 'approve'", {"state": State()})
+            is True
+        )
+
+    def test_membership_after_chained_normalisation(self) -> None:
+        class State:
+            severity = "  Critical  "
+
+        assert (
+            evaluate_expression("'critical' in state.severity.strip().lower()", {"state": State()})
+            is True
+        )
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "''.join(['a', 'b'])",
+            "'abc'.upper()",
+            "(1).bit_length()",
+        ],
+    )
+    def test_still_rejects_calls_on_literals(self, expr: str) -> None:
+        # Widening the receiver to allow Call(...) still excludes literal
+        # receivers, so the bottom of every safe chain must be a name,
+        # attribute, or subscript — never a constant.
+        with pytest.raises(SecurityError):
+            evaluate_expression(expr, {})
+
+    def test_still_rejects_dunder_after_safe_chain(self) -> None:
+        # The dunder filter runs against every Attribute.attr in the walk,
+        # so chained calls can't sneak a ``__class__`` through.
+        class State:
+            x = "hello"
+
+        with pytest.raises(SecurityError):
+            evaluate_expression("state.x.lower().__class__", {"state": State()})
+
+    def test_still_rejects_disallowed_builtins(self) -> None:
+        with pytest.raises(SecurityError):
+            evaluate_expression("__import__('os').system('x')", {})

@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agentloom.resilience.retry import DEFAULT_RETRYABLE_STATUS_CODES
 
@@ -152,6 +152,18 @@ class StepDefinition(BaseModel):
     # Subworkflow fields
     workflow_path: str | None = None
     workflow_inline: dict[str, Any] | None = None
+    # Opt-in to fresh-state isolation. With ``isolated_state: false`` (the
+    # default for backwards compatibility), parent state propagates DOWN
+    # into the child and the child's entire final state propagates UP as
+    # the parent's ``output:`` value — handy for trivial helper
+    # subworkflows but leaky for anything resembling encapsulation.
+    # ``isolated_state: true`` seeds the child only from the child's own
+    # ``state:`` block plus the explicit ``input:`` mapping below, and
+    # only the keys listed in ``return_keys`` (default: all top-level
+    # keys the child wrote) surface back through ``output:``.
+    isolated_state: bool = False
+    input: dict[str, Any] = Field(default_factory=dict)
+    return_keys: list[str] | None = None
 
     # Approval gate fields (timeout enforced by callback server — #42)
     timeout_seconds: int | None = None
@@ -217,9 +229,30 @@ class WorkflowConfig(BaseModel):
     max_retries: int = 3
     budget_usd: float | None = None
     timeout: float | None = None
-    max_concurrent_steps: int = 10
+    # ``ge=1`` catches both ``0`` (which makes ``anyio.CapacityLimiter(0)``
+    # block every ``start_soon`` and deadlocks the workflow with no timeout)
+    # and negatives (which used to surface as a cryptic
+    # ``total_tokens must be >= 0`` from the fallback result construction).
+    # ``le=1024`` is a sanity ceiling: workflows needing more concurrency
+    # per layer can either split layers or open an issue — past this point
+    # the layer-loop scheduling overhead dominates and individual provider
+    # rate limits will be the real bottleneck.
+    max_concurrent_steps: int = Field(default=10, ge=1, le=1024)
     stream: bool = False
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+
+    # When a step (or a router) ends in FAILED, ``skip_downstream`` marks every
+    # transitive dependent as SKIPPED so they don't fire side-effect tools,
+    # webhooks, or LLM calls against partial state. ``continue`` preserves the
+    # pre-0.5.0 behaviour (dependents still run) for best-effort fan-outs that
+    # explicitly want to swallow failures.
+    on_step_failure: Literal["skip_downstream", "continue"] = "skip_downstream"
+
+    # When ``True``, two or more parallel-eligible steps writing the same
+    # ``output:`` key abort at parse time. When ``False`` (default), the parser
+    # only emits a warning — silent last-writer-wins is the pre-0.5.0
+    # behaviour that several workflows already depend on, so opt-in only.
+    strict_outputs: bool = False
 
     # MockProvider configuration (used only when provider == "mock")
     responses_file: str | None = None
@@ -271,6 +304,30 @@ class WorkflowDefinition(BaseModel):
     state: dict[str, Any] = Field(default_factory=dict)
     state_schema: dict[str, StateKeyConfig] = Field(default_factory=dict)
     steps: list[StepDefinition]
+
+    @model_validator(mode="after")
+    def _validate_step_ids_unique(self) -> WorkflowDefinition:
+        """Refuse duplicate ``id:`` values across the top-level step list.
+
+        Until 0.4.0 the parser accepted two steps with the same ``id``
+        silently; only one would surface in ``final_state.steps`` after
+        execution and the other was lost without warning. A workflow author
+        who renamed a step and forgot to rename a reference could ship a
+        workflow where steps shadow each other — typically caught only when
+        the missing step's output went unused downstream and the run came
+        back with garbled state.
+        """
+        seen: dict[str, int] = {}
+        dups: list[tuple[str, list[int]]] = []
+        for i, s in enumerate(self.steps):
+            if s.id in seen:
+                dups.append((s.id, [seen[s.id], i]))
+            else:
+                seen[s.id] = i
+        if dups:
+            msg = "; ".join(f"id={d[0]!r} at indices {d[1]}" for d in dups)
+            raise ValueError(f"Duplicate step ids: {msg}")
+        return self
 
     def get_step(self, step_id: str) -> StepDefinition | None:
         """Get a step by its ID."""

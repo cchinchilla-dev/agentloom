@@ -251,9 +251,16 @@ class TestArrayIndexPaths:
         with pytest.raises(TypeError, match="Expected dict or list"):
             await sm.set("items[0].name", "x")
 
-    async def test_set_string_key_on_list_raises_type_error(self) -> None:
+    async def test_set_string_key_on_list_raises_state_write_error(self) -> None:
+        # 0.5.0 reclassified this error: writing a dotted string segment onto
+        # a list intermediate is the same shape of "wrong-type intermediate"
+        # as the scalar-overwrite refusal, so it raises ``StateWriteError``
+        # uniformly. Pre-0.5.0 callers that caught only ``TypeError`` would
+        # have missed this case.
+        from agentloom.exceptions import StateWriteError
+
         sm = StateManager(initial_state={"data": [1, 2]})
-        with pytest.raises(TypeError, match="Cannot set key"):
+        with pytest.raises(StateWriteError, match="not a dict"):
             await sm.set("data.foo", "x")
 
 
@@ -318,3 +325,138 @@ class TestCheckpoint:
         nested_path = tmp_path / "sub" / "dir" / "checkpoint.json"
         await sm.save_checkpoint(nested_path)
         assert nested_path.exists()
+
+
+class TestAtomicUpdate:
+    """#056 regression — ``StateManager.update`` is atomic across read/modify/write.
+
+    The legacy ``get`` then ``set`` pattern drops the lock between the two
+    awaits and collapses parallel writers to 1. The new ``update(key, fn)``
+    primitive holds the lock for the full callback invocation; under 50
+    parallel writers it must produce final 50, not final 1.
+    """
+
+    async def test_update_is_atomic_under_50_parallel_writers(self) -> None:
+        import anyio
+
+        sm = StateManager(initial_state={"counter": 0})
+
+        async def bump() -> None:
+            await sm.update("counter", lambda c: (c or 0) + 1)
+
+        async with anyio.create_task_group() as tg:
+            for _ in range(50):
+                tg.start_soon(bump)
+        assert await sm.get("counter") == 50
+
+    async def test_update_returns_new_value(self) -> None:
+        sm = StateManager(initial_state={"counter": 10})
+        new = await sm.update("counter", lambda c: c * 2)
+        assert new == 20
+        assert await sm.get("counter") == 20
+
+    async def test_update_initialises_missing_key_with_none_seed(self) -> None:
+        sm = StateManager()
+        result = await sm.update("new_key", lambda c: 7 if c is None else c + 1)
+        assert result == 7
+        assert await sm.get("new_key") == 7
+
+    async def test_get_then_set_remains_racy(self) -> None:
+        """Regression net: we must NOT accidentally over-lock ``get`` + ``set``.
+
+        The contract is documented as racy — anyone needing atomicity must
+        switch to ``update``. If this assertion ever starts failing (i.e.
+        ``get`` + ``set`` becomes atomic), revisit the lock granularity:
+        an unintentional widening makes every read serialise with the
+        write queue and tanks throughput in busy workflows.
+        """
+        import anyio
+
+        sm = StateManager(initial_state={"counter": 0})
+
+        async def bump_via_get_set() -> None:
+            cur = await sm.get("counter")
+            await anyio.sleep(0.001)
+            await sm.set("counter", cur + 1)
+
+        async with anyio.create_task_group() as tg:
+            for _ in range(50):
+                tg.start_soon(bump_via_get_set)
+        assert await sm.get("counter") < 50
+
+
+class TestDottedScalarOverwriteRefused:
+    """#056/F52 regression — dotted write must not silently replace a scalar.
+
+    Pre-0.5.0, writing ``user.name`` when ``state.user`` was a string
+    replaced the string with a fresh dict and lost the original value
+    with no warning. Now ``_set_nested`` raises ``StateWriteError`` so
+    the workflow author either picks a different output key or
+    explicitly overwrites ``user`` at the parent path first.
+    """
+
+    async def test_refuses_overwrite_of_scalar_parent(self) -> None:
+        from agentloom.exceptions import StateWriteError
+
+        sm = StateManager(initial_state={"user": "alice"})
+        with pytest.raises(StateWriteError) as exc_info:
+            await sm.set("user.name", "bob")
+        msg = str(exc_info.value)
+        assert "user" in msg and "str" in msg
+        # The original scalar must survive the refusal.
+        assert await sm.get("user") == "alice"
+
+    async def test_auto_creates_intermediate_when_missing(self) -> None:
+        sm = StateManager()
+        await sm.set("user.name", "bob")
+        assert await sm.get("user.name") == "bob"
+
+    async def test_traverses_existing_dict_intermediate(self) -> None:
+        sm = StateManager(initial_state={"user": {"id": 1}})
+        await sm.set("user.name", "bob")
+        assert await sm.get("user.name") == "bob"
+        assert await sm.get("user.id") == 1
+
+    async def test_refusal_mentions_traversed_prefix(self) -> None:
+        from agentloom.exceptions import StateWriteError
+
+        sm = StateManager(initial_state={"user": {"profile": "guest"}})
+        with pytest.raises(StateWriteError) as exc_info:
+            await sm.set("user.profile.name", "bob")
+        # The message should point at ``user.profile`` (the scalar that
+        # would be overwritten), not just ``user``.
+        assert "user.profile" in str(exc_info.value)
+
+    async def test_refuses_traversal_through_list_intermediate(self) -> None:
+        """Symmetric to the scalar refusal — a list intermediate with a
+        string next-segment is the same "wrong-type intermediate" footgun.
+
+        Pre-fix this leaked a generic ``TypeError("Cannot set key 'name' on
+        list ...")``; now ``StateWriteError`` is raised so callers that
+        catch the dedicated exception class don't miss the case.
+        """
+        from agentloom.exceptions import StateWriteError
+
+        sm = StateManager(initial_state={"users": [{"id": 1}]})
+        with pytest.raises(StateWriteError) as exc_info:
+            await sm.set("users.name", "bob")
+        msg = str(exc_info.value)
+        assert "users" in msg and "list" in msg
+        # Original list survives the refusal.
+        assert await sm.get("users") == [{"id": 1}]
+
+    async def test_refuses_string_segment_through_mid_loop_list(self) -> None:
+        """Three-segment path through a list intermediate trips the loop-body
+        refusal (line 246 — the ``not isinstance(current, dict)`` branch
+        inside the ``for part in parts[:-1]`` loop). The two-segment case
+        ``users.name`` exits the loop with ``current`` still the root dict
+        and trips the final-segment refusal instead; this test pins the
+        in-loop branch so both code paths are exercised."""
+        from agentloom.exceptions import StateWriteError
+
+        sm = StateManager(initial_state={"users": [{"id": 1}]})
+        with pytest.raises(StateWriteError) as exc_info:
+            await sm.set("users.profile.name", "bob")
+        msg = str(exc_info.value)
+        assert "users" in msg and "list" in msg
+        assert await sm.get("users") == [{"id": 1}]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,8 @@ import yaml
 from agentloom.core.dag import DAG
 from agentloom.core.models import WorkflowDefinition
 from agentloom.exceptions import ValidationError
+
+logger = logging.getLogger("agentloom.parser")
 
 
 class WorkflowParser:
@@ -69,6 +73,8 @@ class WorkflowParser:
                 "DAG validation errors:\n" + "\n".join(f"  - {e}" for e in errors)
             )
 
+        WorkflowParser._validate_output_collisions(workflow, dag)
+
         return workflow
 
     @staticmethod
@@ -108,6 +114,78 @@ class WorkflowParser:
         if errors:
             detail = "\n".join(f"  - {e}" for e in errors)
             raise ValidationError(f"Workflow validation errors:\n{detail}")
+
+    @staticmethod
+    def _validate_output_collisions(workflow: WorkflowDefinition, dag: DAG) -> None:
+        """Warn (or error under ``config.strict_outputs``) on shared output keys.
+
+        Two parallel-eligible steps writing the same ``output:`` key collapse
+        silently at runtime under last-writer-wins semantics: the survivor
+        depends on layer scheduling order, which is implementation-defined.
+        Steps where one transitively depends on the other are exempt — that
+        chain is an explicit, intentional overwrite (and the second step
+        sees the first's value beforehand).
+
+        Default surface is a single ``UserWarning`` so existing workflows
+        depending on the last-writer-wins pattern keep running while the
+        author notices. ``config.strict_outputs: true`` promotes to a parse
+        error for workflows that want the strict contract.
+        """
+        outputs: dict[str, list[str]] = {}
+        for s in workflow.steps:
+            if s.output:
+                outputs.setdefault(s.output, []).append(s.id)
+
+        # Precompute transitive ancestors per owner once — used to test
+        # concurrency pairwise below. The naïve "any other owner in my
+        # ancestry → exempt me" filter is incorrect for the partial-chain
+        # case (owners ``[a, b, c]`` with ``a → b`` and ``c`` independent:
+        # ``b`` still overlaps with ``c`` and would silently overwrite under
+        # last-writer-wins, so dropping ``b`` because ``a`` is its ancestor
+        # would miss the real collision).
+        def _ancestors(sid: str) -> set[str]:
+            seen: set[str] = {sid}
+            stack = [sid]
+            while stack:
+                node = stack.pop()
+                for pred in dag.predecessors(node):
+                    if pred not in seen:
+                        seen.add(pred)
+                        stack.append(pred)
+            seen.discard(sid)
+            return seen
+
+        collisions: list[tuple[str, list[str]]] = []
+        for key, owners in outputs.items():
+            if len(owners) < 2:
+                continue
+            ancestry = {sid: _ancestors(sid) for sid in owners}
+            concurrent: set[str] = set()
+            for i, a in enumerate(owners):
+                for b in owners[i + 1 :]:
+                    # A pair is concurrent iff neither sits in the other's
+                    # transitive ancestry — the layer scheduler can then run
+                    # them in either order (or the same layer).
+                    if a not in ancestry[b] and b not in ancestry[a]:
+                        concurrent.add(a)
+                        concurrent.add(b)
+            if len(concurrent) >= 2:
+                collisions.append((key, sorted(concurrent)))
+
+        if not collisions:
+            return
+
+        details = "; ".join(f"output={key!r} written by {owners}" for key, owners in collisions)
+        msg = (
+            "Parallel steps share an output key under last-writer-wins "
+            f"semantics: {details}. Set config.strict_outputs: true to "
+            "promote this to a parse error, or chain the steps via "
+            "depends_on if the overwrite is intentional."
+        )
+        if workflow.config.strict_outputs:
+            raise ValidationError(msg)
+        warnings.warn(msg, UserWarning, stacklevel=3)
+        logger.warning(msg)
 
     @staticmethod
     def build_dag(workflow: WorkflowDefinition) -> DAG:

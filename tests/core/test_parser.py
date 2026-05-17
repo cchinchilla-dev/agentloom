@@ -155,3 +155,127 @@ steps:
         """Cycle YAML should fail at the reference validation or DAG validation stage."""
         with pytest.raises(ValidationError):
             WorkflowParser.from_yaml(INVALID_YAML_CYCLE)
+
+
+class TestParseTimeInvariants:
+    """#055 regression — parse-time validation of step ids and concurrency.
+
+    Three flavours of footgun became hard errors in 0.5.0: duplicate step
+    ids (used to shadow silently), ``max_concurrent_steps <= 0`` (used to
+    deadlock or surface a cryptic ``total_tokens must be >= 0``), and
+    parallel-eligible steps sharing an ``output:`` key (used to drop most
+    writers under last-writer-wins).
+    """
+
+    def test_rejects_duplicate_step_ids(self) -> None:
+        yaml_str = """
+name: dup
+config: {provider: mock, model: x}
+steps:
+  - {id: a, type: llm_call, prompt: first}
+  - {id: a, type: llm_call, prompt: second}
+"""
+        with pytest.raises(ValidationError) as exc_info:
+            WorkflowParser.from_yaml(yaml_str)
+        msg = str(exc_info.value)
+        # Error must name the offending id and the indices so the workflow
+        # author can find both copies in the source.
+        assert "a" in msg
+        assert "[0, 1]" in msg
+
+    @pytest.mark.parametrize("bad", [0, -1, -100, 9999999])
+    def test_rejects_invalid_max_concurrent_steps(self, bad: int) -> None:
+        yaml_str = f"""
+name: bad-concurrent
+config:
+  provider: mock
+  model: x
+  max_concurrent_steps: {bad}
+steps:
+  - {{id: a, type: llm_call, prompt: x}}
+"""
+        with pytest.raises(ValidationError):
+            WorkflowParser.from_yaml(yaml_str)
+
+    def test_accepts_boundary_max_concurrent_steps_1(self) -> None:
+        yaml_str = """
+name: boundary
+config: {provider: mock, model: x, max_concurrent_steps: 1}
+steps:
+  - {id: a, type: llm_call, prompt: x}
+"""
+        wf = WorkflowParser.from_yaml(yaml_str)
+        assert wf.config.max_concurrent_steps == 1
+
+    def test_warns_on_parallel_steps_sharing_output_key(self) -> None:
+        import warnings
+
+        yaml_str = """
+name: dup-output
+config: {provider: mock, model: x}
+steps:
+  - {id: a, type: llm_call, prompt: x, output: shared}
+  - {id: b, type: llm_call, prompt: x, output: shared}
+"""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            WorkflowParser.from_yaml(yaml_str)
+            messages = [str(w.message) for w in caught]
+        assert any("shared" in m and "'a'" in m and "'b'" in m for m in messages)
+
+    def test_no_warning_when_owners_chain_via_depends_on(self) -> None:
+        """Sequential overwrite is intentional — no warning."""
+        import warnings
+
+        yaml_str = """
+name: seq
+config: {provider: mock, model: x}
+steps:
+  - {id: a, type: llm_call, prompt: x, output: shared}
+  - {id: b, type: llm_call, prompt: x, output: shared, depends_on: [a]}
+"""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            WorkflowParser.from_yaml(yaml_str)
+            messages = [str(w.message) for w in caught if "shared" in str(w.message)]
+        assert messages == []
+
+    def test_strict_outputs_promotes_warning_to_error(self) -> None:
+        yaml_str = """
+name: strict
+config: {provider: mock, model: x, strict_outputs: true}
+steps:
+  - {id: a, type: llm_call, prompt: x, output: shared}
+  - {id: b, type: llm_call, prompt: x, output: shared}
+"""
+        with pytest.raises(ValidationError) as exc_info:
+            WorkflowParser.from_yaml(yaml_str)
+        assert "shared" in str(exc_info.value)
+
+    def test_warns_on_partial_chain_owners(self) -> None:
+        """Three owners with a partial dependency chain still collide.
+
+        Topology: ``a → b`` (b depends on a, sequential overwrite is
+        intentional) plus ``c`` independent of both. ``b`` and ``c`` can
+        still run concurrently and clobber each other under last-writer-
+        wins, so the warning must name them — even though ``b`` has ``a``
+        in its ancestry. Pre-fix the per-owner ancestry filter dropped
+        ``b`` outright and missed the (b, c) collision.
+        """
+        import warnings
+
+        yaml_str = """
+name: partial-chain
+config: {provider: mock, model: x}
+steps:
+  - {id: a, type: llm_call, prompt: x, output: shared}
+  - {id: b, type: llm_call, prompt: x, output: shared, depends_on: [a]}
+  - {id: c, type: llm_call, prompt: x, output: shared}
+"""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            WorkflowParser.from_yaml(yaml_str)
+            messages = [str(w.message) for w in caught if "shared" in str(w.message)]
+        # The collision set must include both ``b`` and ``c`` (the
+        # concurrent pair), not just ``a`` and ``c``.
+        assert any("'b'" in m and "'c'" in m for m in messages)
