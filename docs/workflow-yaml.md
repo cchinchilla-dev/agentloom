@@ -300,6 +300,52 @@ Executes a registered tool with author-chosen arguments — the workflow author 
 !!! info "Argument resolution"
     String values starting with `state.` are resolved from workflow state. Other values are passed as literals.
 
+#### Placeholder grammar in `tool_args`
+
+`tool_args` values may also embed `{state.foo}` / `{state[items][0]}` / `{name}` placeholders that get rendered against state via the shared template engine. AgentLoom recognises a placeholder only when the brace is followed by `state.`, `state[`, or an identifier that ends in `}`, `![rsa]`, or `:` immediately followed by a non-whitespace character:
+
+```yaml
+tool_args:
+  greeting: "hello {state.user.name}"            # rendered
+  formatted: "cost: {total:.2f}"                 # rendered (format spec)
+  raw_inline: '{"k": [1,2,3], "v": true}'        # passed through unchanged
+  raw_html: "<style>.x { color: red; }</style>"  # passed through unchanged
+  raw_js_obj: '{foo: true, bar: false}'          # passed through (`: ` whitespace)
+```
+
+If a value happens to look like a placeholder but you need it passed through verbatim, use the per-key escape hatch:
+
+```yaml
+tool_args:
+  body:
+    value: '{"key": "{state.user}"}'             # literal, not rendered
+    template: false
+```
+
+Workflows written before 0.5.0 that relied on `{` triggering template expansion on raw JSON / HTML strings would have failed at runtime (`Max string recursion exceeded` or `Invalid format specifier`) — the narrowed grammar removes that footgun.
+
+!!! warning "Mixed content with embedded placeholders"
+    A string that *mixes* a real placeholder with raw braces — e.g. `'{"user": "{state.user}"}'` — still hits the underlying Python `str.format_map` parser, which interprets the outer `{` as a format field and raises `Invalid format specifier`. Two supported workarounds: (1) compose the JSON in two steps and use `template: false` on the literal half, or (2) escape every literal brace as `{{` / `}}`. AgentLoom cannot disambiguate "intended placeholder" from "intended literal brace" inside the same string. Compact CSS / JS-object shapes like `{color:red}` (no whitespace after `:`) are also inherently ambiguous with `{name:spec}` placeholders — use `template: false` or escape the braces.
+
+#### Missing keys in templates
+
+The template engine renders missing state references as the empty string in non-strict mode (default), including when the reference chains through several segments, and including chained dunders / conversion flags so a stray `{state.missing.__class__}` or `{state.missing!r}` cannot leak object internals:
+
+| Template                       | State                  | Renders as       |
+| ------------------------------ | ---------------------- | ---------------- |
+| `{state.missing}`              | `{}`                   | `""`             |
+| `{state.x.y.z}`                | `{}`                   | `""`             |
+| `{state.missing:.20}`          | `{}`                   | `""`             |
+| `{state.missing!r}`            | `{}`                   | `""`             |
+| `{state.missing.__class__}`    | `{}`                   | `""`             |
+| `{state.user:.20}`             | `{user: {name: alice}}`| `{'name': 'alice'}` (format spec ignored on non-scalar, warning logged) |
+| `{{state.x}}`                  | any                    | `{state.x}` (escaped braces)     |
+
+The template engine also supports an opt-in strict mode at the programmatic API surface (`SafeFormatDict(strict=True)` / `DotAccessDict(strict=True)`) that raises `TemplateError` at the first missing segment. Strict mode is currently not exposed as a per-step YAML toggle; the runtime defaults to non-strict so missing references render gracefully.
+
+!!! warning "Unicode normalisation"
+    State dict lookup is byte-exact. A workflow that stores a key as NFD-form unicode (`café`) and references it as NFC (`café`) renders empty — there is no implicit normalisation step. If your workflow accepts user-supplied keys, normalise to NFC at the boundary (`unicodedata.normalize("NFC", key)`) before writing them to state.
+
 ### `subworkflow`
 
 Nests a workflow inside another. By default the child inherits parent state both ways — convenient for trivial helper subworkflows, leaky for anything resembling encapsulation. Set `isolated_state: true` to opt into a fresh state boundary.

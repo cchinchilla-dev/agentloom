@@ -26,8 +26,13 @@ class TestDotAccessDict:
         assert d.user.name == "Bob"
 
     def test_missing_key_returns_empty_string(self) -> None:
+        # Missing key now returns the ``_MissingDotAccess`` sentinel so a
+        # chained ``{state.missing.deep}`` keeps rendering empty instead
+        # of raising ``AttributeError`` on the next segment. The sentinel
+        # still renders to ``""`` under ``str``/``format`` — that's what
+        # ``str.format_map`` actually calls.
         d = DotAccessDict({"name": "Alice"})
-        assert d.missing == ""
+        assert str(d.missing) == ""
 
     def test_str_representation(self) -> None:
         d = DotAccessDict({"a": 1})
@@ -45,9 +50,11 @@ class TestDotAccessDict:
         d = DotAccessDict({"items": [{"name": "Alice"}]})
         assert d.items[0].name == "Alice"
 
-    def test_list_out_of_bounds_returns_empty(self) -> None:
+    def test_list_out_of_bounds_renders_empty(self) -> None:
+        # Out-of-range list index renders the sentinel (empty under
+        # ``str``/``format``) so chained access stays graceful.
         d = DotAccessDict({"items": [1]})
-        assert d.items[5] == ""
+        assert str(d.items[5]) == ""
 
     def test_format_map_with_index(self) -> None:
         state = {"items": ["alpha", "beta"]}
@@ -72,9 +79,11 @@ class TestDotAccessList:
         dl = DotAccessList([1, 2, 3])
         assert dl[-1] == 3
 
-    def test_out_of_bounds(self) -> None:
+    def test_out_of_bounds_renders_empty(self) -> None:
+        # Out-of-range list index renders the sentinel (empty under
+        # ``str``/``format``) so chained access stays graceful.
         dl = DotAccessList([1])
-        assert dl[5] == ""
+        assert str(dl[5]) == ""
 
     def test_nested_dict_wrapping(self) -> None:
         dl = DotAccessList([{"key": "val"}])
@@ -90,9 +99,9 @@ class TestDotAccessList:
         dl = DotAccessList([1, 2])
         assert str(dl) == "[1, 2]"
 
-    def test_invalid_string_index(self) -> None:
+    def test_invalid_string_index_renders_empty(self) -> None:
         dl = DotAccessList(["a"])
-        assert dl["abc"] == ""
+        assert str(dl["abc"]) == ""
 
 
 # SafeFormatDict
