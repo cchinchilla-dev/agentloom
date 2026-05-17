@@ -21,10 +21,17 @@ from agentloom.steps.base import BaseStep, StepContext
 # snippet a user wrote into ``tool_args.content`` or ``tool_args.body``,
 # blowing up with ``Max string recursion exceeded`` or
 # ``Invalid format specifier`` for any non-trivial inline JSON. The regex
-# below requires either ``{state.`` / ``{state[`` or an identifier
-# followed by one of ``}``, ``:``, ``!`` so a literal ``{"k": 1}`` is
-# left untouched.
-_PLACEHOLDER_RE = re.compile(r"\{(?:state(?:\.|\[)|[A-Za-z_][A-Za-z0-9_]*[\}:!])")
+# requires either ``{state.`` / ``{state[`` or an identifier followed by
+# ``}`` (bare), ``![rsa]`` (Python conversion flag), or ``:`` immediately
+# followed by a non-whitespace character (the format-spec must not start
+# with whitespace, so JS-object literals like ``{foo: true}`` and CSS
+# rules with spaces are left untouched). A literal ``{"k": 1}`` is
+# excluded because ``"`` is not a valid identifier start. CSS shapes
+# without spaces (``{color:red}``) remain inherently ambiguous with
+# ``{name:spec}`` placeholders — workflows shipping that style of
+# content must use the ``template: false`` escape hatch or escape the
+# braces as ``{{`` / ``}}``.
+_PLACEHOLDER_RE = re.compile(r"\{(?:state(?:\.|\[)|[A-Za-z_][A-Za-z0-9_]*(?:\}|![rsa]|:(?!\s)))")
 
 
 class ToolStep(BaseStep):

@@ -28,20 +28,40 @@ class _MissingDotAccess:
     Used so that a chained reference like ``{state.x.y.z}`` whose first
     segment is missing renders as ``""`` instead of bottoming out into
     ``AttributeError: 'str' object has no attribute 'y'``. Every further
-    attribute / index access returns the same sentinel; ``__str__`` and
-    ``__format__`` render as the empty string regardless of the format
-    spec so a stray ``:.20`` on a missing dict path is also benign.
+    attribute / index access returns the same sentinel; ``__str__``,
+    ``__repr__``, and ``__format__`` render as the empty string regardless
+    of the format spec so a stray ``:.20`` on a missing dict path is also
+    benign and a conversion flag like ``{state.missing!r}`` does not leak
+    an object repr.
     """
 
     __slots__ = ()
 
-    def __getattr__(self, _name: str) -> _MissingDotAccess:
+    def __getattribute__(self, _name: str) -> _MissingDotAccess:
+        # Block EVERY attribute access — including dunders like
+        # ``__class__`` — so a template such as
+        # ``{state.missing.__class__}`` cannot leak the sentinel's type
+        # name into rendered output. Python looks up special methods
+        # (``__str__``, ``__repr__``, ``__format__``, ``__getitem__``,
+        # ``__bool__``) on the type rather than the instance, so they
+        # keep working even though this method shadows them at the
+        # instance level. ``__getattr__`` is intentionally absent — it
+        # is only invoked when ``__getattribute__`` raises
+        # ``AttributeError`` and this method never raises.
         return self
 
     def __getitem__(self, _key: Any) -> _MissingDotAccess:
         return self
 
     def __str__(self) -> str:
+        return ""
+
+    def __repr__(self) -> str:
+        # ``str.format_map`` applies ``!r`` / ``!a`` conversions BEFORE
+        # calling ``__format__``, so without an explicit ``__repr__`` a
+        # template like ``{state.missing!r}`` would render the default
+        # ``<_MissingDotAccess object at 0x…>`` instead of the empty
+        # string promised by the missing-key contract.
         return ""
 
     def __format__(self, _spec: str) -> str:

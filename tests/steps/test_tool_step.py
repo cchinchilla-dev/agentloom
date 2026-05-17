@@ -327,3 +327,18 @@ class TestPlaceholderTriggerNarrowed:
         payload = {"value": "x", "extra": 1}
         result = ToolStep._resolve_args({"body": payload}, {})
         assert result == {"body": payload}
+
+    def test_js_object_literal_with_space_after_colon_passes_through(self) -> None:
+        # ``{foo: true}`` shape (JS object literal): identifier-then-``:``
+        # is normally a placeholder shape, but the negative lookahead in
+        # the regex refuses ``:`` followed by whitespace so this stays
+        # literal instead of triggering format_map (which would raise).
+        result = ToolStep._resolve_args({"body": "{foo: true, bar: false}"}, {})
+        assert result == {"body": "{foo: true, bar: false}"}
+
+    def test_css_rule_with_spaces_passes_through(self) -> None:
+        # ``.x { color: red; }`` shape: the inner ``:`` has whitespace
+        # after it, so the regex does not match.
+        css = ".x { color: red; padding: 0; }"
+        result = ToolStep._resolve_args({"style": css}, {})
+        assert result == {"style": css}

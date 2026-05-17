@@ -309,6 +309,26 @@ class TestMissingDeepKeyChain:
 
         assert bool(_MISSING) is False
 
+    def test_sentinel_blocks_dunder_attribute_access(self) -> None:
+        # ``{state.missing.__class__}`` previously rendered the sentinel's
+        # class name (regression of the security hardening from PR1).
+        # ``__getattribute__`` returning self for every attribute keeps
+        # the chain bottoming out at the empty string.
+        tv = build_template_vars({"name": "alice"})
+        assert "{state.missing.__class__}".format_map(SafeFormatDict(tv)) == ""
+        assert "{state.missing.__dict__}".format_map(SafeFormatDict(tv)) == ""
+
+    def test_sentinel_bottoms_out_on_repr_conversion(self) -> None:
+        # ``str.format_map`` applies ``!r`` BEFORE calling ``__format__``,
+        # so the sentinel's ``__repr__`` must also render empty. Without
+        # the override, ``{state.missing!r}`` would emit something like
+        # ``<_MissingDotAccess object at 0x…>``.
+        tv = build_template_vars({"name": "alice"})
+        assert "{state.missing!r}".format_map(SafeFormatDict(tv)) == ""
+        assert "{state.missing.deep!r}".format_map(SafeFormatDict(tv)) == ""
+        assert "{state.missing!s}".format_map(SafeFormatDict(tv)) == ""
+        assert "{state.missing!a}".format_map(SafeFormatDict(tv)) == ""
+
 
 class TestFormatSpecOnNonScalar:
     """``__format__`` falls back to ``str(...)`` when the underlying
