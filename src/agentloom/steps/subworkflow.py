@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from agentloom.core.results import StepResult, StepStatus, WorkflowStatus
-from agentloom.exceptions import PauseRequestedError, StepError
+from agentloom.exceptions import BudgetExceededError, PauseRequestedError, StepError
 from agentloom.steps.base import BaseStep, StepContext
 
 
@@ -107,6 +107,18 @@ class SubworkflowStep(BaseStep):
         if context.sandbox_config.enabled:
             sub_workflow.config.sandbox = context.sandbox_config
 
+        # Budget propagation contract: when the child declares its own
+        # ``budget_usd`` it owns the budget — give it a fresh enforcer
+        # scoped to that limit. When the child has none, inherit the
+        # parent's enforcer so child charges land in the parent's counter
+        # and the parent gate trips at the correct step. The
+        # ``budget_enforcer`` argument to ``WorkflowEngine`` exists for
+        # exactly this hand-off — when ``None`` the engine builds a
+        # fresh one, so the default top-level execution path is
+        # unchanged.
+        parent_enforcer = getattr(context, "budget_enforcer", None)
+        child_enforcer = None if sub_workflow.config.budget_usd is not None else parent_enforcer
+
         engine = WorkflowEngine(
             workflow=sub_workflow,
             state_manager=child_state,
@@ -116,6 +128,7 @@ class SubworkflowStep(BaseStep):
             on_stream_chunk=context.on_stream_chunk,
             checkpointer=context.checkpointer,
             run_id=f"{context.run_id}.{step.id}" if context.run_id else step.id,
+            budget_enforcer=child_enforcer,
         )
 
         try:
@@ -135,6 +148,30 @@ class SubworkflowStep(BaseStep):
                 error=f"Subworkflow failed: {e}",
                 duration_ms=duration,
             )
+
+        # Shared-budget hand-off: a child that ran against the parent's
+        # shared enforcer ends with ``WorkflowStatus.BUDGET_EXCEEDED``
+        # when the parent counter trips. Re-raise as
+        # ``BudgetExceededError`` so the parent's terminal classifier
+        # surfaces the overrun directly instead of letting the retry
+        # loop spin 4× on a subworkflow that's already proven the
+        # budget is gone. The parent budget enforcer holds the
+        # canonical ``spent`` reading, so we use that rather than
+        # ``result.total_cost_usd`` (which only reflects the child's
+        # own per-step charges).
+        if (
+            result.status == WorkflowStatus.BUDGET_EXCEEDED
+            and parent_enforcer is not None
+            and parent_enforcer is child_enforcer
+        ):
+            # Child shared the parent enforcer; re-raise so the parent
+            # engine treats this as its own overrun. The parent budget
+            # enforcer holds the canonical ``spent`` reading, so we use
+            # that rather than ``result.total_cost_usd`` (which only
+            # reflects the child's own per-step charges).
+            budget = parent_enforcer.limit_usd or 0.0
+            spent = parent_enforcer.spent
+            raise BudgetExceededError(budget, spent)
 
         # Child engines absorb their own ``PauseRequestedError`` and return
         # a paused ``WorkflowResult`` (so they can persist their own
@@ -200,12 +237,32 @@ class SubworkflowStep(BaseStep):
             total_tokens=total_prompt + total_completion,
         )
 
+        # Avoid double-charging the parent enforcer in the shared-budget
+        # case. When the child ran against the parent's ``BudgetEnforcer``,
+        # every child step already charged the parent counter via
+        # ``self._budget.charge(...)`` inside the child engine's
+        # ``_execute_step``. Returning ``result.total_cost_usd``
+        # here would make the parent's own ``_execute_step`` re-charge
+        # the same amount on completion of the subworkflow step, so a
+        # parent ``budget_usd: 0.25`` and a child that legitimately spent
+        # ``$0.20`` would surface ``budget exceeded: spent $0.40`` even
+        # though the real spend fit. Surface zero in the shared case so
+        # the rolled-up cost is reported only via the per-step charges
+        # the child already made. The child's own budget case (fresh
+        # enforcer) still surfaces the rolled-up cost so the parent's
+        # counter learns about subworkflow spend.
+        reported_cost = (
+            0.0
+            if parent_enforcer is not None and parent_enforcer is child_enforcer
+            else result.total_cost_usd
+        )
+
         return StepResult(
             step_id=step.id,
             status=status,
             output=child_final,
             error=child_error,
             duration_ms=duration,
-            cost_usd=result.total_cost_usd,
+            cost_usd=reported_cost,
             token_usage=token_usage,
         )

@@ -53,6 +53,11 @@ class StepContext(BaseModel):
     # at startup (see #111). The rest of the collaborator types use
     # ``Any`` + a comment naming the intended protocol.
     checkpointer: BaseCheckpointer | None = None
+    # Optional shared budget enforcer: present when a parent workflow
+    # launches a subworkflow and wants child charges to count against
+    # the parent counter. ``None`` for top-level steps, which build
+    # their own enforcer in ``WorkflowEngine.__init__``.
+    budget_enforcer: Any | None = None  # BudgetEnforcer; ``Any`` to avoid an import cycle
 
 
 class BaseStep(ABC):
