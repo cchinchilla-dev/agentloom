@@ -162,6 +162,54 @@ class TestOpenAIProvider:
         p = OpenAIProvider(api_key="k", base_url="https://api.openai.com")
         assert p.base_url == "https://api.openai.com/v1"
 
+
+class TestBaseURLNormalization:
+    """``_normalize_base_url`` must append ``/v1`` only when the URL
+    points at a bare host. Pre-0.5.0 the suffix was appended whenever the
+    URL did not literally end in ``/v1``, mangling alternative API
+    versions and any deeper-path enterprise gateway URL."""
+
+    def test_appends_v1_for_bare_host(self) -> None:
+        p = OpenAIProvider(api_key="k", base_url="https://api.openai.com")
+        assert p.base_url == "https://api.openai.com/v1"
+
+    def test_appends_v1_for_host_with_trailing_slash(self) -> None:
+        p = OpenAIProvider(api_key="k", base_url="https://api.openai.com/")
+        assert p.base_url == "https://api.openai.com/v1"
+
+    def test_preserves_existing_v1(self) -> None:
+        p = OpenAIProvider(api_key="k", base_url="https://api.openai.com/v1")
+        assert p.base_url == "https://api.openai.com/v1"
+
+    def test_preserves_existing_v1_with_trailing_slash(self) -> None:
+        # ``/v1/`` is the same as ``/v1`` — the rstrip pass normalises
+        # the slash, but the path stays ``/v1`` so the suffix-append
+        # path is skipped.
+        p = OpenAIProvider(api_key="k", base_url="https://api.openai.com/v1/")
+        assert p.base_url == "https://api.openai.com/v1"
+
+    def test_preserves_alternative_version(self) -> None:
+        # ``/v2`` is non-root; do NOT append ``/v1`` on top.
+        p = OpenAIProvider(api_key="k", base_url="https://gw.example.com/v2")
+        assert p.base_url == "https://gw.example.com/v2"
+
+    def test_preserves_deep_path(self) -> None:
+        # Enterprise gateway: ``/api/v1/foo`` is the real endpoint; do
+        # NOT append ``/v1`` on top.
+        p = OpenAIProvider(api_key="k", base_url="https://gw.example.com/api/v1/foo")
+        assert p.base_url == "https://gw.example.com/api/v1/foo"
+
+    def test_preserves_deep_path_without_version(self) -> None:
+        # Any non-root path counts as "already configured".
+        p = OpenAIProvider(api_key="k", base_url="https://gw.example.com/chat")
+        assert p.base_url == "https://gw.example.com/chat"
+
+    def test_empty_base_url_returns_empty(self) -> None:
+        # The base class supplies a default elsewhere; ``""`` must round-trip.
+        from agentloom.providers.openai import _normalize_base_url
+
+        assert _normalize_base_url("") == ""
+
     @respx.mock
     async def test_streaming_yields_chunks(self) -> None:
         lines = [
