@@ -122,7 +122,10 @@ class DotAccessDict:
         if isinstance(key, int):
             if strict:
                 raise TemplateError(f"int index {key} on DotAccessDict")
-            return ""
+            # Return the sentinel (not plain ``""``) so a chained
+            # reference like ``{state[0].foo}`` keeps bottoming out at
+            # the empty string instead of raising on the next segment.
+            return _MISSING
         return self.__getattr__(key)
 
     def __str__(self) -> str:
@@ -169,7 +172,10 @@ class DotAccessList:
             except ValueError:
                 if strict:
                     raise TemplateError(f"non-integer index {index!r}") from None
-                return ""
+                # Sentinel (not plain ``""``) so a chained reference like
+                # ``{state.lst[abc].foo}`` keeps bottoming out instead of
+                # raising on the next segment.
+                return _MISSING
         if -len(data) <= index < len(data):
             value = data[index]
             if isinstance(value, dict):
@@ -179,7 +185,10 @@ class DotAccessList:
             return value
         if strict:
             raise TemplateError(f"index {index} out of range")
-        return ""
+        # Out-of-range index in non-strict mode falls into the same
+        # sentinel path as missing dict keys so ``{state.lst[99].foo}``
+        # also stays graceful.
+        return _MISSING
 
     def __str__(self) -> str:
         return str(object.__getattribute__(self, "_DotAccessList__data"))

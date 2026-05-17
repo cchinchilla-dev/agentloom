@@ -55,9 +55,12 @@ class TestDotAccessDict:
         assert str(d._nonexistent) == ""
         assert format(d._nonexistent) == ""
 
-    def test_int_key_returns_empty(self) -> None:
+    def test_int_key_renders_empty(self) -> None:
+        # Int subscript on a dict renders the sentinel (empty under
+        # ``str``/``format``) so a chained ``{state[0].foo}`` also
+        # bottoms out gracefully.
         d = DotAccessDict({"a": 1})
-        assert d[0] == ""
+        assert str(d[0]) == ""
 
     def test_string_key_delegates(self) -> None:
         d = DotAccessDict({"a": 1})
@@ -74,17 +77,19 @@ class TestDotAccessList:
         assert lst[0] == "x"
         assert lst[2] == "z"
 
-    def test_out_of_range(self) -> None:
+    def test_out_of_range_renders_empty(self) -> None:
+        # Out-of-range list index renders the sentinel, so
+        # ``{state.lst[99].foo}`` keeps bottoming out gracefully.
         lst = DotAccessList(["x"])
-        assert lst[5] == ""
+        assert str(lst[5]) == ""
 
     def test_string_index(self) -> None:
         lst = DotAccessList(["a", "b"])
         assert lst["0"] == "a"
 
-    def test_invalid_string_index(self) -> None:
+    def test_invalid_string_index_renders_empty(self) -> None:
         lst = DotAccessList(["a"])
-        assert lst["foo"] == ""
+        assert str(lst["foo"]) == ""
 
 
 class TestStrictMode:
@@ -273,6 +278,28 @@ class TestMissingDeepKeyChain:
         tv = build_template_vars({"name": "alice"}, strict=True)
         with pytest.raises(TemplateError, match="state.x"):
             "{state.x.y.z}".format_map(SafeFormatDict(tv, strict=True))
+
+    def test_missing_intermediate_strict_raises_at_first_missing_segment(self) -> None:
+        # F40: strict mode must surface the first missing segment along
+        # the chain, not the leaf. ``state.x`` and ``state.x.y`` exist;
+        # ``state.x.y.z`` is missing — the error must name ``z``, not
+        # bubble up some deeper or earlier name.
+        tv = build_template_vars({"x": {"y": {}}}, strict=True)
+        with pytest.raises(TemplateError, match="state.z"):
+            "{state.x.y.z}".format_map(SafeFormatDict(tv, strict=True))
+
+    def test_missing_list_index_chain_renders_empty(self) -> None:
+        # Symmetric to the dict miss path: ``{state.lst[99].foo}`` keeps
+        # bottoming out instead of raising ``AttributeError`` on the
+        # ``.foo`` follow-up. Out-of-range index returns the sentinel.
+        tv = build_template_vars({"lst": [1, 2, 3]})
+        assert "{state.lst[99].foo}".format_map(SafeFormatDict(tv)) == ""
+
+    def test_dict_int_key_chain_renders_empty(self) -> None:
+        # Int subscript on a dict (e.g. ``{state[0].foo}``) hits the
+        # sibling sentinel path on ``DotAccessDict.__getitem__``.
+        tv = build_template_vars({"x": 1})
+        assert "{state[0].foo}".format_map(SafeFormatDict(tv)) == ""
 
     def test_sentinel_is_falsy(self) -> None:
         # ``__bool__`` returns False so workflows can keep using truthy
