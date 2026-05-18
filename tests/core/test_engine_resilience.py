@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -182,6 +183,31 @@ class TestParallelLayerBudget:
         # s1 charged $0.001 against a $0.0005 limit — overrun is on s1.
         # s2 must never have dispatched (provider call count is 1).
         assert provider.calls == 1
+
+    async def test_pre_dispatch_gate_blocks_next_layer_when_budget_exhausted(self) -> None:
+        # Layer 0's single step charges exactly the budget — ``charge``
+        # does not raise (the overrun test is strict ``>``), so the
+        # workflow does not terminate inside layer 0. The pre-dispatch
+        # gate must then refuse layer 1 because ``remaining`` is zero,
+        # rather than dispatching a step that would only burn its cost
+        # before ``charge`` raised.
+        provider = _CostedProvider(cost_per_call=0.0005)
+        workflow = WorkflowDefinition(
+            name="exact-exhaust",
+            config=WorkflowConfig(provider="costed-mock", model="x", budget_usd=0.0005),
+            state={},
+            steps=[
+                StepDefinition(id="s1", type=StepType.LLM_CALL, prompt="hi"),
+                StepDefinition(id="s2", type=StepType.LLM_CALL, prompt="hi", depends_on=["s1"]),
+            ],
+        )
+        engine = WorkflowEngine(workflow=workflow, provider_gateway=_gateway_for(provider))
+        result = await engine.run()
+        assert result.status == WorkflowStatus.BUDGET_EXCEEDED
+        # s1 spent the budget exactly; s2 was refused by the gate before
+        # reaching the provider — exactly one provider call.
+        assert provider.calls == 1
+        assert engine._budget.remaining == 0.0
 
 
 class TestSubworkflowSharedBudget:
@@ -427,3 +453,33 @@ class TestErrorClassificationField:
         s1 = result.step_results["s1"]
         assert s1.status == StepStatus.FAILED
         assert s1.error_classification == "transient"
+
+
+class TestBudgetObserverNotification:
+    """A budget overrun must reach the observer's ``on_workflow_end``
+    hook with the ``"budget_exceeded"`` status so dashboards and trace
+    consumers see the terminal state, not just a silent stop."""
+
+    async def test_budget_exceeded_notifies_observer(self) -> None:
+        provider = _CostedProvider(cost_per_call=0.001)
+        workflow = WorkflowDefinition(
+            name="budget-observer",
+            config=WorkflowConfig(provider="costed-mock", model="x", budget_usd=0.0005),
+            state={},
+            steps=[StepDefinition(id="s1", type=StepType.LLM_CALL, prompt="hi")],
+        )
+        observer = MagicMock()
+        engine = WorkflowEngine(
+            workflow=workflow,
+            provider_gateway=_gateway_for(provider),
+            observer=observer,
+        )
+        result = await engine.run()
+        assert result.status == WorkflowStatus.BUDGET_EXCEEDED
+        observer.on_workflow_end.assert_called_once()
+        # Positional args: (workflow_name, status, duration, tokens, cost).
+        call_args = observer.on_workflow_end.call_args[0]
+        assert call_args[0] == "budget-observer"
+        assert call_args[1] == "budget_exceeded"
+        # Cost carried to the observer is the enforcer's recorded spend.
+        assert call_args[4] == pytest.approx(engine._budget.spent)

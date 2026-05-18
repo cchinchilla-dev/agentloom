@@ -376,6 +376,28 @@ class TestAttachmentResolutionErrorWrapping:
         with pytest.raises(PermissionError):
             await resolve_attachments([att], sandbox=sandbox)
 
+    async def test_already_classified_error_propagates_without_rewrap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An ``AttachmentResolutionError`` raised inside ``_resolve_single``
+        is propagated as-is — the dedicated ``except`` arm stops the
+        generic ``ValueError`` handler from re-wrapping it into a
+        double-prefixed ``Attachment 'X': Attachment 'X': ...`` message."""
+        from agentloom.exceptions import AttachmentResolutionError
+        from agentloom.providers import multimodal
+
+        original = AttachmentResolutionError("doc.png", "already classified")
+
+        async def _raise_classified(att: object, cfg: object) -> object:
+            raise original
+
+        monkeypatch.setattr(multimodal, "_resolve_single", _raise_classified)
+        att = Attachment(type="image", source="doc.png")
+        with pytest.raises(AttachmentResolutionError) as excinfo:
+            await resolve_attachments([att])
+        # Same object surfaces — not re-wrapped.
+        assert excinfo.value is original
+
 
 class TestOpenAIAudioFormats:
     async def test_unsupported_audio_format_raises(self) -> None:

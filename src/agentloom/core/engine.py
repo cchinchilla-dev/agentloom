@@ -702,14 +702,15 @@ class WorkflowEngine:
         if step_def is None:
             raise WorkflowError(f"Step '{step_id}' not found in workflow")
 
-        # Pre-dispatch budget gate: if prior completions already exhausted
-        # the budget, refuse to start this step. ``estimate(0)`` reads
-        # ``spent`` under the lock so the answer is consistent with any
-        # concurrent ``charge`` from a sibling in the same layer. The
-        # pre-check still allows a single-layer in-flight set to
-        # overshoot (we can't know each step's true cost beforehand), but
-        # it prevents that overshoot from compounding across layers.
-        if self._budget.has_limit() and not await self._budget.estimate(0.0):
+        # Pre-dispatch budget gate: if a prior layer already exhausted
+        # the budget, refuse to start this step. ``remaining`` is the
+        # headroom left (``max(0, limit - spent)``); a zero reading
+        # means earlier charges landed exactly on — or past — the limit,
+        # so dispatching another step would only burn its cost before
+        # ``charge`` raised anyway. A breach within a layer is caught by
+        # ``charge`` itself; this gate stops the next layer from
+        # starting once the budget is spent.
+        if self._budget.has_limit() and self._budget.remaining == 0.0:
             assert self._budget.limit_usd is not None
             raise BudgetExceededError(self._budget.limit_usd, self._budget.spent)
 
