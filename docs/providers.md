@@ -39,6 +39,36 @@ agentloom run workflow.yaml --provider anthropic --model claude-sonnet-4-2025051
 | `ANTHROPIC_API_KEY` | Anthropic |
 | `GOOGLE_API_KEY` | Google |
 | `OLLAMA_BASE_URL` | Ollama (default: `http://localhost:11434`) |
+| `AGENTLOOM_OLLAMA_FALLBACK` | **Opt-in:** any truthy value (`1`, `true`, `yes`) registers Ollama as a global fallback during provider auto-discovery. |
+
+!!! warning "Breaking change in 0.5.0 — Ollama is now opt-in"
+    Pre-0.5.0 AgentLoom auto-registered Ollama as a catch-all fallback whenever no `providers:` block was explicitly configured. Every primary-provider failure — a 404 from a wrong model id, a transient 5xx — triggered a secondary call to `http://localhost:11434`, adding 250 ms – 1 s of latency per failure and a confusing error chain ("Provider 'anthropic' failed: 404 / Provider 'ollama' failed: model not found") for users who didn't run Ollama at all.
+
+    Starting in 0.5.0 you opt in via `AGENTLOOM_OLLAMA_FALLBACK=1`, or by listing `ollama` in the top-level `providers:` block of an `agentloom.yaml` config file. Workflows that set `provider: ollama` directly (no fallback) keep working unchanged — the opt-in only affects the *implicit fallback* path.
+
+### Opt-in via the config file
+
+The `providers:` block is a top-level key of the `agentloom.yaml` config file (the one passed to `load_config` / the CLI's `--config`), **not** a field of a workflow's `config:`. Declaring it disables auto-discovery, so list every provider you want — API keys are still read from the environment when omitted here:
+
+```yaml
+# agentloom.yaml
+providers:
+  - name: openai
+    models: ["gpt-4o-mini"]
+  - name: ollama
+    base_url: http://localhost:11434
+    is_fallback: true
+```
+
+### Recommended model IDs
+
+Pin to date-stamped IDs rather than tracking aliases. Date-pinned IDs reproduce the exact behaviour of the article validations; tracking aliases (`-latest`, `-flash-latest`) may stop accepting console keys without notice.
+
+| Provider | Recommended ID | Notes |
+|----------|----------------|-------|
+| Anthropic | `claude-haiku-4-5-20251001` | Pre-0.5.0 docs referenced `claude-3-5-haiku-latest`, which current console keys reject with `404 not_found_error`. |
+| Google | `gemini-2.5-flash` | Pre-0.5.0 docs referenced `gemini-2.0-flash`, which Google's API now returns as `404 NOT_FOUND` for new users. |
+| OpenAI | `gpt-4o-mini` / `gpt-4o` | No change. |
 
 ## Circuit breaker
 
@@ -80,6 +110,37 @@ All provider adapters normalize remote errors to a common taxonomy:
 | network / timeout | `ProviderError` | Counts toward the circuit breaker |
 
 Provider adapters declare an explicit kwargs allowlist for `extra` parameters; unknown kwargs raise a `TypeError` at call time rather than silently reaching the vendor's API. Each adapter exposes its allowlist via a constant (`_OPENAI_EXTRA_PAYLOAD_KEYS`, `_ANTHROPIC_EXTRA_PAYLOAD_KEYS`, `_GOOGLE_GEN_CONFIG_KEYS` + `_GOOGLE_TOPLEVEL_KEYS`, `_OLLAMA_OPTION_KEYS` + `_OLLAMA_TOPLEVEL_KEYS`).
+
+### OpenAI base_url normalization
+
+The OpenAI adapter normalizes `base_url` so workflows that point at the bare host (`https://api.openai.com`) get the `/v1` suffix automatically. Custom enterprise gateways that already include a path are preserved verbatim:
+
+| Input | Normalized |
+|-------|------------|
+| `https://api.openai.com` | `https://api.openai.com/v1` |
+| `https://api.openai.com/` | `https://api.openai.com/v1` |
+| `https://api.openai.com/v1` | `https://api.openai.com/v1` |
+| `https://gw.example.com/v2` | `https://gw.example.com/v2` *(preserved)* |
+| `https://gw.example.com/api/v1/foo` | `https://gw.example.com/api/v1/foo` *(preserved)* |
+
+Pre-0.5.0 the rule was "append `/v1` unless the URL ends literally in `/v1`", which silently mangled `/v2` into `/v2/v1` and any deeper path into broken request URLs.
+
+## Non-retryable errors
+
+The resilience layer short-circuits the retry loop when an exception carries `is_retryable = False`. Pre-0.5.0 these errors burned the full retry budget (up to 127 s of backoff per workflow) before surfacing the same failure the first attempt returned.
+
+| Exception | Reason |
+|-----------|--------|
+| `SandboxViolationError` | Sandbox policy is deterministic; the next attempt is refused identically. |
+| `ToolNotFoundError` *(subclass of `KeyError`)* | A typo in `tool_name` never resolves itself. |
+| `AttachmentResolutionError` *(subclass of `ValueError`)* | Deterministic resolution failure — size limit, empty source, unsupported type, or a missing local file. |
+| `TemplateError` | A typo in `{state.foo}` never resolves itself. |
+| `ValidationError` | Workflow / step definition refused by Pydantic — fix the YAML, don't retry. |
+| `SecurityError` | Expression rejected by router AST policy — semantics, not flakiness. |
+| `BudgetExceededError` | Spend doesn't decrease between attempts. |
+| Pydantic `ValidationError` | Provider-side schema rejection. Special-cased because it's outside the AgentLoom hierarchy. |
+
+Every failed `StepResult` carries an `error_classification` field — `"permanent"` for the errors above and `"transient"` for failures that exhausted the retry budget. It is part of the result model (visible in `agentloom run --json` and on `result.step_results`), so callers and post-run analysis can distinguish "we wasted 30 s retrying nothing" from "we actually retried a transient one".
 
 ## Fallback chain
 

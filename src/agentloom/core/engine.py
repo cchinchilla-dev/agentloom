@@ -29,9 +29,9 @@ from agentloom.exceptions import (
     PauseRequestedError,
     WorkflowError,
 )
+from agentloom.resilience.budget import BudgetEnforcer
 from agentloom.resilience.retry import (
     compute_backoff,
-    extract_status_code,
     is_retryable_exception,
 )
 from agentloom.steps.base import BaseStep, StepContext
@@ -115,6 +115,7 @@ class WorkflowEngine:
         on_stream_chunk: Callable[[str, str], None] | None = None,
         checkpointer: BaseCheckpointer | None = None,
         run_id: str | None = None,
+        budget_enforcer: BudgetEnforcer | None = None,
     ) -> None:
         self.workflow = workflow
         self.state = state_manager or StateManager(initial_state=dict(workflow.state))
@@ -123,7 +124,14 @@ class WorkflowEngine:
         self.step_registry = step_registry or create_default_registry()
         self.observer = observer
         self._stream_callback = on_stream_chunk
-        self._budget_spent: float = 0.0
+        # ``budget_enforcer`` is the shared-budget hook: a parent engine
+        # passes its own enforcer when launching a subworkflow so child
+        # charges land in the same counter. When unset (the ordinary
+        # top-level case) we build a fresh enforcer scoped to this
+        # workflow's ``budget_usd``. ``None`` limit ⇒ unlimited; the
+        # enforcer is still created so call sites don't need ``if budget
+        # is None`` branching.
+        self._budget = budget_enforcer or BudgetEnforcer(workflow.config.budget_usd)
 
         self._checkpointer = checkpointer
         # Always generate a run_id so ``workflow.run_id`` propagates through
@@ -548,7 +556,20 @@ class WorkflowEngine:
             final_state = await self.state.get_state_snapshot()
 
             total_tokens = sum(r.token_usage.total_tokens for r in step_results.values())
-            total_cost = sum(r.cost_usd for r in step_results.values())
+            # Report the larger of the per-step sum and the enforcer's
+            # recorded spend. They agree for an ordinary run, but a
+            # subworkflow that shared this engine's enforcer reports
+            # ``cost_usd=0`` on its step result (its child steps already
+            # charged the enforcer directly — re-counting it would
+            # double-charge), so the per-step sum alone would under-
+            # report. ``self._budget.spent`` carries the child charges;
+            # on a resumed run the per-step sum carries pre-checkpoint
+            # cost the fresh enforcer does not — ``max`` keeps whichever
+            # is the fuller picture.
+            total_cost = max(
+                sum(r.cost_usd for r in step_results.values()),
+                self._budget.spent,
+            )
 
             failed_steps = [r for r in step_results.values() if r.status == StepStatus.FAILED]
             status = WorkflowStatus.FAILED if failed_steps else WorkflowStatus.SUCCESS
@@ -584,35 +605,35 @@ class WorkflowEngine:
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
 
-            # Unwrap BudgetExceededError from the task group before pauses —
-            # a budget overrun supersedes any pause that may have been
-            # pending in the same layer.
-            budget_err = _extract_budget_error(e)
-            if budget_err is not None:
-                await self._save_checkpoint("budget_exceeded")
-                if self.observer:
-                    self.observer.on_workflow_end(
-                        workflow_name,
-                        "budget_exceeded",
-                        duration,
-                        0,
-                        self._budget_spent,
-                    )
-                result = WorkflowResult(
-                    workflow_name=workflow_name,
-                    status=WorkflowStatus.BUDGET_EXCEEDED,
-                    step_results=await self.state.all_step_results(),
-                    final_state=await self.state.get_state_snapshot(),
-                    total_duration_ms=duration,
-                    total_cost_usd=self._budget_spent,
-                    error=str(budget_err),
-                )
-                await self._finalize_result(result, workflow_name)
-                return result
-
-            # Check for PauseRequestedError wrapped in ExceptionGroup
-            # (anyio task groups always wrap step exceptions).
+            # Pause outranks budget in conflict resolution. Pre-0.5.0 a
+            # workflow whose approval gate fired in the same layer as a
+            # budget-blowing LLM step silently ended ``budget_exceeded``
+            # — the user lost both the money (the LLM call had already
+            # completed) AND the approval opportunity, with no resumable
+            # checkpoint at the gate. Surfacing the pause first
+            # preserves both options: the human can ``--approve`` /
+            # ``--reject``, and the workflow re-evaluates budget on
+            # resume (an exhausted budget will then surface
+            # ``BudgetExceededError`` on the next dispatch, which is the
+            # user's explicit choice — they asked to look at the pause
+            # before the budget).
+            #
+            # Two sources to inspect: (1) ``_extract_pause_error`` walks
+            # the ExceptionGroup for an unhandled pause, (2) state
+            # manager carries PAUSED step results from gates whose
+            # ``PauseRequestedError`` was swallowed by ``_execute_step``
+            # so siblings could complete — when a sibling then raises
+            # ``BudgetExceededError`` and cancels the task group, the
+            # raised exception is the budget error but the state still
+            # has the pause recorded. Check the state too so the pause
+            # still wins even in that race.
             pause_err = _extract_pause_error(e)
+            if pause_err is None:
+                step_results_for_pause = await self.state.all_step_results()
+                for sid, sresult in step_results_for_pause.items():
+                    if sresult.status == StepStatus.PAUSED:
+                        pause_err = PauseRequestedError(sresult.error or sid)
+                        break
             if pause_err is not None:
                 await self._save_checkpoint("paused", paused_step_id=pause_err.step_id)
                 step_results = await self.state.all_step_results()
@@ -643,10 +664,33 @@ class WorkflowEngine:
                 await self._finalize_result(result, workflow_name)
                 return result
 
+            budget_err = _extract_budget_error(e)
+            if budget_err is not None:
+                await self._save_checkpoint("budget_exceeded")
+                if self.observer:
+                    self.observer.on_workflow_end(
+                        workflow_name,
+                        "budget_exceeded",
+                        duration,
+                        0,
+                        self._budget.spent,
+                    )
+                result = WorkflowResult(
+                    workflow_name=workflow_name,
+                    status=WorkflowStatus.BUDGET_EXCEEDED,
+                    step_results=await self.state.all_step_results(),
+                    final_state=await self.state.get_state_snapshot(),
+                    total_duration_ms=duration,
+                    total_cost_usd=self._budget.spent,
+                    error=str(budget_err),
+                )
+                await self._finalize_result(result, workflow_name)
+                return result
+
             await self._save_checkpoint("failed")
             if self.observer:
                 self.observer.on_workflow_end(
-                    workflow_name, "failed", duration, 0, self._budget_spent
+                    workflow_name, "failed", duration, 0, self._budget.spent
                 )
             logger.error("Workflow '%s' failed: %s", workflow_name, e)
             result = WorkflowResult(
@@ -671,14 +715,17 @@ class WorkflowEngine:
         if step_def is None:
             raise WorkflowError(f"Step '{step_id}' not found in workflow")
 
-        # Pre-dispatch budget gate: if prior completions already exhausted
-        # the budget, refuse to start this step. Post-hoc enforcement lets
-        # in-flight sibling calls overshoot by their cost; a pre-check here
-        # at least bounds the overshoot to the worst-case single-layer
-        # in-flight set instead of compounding across layers.
-        budget = self.workflow.config.budget_usd
-        if budget is not None and self._budget_spent >= budget:
-            raise BudgetExceededError(budget, self._budget_spent)
+        # Pre-dispatch budget gate: if a prior layer already exhausted
+        # the budget, refuse to start this step. ``remaining`` is the
+        # headroom left (``max(0, limit - spent)``); a zero reading
+        # means earlier charges landed exactly on — or past — the limit,
+        # so dispatching another step would only burn its cost before
+        # ``charge`` raised anyway. A breach within a layer is caught by
+        # ``charge`` itself; this gate stops the next layer from
+        # starting once the budget is spent.
+        if self._budget.has_limit() and self._budget.remaining == 0.0:
+            assert self._budget.limit_usd is not None
+            raise BudgetExceededError(self._budget.limit_usd, self._budget.spent)
 
         logger.debug("Executing step: %s (type=%s)", step_id, step_def.type.value)
 
@@ -708,6 +755,7 @@ class WorkflowEngine:
             on_stream_chunk=self._stream_callback,
             checkpointer=self._checkpointer,
             capture_prompts=self.workflow.config.capture_prompts,
+            budget_enforcer=self._budget,
         )
 
         max_retries = step_def.retry.max_retries
@@ -726,24 +774,22 @@ class WorkflowEngine:
                 if result.status == StepStatus.SUCCESS:
                     await self.state.set_step_result(step_id, result)
 
-                    # Budget tracking — post-hoc check, no async lock on _budget_spent.
-                    # Cooperative concurrency makes this safe in practice (no preemption
-                    # between read and write), but a proper BudgetEnforcer refactor is planned.
-                    self._budget_spent += result.cost_usd
-                    if self.observer and self.workflow.config.budget_usd is not None:
+                    # ``BudgetEnforcer.charge`` is the single source of
+                    # truth for spend — its ``anyio.Lock`` makes the
+                    # increment safe across parallel-layer task groups
+                    # (the old bare-float counter could double-bill under
+                    # concurrent completions) and raises
+                    # ``BudgetExceededError`` from inside the critical
+                    # section so the engine's terminal classifier picks
+                    # up the overrun on the way out.
+                    await self._budget.charge(result.cost_usd)
+                    if self.observer and self._budget.has_limit():
                         hook = getattr(self.observer, "on_budget_remaining", None)
                         if hook:
                             hook(
                                 self.workflow.name,
-                                max(0.0, self.workflow.config.budget_usd - self._budget_spent),
+                                self._budget.remaining or 0.0,
                             )
-                    if (
-                        self.workflow.config.budget_usd is not None
-                        and self._budget_spent > self.workflow.config.budget_usd
-                    ):
-                        raise BudgetExceededError(
-                            self.workflow.config.budget_usd, self._budget_spent
-                        )
 
                     if self.observer:
                         pmeta = result.prompt_metadata
@@ -795,7 +841,13 @@ class WorkflowEngine:
                 # non-success result without raising. ``result.error`` is a
                 # string with no ``status_code`` to inspect, so the
                 # retryable-status-codes filter is intentionally skipped —
-                # treat the returned failure as transient and retry.
+                # treat the returned failure as transient and retry. On
+                # the last attempt the result still flows through to
+                # ``last_result`` below; stamp ``error_classification``
+                # so a step that exhausts retries surfaces ``transient``
+                # to observability (the executor wouldn't have set it).
+                if result.error_classification is None:
+                    result.error_classification = "transient"
                 if attempt < max_retries:
                     backoff = compute_backoff(
                         step_def.retry.backoff_base,
@@ -869,20 +921,23 @@ class WorkflowEngine:
                 return
 
             except Exception as e:
+                # Bail out on permanent failures (4xx that's not 429,
+                # sandbox violation, attachment-not-found, tool-not-found,
+                # template typo, Pydantic validation, …) before consuming
+                # the retry budget. ``is_retryable_exception`` walks the
+                # cause chain for an explicit ``is_retryable = False``
+                # marker first, then falls back to the status-code rule.
+                retryable = is_retryable_exception(e, step_def.retry.retryable_status_codes)
                 last_result = StepResult(
                     step_id=step_id,
                     status=StepStatus.FAILED,
                     error=str(e),
+                    error_classification=("transient" if retryable else "permanent"),
                 )
-                # Bail out on permanent failures (4xx that's not 429, etc.)
-                # before consuming the retry budget. Status-less exceptions
-                # are treated as transient and retried — see
-                # ``is_retryable_exception`` for the rule.
-                if not is_retryable_exception(e, step_def.retry.retryable_status_codes):
+                if not retryable:
                     logger.warning(
-                        "Step '%s' failed with non-retryable status %s; not retrying: %s",
+                        "Step '%s' failed with non-retryable error; not retrying: %s",
                         step_id,
-                        extract_status_code(e),
                         e,
                     )
                     break

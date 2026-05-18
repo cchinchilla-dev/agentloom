@@ -327,6 +327,91 @@ class TestEmptySource:
             await resolve_attachments([att])
 
 
+class TestAttachmentResolutionErrorWrapping:
+    """Deterministic shape/policy refusals (unsupported type, size
+    limit, empty source) get wrapped in ``AttachmentResolutionError``
+    so the resilience layer sees a non-retryable marker.
+    ``AttachmentResolutionError`` subclasses ``ValueError`` so pre-0.5.0
+    ``except ValueError`` clauses keep working. ``PermissionError``
+    (sandbox blocks) and ``httpx.HTTPError`` (network failures) are
+    intentionally NOT wrapped so the existing rules continue to apply."""
+
+    async def test_size_limit_raises_attachment_resolution_error(self) -> None:
+        import tempfile
+
+        from agentloom.exceptions import AttachmentResolutionError
+        from agentloom.providers.multimodal import MAX_ATTACHMENT_BYTES
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x00" * (MAX_ATTACHMENT_BYTES + 1))
+            f.flush()
+            path = f.name
+        att = Attachment(type="image", source=path)
+        with pytest.raises(AttachmentResolutionError) as excinfo:
+            await resolve_attachments([att])
+        # Non-retryable contract: the resilience layer must skip retries.
+        assert excinfo.value.is_retryable is False
+        # Backwards compat: still a ValueError.
+        assert isinstance(excinfo.value, ValueError)
+
+    async def test_empty_source_raises_attachment_resolution_error(self) -> None:
+        from agentloom.exceptions import AttachmentResolutionError
+
+        att = Attachment(type="image", source="")
+        with pytest.raises(AttachmentResolutionError) as excinfo:
+            await resolve_attachments([att])
+        assert excinfo.value.is_retryable is False
+        # Source defaults to ``<unknown>`` when empty.
+        assert excinfo.value.source == "<unknown>"
+
+    async def test_missing_local_file_wrapped(self) -> None:
+        """A local attachment path that does not exist raises
+        ``FileNotFoundError`` from ``read_bytes()``. It is a permanent
+        failure — the file will not appear on a retry — so it must be
+        wrapped in ``AttachmentResolutionError`` to carry the
+        non-retryable marker."""
+        from agentloom.exceptions import AttachmentResolutionError
+
+        att = Attachment(type="image", source="/nonexistent/path/does-not-exist.png")
+        with pytest.raises(AttachmentResolutionError) as excinfo:
+            await resolve_attachments([att])
+        assert excinfo.value.is_retryable is False
+
+    async def test_permission_error_not_wrapped(self) -> None:
+        """Sandbox blocks raise ``PermissionError`` directly — they're
+        already terminal at the call site, no need for the wrapper. The
+        existing ``pytest.raises(PermissionError)`` tests around sandbox
+        rejection continue to work without changes."""
+        from agentloom.core.models import SandboxConfig
+
+        sandbox = SandboxConfig(allow_network=False)
+        att = Attachment(type="image", source="https://example.com/image.jpg")
+        with pytest.raises(PermissionError):
+            await resolve_attachments([att], sandbox=sandbox)
+
+    async def test_already_classified_error_propagates_without_rewrap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An ``AttachmentResolutionError`` raised inside ``_resolve_single``
+        is propagated as-is — the dedicated ``except`` arm stops the
+        generic ``ValueError`` handler from re-wrapping it into a
+        double-prefixed ``Attachment 'X': Attachment 'X': ...`` message."""
+        from agentloom.exceptions import AttachmentResolutionError
+        from agentloom.providers import multimodal
+
+        original = AttachmentResolutionError("doc.png", "already classified")
+
+        async def _raise_classified(att: object, cfg: object) -> object:
+            raise original
+
+        monkeypatch.setattr(multimodal, "_resolve_single", _raise_classified)
+        att = Attachment(type="image", source="doc.png")
+        with pytest.raises(AttachmentResolutionError) as excinfo:
+            await resolve_attachments([att])
+        # Same object surfaces — not re-wrapped.
+        assert excinfo.value is original
+
+
 class TestOpenAIAudioFormats:
     async def test_unsupported_audio_format_raises(self) -> None:
         from agentloom.exceptions import ProviderError

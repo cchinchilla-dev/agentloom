@@ -119,10 +119,16 @@ class TestEnvVarOverrides:
 class TestProviderDiscovery:
     def test_discovers_openai(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        # Ensure the opt-in is OFF so the assertion below is meaningful —
+        # parent shells with ``AGENTLOOM_OLLAMA_FALLBACK`` set would
+        # otherwise mask the regression net.
+        monkeypatch.delenv("AGENTLOOM_OLLAMA_FALLBACK", raising=False)
         cfg = load_config()
         names = [p.name for p in cfg.providers]
         assert "openai" in names
-        assert "ollama" in names  # always present
+        # Ollama is opt-in as of 0.5.0 — without the env var the
+        # secondary fallback path must NOT be registered.
+        assert "ollama" not in names
 
     def test_discovers_anthropic(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
@@ -130,15 +136,76 @@ class TestProviderDiscovery:
         names = [p.name for p in cfg.providers]
         assert "anthropic" in names
 
-    def test_ollama_always_present(self) -> None:
+    def test_ollama_not_registered_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Pre-0.5.0 Ollama was auto-registered as a global fallback, so
+        every primary-provider failure produced an error chain that
+        mentioned Ollama even for users who didn't run it. Registration
+        is now gated behind ``AGENTLOOM_OLLAMA_FALLBACK``."""
+        monkeypatch.delenv("AGENTLOOM_OLLAMA_FALLBACK", raising=False)
+        cfg = load_config()
+        names = [p.name for p in cfg.providers]
+        assert "ollama" not in names
+
+    def test_ollama_registered_when_env_var_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Opt-in path: ``AGENTLOOM_OLLAMA_FALLBACK=1`` re-enables the
+        pre-0.5.0 behaviour for users who DO run Ollama and want it as a
+        catch-all fallback."""
+        monkeypatch.setenv("AGENTLOOM_OLLAMA_FALLBACK", "1")
         cfg = load_config()
         names = [p.name for p in cfg.providers]
         assert "ollama" in names
-
-    def test_ollama_is_fallback(self) -> None:
-        cfg = load_config()
         ollama = next(p for p in cfg.providers if p.name == "ollama")
         assert ollama.is_fallback is True
+
+    @pytest.mark.parametrize("falsey", ["0", "false", "no", "off", ""])
+    def test_ollama_not_registered_for_falsey_flag(
+        self, monkeypatch: pytest.MonkeyPatch, falsey: str
+    ) -> None:
+        """The flag honours boolean coercion: ``0`` / ``false`` / ``no`` /
+        ``off`` / empty do NOT opt in. A bare non-empty-string check
+        would treat ``AGENTLOOM_OLLAMA_FALLBACK=0`` as enabled and
+        surprise a user who explicitly disabled the fallback."""
+        monkeypatch.setenv("AGENTLOOM_OLLAMA_FALLBACK", falsey)
+        cfg = load_config()
+        names = [p.name for p in cfg.providers]
+        assert "ollama" not in names
+
+    def test_ollama_not_registered_for_unrecognised_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unrecognised flag value fails closed — discovery does not
+        abort, and Ollama stays unregistered."""
+        monkeypatch.setenv("AGENTLOOM_OLLAMA_FALLBACK", "maybe")
+        cfg = load_config()
+        names = [p.name for p in cfg.providers]
+        assert "ollama" not in names
+
+    def test_ollama_registered_when_explicit_in_yaml(self) -> None:
+        """Explicit YAML config bypasses auto-discovery — users who list
+        ``ollama`` under ``providers:`` keep the path even without the
+        env var, since that's the unambiguous opt-in."""
+        yaml_content = """\
+providers:
+  - name: ollama
+    base_url: http://localhost:11434
+    is_fallback: true
+"""
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+            cfg = load_config(f.name)
+        names = [p.name for p in cfg.providers]
+        assert "ollama" in names
+
+    def test_ollama_registered_when_default_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A workflow that names ``ollama`` as the primary provider
+        registers it even without the opt-in flag — otherwise the user
+        would see "no provider for ollama" with no clear path to fix it.
+        Pre-0.5.0 path preserved for users who run Ollama primary."""
+        monkeypatch.delenv("AGENTLOOM_OLLAMA_FALLBACK", raising=False)
+        cfg = load_config(default_provider_override="ollama")
+        names = [p.name for p in cfg.providers]
+        assert "ollama" in names
 
     def test_default_provider_gets_priority_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")

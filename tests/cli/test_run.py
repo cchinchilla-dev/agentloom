@@ -107,26 +107,43 @@ class TestRunCheckpoint:
 
 
 class TestSetupProviders:
-    def test_ollama_always_registered(self) -> None:
+    def test_ollama_registered_when_explicit_default(self) -> None:
+        """A workflow that names ``ollama`` as its primary provider
+        opts in via ``AGENTLOOM_OLLAMA_FALLBACK``. The post-0.5.0 default
+        no longer auto-registers it for the no-config case."""
+        from agentloom.cli.run import _setup_providers
+        from agentloom.providers.gateway import ProviderGateway
+
+        gw = ProviderGateway()
+        with patch.dict("os.environ", {"AGENTLOOM_OLLAMA_FALLBACK": "1"}, clear=True):
+            _setup_providers(gw, "ollama")
+        assert len(gw._providers) >= 1
+        assert any(e.provider.name == "ollama" for e in gw._providers)
+
+    def test_ollama_not_registered_by_default(self) -> None:
+        """Mirror of the config-layer test — the CLI surface honours the
+        opt-in too. Pre-0.5.0 this returned an Ollama provider even with
+        no env var set."""
         from agentloom.cli.run import _setup_providers
         from agentloom.providers.gateway import ProviderGateway
 
         gw = ProviderGateway()
         with patch.dict("os.environ", {}, clear=True):
-            _setup_providers(gw, "ollama")
-        assert len(gw._providers) >= 1
-        assert any(e.provider.name == "ollama" for e in gw._providers)
+            _setup_providers(gw, "openai")
+        names = [e.provider.name for e in gw._providers]
+        assert "ollama" not in names
 
     def test_openai_registered_when_key_set(self) -> None:
         from agentloom.cli.run import _setup_providers
         from agentloom.providers.gateway import ProviderGateway
 
         gw = ProviderGateway()
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=True):
             _setup_providers(gw, "openai")
         names = [e.provider.name for e in gw._providers]
         assert "openai" in names
-        assert "ollama" in names
+        # ollama is opt-in (post-0.5.0) — must NOT show up here.
+        assert "ollama" not in names
 
     def test_anthropic_registered_when_key_set(self) -> None:
         from agentloom.cli.run import _setup_providers
@@ -149,11 +166,19 @@ class TestSetupProviders:
         assert "google" in names
 
     def test_priority_reflects_default(self) -> None:
+        """When both OpenAI (primary) and Ollama (opt-in fallback) are
+        registered, the default provider should sort ahead of the
+        fallback. Force ``AGENTLOOM_OLLAMA_FALLBACK=1`` here because
+        Ollama is no longer registered by default (post-0.5.0)."""
         from agentloom.cli.run import _setup_providers
         from agentloom.providers.gateway import ProviderGateway
 
         gw = ProviderGateway()
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}):
+        with patch.dict(
+            "os.environ",
+            {"OPENAI_API_KEY": "sk-test", "AGENTLOOM_OLLAMA_FALLBACK": "1"},
+            clear=True,
+        ):
             _setup_providers(gw, "openai")
         openai_entry = next(e for e in gw._providers if e.provider.name == "openai")
         ollama_entry = next(e for e in gw._providers if e.provider.name == "ollama")

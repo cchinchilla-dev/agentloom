@@ -33,8 +33,19 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, object]] = {
         "env_key": "GOOGLE_API_KEY",
         "models": ["gemini-2.5-flash"],
     },
+    # Ollama discovery requires an explicit opt-in. Pre-0.5.0 Ollama was
+    # auto-registered as a global fallback (``env_key=""``) which meant
+    # every primary-provider failure (404 on a wrong model id, transient
+    # 5xx, etc.) triggered a secondary call to ``http://localhost:11434``
+    # and only then surfaced the error — adding 250 ms – 1 s of latency
+    # per failure to users who never ran Ollama, plus a confusing error
+    # chain ("Provider 'anthropic' failed: 404 ... / Provider 'ollama'
+    # failed: model not found"). The opt-in via
+    # ``AGENTLOOM_OLLAMA_FALLBACK`` keeps the path for users who do run
+    # Ollama while removing the surprise egress + diagnosis-noise tax
+    # for everyone else.
     "ollama": {
-        "env_key": "",
+        "env_key": "AGENTLOOM_OLLAMA_FALLBACK",
         "base_url": "http://localhost:11434",
         "is_fallback": True,
     },
@@ -69,17 +80,32 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
 _ENV_PREFIX = "AGENTLOOM_"
 
 
+_TRUTHY_FLAG_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
 def _coerce(value: str, target_type: type) -> object:
     """Convert an env var string to the target type."""
     if target_type is bool:
         normalized = value.strip().lower()
-        if normalized in ("1", "true", "yes", "on"):
+        if normalized in _TRUTHY_FLAG_VALUES:
             return True
         if normalized in ("0", "false", "no", "off"):
             return False
         msg = f"Invalid boolean value for configuration: {value!r}"
         raise ValueError(msg)
     return target_type(value)
+
+
+def _env_flag_enabled(name: str) -> bool:
+    """True when an ``AGENTLOOM_*`` boolean opt-in flag is set truthy.
+
+    Honours the same vocabulary as :func:`_coerce` — ``1/true/yes/on``
+    enable; an unset var, an empty string, or any falsey / unrecognised
+    value does not. Unlike :func:`_coerce` this never raises: a typo in
+    an opt-in flag fails closed rather than aborting provider discovery.
+    """
+    value = os.environ.get(name)
+    return value is not None and value.strip().lower() in _TRUTHY_FLAG_VALUES
 
 
 def _apply_env_overrides(data: dict[str, object]) -> dict[str, object]:
@@ -92,18 +118,47 @@ def _apply_env_overrides(data: dict[str, object]) -> dict[str, object]:
 
 
 def discover_providers(default_provider: str) -> list[ProviderConfig]:
-    """Auto-discover providers from API-key env vars."""
+    """Auto-discover providers from API-key env vars.
+
+    Skip rule for ``env_key``:
+    * Providers whose ``env_key`` names an API key (``OPENAI_API_KEY``,
+      ``ANTHROPIC_API_KEY``, ``GOOGLE_API_KEY``) are skipped when the
+      key is missing — they cannot make calls without credentials. Any
+      non-empty value counts as the credential.
+    * Ollama's ``env_key`` is the ``AGENTLOOM_OLLAMA_FALLBACK`` opt-in
+      flag, not a credential. It's skipped by default (post-0.5.0 — no
+      auto-fallback for users who don't run Ollama), but registered
+      when EITHER (a) the flag holds a truthy value (``1/true/yes/on``;
+      ``0/false/no/off`` and unrecognised values do NOT opt in), OR
+      (b) the workflow has explicitly named ``ollama`` as its primary
+      provider. Without (b) a workflow that says ``provider: ollama``
+      would silently end up with no registered providers and an opaque
+      "no provider for ollama" error.
+    """
     providers: list[ProviderConfig] = []
 
     for name, defaults in _PROVIDER_DEFAULTS.items():
         env_key = str(defaults.get("env_key", ""))
         is_fallback = bool(defaults.get("is_fallback", False))
 
-        # Providers that require an API key are skipped when the key is absent.
-        if env_key and not os.environ.get(env_key):
-            continue
+        if env_key:
+            if name == "ollama":
+                # ``env_key`` here is the boolean opt-in flag — honour
+                # the truthy vocabulary so ``AGENTLOOM_OLLAMA_FALLBACK=0``
+                # (or ``false`` / ``no``) does NOT register Ollama.
+                enabled = _env_flag_enabled(env_key)
+            else:
+                # API-key providers: any non-empty value is the key.
+                enabled = bool(os.environ.get(env_key))
+            # Ollama-as-primary opt-in exception: when the workflow
+            # names ollama as its default provider, register it even
+            # without the flag (otherwise discovery yields nothing).
+            if not enabled and not (name == "ollama" and default_provider == "ollama"):
+                continue
 
-        api_key = os.environ.get(env_key, "") if env_key else ""
+        # Ollama runs keyless; its ``env_key`` is an opt-in flag, never
+        # a credential, so do not leak the flag value into ``api_key``.
+        api_key = "" if name == "ollama" else (os.environ.get(env_key, "") if env_key else "")
         default_base = str(defaults.get("base_url", ""))
         base_url = os.environ.get(f"{name.upper()}_BASE_URL", default_base)
         raw_models = defaults.get("models", [])

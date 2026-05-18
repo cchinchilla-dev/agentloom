@@ -32,11 +32,18 @@ class ToolRegistry:
         """Get a tool by name.
 
         Raises:
-            KeyError: If tool is not registered.
+            ToolNotFoundError: If tool is not registered. Subclass of
+                ``KeyError`` so pre-0.5.0 ``except KeyError`` call sites
+                keep working; the change is purely additive — the
+                resilience layer now sees a non-retryable marker on the
+                exception and skips retries.
         """
         if name not in self._tools:
-            available = ", ".join(sorted(self._tools.keys())) or "(none)"
-            raise KeyError(f"Tool '{name}' not found. Available: {available}")
+            # Lazy import keeps ``tools/registry.py`` free of an import
+            # edge into ``exceptions.py`` at module load.
+            from agentloom.exceptions import ToolNotFoundError
+
+            raise ToolNotFoundError(name, list(self._tools.keys()))
         return self._tools[name]
 
     def list(self) -> list[ToolInfo]:

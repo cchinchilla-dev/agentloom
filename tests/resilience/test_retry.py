@@ -224,3 +224,121 @@ class TestRetryWithPolicyNonRetryable:
         assert is_retryable_exception(FakeHTTPStatusError(404), [429, 500, 502, 503, 504]) is False
         # 503 IS in the list — must retry.
         assert is_retryable_exception(FakeHTTPStatusError(503), [429, 500, 502, 503, 504]) is True
+
+
+class TestPermanentMarkerClassification:
+    """Exceptions carrying ``is_retryable = False`` must short-circuit
+    the retry loop. Pre-0.5.0 a sandbox violation, a tool-not-found, an
+    attachment shape refusal, or a template typo each burned the full
+    retry budget (4× × 10 s = 40 s of useless backoff) before surfacing
+    the same error the first attempt returned."""
+
+    def test_sandbox_violation_marked_non_retryable(self) -> None:
+        from agentloom.exceptions import SandboxViolationError
+        from agentloom.resilience.retry import is_retryable_exception
+
+        exc = SandboxViolationError("shell_command", "denied")
+        assert exc.is_retryable is False
+        assert is_retryable_exception(exc, [429, 500]) is False
+
+    def test_tool_not_found_marked_non_retryable(self) -> None:
+        from agentloom.exceptions import ToolNotFoundError
+        from agentloom.resilience.retry import is_retryable_exception
+
+        exc = ToolNotFoundError("missing_tool", ["a", "b"])
+        assert exc.is_retryable is False
+        assert is_retryable_exception(exc, [429, 500]) is False
+        # KeyError compatibility: pre-0.5.0 call sites use ``except KeyError``.
+        assert isinstance(exc, KeyError)
+
+    def test_attachment_resolution_marked_non_retryable(self) -> None:
+        from agentloom.exceptions import AttachmentResolutionError
+        from agentloom.resilience.retry import is_retryable_exception
+
+        exc = AttachmentResolutionError("file.png", "size limit")
+        assert exc.is_retryable is False
+        assert is_retryable_exception(exc, [429, 500]) is False
+        # ValueError compatibility: pre-0.5.0 ``except ValueError`` clauses keep working.
+        assert isinstance(exc, ValueError)
+
+    def test_template_error_marked_non_retryable(self) -> None:
+        from agentloom.core.templates import TemplateError
+        from agentloom.resilience.retry import is_retryable_exception
+
+        exc = TemplateError("state.missing_key")
+        assert exc.is_retryable is False
+        assert is_retryable_exception(exc, [429, 500]) is False
+
+    def test_validation_error_marked_non_retryable(self) -> None:
+        from agentloom.exceptions import ValidationError
+        from agentloom.resilience.retry import is_retryable_exception
+
+        exc = ValidationError("bad workflow")
+        assert exc.is_retryable is False
+        assert is_retryable_exception(exc, [429, 500]) is False
+
+    def test_pydantic_validation_error_marked_non_retryable(self) -> None:
+        """Pydantic's ``ValidationError`` is outside the AgentLoom class
+        hierarchy and has no place to hang ``is_retryable``. The
+        resilience layer special-cases it so provider-side schema
+        rejections from Pydantic models bail out fast."""
+        from pydantic import BaseModel
+        from pydantic import ValidationError as PydanticValidationError
+
+        from agentloom.resilience.retry import is_retryable_exception
+
+        class _M(BaseModel):
+            x: int
+
+        try:
+            _M.model_validate({"x": "not-an-int"})
+            raise AssertionError("Pydantic should have raised")
+        except PydanticValidationError as exc:
+            assert is_retryable_exception(exc, [429, 500]) is False
+
+    def test_security_error_marked_non_retryable(self) -> None:
+        from agentloom.exceptions import SecurityError
+        from agentloom.resilience.retry import is_retryable_exception
+
+        exc = SecurityError("expression refused", expression="getattr(...)")
+        assert is_retryable_exception(exc, [429, 500]) is False
+
+    def test_marker_walks_cause_chain(self) -> None:
+        """The ``StepError`` wrapper added by the engine for step-id
+        context must not erase the underlying classification. The
+        retry layer walks ``__cause__`` for an explicit marker."""
+        from agentloom.exceptions import SandboxViolationError, StepError
+        from agentloom.resilience.retry import is_retryable_exception
+
+        cause = SandboxViolationError("shell_command", "denied")
+        try:
+            try:
+                raise cause
+            except SandboxViolationError as inner:
+                raise StepError("s1", "wrapped") from inner
+        except StepError as wrapped:
+            assert is_retryable_exception(wrapped, [429, 500]) is False
+
+    def test_marker_walks_context_chain(self) -> None:
+        """Implicit chaining via ``__context__`` (raise inside ``except``
+        without ``from``) is also honoured — a ``TemplateError`` that
+        leaks during cleanup must still mark the wrapper permanent."""
+        from agentloom.core.templates import TemplateError
+        from agentloom.exceptions import StepError
+        from agentloom.resilience.retry import is_retryable_exception
+
+        try:
+            try:
+                raise TemplateError("state.x")
+            except TemplateError:
+                raise StepError("s1", "during cleanup")  # noqa: B904 — intentional implicit chain
+        except StepError as wrapped:
+            assert is_retryable_exception(wrapped, [429, 500]) is False
+
+    def test_status_less_exception_still_transient_when_no_marker(self) -> None:
+        """Regression net: a status-less generic exception without a
+        marker (network error, generic provider hiccup) must still be
+        treated as transient — pre-0.5.0 default behaviour."""
+        from agentloom.resilience.retry import is_retryable_exception
+
+        assert is_retryable_exception(RuntimeError("transient"), [429, 500]) is True

@@ -340,6 +340,30 @@ agentloom history --json                           # machine-readable
 
 ---
 
+## Budget enforcement
+
+The engine routes all workflow spend through `BudgetEnforcer` (`agentloom.resilience.budget`). The enforcer carries an `anyio.Lock`, so concurrent step completions in a parallel layer can't race past the limit by reading the same `_spent` value and both adding their cost. Two surfaces matter:
+
+* **Pre-dispatch gate** (`estimate(0)`) — before launching any step, the engine reads `spent` under the lock and refuses to start if the budget is already exhausted. This bounds the worst-case overshoot to the in-flight set of a single layer rather than letting it compound across layers.
+* **Post-completion charge** (`charge(cost_usd)`) — when a step succeeds, the engine adds the actual cost inside the lock and raises `BudgetExceededError` if the post-charge total is over. The exception propagates through the task group to the engine's terminal classifier, which surfaces `WorkflowStatus.BUDGET_EXCEEDED`.
+
+### Cross-subworkflow accounting
+
+When a parent workflow launches a subworkflow step:
+
+| Parent budget | Child budget | Behaviour |
+|---------------|--------------|-----------|
+| Set (`$0.10`) | None | Child engine inherits the parent's enforcer. Child charges count against the parent's `_spent`, so the parent's gate trips at the right step. |
+| Set (`$0.10`) | Set (`$0.05`) | Child uses a fresh enforcer scoped to its own limit. Pre-0.5.0 behaviour preserved. The parent's per-step accounting still adds the rolled-up subworkflow cost to the parent counter. |
+| None | Set (`$0.05`) | Child enforces its own budget; parent has no limit to enforce. |
+| None | None | No enforcement at either level. |
+
+### Pause-over-budget precedence
+
+When an `approval_gate` and a budget-blowing LLM step land in the same layer, **pause wins**. Pre-0.5.0 budget short-circuited the pause: the LLM step completed (spending the money), the pause was dropped, and the workflow ended `budget_exceeded` with no resumable checkpoint at the gate. The reversed precedence preserves both options — the human can `--approve` or `--reject`, and the workflow re-evaluates budget on resume. A workflow that resumes with budget already exhausted will then surface `BudgetExceededError` on the next dispatch (the user explicitly chose to look at the pause first).
+
+---
+
 ## Troubleshooting
 
 ??? question "Panels show 'No data'"

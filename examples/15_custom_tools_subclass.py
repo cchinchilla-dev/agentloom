@@ -261,7 +261,7 @@ def _setup_gateway(provider: str) -> ProviderGateway:
         gateway.register(
             GoogleProvider(),
             priority=0 if provider == "google" else 10,
-            models=["gemini-2.0-flash", "gemini-2.5-flash"],
+            models=["gemini-2.5-flash"],
         )
 
     from agentloom.providers.ollama import OllamaProvider

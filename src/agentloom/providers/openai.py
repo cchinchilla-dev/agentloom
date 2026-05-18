@@ -7,6 +7,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -24,6 +25,28 @@ from agentloom.providers.multimodal import (
 from agentloom.providers.pricing import calculate_cost
 
 logger = logging.getLogger("agentloom.providers.openai")
+
+
+def _normalize_base_url(raw: str) -> str:
+    """Append ``/v1`` only when *raw* points at a bare host.
+
+    The pre-0.5.0 rule — "append ``/v1`` unless the URL ends in ``/v1``" —
+    silently mangled URLs like ``https://gw.example.com/v2`` (became
+    ``…/v2/v1``) and ``https://gw.example.com/api/v1/foo`` (became
+    ``…/foo/v1``). Custom enterprise gateways that expose an alternative
+    API version, or already include a versioned path deeper in the URL,
+    produced broken request URLs and a confusing ``404`` from the
+    gateway. Any non-root path is now preserved verbatim; only a bare
+    host (``https://x``, ``https://x/``) still gets the suffix.
+    """
+    if not raw:
+        return raw
+    trimmed = raw.rstrip("/")
+    parsed = urlparse(trimmed)
+    if parsed.path and parsed.path != "/":
+        return trimmed
+    return trimmed + "/v1"
+
 
 # Keys forwarded to the OpenAI HTTP payload in addition to model/messages/
 # temperature/max_tokens. Unknown kwargs raise TypeError so silent parameter
@@ -61,9 +84,7 @@ class OpenAIProvider(BaseProvider):
         base_url: str = "https://api.openai.com/v1",
         **kwargs: Any,
     ) -> None:
-        # Normalize base_url: SDK-style URLs (without /v1) need the suffix.
-        if base_url and not base_url.rstrip("/").endswith("/v1"):
-            base_url = base_url.rstrip("/") + "/v1"
+        base_url = _normalize_base_url(base_url)
         super().__init__(api_key=api_key, base_url=base_url, **kwargs)
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self._client = httpx.AsyncClient(
