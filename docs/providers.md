@@ -44,18 +44,20 @@ agentloom run workflow.yaml --provider anthropic --model claude-sonnet-4-2025051
 !!! warning "Breaking change in 0.5.0 — Ollama is now opt-in"
     Pre-0.5.0 AgentLoom auto-registered Ollama as a catch-all fallback whenever no `providers:` block was explicitly configured. Every primary-provider failure — a 404 from a wrong model id, a transient 5xx — triggered a secondary call to `http://localhost:11434`, adding 250 ms – 1 s of latency per failure and a confusing error chain ("Provider 'anthropic' failed: 404 / Provider 'ollama' failed: model not found") for users who didn't run Ollama at all.
 
-    Starting in 0.5.0 you opt in via `AGENTLOOM_OLLAMA_FALLBACK=1`, or by listing `ollama` explicitly under `config.providers:` in YAML. Workflows that set `provider: ollama` directly (no fallback) keep working unchanged — the opt-in only affects the *implicit fallback* path.
+    Starting in 0.5.0 you opt in via `AGENTLOOM_OLLAMA_FALLBACK=1`, or by listing `ollama` in the top-level `providers:` block of an `agentloom.yaml` config file. Workflows that set `provider: ollama` directly (no fallback) keep working unchanged — the opt-in only affects the *implicit fallback* path.
 
-### Workflow opt-in via YAML
+### Opt-in via the config file
+
+The `providers:` block is a top-level key of the `agentloom.yaml` config file (the one passed to `load_config` / the CLI's `--config`), **not** a field of a workflow's `config:`. Declaring it disables auto-discovery, so list every provider you want — API keys are still read from the environment when omitted here:
 
 ```yaml
-config:
-  providers:
-    - name: openai
-      api_key: ${OPENAI_API_KEY}
-    - name: ollama
-      base_url: http://localhost:11434
-      is_fallback: true
+# agentloom.yaml
+providers:
+  - name: openai
+    models: ["gpt-4o-mini"]
+  - name: ollama
+    base_url: http://localhost:11434
+    is_fallback: true
 ```
 
 ### Recommended model IDs
@@ -131,14 +133,14 @@ The resilience layer short-circuits the retry loop when an exception carries `is
 |-----------|--------|
 | `SandboxViolationError` | Sandbox policy is deterministic; the next attempt is refused identically. |
 | `ToolNotFoundError` *(subclass of `KeyError`)* | A typo in `tool_name` never resolves itself. |
-| `AttachmentResolutionError` *(subclass of `ValueError`)* | Deterministic shape/policy refusal (size limit, empty source, unsupported type). |
+| `AttachmentResolutionError` *(subclass of `ValueError`)* | Deterministic resolution failure — size limit, empty source, unsupported type, or a missing local file. |
 | `TemplateError` | A typo in `{state.foo}` never resolves itself. |
 | `ValidationError` | Workflow / step definition refused by Pydantic — fix the YAML, don't retry. |
 | `SecurityError` | Expression rejected by router AST policy — semantics, not flakiness. |
 | `BudgetExceededError` | Spend doesn't decrease between attempts. |
 | Pydantic `ValidationError` | Provider-side schema rejection. Special-cased because it's outside the AgentLoom hierarchy. |
 
-`StepResult.error_classification` carries `"permanent"` for these and `"transient"` for failures that exhausted the retry budget — observability dashboards use the field to distinguish "we wasted 30 s retrying nothing" from "we actually retried a transient one".
+Every failed `StepResult` carries an `error_classification` field — `"permanent"` for the errors above and `"transient"` for failures that exhausted the retry budget. It is part of the result model (visible in `agentloom run --json` and on `result.step_results`), so callers and post-run analysis can distinguish "we wasted 30 s retrying nothing" from "we actually retried a transient one".
 
 ## Fallback chain
 

@@ -364,6 +364,19 @@ class TestAttachmentResolutionErrorWrapping:
         # Source defaults to ``<unknown>`` when empty.
         assert excinfo.value.source == "<unknown>"
 
+    async def test_missing_local_file_wrapped(self) -> None:
+        """A local attachment path that does not exist raises
+        ``FileNotFoundError`` from ``read_bytes()``. It is a permanent
+        failure — the file will not appear on a retry — so it must be
+        wrapped in ``AttachmentResolutionError`` to carry the
+        non-retryable marker."""
+        from agentloom.exceptions import AttachmentResolutionError
+
+        att = Attachment(type="image", source="/nonexistent/path/does-not-exist.png")
+        with pytest.raises(AttachmentResolutionError) as excinfo:
+            await resolve_attachments([att])
+        assert excinfo.value.is_retryable is False
+
     async def test_permission_error_not_wrapped(self) -> None:
         """Sandbox blocks raise ``PermissionError`` directly — they're
         already terminal at the call site, no need for the wrapper. The

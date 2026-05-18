@@ -287,15 +287,20 @@ class TestSubworkflowSharedBudget:
         assert result.status == WorkflowStatus.SUCCESS
         # The parent enforcer reflects the true spend, not 2× it.
         assert engine._budget.spent == pytest.approx(0.20)
+        # The result's reported cost is the true $0.20 — the engine
+        # takes it from the enforcer, so the shared-budget subworkflow
+        # step reporting ``cost_usd=0`` does not under-report the total.
+        assert result.total_cost_usd == pytest.approx(0.20)
 
     async def test_child_with_own_budget_uses_own_enforcer(self) -> None:
         """When the child declares its own ``budget_usd``, it owns the
         budget — the shared-enforcer hand-off does NOT happen. The
         child's BudgetEnforcer is fresh, and its own per-step gating is
-        what terminates it. The parent's per-step accounting still rolls
-        up the subworkflow step's cost (so the parent's budget cap still
-        applies to the aggregate), but child charges do not bypass the
-        parent's own gate via the shared-enforcer path."""
+        what terminates it. The parent sees a FAILED subworkflow (not
+        its own BUDGET_EXCEEDED) and — crucially — does NOT retry it:
+        the subworkflow raises a non-retryable ``StepError`` so the
+        engine's soft-failure path cannot re-bill the over-budget child
+        4× over."""
         provider = _CostedProvider(cost_per_call=0.001)
         # Child budget = $0.0005, which can't even cover one $0.001 call —
         # child terminates BUDGET_EXCEEDED inside its own enforcer. The
@@ -324,8 +329,15 @@ class TestSubworkflowSharedBudget:
         result = await engine.run()
         # The parent did NOT terminate BUDGET_EXCEEDED — the child's
         # own enforcer absorbed the breach, so the parent only sees a
-        # generic FAILED subworkflow. Pre-0.5.0 behaviour preserved.
+        # generic FAILED subworkflow.
         assert result.status != WorkflowStatus.BUDGET_EXCEEDED
+        sub = result.step_results["sub"]
+        assert sub.status == StepStatus.FAILED
+        assert sub.error_classification == "permanent"
+        # The over-budget child ran exactly once — the non-retryable
+        # ``StepError`` stopped the engine from retrying the subworkflow
+        # and re-billing the child's provider calls.
+        assert provider.calls == 1
 
 
 class TestPauseOverBudgetPrecedence:

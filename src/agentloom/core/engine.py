@@ -556,7 +556,20 @@ class WorkflowEngine:
             final_state = await self.state.get_state_snapshot()
 
             total_tokens = sum(r.token_usage.total_tokens for r in step_results.values())
-            total_cost = sum(r.cost_usd for r in step_results.values())
+            # Report the larger of the per-step sum and the enforcer's
+            # recorded spend. They agree for an ordinary run, but a
+            # subworkflow that shared this engine's enforcer reports
+            # ``cost_usd=0`` on its step result (its child steps already
+            # charged the enforcer directly — re-counting it would
+            # double-charge), so the per-step sum alone would under-
+            # report. ``self._budget.spent`` carries the child charges;
+            # on a resumed run the per-step sum carries pre-checkpoint
+            # cost the fresh enforcer does not — ``max`` keeps whichever
+            # is the fuller picture.
+            total_cost = max(
+                sum(r.cost_usd for r in step_results.values()),
+                self._budget.spent,
+            )
 
             failed_steps = [r for r in step_results.values() if r.status == StepStatus.FAILED]
             status = WorkflowStatus.FAILED if failed_steps else WorkflowStatus.SUCCESS

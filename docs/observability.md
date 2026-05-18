@@ -238,7 +238,6 @@ Inference spans follow the **canonical OTel GenAI registry** (May 2026 spec). Wo
 |-----------|-------------|
 | `step.id`, `step.type`, `step.status` | Step identification |
 | `step.duration_ms`, `step.cost_usd` | Per-step latency / spend |
-| `step.error_classification` | `"permanent"` for non-retryable failures (sandbox violation, tool-not-found, attachment shape, template typo, validation error); `"transient"` for failures that exhausted the retry budget. `null` on success. Pre-0.5.0 every failure looked the same in dashboards. |
 | `step.stream`, `step.attachments` | Streaming flag, attachment count |
 | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` | Operation type (`chat` for `llm_call`), provider (e.g. `openai`, `gcp.gemini`), model |
 | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | Visible token counts |

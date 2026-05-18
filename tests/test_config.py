@@ -157,6 +157,29 @@ class TestProviderDiscovery:
         ollama = next(p for p in cfg.providers if p.name == "ollama")
         assert ollama.is_fallback is True
 
+    @pytest.mark.parametrize("falsey", ["0", "false", "no", "off", ""])
+    def test_ollama_not_registered_for_falsey_flag(
+        self, monkeypatch: pytest.MonkeyPatch, falsey: str
+    ) -> None:
+        """The flag honours boolean coercion: ``0`` / ``false`` / ``no`` /
+        ``off`` / empty do NOT opt in. A bare non-empty-string check
+        would treat ``AGENTLOOM_OLLAMA_FALLBACK=0`` as enabled and
+        surprise a user who explicitly disabled the fallback."""
+        monkeypatch.setenv("AGENTLOOM_OLLAMA_FALLBACK", falsey)
+        cfg = load_config()
+        names = [p.name for p in cfg.providers]
+        assert "ollama" not in names
+
+    def test_ollama_not_registered_for_unrecognised_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unrecognised flag value fails closed — discovery does not
+        abort, and Ollama stays unregistered."""
+        monkeypatch.setenv("AGENTLOOM_OLLAMA_FALLBACK", "maybe")
+        cfg = load_config()
+        names = [p.name for p in cfg.providers]
+        assert "ollama" not in names
+
     def test_ollama_registered_when_explicit_in_yaml(self) -> None:
         """Explicit YAML config bypasses auto-discovery — users who list
         ``ollama`` under ``providers:`` keep the path even without the

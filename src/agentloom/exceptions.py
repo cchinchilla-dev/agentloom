@@ -27,10 +27,20 @@ class WorkflowError(AgentLoomError):
 
 
 class StepError(AgentLoomError):
-    """Error during step execution."""
+    """Error during step execution.
 
-    def __init__(self, step_id: str, message: str) -> None:
+    ``is_retryable`` defaults to ``True`` (a step error is presumed
+    transient unless the raiser knows better). Pass ``is_retryable=False``
+    for a deterministic failure the retry loop must not spin on — e.g. a
+    subworkflow whose own budget is already exhausted, where re-running
+    the step would only repeat the same over-budget provider calls. The
+    flag is set as an instance attribute so it overrides the class
+    default that ``is_retryable_exception`` reads.
+    """
+
+    def __init__(self, step_id: str, message: str, *, is_retryable: bool = True) -> None:
         self.step_id = step_id
+        self.is_retryable = is_retryable
         super().__init__(f"Step '{step_id}': {message}")
 
 

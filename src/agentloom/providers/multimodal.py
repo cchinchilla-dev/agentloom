@@ -396,16 +396,22 @@ async def resolve_attachments(
         except AttachmentResolutionError:
             # Already a permanent classification — propagate as-is.
             raise
-        except ValueError as exc:
-            # Deterministic shape/policy refusal (unsupported type,
-            # size limit, empty source, unsupported URL passthrough).
-            # Wrap so the resilience layer sees ``is_retryable = False``
-            # — pre-0.5.0 these spent 10–127 s on retries that never
-            # succeed. ``PermissionError`` (sandbox blocks) and
-            # ``httpx.HTTPError`` (network 4xx/5xx) are intentionally
-            # NOT wrapped: the former is already terminal at the call
-            # site, and the latter goes through the status-code rule so
-            # genuine 5xx transients keep retrying.
+        except (ValueError, FileNotFoundError, IsADirectoryError) as exc:
+            # Deterministic resolution failure that never recovers:
+            # ``ValueError`` (unsupported type, size limit, empty
+            # source, unsupported URL passthrough) or a local file that
+            # is missing / a directory. Wrap so the resilience layer
+            # sees ``is_retryable = False`` — pre-0.5.0 these spent
+            # 10–127 s on retries that never succeed.
+            #
+            # ``PermissionError`` and ``httpx.HTTPError`` are
+            # intentionally NOT wrapped: a sandbox ``PermissionError``
+            # is already terminal at the call site (and existing tests
+            # assert the raw type), and ``httpx`` network errors go
+            # through the status-code rule so genuine 5xx transients
+            # keep retrying. ``FileNotFoundError`` / ``IsADirectoryError``
+            # are subclasses of ``OSError`` but NOT of ``PermissionError``,
+            # so naming them explicitly keeps the sandbox path untouched.
             raise AttachmentResolutionError(att.source or "<unknown>", str(exc)) from exc
         blocks.append(block)
     return blocks
