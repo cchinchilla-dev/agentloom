@@ -143,7 +143,7 @@ async def test_observer_receives_prompt_hash_and_default(responses_file):
 def test_rejects_non_object_responses_file(tmp_path):
     path = tmp_path / "bad.json"
     path.write_text("[1, 2, 3]")
-    with pytest.raises(ValueError, match="must contain a JSON object"):
+    with pytest.raises(ValueError, match="must be a JSON object"):
         MockProvider(responses_file=path)
 
 
@@ -170,3 +170,98 @@ def test_canonical_default_falls_back_to_str_for_plain_objects() -> None:
             return "Plain(123)"
 
     assert _canonical_default(Plain()) == "Plain(123)"
+
+
+class TestStrictReplay:
+    """Issue #063: strict mode turns a recording miss / prompt drift into
+    a hard error so a green replay cannot silently answer the wrong
+    prompt. ``agentloom replay`` sets ``strict=True``."""
+
+    def _write(self, tmp_path, payload):
+        path = tmp_path / "rec.json"
+        path.write_text(json.dumps(payload))
+        return path
+
+    async def test_strict_miss_raises_recording_mismatch(self, tmp_path) -> None:
+        from agentloom.exceptions import RecordingMismatchError
+
+        path = self._write(tmp_path, {"_version": 2, "other": {"content": "x"}})
+        provider = MockProvider(responses_file=path, strict=True)
+        with pytest.raises(RecordingMismatchError, match="No recorded response"):
+            await provider.complete(
+                messages=[{"role": "user", "content": "hi"}], model="m", step_id="missing"
+            )
+
+    async def test_strict_prompt_drift_raises(self, tmp_path) -> None:
+        from agentloom.exceptions import RecordingMismatchError
+
+        # Entry keyed by step id but recorded against a different prompt.
+        recorded_hash = prompt_hash([{"role": "user", "content": "ORIGINAL"}], "m", None, None, {})
+        path = self._write(
+            tmp_path,
+            {"_version": 2, "s": {"content": "x", "request_hash": recorded_hash}},
+        )
+        provider = MockProvider(responses_file=path, strict=True)
+        with pytest.raises(RecordingMismatchError, match="does not match the recording"):
+            await provider.complete(
+                messages=[{"role": "user", "content": "EDITED"}], model="m", step_id="s"
+            )
+
+    async def test_strict_match_succeeds(self, tmp_path) -> None:
+        messages = [{"role": "user", "content": "hi"}]
+        recorded_hash = prompt_hash(messages, "m", None, None, {})
+        path = self._write(
+            tmp_path,
+            {"_version": 2, "s": {"content": "answer", "request_hash": recorded_hash}},
+        )
+        provider = MockProvider(responses_file=path, strict=True)
+        r = await provider.complete(messages=messages, model="m", step_id="s")
+        assert r.content == "answer"
+
+    async def test_non_strict_miss_returns_default(self, tmp_path, caplog) -> None:
+        path = self._write(tmp_path, {"_version": 2, "other": {"content": "x"}})
+        provider = MockProvider(responses_file=path, strict=False, default_response="DEFAULT")
+        r = await provider.complete(
+            messages=[{"role": "user", "content": "hi"}], model="m", step_id="missing"
+        )
+        # Non-strict keeps the dev fallback, but warns so a CI assertion
+        # passing on the placeholder is at least visible.
+        assert r.content == "DEFAULT"
+        assert any("no recorded response" in rec.message.lower() for rec in caplog.records)
+
+
+class TestRecordingSchemaValidation:
+    """Issue #063: a malformed / wrong-version recording is rejected at
+    load time (F29) — pre-0.5.0 it loaded silently and every lookup fell
+    through to the placeholder default."""
+
+    async def test_malformed_recording_rejected(self, tmp_path) -> None:
+        path = tmp_path / "bad.json"
+        path.write_text(json.dumps({"not": "valid"}))
+        with pytest.raises(ValueError, match="must be a response object"):
+            MockProvider(responses_file=path)
+
+    async def test_invalid_json_recording_rejected(self, tmp_path) -> None:
+        path = tmp_path / "bad.json"
+        path.write_text("{not json at all")
+        with pytest.raises(ValueError, match="not valid JSON"):
+            MockProvider(responses_file=path)
+
+    async def test_recording_v1_version_rejected(self, tmp_path) -> None:
+        path = tmp_path / "old.json"
+        path.write_text(json.dumps({"_version": 1, "s": {"content": "x"}}))
+        with pytest.raises(ValueError, match="needs v2"):
+            MockProvider(responses_file=path)
+
+    async def test_recording_v2_accepted(self, tmp_path) -> None:
+        path = tmp_path / "ok.json"
+        path.write_text(json.dumps({"_version": 2, "s": {"content": "x"}}))
+        provider = MockProvider(responses_file=path)
+        assert provider.responses_file == path
+
+    async def test_recording_list_turns_accepted(self, tmp_path) -> None:
+        # Multi-turn tool loops record a list of response objects.
+        path = tmp_path / "turns.json"
+        path.write_text(json.dumps({"_version": 2, "s": [{"content": "a"}, {"content": "b"}]}))
+        provider = MockProvider(responses_file=path)
+        assert isinstance(provider._responses["s"], list)
