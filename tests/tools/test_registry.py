@@ -124,3 +124,29 @@ class TestToolList:
         info = tools[0]
         assert info.schema is not None
         assert "properties" in info.schema
+
+
+class TestDuplicateRegistration:
+    """F44: registering a name that is already taken logs a warning
+    before overwriting — pre-0.5.0 it clobbered the existing tool
+    silently. ``replace=True`` is the deliberate-override opt-out."""
+
+    def test_duplicate_registration_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        registry = ToolRegistry()
+        registry.register(MockTool())
+        with caplog.at_level("WARNING"):
+            registry.register(MockTool())
+        assert any("already registered" in rec.message for rec in caplog.records)
+
+    def test_replace_true_silences_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        registry = ToolRegistry()
+        registry.register(MockTool())
+        with caplog.at_level("WARNING"):
+            registry.register(MockTool(), replace=True)
+        assert not any("already registered" in rec.message for rec in caplog.records)
+
+    def test_first_registration_does_not_warn(self, caplog: pytest.LogCaptureFixture) -> None:
+        registry = ToolRegistry()
+        with caplog.at_level("WARNING"):
+            registry.register(MockTool())
+        assert not any("already registered" in rec.message for rec in caplog.records)
