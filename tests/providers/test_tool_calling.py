@@ -944,6 +944,71 @@ class TestLLMStepToolLoop:
         assert sr.prompt_metadata is not None
         assert sr.prompt_metadata.finish_reason == "max_tool_iterations"
 
+    @respx.mock
+    async def test_tool_choice_required_cap_sets_no_answer_finish_reason(self) -> None:
+        # F55: tool_choice='required' that loops to the iteration cap with
+        # an empty final message gets a distinct finish_reason so callers
+        # can tell "never answered" apart from a normal cap hit.
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "c1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "add",
+                                            "arguments": '{"a": 1, "b": 1}',
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                },
+            )
+        )
+        workflow = WorkflowDefinition(
+            name="required-loop",
+            config=WorkflowConfig(provider="openai", model="gpt-4o-mini"),
+            state={},
+            steps=[
+                StepDefinition(
+                    id="ask",
+                    type=StepType.LLM_CALL,
+                    prompt="loop",
+                    tools=[
+                        ToolDefinition(name="add", description="d", parameters={"type": "object"})
+                    ],
+                    tool_choice="required",
+                    max_tool_iterations=2,
+                    output="answer",
+                )
+            ],
+        )
+        gateway = ProviderGateway()
+        gateway.register(OpenAIProvider(api_key="k"))
+        engine = WorkflowEngine(
+            workflow=workflow,
+            provider_gateway=gateway,
+            tool_registry=_registry_with(_AddTool()),
+        )
+        result = await engine.run()
+        await gateway.close()
+
+        sr = result.step_results["ask"]
+        assert sr.prompt_metadata is not None
+        assert sr.prompt_metadata.finish_reason == "max_tool_iterations_no_answer"
+
     async def test_tool_dispatch_without_registry_raises(self) -> None:
         # When a step declares tools but no registry is attached, the loop
         # raises StepError surfaced as FAILED.

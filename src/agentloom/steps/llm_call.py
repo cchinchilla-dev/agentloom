@@ -148,7 +148,24 @@ class LLMCallStep(BaseStep):
             reasoning_tokens=accumulated_reasoning,
         )
         response.cost_usd = accumulated_cost
-        response.finish_reason = "max_tool_iterations"
+        # ``tool_choice: required`` that hits the iteration cap with an
+        # empty final message means the model never produced an answer —
+        # it looped picking tools until the budget ran out. Pre-0.5.0
+        # this surfaced as a bare ``success`` with empty output and no
+        # signal. Tag it with a distinct ``finish_reason`` and a one-line
+        # warning so callers and dashboards can tell it apart from a
+        # normal cap hit (the model answered but kept calling tools).
+        if step.tool_choice == "required" and not (response.content or "").strip():
+            logger.warning(
+                "Step %r: tool_choice='required' hit the %d-iteration cap with an "
+                "empty final response — the model never produced an answer. Raise "
+                "max_tool_iterations or relax tool_choice.",
+                step.id,
+                step.max_tool_iterations,
+            )
+            response.finish_reason = "max_tool_iterations_no_answer"
+        else:
+            response.finish_reason = "max_tool_iterations"
         return response
 
     @staticmethod

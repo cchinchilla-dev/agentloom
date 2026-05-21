@@ -17,43 +17,48 @@ from tests.conftest import MockTool
 
 class TestResolveArgs:
     def test_literal_values_pass_through(self) -> None:
-        result = ToolStep._resolve_args({"url": "https://example.com"}, {})
+        result = ToolStep._resolve_args({"url": "https://example.com"}, {}, "s")
         assert result == {"url": "https://example.com"}
 
     def test_state_reference_resolved(self) -> None:
         state = {"user_url": "https://test.com"}
-        result = ToolStep._resolve_args({"url": "state.user_url"}, state)
+        result = ToolStep._resolve_args({"url": "state.user_url"}, state, "s")
         assert result == {"url": "https://test.com"}
 
     def test_nested_state_reference(self) -> None:
         state = {"config": {"api_url": "https://api.test.com"}}
-        result = ToolStep._resolve_args({"url": "state.config.api_url"}, state)
+        result = ToolStep._resolve_args({"url": "state.config.api_url"}, state, "s")
         assert result == {"url": "https://api.test.com"}
 
-    def test_missing_state_reference_returns_none(self) -> None:
-        result = ToolStep._resolve_args({"url": "state.missing"}, {})
-        assert result == {"url": None}
+    def test_missing_state_reference_raises_clear_error(self) -> None:
+        # F56: a ``state.X`` reference to a key that does not exist now
+        # raises a non-retryable StepError naming the missing key —
+        # pre-0.5.0 it resolved to ``None`` and the tool surfaced an
+        # opaque downstream ``TypeError``.
+        from agentloom.exceptions import StepError
+
+        with pytest.raises(StepError) as excinfo:
+            ToolStep._resolve_args({"url": "state.missing"}, {}, "s")
+        assert "state.missing" in str(excinfo.value)
+        assert excinfo.value.is_retryable is False
 
     def test_non_string_values_pass_through(self) -> None:
-        result = ToolStep._resolve_args({"count": 5, "flag": True}, {})
+        result = ToolStep._resolve_args({"count": 5, "flag": True}, {}, "s")
         assert result == {"count": 5, "flag": True}
 
     def test_mixed_literal_and_state(self) -> None:
         state = {"name": "Alice"}
-        result = ToolStep._resolve_args(
-            {"greeting": "hello", "name": "state.name"},
-            state,
-        )
+        result = ToolStep._resolve_args({"greeting": "hello", "name": "state.name"}, state, "s")
         assert result == {"greeting": "hello", "name": "Alice"}
 
     def test_state_reference_with_index(self) -> None:
         state = {"items": ["first", "second"]}
-        result = ToolStep._resolve_args({"val": "state.items[0]"}, state)
+        result = ToolStep._resolve_args({"val": "state.items[0]"}, state, "s")
         assert result == {"val": "first"}
 
     def test_state_reference_with_nested_index(self) -> None:
         state = {"items": [{"name": "Alice"}, {"name": "Bob"}]}
-        result = ToolStep._resolve_args({"val": "state.items[1].name"}, state)
+        result = ToolStep._resolve_args({"val": "state.items[1].name"}, state, "s")
         assert result == {"val": "Bob"}
 
 
@@ -253,71 +258,60 @@ class TestPlaceholderTriggerNarrowed:
     def test_literal_json_content_passes_through_unchanged(self) -> None:
         # F9 reproducer: ``content: |`` block carrying inline JSON.
         json_content = '{\n  "k": [1, 2, 3],\n  "nested": {"v": true}\n}'
-        result = ToolStep._resolve_args({"content": json_content}, {})
+        result = ToolStep._resolve_args({"content": json_content}, {}, "s")
         assert result == {"content": json_content}
 
     def test_literal_json_body_passes_through_unchanged(self) -> None:
         # F57 reproducer: ``body:`` carrying inline JSON with a colon.
         body = '{"k": [1,2,3], "nested": {"v": true}}'
-        result = ToolStep._resolve_args({"body": body}, {})
+        result = ToolStep._resolve_args({"body": body}, {}, "s")
         assert result == {"body": body}
 
     def test_html_with_braces_passes_through(self) -> None:
         html = "<style>.x { color: red; }</style>"
-        result = ToolStep._resolve_args({"content": html}, {})
+        result = ToolStep._resolve_args({"content": html}, {}, "s")
         assert result == {"content": html}
 
     def test_lone_braces_pass_through(self) -> None:
         # Mismatched / standalone braces never match the placeholder shape.
-        result = ToolStep._resolve_args({"raw": "a } b { c"}, {})
+        result = ToolStep._resolve_args({"raw": "a } b { c"}, {}, "s")
         assert result == {"raw": "a } b { c"}
 
     def test_state_dot_placeholder_still_renders(self) -> None:
-        result = ToolStep._resolve_args(
-            {"greet": "hello {state.name}"},
-            {"name": "Alice"},
-        )
+        result = ToolStep._resolve_args({"greet": "hello {state.name}"}, {"name": "Alice"}, "s")
         assert result == {"greet": "hello Alice"}
 
     def test_state_subscript_placeholder_still_renders(self) -> None:
         # ``{state[items][0]}`` — the regex matches the ``{state[`` shape
         # so subscript-form placeholders still trigger expansion.
         result = ToolStep._resolve_args(
-            {"first": "got {state[items][0]}"},
-            {"items": ["A", "B"]},
+            {"first": "got {state[items][0]}"}, {"items": ["A", "B"]}, "s"
         )
         assert result == {"first": "got A"}
 
     def test_bare_placeholder_still_renders(self) -> None:
-        result = ToolStep._resolve_args({"greet": "hello {name}"}, {"name": "Bob"})
+        result = ToolStep._resolve_args({"greet": "hello {name}"}, {"name": "Bob"}, "s")
         assert result == {"greet": "hello Bob"}
 
     def test_format_spec_placeholder_still_renders(self) -> None:
-        result = ToolStep._resolve_args(
-            {"price": "cost: {total:.2f}"},
-            {"total": 1234.5678},
-        )
+        result = ToolStep._resolve_args({"price": "cost: {total:.2f}"}, {"total": 1234.5678}, "s")
         assert result == {"price": "cost: 1234.57"}
 
     def test_conversion_flag_placeholder_still_renders(self) -> None:
-        result = ToolStep._resolve_args({"r": "value={n!r}"}, {"n": "x"})
+        result = ToolStep._resolve_args({"r": "value={n!r}"}, {"n": "x"}, "s")
         assert result == {"r": "value='x'"}
 
     def test_template_false_escape_hatch_disables_expansion(self) -> None:
         # Even a string that looks like a placeholder is returned
         # untouched when the caller flags it ``template: false``.
         result = ToolStep._resolve_args(
-            {"content": {"value": "{state.foo}", "template": False}},
-            {"foo": "expanded"},
+            {"content": {"value": "{state.foo}", "template": False}}, {"foo": "expanded"}, "s"
         )
         assert result == {"content": "{state.foo}"}
 
     def test_template_false_with_non_string_value_passes_through(self) -> None:
         # The escape hatch carries any payload, not just strings.
-        result = ToolStep._resolve_args(
-            {"data": {"value": [1, 2, 3], "template": False}},
-            {},
-        )
+        result = ToolStep._resolve_args({"data": {"value": [1, 2, 3], "template": False}}, {}, "s")
         assert result == {"data": [1, 2, 3]}
 
     def test_dict_without_template_false_passes_through_unchanged(self) -> None:
@@ -325,7 +319,7 @@ class TestPlaceholderTriggerNarrowed:
         # the escape hatch — it falls through to the existing
         # "non-string value" path and reaches the tool verbatim.
         payload = {"value": "x", "extra": 1}
-        result = ToolStep._resolve_args({"body": payload}, {})
+        result = ToolStep._resolve_args({"body": payload}, {}, "s")
         assert result == {"body": payload}
 
     def test_js_object_literal_with_space_after_colon_passes_through(self) -> None:
@@ -333,12 +327,12 @@ class TestPlaceholderTriggerNarrowed:
         # is normally a placeholder shape, but the negative lookahead in
         # the regex refuses ``:`` followed by whitespace so this stays
         # literal instead of triggering format_map (which would raise).
-        result = ToolStep._resolve_args({"body": "{foo: true, bar: false}"}, {})
+        result = ToolStep._resolve_args({"body": "{foo: true, bar: false}"}, {}, "s")
         assert result == {"body": "{foo: true, bar: false}"}
 
     def test_css_rule_with_spaces_passes_through(self) -> None:
         # ``.x { color: red; }`` shape: the inner ``:`` has whitespace
         # after it, so the regex does not match.
         css = ".x { color: red; padding: 0; }"
-        result = ToolStep._resolve_args({"style": css}, {})
+        result = ToolStep._resolve_args({"style": css}, {}, "s")
         assert result == {"style": css}
