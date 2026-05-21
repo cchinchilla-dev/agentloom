@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import typer
@@ -15,6 +16,35 @@ from agentloom.core.state import StateManager
 if TYPE_CHECKING:
     from agentloom.observability.observer import WorkflowObserver
     from agentloom.providers.gateway import ProviderGateway
+
+
+def _parse_state_value(raw: str) -> Any:
+    """Decode a CLI ``--state`` value, parsing JSON-shaped inputs.
+
+    ``--state items=[1,2,3]`` and ``--state user={"name":"x"}`` now yield
+    a real list / dict instead of the string literal. The heuristic only
+    runs ``json.loads`` on plausibly-JSON inputs — a value that opens
+    with ``[``, ``{`` or ``"``, the bare tokens ``true`` / ``false`` /
+    ``null``, or a number — so common string values (``msg=hello``, a
+    URL like ``url=https://x?a=b&c=d``) are left untouched. A
+    JSON-shaped value that fails to parse also falls back to the raw
+    string rather than erroring.
+    """
+    stripped = raw.strip()
+    if not stripped:
+        return raw
+    looks_json = (
+        stripped[0] in '[{"'
+        or stripped in ("true", "false", "null")
+        or stripped[0].isdigit()
+        or (stripped[0] == "-" and len(stripped) > 1 and stripped[1].isdigit())
+    )
+    if looks_json:
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+    return raw
 
 
 def run(
@@ -59,6 +89,7 @@ def run(
         checkpoint_dir,
         mock_responses,
         record,
+        False,  # mock_strict — `run` keeps the lenient dev fallback; `replay` is strict
     )
 
 
@@ -75,6 +106,7 @@ async def _run_async(
     checkpoint_dir: str = ".agentloom/checkpoints",
     mock_responses: Path | None = None,
     record: Path | None = None,
+    mock_strict: bool = False,
 ) -> None:
     """Async implementation of the run command."""
     from agentloom.core.engine import WorkflowEngine
@@ -103,8 +135,8 @@ async def _run_async(
         if "=" not in item:
             typer.echo(f"Invalid state format '{item}'. Use key=value.", err=True)
             raise typer.Exit(1)
-        key, value = item.split("=", 1)
-        initial_state[key] = value
+        key, _, raw = item.partition("=")
+        initial_state[key] = _parse_state_value(raw)
 
     state_manager = StateManager(initial_state=initial_state)
 
@@ -116,14 +148,20 @@ async def _run_async(
         from agentloom.providers.mock import MockProvider
 
         workflow.config.provider = "mock"
-        gateway.register(
-            MockProvider(
+        try:
+            mock = MockProvider(
                 responses_file=mock_responses,
                 observer=observer,
                 workflow_name=workflow.name,
-            ),
-            priority=0,
-        )
+                strict=mock_strict,
+            )
+        except ValueError as e:
+            # A malformed / wrong-version recording file is a startup
+            # error — surface it cleanly instead of letting the workflow
+            # run green against a fixture that never loaded.
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1) from e
+        gateway.register(mock, priority=0)
     elif workflow.config.provider == "mock" and record is None:
         from agentloom.providers.mock import MockProvider
 
@@ -333,8 +371,13 @@ def _print_result(result: object, *, run_id: str | None = None) -> None:
         typer.echo("")
         run_label = run_id or "<run_id>"
         for step_id in paused_steps:
+            # The hint must use only flags ``agentloom resume`` actually
+            # accepts: it resolves the paused step from the checkpoint,
+            # so there is no ``--step`` option. Pre-0.5.0 the hint
+            # printed ``--step <id>`` verbatim and a user who copied it
+            # hit ``Error: No such option: --step``.
             typer.echo(f"[APPROVAL REQUIRED] Step '{step_id}' is waiting for a decision.")
-            typer.echo(f"  Approve: agentloom resume {run_label} --step {step_id} --approve")
-            typer.echo(f"  Reject:  agentloom resume {run_label} --step {step_id} --reject")
+            typer.echo(f"  Approve: agentloom resume {run_label} --approve")
+            typer.echo(f"  Reject:  agentloom resume {run_label} --reject")
 
     typer.echo(f"{'=' * 60}")

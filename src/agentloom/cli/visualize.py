@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from pathlib import Path
 
 import typer
@@ -11,9 +12,23 @@ from agentloom.core.parser import WorkflowParser
 from agentloom.exceptions import ValidationError
 
 
+class VisualizeFormat(StrEnum):
+    """Supported ``--format`` values.
+
+    Typed as an enum so Typer renders the choices in ``--help`` and
+    rejects anything else with a clear error — pre-0.5.0 ``--format dot``
+    (or any unknown value) silently degraded to ASCII output.
+    """
+
+    ascii = "ascii"
+    mermaid = "mermaid"
+
+
 def visualize(
     workflow_path: Path = typer.Argument(..., help="Path to the workflow YAML file.", exists=True),
-    format: str = typer.Option("ascii", "--format", "-f", help="Output format: ascii or mermaid."),
+    format: VisualizeFormat = typer.Option(
+        VisualizeFormat.ascii, "--format", "-f", help="Output format."
+    ),
 ) -> None:
     """Visualize a workflow as an ASCII diagram or Mermaid graph."""
     try:
@@ -23,7 +38,7 @@ def visualize(
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
-    if format == "mermaid":
+    if format is VisualizeFormat.mermaid:
         _print_mermaid(workflow, dag)
     else:
         _print_ascii(workflow, dag)

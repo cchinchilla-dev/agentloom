@@ -375,3 +375,55 @@ class TestRunRecordAndReplay:
             # exactly one captured call entry alongside it.
             entries = {k: v for k, v in data.items() if not k.startswith("_")}
             assert len(entries) == 1
+
+
+class TestStateJSONParsing:
+    """F38: ``--state`` decodes JSON-shaped values into real lists /
+    dicts / numbers; plain strings and URLs pass through untouched."""
+
+    def test_parses_json_array(self) -> None:
+        from agentloom.cli.run import _parse_state_value
+
+        assert _parse_state_value("[1, 2, 3]") == [1, 2, 3]
+
+    def test_parses_json_object(self) -> None:
+        from agentloom.cli.run import _parse_state_value
+
+        assert _parse_state_value('{"name": "alice"}') == {"name": "alice"}
+
+    def test_parses_json_number(self) -> None:
+        from agentloom.cli.run import _parse_state_value
+
+        assert _parse_state_value("42") == 42
+        assert _parse_state_value("-3.5") == -3.5
+
+    def test_parses_json_bool_and_null(self) -> None:
+        from agentloom.cli.run import _parse_state_value
+
+        assert _parse_state_value("true") is True
+        assert _parse_state_value("false") is False
+        assert _parse_state_value("null") is None
+
+    def test_preserves_plain_string(self) -> None:
+        from agentloom.cli.run import _parse_state_value
+
+        assert _parse_state_value("hello") == "hello"
+
+    def test_preserves_url_with_query_string(self) -> None:
+        # A URL is not JSON-shaped — it must round-trip as a string even
+        # though it contains ``=`` and ``&``.
+        from agentloom.cli.run import _parse_state_value
+
+        url = "https://example.com/x?a=b&c=d"
+        assert _parse_state_value(url) == url
+
+    def test_json_shaped_but_invalid_falls_back_to_string(self) -> None:
+        from agentloom.cli.run import _parse_state_value
+
+        # Opens like JSON but is not valid — keep the raw string.
+        assert _parse_state_value("[not, valid") == "[not, valid"
+
+    def test_empty_value_preserved(self) -> None:
+        from agentloom.cli.run import _parse_state_value
+
+        assert _parse_state_value("") == ""

@@ -11,8 +11,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 import anyio
+from pydantic import ValidationError as PydanticValidationError
 
-from agentloom.checkpointing.base import BaseCheckpointer, CheckpointData
+from agentloom.checkpointing.base import (
+    CURRENT_CHECKPOINT_SCHEMA_VERSION,
+    BaseCheckpointer,
+    CheckpointData,
+)
 from agentloom.core.dag import DAG
 from agentloom.core.models import StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
@@ -26,6 +31,7 @@ from agentloom.core.results import (
 from agentloom.core.state import StateManager
 from agentloom.exceptions import (
     BudgetExceededError,
+    CheckpointSchemaError,
     PauseRequestedError,
     WorkflowError,
 )
@@ -326,6 +332,17 @@ class WorkflowEngine:
                 injected into state so that paused approval gate steps can read
                 the human decision on re-execution.
         """
+        # A checkpoint written by a newer AgentLoom can carry structures
+        # this runtime does not understand. Refuse it up front with an
+        # upgrade hint instead of silently mis-resuming.
+        if checkpoint_data.schema_version > CURRENT_CHECKPOINT_SCHEMA_VERSION:
+            raise CheckpointSchemaError(
+                f"Checkpoint for run '{checkpoint_data.run_id}' has "
+                f"schema_version={checkpoint_data.schema_version}, newer than this "
+                f"runtime supports (v{CURRENT_CHECKPOINT_SCHEMA_VERSION}). It was "
+                f"written by a newer AgentLoom — upgrade to resume it."
+            )
+
         workflow = WorkflowDefinition.model_validate(checkpoint_data.workflow_definition)
 
         # Detect redacted state keys carried in the checkpoint. Sentinels were
@@ -348,7 +365,18 @@ class WorkflowEngine:
         # so internal state, snapshots, and locking remain consistent.
         state_manager = StateManager(initial_state=checkpoint_data.state)
         for step_id, result_data in checkpoint_data.step_results.items():
-            result = StepResult.model_validate(result_data)
+            try:
+                result = StepResult.model_validate(result_data)
+            except PydanticValidationError as e:
+                # A step result with a status (or other field) outside
+                # this runtime's enums is the signature of a checkpoint
+                # written by a newer AgentLoom. Surface it as a clear
+                # schema error rather than a raw Pydantic dump.
+                raise CheckpointSchemaError(
+                    f"Checkpoint for run '{checkpoint_data.run_id}' has a step "
+                    f"result ({step_id!r}) this runtime cannot parse — likely an "
+                    f"enum value added in a newer AgentLoom. Upgrade to resume it."
+                ) from e
             await state_manager.set_step_result(step_id, result)
 
         # Inject approval decisions so gate steps find them on re-execution

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from agentloom.checkpointing.base import BaseCheckpointer, CheckpointData
 from agentloom.checkpointing.file import FileCheckpointer
 from agentloom.core.engine import WorkflowEngine
@@ -570,3 +572,65 @@ class TestCheckpointStateRedaction:
         dumped = result.model_dump_json()
         assert "sk-final-state-leak" not in dumped
         assert "alice" in dumped
+
+
+class TestCheckpointSchemaStrictness:
+    """F74: a checkpoint written by a newer AgentLoom — a future
+    ``schema_version`` or an unknown step-status enum — is refused at
+    resume time with a clear migration hint, not silently mis-resumed."""
+
+    async def test_future_schema_version_rejected(self, tmp_path: Path) -> None:
+        from agentloom.checkpointing.base import CURRENT_CHECKPOINT_SCHEMA_VERSION
+        from agentloom.exceptions import CheckpointSchemaError
+
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+        workflow = _two_step_workflow()
+        checkpoint_data = CheckpointData(
+            workflow_name="future",
+            run_id="future-run",
+            schema_version=CURRENT_CHECKPOINT_SCHEMA_VERSION + 1,
+            workflow_definition=workflow.model_dump(),
+            state={},
+            status="paused",
+        )
+        with pytest.raises(CheckpointSchemaError, match="newer than this runtime"):
+            await WorkflowEngine.from_checkpoint(
+                checkpoint_data=checkpoint_data, checkpointer=checkpointer
+            )
+
+    async def test_unknown_step_status_enum_rejected(self, tmp_path: Path) -> None:
+        from agentloom.exceptions import CheckpointSchemaError
+
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+        workflow = _two_step_workflow()
+        checkpoint_data = CheckpointData(
+            workflow_name="enum",
+            run_id="enum-run",
+            workflow_definition=workflow.model_dump(),
+            state={},
+            step_results={
+                # ``future_unknown`` is not a StepStatus this runtime defines.
+                "step_a": {"step_id": "step_a", "status": "future_unknown"},
+            },
+            status="running",
+        )
+        with pytest.raises(CheckpointSchemaError, match="cannot parse"):
+            await WorkflowEngine.from_checkpoint(
+                checkpoint_data=checkpoint_data, checkpointer=checkpointer
+            )
+
+    async def test_current_schema_version_resumes(self, tmp_path: Path) -> None:
+        # Regression net: the default schema_version still resumes.
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+        workflow = _two_step_workflow()
+        checkpoint_data = CheckpointData(
+            workflow_name="ok",
+            run_id="ok-run",
+            workflow_definition=workflow.model_dump(),
+            state={"input": "hi"},
+            status="running",
+        )
+        engine = await WorkflowEngine.from_checkpoint(
+            checkpoint_data=checkpoint_data, checkpointer=checkpointer
+        )
+        assert engine.workflow.name == "checkpoint-test"

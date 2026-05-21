@@ -128,7 +128,15 @@ class ToolChoiceByName(BaseModel):
 
 
 class StepDefinition(BaseModel):
-    """Definition of a single workflow step."""
+    """Definition of a single workflow step.
+
+    Unknown keys are refused at parse time (``extra="forbid"``) so a typo
+    like ``workflow:`` for ``workflow_inline:`` fails at ``agentloom
+    validate`` with the offending key named, instead of being silently
+    dropped and surfacing a cryptic run-time error.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str
     type: StepType
@@ -222,7 +230,15 @@ class SandboxConfig(BaseModel):
 
 
 class WorkflowConfig(BaseModel):
-    """Workflow-level configuration."""
+    """Workflow-level configuration.
+
+    Unknown keys are refused at parse time (``extra="forbid"``). This
+    also rejects the half-supported ``config.responses:`` field — mock
+    responses are configured via ``responses_file`` (a path to a
+    recording), never an inline ``responses:`` list.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     provider: str = "openai"
     model: str = "gpt-4o-mini"

@@ -80,3 +80,40 @@ steps:
             result = runner.invoke(app, ["visualize", f.name, "--format", "mermaid"])
         assert result.exit_code == 0
         assert "route{route}" in result.output  # diamond shape for router
+
+
+class TestFormatChoice:
+    """F39: ``--format`` is a typed Choice — an unknown value is
+    rejected with a clear error instead of silently degrading to ASCII."""
+
+    _YAML = """\
+name: fmt-test
+config:
+  provider: mock
+  model: mock-model
+steps:
+  - id: a
+    type: llm_call
+    prompt: hi
+"""
+
+    def _workflow(self) -> str:
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(self._YAML)
+            f.flush()
+            return f.name
+
+    def test_unknown_format_rejected(self) -> None:
+        result = runner.invoke(app, ["visualize", self._workflow(), "--format", "dot"])
+        assert result.exit_code != 0
+        # The error names the valid choices.
+        assert "ascii" in result.output and "mermaid" in result.output
+
+    def test_ascii_format_accepted(self) -> None:
+        result = runner.invoke(app, ["visualize", self._workflow(), "--format", "ascii"])
+        assert result.exit_code == 0
+
+    def test_mermaid_format_accepted(self) -> None:
+        result = runner.invoke(app, ["visualize", self._workflow(), "--format", "mermaid"])
+        assert result.exit_code == 0
+        assert "mermaid" in result.output
