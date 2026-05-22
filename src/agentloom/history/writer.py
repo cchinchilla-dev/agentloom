@@ -141,6 +141,13 @@ class RunHistoryWriter:
     DEFAULT_DIR = "./agentloom_runs"
 
     def __init__(self, runs_dir: str | Path | None = None) -> None:
+        # ``_explicit`` records whether the operator deliberately chose
+        # this directory — via the ``runs_dir`` argument or the
+        # ``AGENTLOOM_RUNS_DIR`` env var. It gates the failure verbosity:
+        # an unwritable explicitly-chosen dir warns (they asked for it);
+        # an unwritable default dir stays silent (a read-only container
+        # with no runs mount is a normal, expected setup — F13).
+        self._explicit = runs_dir is not None or os.environ.get(self.ENV_VAR) is not None
         resolved = (
             runs_dir if runs_dir is not None else os.environ.get(self.ENV_VAR, self.DEFAULT_DIR)
         )
@@ -186,13 +193,27 @@ class RunHistoryWriter:
 
         try:
             return await anyio.to_thread.run_sync(_write)
-        except PermissionError:
-            # Read-only filesystem (containers, CI) is expected — debug log
-            # only, no traceback dump in normal user output.
-            logger.debug(
-                "Run history dir not writable (%s); skipping record.",
-                target.parent,
-            )
+        except OSError:
+            # ``OSError`` covers every "directory not writable" shape:
+            # ``PermissionError``, a read-only filesystem (``EROFS``),
+            # ``FileNotFoundError`` for a missing mount point. Inside a
+            # read-only container with no ``agentloom_runs/`` mount this
+            # is the normal case — if the operator did not explicitly
+            # choose the directory, stay silent (debug only) so every
+            # workflow run does not print a warning (F13). When they DID
+            # choose it (``runs_dir`` argument or ``AGENTLOOM_RUNS_DIR``),
+            # keep the warning — they asked for that location.
+            if self._explicit:
+                logger.warning(
+                    "Failed to write run history record to %s — continuing",
+                    target,
+                )
+                logger.debug("Run history error trace", exc_info=True)
+            else:
+                logger.debug(
+                    "Run history dir not writable (%s); skipping record.",
+                    target.parent,
+                )
             return None
         except Exception:
             logger.warning(

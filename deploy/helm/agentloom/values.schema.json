@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentLoom Helm chart values",
+  "description": "Validates values.yaml and `--set` overrides so a typo or wrong-typed value is rejected by `helm lint` / `helm install` instead of flowing through silently.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "imagePullSecrets": { "type": "array", "items": { "type": "object" } },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "definition": { "type": "string" },
+        "existingConfigMap": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "cron": { "type": "string", "minLength": 1 },
+        "timeZone": { "type": "string" },
+        "concurrencyPolicy": { "type": "string", "enum": ["Allow", "Forbid", "Replace"] },
+        "startingDeadlineSeconds": { "type": "integer", "minimum": 0 },
+        "successfulJobsHistoryLimit": { "type": "integer", "minimum": 0 },
+        "failedJobsHistoryLimit": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backoffLimit": { "type": "integer", "minimum": 0 },
+        "ttlSecondsAfterFinished": { "type": "integer", "minimum": 0 },
+        "activeDeadlineSeconds": { "type": ["integer", "null"], "minimum": 1 },
+        "restartPolicy": { "type": "string", "enum": ["Never", "OnFailure"] }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "openaiApiKey": { "type": "string" },
+        "anthropicApiKey": { "type": "string" },
+        "googleApiKey": { "type": "string" }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "otelEndpoint": { "type": "string" }
+      }
+    },
+    "resources": { "type": "object" },
+    "securityContext": { "type": "object" },
+    "containerSecurityContext": { "type": "object" },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "annotations": { "type": "object" },
+        "automountServiceAccountToken": { "type": "boolean" }
+      }
+    },
+    "namespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" }
+      }
+    },
+    "ollama": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "resources": { "type": "object" }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "allowOllama": { "type": "boolean" }
+      }
+    },
+    "resourceQuota": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "hard": { "type": "object" }
+      }
+    },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" },
+    "podAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" }
+  }
+}

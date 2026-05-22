@@ -16,8 +16,9 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-      args:
-        BUILD_OBSERVABILITY: "true"
+      # The default `production` stage already ships the observability
+      # extra — no build arg needed. Use `target: production-lite` for
+      # the smaller image without OTel / Prometheus support.
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
