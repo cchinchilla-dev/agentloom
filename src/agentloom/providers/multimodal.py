@@ -6,16 +6,18 @@ import base64
 import ipaddress
 import logging
 import mimetypes
+import re
 import socket
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import anyio
 import httpx
 from pydantic import BaseModel
 
 from agentloom.core.models import Attachment, SandboxConfig
+from agentloom.exceptions import AttachmentResolutionError
 
 logger = logging.getLogger("agentloom.multimodal")
 
@@ -111,6 +113,58 @@ def detect_media_type(source: str, attachment_type: str = "image") -> str:
 def _is_url(source: str) -> bool:
     """Return True if *source* looks like an HTTP(S) URL (case-insensitive)."""
     return source.lower().startswith(("http://", "https://"))
+
+
+# RFC 2397 data: URL — ``data:[<media>][;<param>=<value>]*[;base64],<payload>``.
+# ``media`` and the parameter list are both optional (``data:,Hello`` is
+# valid). ``re.DOTALL`` lets a payload contain newlines.
+_DATA_URL_RE = re.compile(
+    r"^data:(?P<media>[\w.+/-]*)(?P<params>(?:;[\w-]+=[^;,]*)*)"
+    r"(?P<base64>;base64)?,(?P<payload>.*)$",
+    re.DOTALL,
+)
+
+
+def _is_data_url(source: str) -> bool:
+    """Return True if *source* is an RFC 2397 ``data:`` URL."""
+    return source.startswith("data:")
+
+
+def _decode_data_url(attachment: Attachment, source: str) -> tuple[bytes, str]:
+    """Decode a ``data:`` URL into ``(raw_bytes, media_type)``.
+
+    ``data:`` URLs inline binary content directly in the workflow — a
+    standard idiom for composing an image in-process. Pre-0.5.0 the
+    resolver treated the whole ``data:image/png;base64,…`` string as a
+    filesystem path and surfaced a misleading ``FileNotFoundError``
+    naming the base64 blob as a filename (F71).
+
+    Raises:
+        AttachmentResolutionError: malformed URL, invalid base64, or a
+            decoded payload over the size limit.
+    """
+    match = _DATA_URL_RE.match(source)
+    if match is None:
+        raise AttachmentResolutionError(
+            source[:60], "malformed data: URL (expected `data:[<media>][;base64],<payload>`)"
+        )
+    media = (
+        match["media"]
+        or attachment.media_type
+        or _MEDIA_TYPE_DEFAULTS.get(attachment.type, "application/octet-stream")
+    )
+    payload = match["payload"]
+    if match["base64"]:
+        try:
+            raw = base64.b64decode(payload, validate=True)
+        except ValueError as e:
+            # ``binascii.Error`` (a ValueError subclass) for bad base64.
+            raise AttachmentResolutionError(source[:60], f"invalid base64 payload: {e}") from e
+    else:
+        # Non-base64 data: URL — the payload is percent-encoded text.
+        raw = unquote(payload).encode("utf-8")
+    _check_size(raw, source[:60])
+    return raw, media
 
 
 def _is_base64(source: str) -> bool:
@@ -245,7 +299,18 @@ def _validate_file_sandbox(file_path: str, sandbox: SandboxConfig) -> None:
             return
         except ValueError:
             continue
-    msg = f"File path '{file_path}' not in sandbox readable_paths: {allowed}"
+    # Name the resolved target separately from the path the workflow
+    # gave: when a symlink inside ``readable_paths`` points OUT of it,
+    # the original path looks allowed and only the resolved target is
+    # not — pre-0.5.0 the message named just one of them, sending the
+    # operator to look in the wrong place (F70).
+    if str(resolved) != file_path:
+        msg = (
+            f"Attachment path '{file_path}' resolves to '{resolved}', which is "
+            f"not within sandbox readable_paths: {allowed}"
+        )
+    else:
+        msg = f"Attachment path '{file_path}' not within sandbox readable_paths: {allowed}"
     raise PermissionError(msg)
 
 
@@ -341,6 +406,15 @@ async def _resolve_single(
         raise ValueError(msg)
     media_type = attachment.media_type or detect_media_type(source, attachment.type)
 
+    if _is_data_url(source):
+        # ``data:`` URLs inline their payload — no network call, no file
+        # open, so they are unconditionally allowed even under a strict
+        # sandbox (the attacker model is the workflow author). The media
+        # type comes from the URL itself.
+        raw_bytes, resolved_media = _decode_data_url(attachment, source)
+        encoded = base64.b64encode(raw_bytes).decode("ascii")
+        return _make_block(attachment.type, encoded, resolved_media)
+
     if _is_url(source):
         if attachment.fetch == "provider":
             _validate_provider_url(source, sandbox)
@@ -386,8 +460,6 @@ async def resolve_attachments(
     * **Size limit** — downloads are streamed and aborted if they exceed
       :data:`MAX_ATTACHMENT_BYTES` (20 MB), preventing OOM.
     """
-    from agentloom.exceptions import AttachmentResolutionError
-
     cfg = sandbox or SandboxConfig()
     blocks: list[ContentBlock] = []
     for att in attachments:

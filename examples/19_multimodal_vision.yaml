@@ -10,7 +10,7 @@ config:
   model: gpt-4o
 
 state:
-  image_url: "https://placehold.co/400x300/orange/white.png?text=AgentLoom"
+  image_url: "https://httpbin.org/image/png"
 
 steps:
   - id: describe
