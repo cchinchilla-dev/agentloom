@@ -173,12 +173,18 @@ steps:
 | Field | Description |
 |-------|-------------|
 | `type` | `image`, `pdf`, or `audio` |
-| `source` | URL, local file path, or base64 data |
+| `source` | HTTP(S) URL, `data:` URL, local file path, or raw base64 data |
 | `media_type` | Optional; inferred from type if omitted |
 | `fetch` | `local` (engine downloads) or `provider` (provider fetches URL directly) |
 
 !!! warning "Provider support varies"
     Check the [capability matrix](#capability-matrix) above. Sending a PDF to OpenAI or audio to Anthropic will raise a `ProviderError`.
+
+### `data:` URL attachments
+
+A `source` may be an RFC 2397 `data:` URL — `data:image/png;base64,iVBORw0KGgo…` — to inline binary content directly in the workflow, a common idiom when an earlier step composed the image in-process. Both base64 and percent-encoded payloads are decoded. A malformed URL or invalid base64 raises `AttachmentResolutionError` (a non-retryable failure) rather than a misleading `FileNotFoundError`.
+
+`data:` URLs make no network call and open no file, so they are **allowed unconditionally** even when `sandbox.enabled: true` — the threat model for inline content is the workflow author, not a remote host. The 20 MB size limit still applies to the decoded payload.
 
 ## Reasoning models
 

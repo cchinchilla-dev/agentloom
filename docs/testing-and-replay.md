@@ -45,17 +45,31 @@ Entries sit at the top level alongside the `_version` metadata key, keyed by the
 
 ## Replaying a run
 
-Two equivalent ways:
+Two ways, with **different strictness**:
 
 ```bash
-# Dedicated subcommand — observability off by default, no stream/checkpoint flags
+# Dedicated subcommand — strict by default, observability off
 agentloom replay workflow.yaml --recording recordings/run1.json
 
-# Or via run --mock-responses (same effect)
+# Via run --mock-responses — lenient (one-line warning on a miss)
 agentloom run workflow.yaml --mock-responses recordings/run1.json
 ```
 
 Every `llm_call` step resolves from the JSON. No network, no API key, no cost. Latency is simulated according to `latency_model`.
+
+### Strict mode
+
+`agentloom replay` runs the mock provider in **strict mode**. A request that misses the recording — or matches a step whose prompt, system prompt, model, or tools spec drifted since capture — raises `RecordingMismatchError` and fails the workflow. This is what makes a green replay trustworthy in CI: pre-0.5.0 the mock provider silently fell through to the placeholder `"Mock response"`, so a replay could pass while answering a prompt the recording no longer matched.
+
+Each recorded entry carries a `request_hash`; on replay the mock compares it against the live request and refuses on a mismatch. Recording files are also validated against the canonical schema when loaded — a malformed file, or one with `_version` below 2, is rejected at startup with a re-record hint.
+
+Pass `--allow-default-fallback` to restore the lenient behaviour (placeholder response on a miss):
+
+```bash
+agentloom replay workflow.yaml --recording rec.json --allow-default-fallback
+```
+
+`agentloom run --provider mock` and `--mock-responses` stay lenient — a miss returns the placeholder default and logs a one-line warning, so ad-hoc mock runs stay frictionless.
 
 ### YAML-configured MockProvider
 
