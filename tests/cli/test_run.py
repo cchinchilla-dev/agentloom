@@ -292,6 +292,33 @@ class TestRunRecordAndReplay:
         combined = result.output + (result.stderr or "")
         assert "mutually exclusive" in combined
 
+    def test_mock_responses_invalid_file_exits_with_error(self) -> None:
+        # An unreadable / malformed recording file is a startup error —
+        # ``MockProvider.__init__`` raises ValueError and the CLI must
+        # turn that into a clean exit-1 with the file path in the message,
+        # not let the workflow continue against an empty fixture.
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rec_path = Path(tmp) / "broken.json"
+            rec_path.write_text("{not valid json at all")
+            yaml_path = Path(tmp) / "wf.yaml"
+            yaml_path.write_text(SIMPLE_YAML)
+            with patch("agentloom.cli.run._setup_observer", return_value=None):
+                result = runner.invoke(
+                    app,
+                    [
+                        "run",
+                        str(yaml_path),
+                        "--mock-responses",
+                        str(rec_path),
+                        "--lite",
+                    ],
+                )
+        assert result.exit_code == 1
+        combined = result.output + (result.stderr or "")
+        assert "not valid JSON" in combined or "Error" in combined
+
     def test_mock_responses_registers_mock_provider(self) -> None:
         import json
         from pathlib import Path

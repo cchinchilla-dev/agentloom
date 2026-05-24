@@ -553,6 +553,23 @@ class TestCallbackServerEdgeCases:
         await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
         assert b"400 Bad Request" in b"".join(stream._sent)
 
+    @pytest.mark.anyio()
+    async def test_client_disconnect_mid_body_does_not_hang(self, tmp_path: Path) -> None:
+        # The client announces a Content-Length but disconnects before
+        # sending the full body. The read loop must break on the empty
+        # chunk and route the (partial) request rather than block forever.
+        from agentloom.cli.callback_server import _handle_request
+
+        # Content-Length claims 30 bytes; we send only 5 and then EOF.
+        headers = b"POST /webhook HTTP/1.1\r\nContent-Length: 30\r\n\r\n"
+        stream = self._make_chunk_stream([headers, b"hello"])
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        # Got *some* response — the partial body was treated as JSON and
+        # rejected with 400 ("invalid JSON"), not silently hung.
+        sent = b"".join(stream._sent)
+        assert sent, "handler must respond even on truncated body"
+        assert b"400 Bad Request" in sent
+
 
 class TestWebhookBodyValidation:
     """F73: POST /webhook validates the body — malformed JSON returns
@@ -609,6 +626,26 @@ class TestWebhookBodyValidation:
             await _handle_webhook(stream, json.dumps({"x": 1}), None)  # type: ignore[arg-type]
         assert stream.responses[0][0] == 200
         assert any("Content-Type" in rec.message for rec in caplog.records)
+
+    @pytest.mark.anyio()
+    async def test_empty_body_accepted_as_ping(self) -> None:
+        # A bare ping (empty body, no JSON to parse) is a valid keep-alive
+        # signal — the server logs it and returns 200 without complaint.
+        from agentloom.cli.callback_server import _handle_webhook
+
+        stream = self._capture_stream()
+        await _handle_webhook(stream, "", "application/json")  # type: ignore[arg-type]
+        assert stream.responses[0][0] == 200
+        assert stream.responses[0][1]["status"] == "received"
+
+    @pytest.mark.anyio()
+    async def test_whitespace_only_body_accepted_as_ping(self) -> None:
+        # Same contract for a body of only whitespace.
+        from agentloom.cli.callback_server import _handle_webhook
+
+        stream = self._capture_stream()
+        await _handle_webhook(stream, "   \n\t  ", "application/json")  # type: ignore[arg-type]
+        assert stream.responses[0][0] == 200
 
 
 class TestCallbackPathTraversal:

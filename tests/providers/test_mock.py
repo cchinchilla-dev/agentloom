@@ -265,3 +265,18 @@ class TestRecordingSchemaValidation:
         path.write_text(json.dumps({"_version": 2, "s": [{"content": "a"}, {"content": "b"}]}))
         provider = MockProvider(responses_file=path)
         assert isinstance(provider._responses["s"], list)
+
+    async def test_step_id_entry_with_non_dict_value_falls_through(self, tmp_path) -> None:
+        # Recording schema validation rejects non-dict / non-list entries
+        # on load, but defensive code in ``_lookup`` still guards against
+        # a programmatic mutation that bypasses the loader. A non-dict /
+        # non-list entry behaves as a miss — never as a crash.
+        path = tmp_path / "ok.json"
+        path.write_text(json.dumps({"_version": 2, "s": {"content": "x"}}))
+        provider = MockProvider(responses_file=path, default_response="DEFAULT")
+        # Bypass the loader to simulate the defensive branch.
+        provider._responses["s"] = "not a dict"  # type: ignore[assignment]
+        r = await provider.complete(
+            messages=[{"role": "user", "content": "hi"}], model="m", step_id="s"
+        )
+        assert r.content == "DEFAULT"

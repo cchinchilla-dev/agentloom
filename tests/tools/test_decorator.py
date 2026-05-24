@@ -281,3 +281,39 @@ class TestPythonToJsonSchemaBranches:
             return str(x)
 
         assert t.parameters_schema["properties"]["x"] == {"type": "string"}
+
+    def test_var_keyword_parameter_is_skipped(self) -> None:
+        # ``**kwargs`` is part of the signature but not a real input the
+        # model can fill — the schema must omit it.
+        @tool(name="vkw")
+        async def t(name: str, **kwargs: object) -> str:
+            return name
+
+        schema = t.parameters_schema
+        assert "kwargs" not in schema["properties"]
+        assert "name" in schema["properties"]
+
+    def test_var_positional_parameter_is_skipped(self) -> None:
+        # Same contract for ``*args``: it never lands in the JSON Schema.
+        @tool(name="vpos")
+        async def t(name: str, *args: object) -> str:
+            return name
+
+        schema = t.parameters_schema
+        assert "args" not in schema["properties"]
+        assert "name" in schema["properties"]
+
+    def test_unresolvable_forward_reference_falls_back_to_string(self) -> None:
+        # ``get_type_hints`` raises NameError when an annotation cannot be
+        # resolved (forward reference to a name that never gets defined).
+        # The decorator must catch that and fall back to per-param schema
+        # — pre-0.5.0 this surfaced raw at import time.
+        from agentloom.tools.decorator import _generate_schema
+
+        def fn(x: "DefinitelyNotARealName") -> str:  # type: ignore[name-defined]  # noqa: F821, UP037
+            return ""
+
+        schema = _generate_schema(fn)
+        # Without resolvable hints the parameter still appears, defaulted
+        # to the safe string shape.
+        assert schema["properties"]["x"] == {"type": "string"}
