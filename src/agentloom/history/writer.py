@@ -193,7 +193,7 @@ class RunHistoryWriter:
 
         try:
             return await anyio.to_thread.run_sync(_write)
-        except OSError:
+        except OSError as e:
             # ``OSError`` covers every "directory not writable" shape:
             # ``PermissionError``, a read-only filesystem (``EROFS``),
             # ``FileNotFoundError`` for a missing mount point. Inside a
@@ -202,23 +202,28 @@ class RunHistoryWriter:
             # choose the directory, stay silent (debug only) so every
             # workflow run does not print a warning (F13). When they DID
             # choose it (``runs_dir`` argument or ``AGENTLOOM_RUNS_DIR``),
-            # keep the warning — they asked for that location.
+            # keep the warning — they asked for that location, so tell
+            # them exactly what failed (errno + message) instead of a
+            # bare "Failed to write".
             if self._explicit:
                 logger.warning(
-                    "Failed to write run history record to %s — continuing",
+                    "Failed to write run history record to %s (%s) — continuing",
                     target,
+                    e,
                 )
                 logger.debug("Run history error trace", exc_info=True)
             else:
                 logger.debug(
-                    "Run history dir not writable (%s); skipping record.",
+                    "Run history dir not writable (%s): %s; skipping record.",
                     target.parent,
+                    e,
                 )
             return None
-        except Exception:
+        except Exception as e:
             logger.warning(
-                "Failed to write run history record to %s — continuing",
+                "Failed to write run history record to %s (%s) — continuing",
                 target,
+                e,
             )
             logger.debug("Run history error trace", exc_info=True)
             return None

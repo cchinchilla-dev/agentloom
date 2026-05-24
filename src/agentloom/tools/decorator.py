@@ -107,15 +107,22 @@ def _python_to_json_schema(hint: Any) -> dict[str, Any]:
         value = args[1] if len(args) == 2 else Any
         return {"type": "object", "additionalProperties": _python_to_json_schema(value)}
     if origin in (typing.Union, types.UnionType):
-        # ``Optional[T]`` / ``T | None`` → expose T's schema directly; the
-        # ``required`` list already conveys whether the parameter may be
-        # omitted. A genuine multi-type union becomes ``anyOf`` so the
-        # model still sees every accepted shape.
-        non_none = [a for a in get_args(hint) if a is not type(None)]
-        if len(non_none) == 1:
-            return _python_to_json_schema(non_none[0])
-        if non_none:
-            return {"anyOf": [_python_to_json_schema(a) for a in non_none]}
+        # ``Optional[T]`` / ``T | None`` → ``anyOf: [<T's schema>,
+        # {"type": "null"}]`` so the schema accepts an explicit null
+        # too (matching the Python signature, which allows it). The
+        # ``required`` list still conveys whether the parameter may be
+        # omitted entirely. A genuine multi-type union becomes
+        # ``anyOf`` over every accepted shape.
+        args = get_args(hint)
+        non_none = [a for a in args if a is not type(None)]
+        has_none = type(None) in args
+        schemas = [_python_to_json_schema(a) for a in non_none]
+        if has_none:
+            schemas.append({"type": "null"})
+        if len(schemas) == 1:
+            return schemas[0]
+        if schemas:
+            return {"anyOf": schemas}
         return {"type": "null"}
 
     if isinstance(hint, type):

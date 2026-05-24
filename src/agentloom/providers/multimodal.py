@@ -10,7 +10,7 @@ import re
 import socket
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote_to_bytes, urlparse
 
 import anyio
 import httpx
@@ -117,17 +117,24 @@ def _is_url(source: str) -> bool:
 
 # RFC 2397 data: URL — ``data:[<media>][;<param>=<value>]*[;base64],<payload>``.
 # ``media`` and the parameter list are both optional (``data:,Hello`` is
-# valid). ``re.DOTALL`` lets a payload contain newlines.
+# valid). ``re.DOTALL`` lets a payload contain newlines; ``re.IGNORECASE``
+# matches the scheme + ``;base64`` marker case-insensitively (URI schemes
+# are case-insensitive per RFC 3986).
 _DATA_URL_RE = re.compile(
     r"^data:(?P<media>[\w.+/-]*)(?P<params>(?:;[\w-]+=[^;,]*)*)"
     r"(?P<base64>;base64)?,(?P<payload>.*)$",
-    re.DOTALL,
+    re.DOTALL | re.IGNORECASE,
 )
 
 
 def _is_data_url(source: str) -> bool:
-    """Return True if *source* is an RFC 2397 ``data:`` URL."""
-    return source.startswith("data:")
+    """Return True if *source* is an RFC 2397 ``data:`` URL.
+
+    The scheme check is case-insensitive (RFC 3986 §3.1 — URI schemes
+    are case-insensitive), so ``DATA:image/png;base64,...`` is also
+    recognised.
+    """
+    return source[:5].lower() == "data:"
 
 
 def _decode_data_url(attachment: Attachment, source: str) -> tuple[bytes, str]:
@@ -161,8 +168,11 @@ def _decode_data_url(attachment: Attachment, source: str) -> tuple[bytes, str]:
             # ``binascii.Error`` (a ValueError subclass) for bad base64.
             raise AttachmentResolutionError(source[:60], f"invalid base64 payload: {e}") from e
     else:
-        # Non-base64 data: URL — the payload is percent-encoded text.
-        raw = unquote(payload).encode("utf-8")
+        # Non-base64 data: URL — the payload is percent-encoded bytes.
+        # ``unquote_to_bytes`` preserves the raw byte sequence;
+        # ``unquote(...).encode("utf-8")`` would corrupt any non-UTF-8
+        # payload (e.g. binary smuggled through ``%xx`` escapes).
+        raw = unquote_to_bytes(payload)
     _check_size(raw, source[:60])
     return raw, media
 

@@ -197,7 +197,7 @@ class RecordingMismatchError(AgentLoomError):
 class CheckpointSchemaError(AgentLoomError):
     """A checkpoint file cannot be loaded by this runtime.
 
-    Raised when a checkpoint's ``_schema_version`` is newer than the
+    Raised when a checkpoint's ``schema_version`` is newer than the
     running AgentLoom understands, or carries an enum value (step status,
     workflow status) this runtime does not define. Fails fast with a
     migration hint instead of silently mis-rendering a checkpoint written

@@ -325,5 +325,8 @@ steps:
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             f.write(yaml)
             f.flush()
-            with pytest.raises((ValidationError, Exception)):
+            # ``WorkflowParser.from_yaml`` wraps Pydantic / parse failures
+            # in our own ``ValidationError``; asserting that specifically
+            # so a regression to a generic ``Exception`` still surfaces.
+            with pytest.raises(ValidationError):
                 WorkflowParser.from_yaml(f.name)

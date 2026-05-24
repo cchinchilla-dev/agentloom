@@ -201,9 +201,13 @@ class TestGenericTypeSchema:
         async def t(name: str | None = None) -> str:
             return ""
 
-        # Optional[str] exposes str's schema; "required" conveys None-ness.
+        # Optional[str] → anyOf [string, null] so the schema accepts an
+        # explicit null too (Python's signature allows it). ``required``
+        # still conveys whether the parameter may be omitted entirely.
         prop = t.parameters_schema["properties"]["name"]
-        assert prop["type"] == "string"
+        assert "anyOf" in prop
+        assert {"type": "string"} in prop["anyOf"]
+        assert {"type": "null"} in prop["anyOf"]
         assert "name" not in t.parameters_schema.get("required", [])
 
     def test_dict_hint(self) -> None:
@@ -234,6 +238,20 @@ class TestGenericTypeSchema:
         assert "anyOf" in prop
         assert {"type": "integer"} in prop["anyOf"]
         assert {"type": "string"} in prop["anyOf"]
+
+    def test_optional_multi_type_hint_includes_null(self) -> None:
+        # ``Optional[int | str]`` (= ``int | str | None``) must list
+        # ``null`` alongside ``int`` and ``string`` so the schema accepts
+        # every value the Python signature allows.
+        @tool(name="t")
+        async def t(val: int | str | None = None) -> str:
+            return ""
+
+        prop = t.parameters_schema["properties"]["val"]
+        assert "anyOf" in prop
+        assert {"type": "integer"} in prop["anyOf"]
+        assert {"type": "string"} in prop["anyOf"]
+        assert {"type": "null"} in prop["anyOf"]
 
 
 class TestPythonToJsonSchemaBranches:

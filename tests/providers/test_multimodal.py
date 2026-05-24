@@ -534,6 +534,29 @@ class TestDataURLAttachments:
 
         assert _b64.b64decode(blocks[0].data) == b"Hello World"
 
+    async def test_data_url_scheme_is_case_insensitive(self) -> None:
+        # RFC 3986 §3.1: URI schemes are case-insensitive. ``DATA:`` (or
+        # mixed-case ``Data:``) must be recognised — pre-fix the
+        # ``startswith`` check rejected anything but lowercase ``data:``
+        # and fell through to file-path handling.
+        att = Attachment(type="image", source=f"DATA:image/png;base64,{self._PNG_B64}")
+        blocks = await resolve_attachments([att])
+        assert len(blocks) == 1
+        assert blocks[0].data == self._PNG_B64
+
+    async def test_data_url_non_base64_preserves_binary_bytes(self) -> None:
+        # Non-base64 data: URLs can carry binary bytes through ``%xx``
+        # escapes. Decoding via ``unquote(...).encode("utf-8")`` would
+        # corrupt anything that isn't valid UTF-8; ``unquote_to_bytes``
+        # preserves the raw sequence. A single 0x80 byte is the canonical
+        # not-a-UTF-8-start regression case.
+        import base64 as _b64
+
+        att = Attachment(type="image", source="data:application/octet-stream,%80%81%FF")
+        blocks = await resolve_attachments([att])
+        # Round-trips exactly to the three raw bytes 0x80 0x81 0xFF.
+        assert _b64.b64decode(blocks[0].data) == b"\x80\x81\xff"
+
 
 class TestSymlinkRejectionMessage:
     """F70: a symlink inside readable_paths pointing OUT of it must
