@@ -18,6 +18,11 @@ from agentloom.exceptions import StateWriteError
 _SEGMENT_RE = re.compile(r"^([^\[]*)((?:\[-?\d+\])*)$")
 _INDEX_RE = re.compile(r"\[(-?\d+)\]")
 
+# Sentinel for "key absent" lookups. A state value can legitimately be
+# ``None``, so ``key_exists`` must distinguish "path resolves to None"
+# from "path does not resolve" — a plain ``default=None`` cannot.
+_KEY_ABSENT = object()
+
 
 def _parse_path(key: str) -> list[str | int]:
     """Split a dotted key with optional array indices into access operations.
@@ -206,6 +211,18 @@ class StateManager:
             else:
                 return default
         return current
+
+    @staticmethod
+    def key_exists(data: dict[str, Any], key: str) -> bool:
+        """Return ``True`` when the dotted *key* path resolves to a value.
+
+        Distinct from ``_resolve_key(...) is None``: a state value can
+        legitimately be ``None``, so callers that need "is this path
+        present" — e.g. ``tool_step`` rejecting a ``state.X`` reference
+        to a key that does not exist — must ask this rather than test
+        the resolved value for falsiness.
+        """
+        return StateManager._resolve_key(data, key, _KEY_ABSENT) is not _KEY_ABSENT
 
     @staticmethod
     def _set_nested(data: dict[str, Any], key: str, value: Any) -> None:

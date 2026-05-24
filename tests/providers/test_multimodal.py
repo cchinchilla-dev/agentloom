@@ -468,3 +468,118 @@ class TestOpenAIAudioFormats:
         )
         audio_part = result[0]["content"][1]
         assert audio_part["input_audio"]["format"] == "mp3"
+
+
+class TestDataURLAttachments:
+    """F71: ``data:`` URLs inline their payload — the resolver decodes
+    them instead of treating the whole string as a filesystem path and
+    surfacing a misleading FileNotFoundError."""
+
+    # 1x1 transparent PNG.
+    _PNG_B64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAA"
+        "AAYAAjCB0C8AAAAASUVORK5CYII="
+    )
+
+    async def test_data_url_base64_decoded_as_inline(self) -> None:
+        from agentloom.providers.multimodal import ImageBlock
+
+        att = Attachment(type="image", source=f"data:image/png;base64,{self._PNG_B64}")
+        blocks = await resolve_attachments([att])
+        assert len(blocks) == 1
+        assert isinstance(blocks[0], ImageBlock)
+        assert blocks[0].media_type == "image/png"
+        assert blocks[0].data == self._PNG_B64
+
+    async def test_data_url_invalid_base64_raises_resolution_error(self) -> None:
+        from agentloom.exceptions import AttachmentResolutionError
+
+        att = Attachment(type="image", source="data:image/png;base64,!!!not-base64!!!")
+        with pytest.raises(AttachmentResolutionError, match="invalid base64"):
+            await resolve_attachments([att])
+
+    async def test_data_url_malformed_raises_resolution_error(self) -> None:
+        from agentloom.exceptions import AttachmentResolutionError
+
+        # No comma — not a well-formed data: URL.
+        att = Attachment(type="image", source="data:not-a-valid-url")
+        with pytest.raises(AttachmentResolutionError, match="malformed data: URL"):
+            await resolve_attachments([att])
+
+    async def test_data_url_unaffected_by_sandbox(self) -> None:
+        from agentloom.core.models import SandboxConfig
+
+        # A strict sandbox with a domain allowlist must NOT block a
+        # data: URL — it makes no network call and opens no file.
+        sandbox = SandboxConfig(enabled=True, allowed_domains=["api.openai.com"])
+        att = Attachment(type="image", source=f"data:image/png;base64,{self._PNG_B64}")
+        blocks = await resolve_attachments([att], sandbox=sandbox)
+        assert len(blocks) == 1
+
+    async def test_data_url_with_charset_param(self) -> None:
+        import base64 as _b64
+
+        att = Attachment(type="image", source="data:text/plain;charset=utf-8,Hello")
+        blocks = await resolve_attachments([att])
+        assert len(blocks) == 1
+        # The ``;charset=`` parameter is parsed and skipped — the payload
+        # after the comma decodes to the literal text.
+        assert _b64.b64decode(blocks[0].data) == b"Hello"
+
+    async def test_data_url_without_base64_marker(self) -> None:
+        # Non-base64 data: URL — percent-decoded text.
+        att = Attachment(type="image", source="data:text/plain,Hello%20World")
+        blocks = await resolve_attachments([att])
+        import base64 as _b64
+
+        assert _b64.b64decode(blocks[0].data) == b"Hello World"
+
+    async def test_data_url_scheme_is_case_insensitive(self) -> None:
+        # RFC 3986 §3.1: URI schemes are case-insensitive. ``DATA:`` (or
+        # mixed-case ``Data:``) must be recognised — pre-fix the
+        # ``startswith`` check rejected anything but lowercase ``data:``
+        # and fell through to file-path handling.
+        att = Attachment(type="image", source=f"DATA:image/png;base64,{self._PNG_B64}")
+        blocks = await resolve_attachments([att])
+        assert len(blocks) == 1
+        assert blocks[0].data == self._PNG_B64
+
+    async def test_data_url_non_base64_preserves_binary_bytes(self) -> None:
+        # Non-base64 data: URLs can carry binary bytes through ``%xx``
+        # escapes. Decoding via ``unquote(...).encode("utf-8")`` would
+        # corrupt anything that isn't valid UTF-8; ``unquote_to_bytes``
+        # preserves the raw sequence. A single 0x80 byte is the canonical
+        # not-a-UTF-8-start regression case.
+        import base64 as _b64
+
+        att = Attachment(type="image", source="data:application/octet-stream,%80%81%FF")
+        blocks = await resolve_attachments([att])
+        # Round-trips exactly to the three raw bytes 0x80 0x81 0xFF.
+        assert _b64.b64decode(blocks[0].data) == b"\x80\x81\xff"
+
+
+class TestSymlinkRejectionMessage:
+    """F70: a symlink inside readable_paths pointing OUT of it must
+    produce an error naming BOTH the symlink path and the resolved
+    target — pre-0.5.0 only one was named, misdirecting the operator."""
+
+    async def test_symlink_error_names_resolved_target(self, tmp_path) -> None:
+        import os
+
+        from agentloom.core.models import SandboxConfig
+
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        outside = tmp_path / "secret.txt"
+        outside.write_text("classified")
+        link = allowed / "sneak.txt"
+        os.symlink(outside, link)
+
+        sandbox = SandboxConfig(enabled=True, readable_paths=[str(allowed)])
+        att = Attachment(type="image", source=str(link))
+        with pytest.raises(PermissionError) as excinfo:
+            await resolve_attachments([att], sandbox=sandbox)
+        msg = str(excinfo.value)
+        # Both the symlink path AND the resolved target appear.
+        assert str(link) in msg
+        assert "resolves to" in msg

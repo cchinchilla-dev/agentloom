@@ -188,12 +188,19 @@ class ProviderGateway:
                     await entry.rate_limiter.acquire(token_count=estimated_tokens)
 
                 async def _call(e: ProviderEntry = entry) -> ProviderResponse:
+                    call_kwargs = dict(kwargs)
+                    # Re-attach step_id only for providers that consume
+                    # it — the mock and recording providers key their
+                    # fixtures by step id. HTTP adapters reject the
+                    # unknown parameter, so it stays popped for them.
+                    if step_id is not None and getattr(e.provider, "accepts_step_id", False):
+                        call_kwargs["step_id"] = step_id
                     return await e.provider.complete(
                         messages=messages,
                         model=model,
                         temperature=temperature,
                         max_tokens=max_tokens,
-                        **kwargs,
+                        **call_kwargs,
                     )
 
                 response = await entry.circuit_breaker.call(_call, exclude=(RateLimitError,))
@@ -333,12 +340,17 @@ class ProviderGateway:
                     )
                     await entry.rate_limiter.acquire(token_count=estimated_tokens)
 
+                stream_kwargs = dict(kwargs)
+                # Re-attach step_id only for providers that consume it
+                # (mock / recorder key their fixtures by step id).
+                if step_id is not None and getattr(entry.provider, "accepts_step_id", False):
+                    stream_kwargs["step_id"] = step_id
                 inner_sr = await entry.provider.stream(
                     messages=messages,
                     model=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    **kwargs,
+                    **stream_kwargs,
                 )
 
                 # Wrap with resilience feedback

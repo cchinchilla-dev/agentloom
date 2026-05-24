@@ -36,6 +36,11 @@ class RecordingProvider(BaseProvider):
     crashed workflow still leaves a partial recording on disk.
     """
 
+    # The recorder keys captures by step id — the gateway must forward
+    # it (the wrapped HTTP adapter never sees it; the recorder consumes
+    # it before delegating).
+    accepts_step_id = True
+
     def __init__(
         self,
         wrapped: BaseProvider,
@@ -75,6 +80,17 @@ class RecordingProvider(BaseProvider):
             return step_id
         return prompt_hash(messages, model, temperature, max_tokens, extra)
 
+    def _wrapped_kwargs(self, extra_kwargs: dict[str, Any], step_id: str | None) -> dict[str, Any]:
+        """Build the kwargs forwarded to the wrapped provider.
+
+        ``step_id`` is added back only when the wrapped provider accepts
+        it (another mock / recorder) — an HTTP adapter rejects unknown
+        parameters, so it receives ``extra_kwargs`` unchanged.
+        """
+        if step_id is not None and getattr(self._wrapped, "accepts_step_id", False):
+            return {**extra_kwargs, "step_id": step_id}
+        return dict(extra_kwargs)
+
     async def _flush(self) -> None:
         async with self._write_lock:
             snapshot = dict(self._recorded)
@@ -107,12 +123,15 @@ class RecordingProvider(BaseProvider):
         step_id = kwargs.get("step_id")
         extra_kwargs = {k: v for k, v in kwargs.items() if k != "step_id"}
         start = time.perf_counter()
+        # Forward ``step_id`` to the wrapped provider only when it
+        # consumes it (another mock / recorder). An HTTP adapter would
+        # reject the unknown parameter, so it gets ``extra_kwargs`` only.
         response = await self._wrapped.complete(
             messages=messages,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
-            **kwargs,
+            **self._wrapped_kwargs(extra_kwargs, step_id),
         )
         latency_ms = (time.perf_counter() - start) * 1000.0
 
@@ -124,6 +143,10 @@ class RecordingProvider(BaseProvider):
             "cost_usd": response.cost_usd,
             "latency_ms": latency_ms,
             "finish_reason": response.finish_reason,
+            # The full request hash rides on every entry — even when the
+            # entry is keyed by ``step_id`` — so a strict-mode replay can
+            # detect a prompt that drifted from its recording (F28).
+            "request_hash": prompt_hash(messages, model, temperature, max_tokens, extra_kwargs),
         }
         async with self._write_lock:
             self._recorded[key] = entry
@@ -147,12 +170,14 @@ class RecordingProvider(BaseProvider):
         step_id = kwargs.get("step_id")
         extra_kwargs = {k: v for k, v in kwargs.items() if k != "step_id"}
         start = time.perf_counter()
+        # Forward ``step_id`` only to a wrapped provider that consumes
+        # it — see ``complete`` above.
         inner_sr = await self._wrapped.stream(
             messages=messages,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
-            **kwargs,
+            **self._wrapped_kwargs(extra_kwargs, step_id),
         )
 
         outer_sr = StreamResponse(model=inner_sr.model, provider=inner_sr.provider)
@@ -182,6 +207,7 @@ class RecordingProvider(BaseProvider):
                 "cost_usd": inner_sr.cost_usd,
                 "latency_ms": latency_ms,
                 "finish_reason": inner_sr.finish_reason,
+                "request_hash": prompt_hash(messages, model, temperature, max_tokens, extra_kwargs),
             }
             async with recorder._write_lock:
                 recorder._recorded[key] = entry

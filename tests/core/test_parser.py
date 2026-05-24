@@ -279,3 +279,54 @@ steps:
         # The collision set must include both ``b`` and ``c`` (the
         # concurrent pair), not just ``a`` and ``c``.
         assert any("'b'" in m and "'c'" in m for m in messages)
+
+
+class TestStrictExtraKeys:
+    """F33: ``StepDefinition`` and ``WorkflowConfig`` reject unknown
+    keys at parse time (``extra="forbid"``) so a typo fails at
+    ``agentloom validate`` with the offending field named, instead of
+    being silently dropped and surfacing a cryptic run-time error."""
+
+    def test_step_definition_rejects_unknown_key(self) -> None:
+        from pydantic import ValidationError as PydanticValidationError
+
+        from agentloom.core.models import StepDefinition, StepType
+
+        with pytest.raises(PydanticValidationError, match="workflow"):
+            # ``workflow:`` is a typo for ``workflow_inline:``.
+            StepDefinition.model_validate(
+                {"id": "s", "type": StepType.SUBWORKFLOW, "workflow": {"name": "child"}}
+            )
+
+    def test_workflow_config_rejects_unknown_key(self) -> None:
+        from pydantic import ValidationError as PydanticValidationError
+
+        from agentloom.core.models import WorkflowConfig
+
+        with pytest.raises(PydanticValidationError, match="responses"):
+            # ``responses:`` is the half-supported field — only
+            # ``responses_file:`` is wired through.
+            WorkflowConfig.model_validate({"provider": "mock", "responses": ["a", "b"]})
+
+    def test_workflow_yaml_with_typo_rejected_at_parse(self) -> None:
+        yaml = """\
+name: typo-test
+config:
+  provider: mock
+  model: mock-model
+steps:
+  - id: sub
+    type: subworkflow
+    workflow:
+      name: child
+"""
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(yaml)
+            f.flush()
+            # ``WorkflowParser.from_yaml`` wraps Pydantic / parse failures
+            # in our own ``ValidationError``; asserting that specifically
+            # so a regression to a generic ``Exception`` still surfaces.
+            with pytest.raises(ValidationError):
+                WorkflowParser.from_yaml(f.name)

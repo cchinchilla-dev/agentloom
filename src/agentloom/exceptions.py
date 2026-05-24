@@ -176,6 +176,37 @@ class ToolNotFoundError(AgentLoomError, KeyError):
         AgentLoomError.__init__(self, f"Tool '{name}' not found. Available: {rendered}")
 
 
+class RecordingMismatchError(AgentLoomError):
+    """A replay request did not match the recorded response file.
+
+    Raised by ``MockProvider`` in strict mode (the default for
+    ``agentloom replay``) when a completion request cannot be matched
+    against the recording — either no entry exists for the step, or the
+    recorded entry was captured for a different prompt / tools spec.
+    Pre-0.5.0 the mock provider silently fell through to its
+    ``default_response``, so a replay could pass green while answering a
+    prompt that no longer matched the recording.
+
+    Non-retryable: a stale recording does not fix itself between
+    attempts — re-record the fixture instead.
+    """
+
+    is_retryable = False
+
+
+class CheckpointSchemaError(AgentLoomError):
+    """A checkpoint file cannot be loaded by this runtime.
+
+    Raised when a checkpoint's ``schema_version`` is newer than the
+    running AgentLoom understands, or carries an enum value (step status,
+    workflow status) this runtime does not define. Fails fast with a
+    migration hint instead of silently mis-rendering a checkpoint written
+    by a newer version.
+    """
+
+    is_retryable = False
+
+
 class StateWriteError(AgentLoomError):
     """Refused state write: dotted path traverses a wrong-type intermediate.
 

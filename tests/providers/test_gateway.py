@@ -397,6 +397,37 @@ class TestGatewayStreaming:
         assert "".join(chunks) == "Mock response"
         assert sr.usage.total_tokens == 30
 
+    async def test_stream_forwards_step_id_when_provider_opts_in(self) -> None:
+        # ``accepts_step_id=True`` providers (mock, recorder) must receive
+        # ``step_id`` on the stream() path too — otherwise replay fixtures
+        # keyed by step id never match for streaming workflows.
+        class StreamStepIdCapture(MockProvider):
+            accepts_step_id = True
+
+            async def stream(
+                self,
+                messages: list[dict[str, Any]],
+                model: str,
+                temperature: float | None = None,
+                max_tokens: int | None = None,
+                **kwargs: Any,
+            ) -> Any:
+                self.calls.append({"stream_kwargs": dict(kwargs)})
+                return await super().stream(messages, model, temperature, max_tokens, **kwargs)
+
+        gateway = ProviderGateway()
+        provider = StreamStepIdCapture()
+        gateway.register(provider, priority=0)
+
+        sr = await gateway.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="m",
+            step_id="my_stream_step",
+        )
+        async for _ in sr:
+            pass
+        assert provider.calls[0]["stream_kwargs"].get("step_id") == "my_stream_step"
+
     async def test_stream_fallback_on_circuit_open(self) -> None:
         gateway = ProviderGateway()
         failing = FailingProvider()

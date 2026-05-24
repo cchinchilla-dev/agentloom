@@ -191,6 +191,13 @@ class BaseProvider(ABC):
 
     name: str = "base"
 
+    # Whether ``complete`` / ``stream`` want the originating ``step_id``
+    # forwarded to them. The gateway pops ``step_id`` from kwargs before
+    # calling the provider (HTTP adapters would reject the unknown
+    # parameter), but the mock and recording providers key their
+    # response files by step id and need it back — they set this True.
+    accepts_step_id: bool = False
+
     def __init__(self, api_key: str = "", base_url: str = "", **kwargs: Any) -> None:
         self.api_key = api_key
         self.base_url = base_url

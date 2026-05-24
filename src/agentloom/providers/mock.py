@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import logging
 import random
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -17,7 +18,16 @@ from typing import Any, Protocol, runtime_checkable
 import anyio
 
 from agentloom.core.results import TokenUsage
+from agentloom.exceptions import RecordingMismatchError
 from agentloom.providers.base import BaseProvider, ProviderResponse
+
+logger = logging.getLogger("agentloom.providers.mock")
+
+# Recording-file format version this runtime reads/writes. v1 keyed
+# responses by ``step_id`` or a messages-only hash; v2 keys by the full
+# request hash and carries a ``request_hash`` on every entry so replay
+# can detect a prompt that drifted from its recording.
+RECORDING_FORMAT_VERSION = 2
 
 
 @runtime_checkable
@@ -65,6 +75,46 @@ def prompt_hash(
     return hashlib.sha256(serialized).hexdigest()
 
 
+def validate_recording_schema(raw: object, source: str) -> dict[str, Any]:
+    """Validate a parsed recording file against the canonical schema.
+
+    A recording is a JSON object whose ``_``-prefixed keys are metadata
+    (``_version``) and whose remaining keys map a request key to either a
+    single response object or a list of response objects (multi-turn
+    tool loops). Pre-0.5.0 ``MockProvider`` only checked the top level
+    was a dict, so a corrupt file like ``{"not": "valid"}`` loaded
+    silently and every lookup fell through to ``default_response`` —
+    a replay could pass green against garbage.
+
+    Raises:
+        ValueError: On any structural deviation, with the offending key
+            named. ``_version`` below :data:`RECORDING_FORMAT_VERSION`
+            gets an explicit re-record hint.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError(f"Recording {source} must be a JSON object, got {type(raw).__name__}")
+    version = raw.get("_version")
+    if version is not None:
+        if not isinstance(version, int) or version < RECORDING_FORMAT_VERSION:
+            raise ValueError(
+                f"Recording {source} has _version={version!r}; this runtime needs "
+                f"v{RECORDING_FORMAT_VERSION}+. Re-record the fixture with "
+                f"`agentloom run --record`."
+            )
+    for key, value in raw.items():
+        if key.startswith("_"):
+            continue
+        if isinstance(value, dict):
+            continue
+        if isinstance(value, list) and all(isinstance(turn, dict) for turn in value):
+            continue
+        raise ValueError(
+            f"Recording {source} entry {key!r} must be a response object or a "
+            f"list of response objects, got {type(value).__name__}"
+        )
+    return raw
+
+
 class MockProvider(BaseProvider):
     """Deterministic provider that returns pre-recorded responses.
 
@@ -86,6 +136,8 @@ class MockProvider(BaseProvider):
     """
 
     name = "mock"
+    # Replay keys responses by step id — the gateway must forward it.
+    accepts_step_id = True
 
     def __init__(
         self,
@@ -98,6 +150,7 @@ class MockProvider(BaseProvider):
         seed: int | None = None,
         observer: MockObserver | None = None,
         workflow_name: str = "unknown",
+        strict: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(api_key=api_key, base_url=base_url)
@@ -105,6 +158,14 @@ class MockProvider(BaseProvider):
         self.latency_model = latency_model
         self.latency_ms = float(latency_ms)
         self.default_response = default_response
+        # ``strict`` is the determinism gate. ``agentloom replay`` sets it
+        # so a request that misses the recording — or matches a step
+        # whose prompt drifted since capture — raises
+        # ``RecordingMismatchError`` instead of silently returning
+        # ``default_response``. ``agentloom run --provider mock`` keeps
+        # it off so ad-hoc mock runs stay frictionless (one-line warning
+        # on each miss).
+        self.strict = strict
         self._rng = random.Random(seed)
         self._observer = observer
         self._workflow_name = workflow_name
@@ -116,10 +177,14 @@ class MockProvider(BaseProvider):
         self._responses: dict[str, Any] = {}
         self._turn_cursor: dict[str, int] = {}
         if self.responses_file and self.responses_file.exists():
-            raw = json.loads(self.responses_file.read_text())
-            if not isinstance(raw, dict):
-                raise ValueError(f"responses_file {self.responses_file} must contain a JSON object")
-            self._responses = raw
+            try:
+                raw = json.loads(self.responses_file.read_text())
+            except json.JSONDecodeError as e:
+                # A malformed recording file is always an error — pre-0.5.0
+                # the JSON parse failure surfaced raw; now it carries the
+                # file path so the operator knows which fixture to fix.
+                raise ValueError(f"Recording {self.responses_file} is not valid JSON: {e}") from e
+            self._responses = validate_recording_schema(raw, str(self.responses_file))
 
     def _lookup(
         self,
@@ -130,11 +195,14 @@ class MockProvider(BaseProvider):
         max_tokens: int | None,
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
+        request_hash = prompt_hash(messages, model, temperature, max_tokens, extra)
         if step_id and step_id in self._responses:
             entry = self._responses[step_id]
             # List form: pop the next turn (clamp at last so excess
             # iterations replay the final response — saner than
-            # raising mid-loop).
+            # raising mid-loop). Multi-turn tool loops carry a distinct
+            # prompt per turn, so the drift check below is skipped for
+            # lists — the step_id + cursor is the contract there.
             if isinstance(entry, list):
                 if not entry:
                     return None
@@ -142,9 +210,26 @@ class MockProvider(BaseProvider):
                 turn = entry[min(idx, len(entry) - 1)]
                 self._turn_cursor[step_id] = idx + 1
                 return turn if isinstance(turn, dict) else None
-            return entry if isinstance(entry, dict) else None
-        key = prompt_hash(messages, model, temperature, max_tokens, extra)
-        return self._responses.get(key)
+            if not isinstance(entry, dict):
+                return None
+            # Drift check: an entry recorded under a step_id carries the
+            # ``request_hash`` it was captured against. In strict (replay)
+            # mode a mismatch means the workflow's prompt / system prompt
+            # / model / tools spec changed since the recording — refuse
+            # rather than answer with stale data (F28). Recordings made
+            # before this field existed have no ``request_hash`` and are
+            # matched by step_id alone, unchanged.
+            recorded_hash = entry.get("request_hash")
+            if self.strict and isinstance(recorded_hash, str) and recorded_hash != request_hash:
+                raise RecordingMismatchError(
+                    f"Step {step_id!r}: the replayed request (hash "
+                    f"{request_hash[:16]}) does not match the recording "
+                    f"(hash {recorded_hash[:16]}). The prompt, system prompt, "
+                    f"model, or tools spec changed since capture — re-record "
+                    f"the fixture with `agentloom run --record`."
+                )
+            return entry
+        return self._responses.get(request_hash)
 
     async def _sleep(self, recorded_ms: float | None) -> None:
         if self.latency_model == "replay" and recorded_ms is not None:
@@ -169,6 +254,19 @@ class MockProvider(BaseProvider):
         extra_kwargs = {k: v for k, v in kwargs.items() if k not in ("step_id",)}
         entry = self._lookup(step_id, messages, model, temperature, max_tokens, extra_kwargs)
         if entry is None:
+            # Strict (replay) mode: a miss is a hard error. Pre-0.5.0 the
+            # mock fell through to ``default_response`` even under
+            # ``agentloom replay``, so a recording with no entry for a
+            # step replayed green with the literal "Mock response" text
+            # (F29 / F41).
+            if self.strict:
+                raise RecordingMismatchError(
+                    f"No recorded response for step {step_id!r} (model {model!r}). "
+                    f"The recording has no entry matching this request. Re-record "
+                    f"the fixture with `agentloom run --record`, or pass "
+                    f"`--allow-default-fallback` to replay with the placeholder "
+                    f"response."
+                )
             matched_by = "default"
         elif step_id and step_id in self._responses:
             matched_by = "step_id"
@@ -191,6 +289,16 @@ class MockProvider(BaseProvider):
         await self._sleep(recorded_latency if isinstance(recorded_latency, int | float) else None)
 
         if entry is None:
+            # Non-strict miss: keep the development-convenience fallback,
+            # but emit a one-line warning so a CI assertion passing on
+            # the literal placeholder text is at least visible in logs.
+            logger.warning(
+                "MockProvider: no recorded response for step %r (model %r); "
+                "returning the placeholder default. Pass strict=True (the "
+                "`agentloom replay` default) to make this an error.",
+                step_id,
+                model,
+            )
             return ProviderResponse(
                 content=self.default_response,
                 model=model,

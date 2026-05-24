@@ -2,14 +2,19 @@
 # AgentLoom — Multi-stage Dockerfile
 # ============================================================
 # Stages:
-#   builder    — install deps + build wheel
-#   dev        — full dev environment (--target dev)
-#   production — minimal runtime image (default)
+#   builder         — install deps + build wheel
+#   dev             — full dev environment (--target dev)
+#   production      — runtime image WITH observability (default)
+#   production-lite — runtime image WITHOUT observability (~30 MB smaller)
 #
 # Usage:
-#   docker build -t agentloom .
-#   docker build --build-arg BUILD_OBSERVABILITY=true -t agentloom:obs .
+#   docker build -t agentloom .                       # production (observability)
+#   docker build --target production-lite -t al:lite .
 #   docker build --target dev -t agentloom:dev .
+#
+# The default image ships the [observability] extra so a container that
+# sets OTEL_EXPORTER_OTLP_ENDPOINT exports traces out of the box. Choose
+# `--target production-lite` for the smaller image when OTel is unused.
 # ============================================================
 
 # --------------- Stage 1: builder ---------------
@@ -45,32 +50,23 @@ WORKDIR /build
 ENTRYPOINT ["uv", "run"]
 CMD ["pytest"]
 
-# --------------- Stage 3: production (default) ---------------
-FROM python:3.12-slim AS production
-
-ARG BUILD_OBSERVABILITY=false
+# --------------- Stage 3: runtime-base ---------------
+# Everything the two runtime images share EXCEPT the dependency install.
+# Keeping it in one stage means `production` and `production-lite` differ
+# by exactly one line — the pip install — so they cannot drift apart.
+FROM python:3.12-slim AS runtime-base
 
 # Non-root user
 RUN groupadd --gid 1000 agentloom \
     && useradd --uid 1000 --gid agentloom --create-home agentloom
 
-# Install the wheel
+# Stage the wheel for the install step in the child stages
 COPY --from=builder /build/dist/*.whl /tmp/
-RUN WHEEL=$(ls /tmp/agentloom-*.whl) \
-    && if [ "$BUILD_OBSERVABILITY" = "true" ]; then \
-         pip install --no-cache-dir --root-user-action=ignore --disable-pip-version-check \
-           "${WHEEL}[observability]"; \
-       else \
-         pip install --no-cache-dir --root-user-action=ignore --disable-pip-version-check \
-           "$WHEEL"; \
-       fi \
-    && rm -f /tmp/*.whl
 
 # Copy example workflows so validate works out of the box
 COPY examples/ /workflows/
 
 WORKDIR /workflows
-USER agentloom
 
 # Default OTel endpoint for containerized environments
 ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
@@ -79,3 +75,27 @@ ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
 
 ENTRYPOINT ["agentloom"]
 CMD ["--help"]
+
+# --------------- Stage 4: production-lite (--target production-lite) ---------------
+# Runtime WITHOUT the observability extra — smaller image for deployments
+# that do not export OTel traces / Prometheus metrics.
+FROM runtime-base AS production-lite
+
+RUN WHEEL=$(ls /tmp/agentloom-*.whl) \
+    && pip install --no-cache-dir --root-user-action=ignore --disable-pip-version-check \
+       "$WHEEL" \
+    && rm -f /tmp/*.whl
+
+USER agentloom
+
+# --------------- Stage 5: production (default) ---------------
+# Runtime WITH the observability extra. Last stage in the file, so a
+# bare `docker build .` produces this image.
+FROM runtime-base AS production
+
+RUN WHEEL=$(ls /tmp/agentloom-*.whl) \
+    && pip install --no-cache-dir --root-user-action=ignore --disable-pip-version-check \
+       "${WHEEL}[observability]" \
+    && rm -f /tmp/*.whl
+
+USER agentloom

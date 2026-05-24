@@ -7,10 +7,10 @@ AgentLoom runs anywhere — from a single Docker container to a fully orchestrat
 
 ## Docker
 
-The multi-stage Dockerfile produces a minimal image (~120MB) with a non-root user and read-only filesystem.
+The multi-stage Dockerfile produces a non-root, read-only-filesystem image. The default `production` stage **ships the `[observability]` extra**, so a container that sets `OTEL_EXPORTER_OTLP_ENDPOINT` exports traces and Prometheus metrics out of the box.
 
 ```bash
-# Build
+# Build the default image (production — observability included)
 docker build -t agentloom .
 
 # Run a workflow
@@ -25,9 +25,14 @@ docker run --rm \
   -v ./examples:/workflows:ro \
   agentloom run /workflows/01_simple_qa.yaml --provider openai --model gpt-4o-mini
 
-# Build with observability extras
-docker build --build-arg BUILD_OBSERVABILITY=true -t agentloom:obs .
+# Smaller image WITHOUT observability (~30 MB lighter)
+docker build --target production-lite -t agentloom:lite .
 ```
+
+| Target | Observability | When to use |
+|--------|---------------|-------------|
+| `production` (default) | Included | OTel tracing / Prometheus metrics needed — the common case |
+| `production-lite` | Omitted | Minimal image, no OTel export |
 
 ## Docker Compose
 
@@ -185,9 +190,33 @@ The Application CRD configures:
 | `ANTHROPIC_API_KEY` | Anthropic API key | — |
 | `GOOGLE_API_KEY` | Google AI API key | — |
 | `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |
+| `AGENTLOOM_OLLAMA_FALLBACK` | Opt-in: register Ollama as a global fallback (`1` / `true` / `yes`) | unset |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel Collector gRPC endpoint | `http://localhost:4317` |
+| `AGENTLOOM_RUNS_DIR` | Run-history output directory | `./agentloom_runs` |
 
 In Kubernetes, these are injected via `envFrom` referencing a Secret. Never bake API keys into images or commit them to source control.
+
+## Approval callback server
+
+`agentloom callback-server` runs a lightweight HTTP server that accepts `approve` / `reject` callbacks for paused approval-gate workflows and receives webhook notifications:
+
+```bash
+agentloom callback-server --checkpoint-dir .agentloom/checkpoints --port 8642
+```
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /webhook` | Receive a notification. A malformed JSON body returns `400`. |
+| `POST /approve/<run_id>` | Resume a paused workflow with an approval. |
+| `POST /reject/<run_id>` | Resume a paused workflow with a rejection. |
+| `GET /pending` | List paused runs. |
+
+The server binds `0.0.0.0` by default — keep it on a loopback or trusted network. For defence in depth, the opt-in `--token <secret>` flag requires a matching `X-AgentLoom-Token` header on `POST /approve` and `POST /reject`; a request without it gets `401`:
+
+```bash
+agentloom callback-server --token "$CALLBACK_SECRET"
+curl -X POST -H "X-AgentLoom-Token: $CALLBACK_SECRET" http://host:8642/approve/<run_id>
+```
 
 ## CI/CD pipeline
 

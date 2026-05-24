@@ -19,12 +19,23 @@ def callback_server(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind address."),
     port: int = typer.Option(8642, "--port", help="Bind port."),
     lite: bool = typer.Option(False, "--lite", help="Run in lite mode (no observability)."),
+    token: str | None = typer.Option(
+        None,
+        "--token",
+        help=(
+            "Optional shared secret. When set, POST /approve and POST /reject "
+            "require a matching `X-AgentLoom-Token` header — defence in depth "
+            "for a server reachable beyond loopback."
+        ),
+    ),
 ) -> None:
     """Start an HTTP server that accepts approve/reject callbacks."""
-    anyio.run(_serve, checkpoint_dir, host, port, lite)  # pragma: no cover
+    anyio.run(_serve, checkpoint_dir, host, port, lite, token)  # pragma: no cover
 
 
-async def _serve(checkpoint_dir: str, host: str, port: int, lite: bool) -> None:  # pragma: no cover
+async def _serve(  # pragma: no cover
+    checkpoint_dir: str, host: str, port: int, lite: bool, token: str | None = None
+) -> None:
     listener = await anyio.create_tcp_listener(local_host=host, local_port=port)
     # Resolve actual port (may differ from requested when port=0)
     actual_port = port
@@ -42,7 +53,7 @@ async def _serve(checkpoint_dir: str, host: str, port: int, lite: bool) -> None:
 
         async def _handle_conn(stream: anyio.abc.SocketStream) -> None:
             try:
-                await _handle_request(stream, checkpoint_dir, lite)
+                await _handle_request(stream, checkpoint_dir, lite, token)
             except Exception:
                 logger.warning("Error handling request", exc_info=True)
             finally:
@@ -51,7 +62,27 @@ async def _serve(checkpoint_dir: str, host: str, port: int, lite: bool) -> None:
         await listener.serve(_handle_conn, task_group=tg)
 
 
-async def _handle_request(stream: anyio.abc.SocketStream, checkpoint_dir: str, lite: bool) -> None:
+def _parse_headers(header_section: str) -> dict[str, str]:
+    """Parse the HTTP header block into a lowercase-keyed dict.
+
+    Header names are case-insensitive per RFC 9110, so lowercasing the
+    keys lets callers look up ``content-type`` / ``x-agentloom-token``
+    without worrying about the sender's casing.
+    """
+    headers: dict[str, str] = {}
+    for line in header_section.split("\r\n")[1:]:
+        name, sep, value = line.partition(":")
+        if sep:
+            headers[name.strip().lower()] = value.strip()
+    return headers
+
+
+async def _handle_request(
+    stream: anyio.abc.SocketStream,
+    checkpoint_dir: str,
+    lite: bool,
+    token: str | None = None,
+) -> None:
     """Parse a raw HTTP/1.1 request and route it."""
     data = await stream.receive(8192)
     if not data:
@@ -103,27 +134,67 @@ async def _handle_request(stream: anyio.abc.SocketStream, checkpoint_dir: str, l
         return
 
     method, path = parts[0], parts[1]
+    headers = _parse_headers(header_section)
 
     if method == "POST" and path == "/webhook":
-        await _handle_webhook(stream, body)
+        await _handle_webhook(stream, body, headers.get("content-type"))
     elif method == "GET" and path == "/pending":
         await _handle_pending(stream, checkpoint_dir)
     elif method == "POST" and path.startswith("/approve/"):
         run_id = path[len("/approve/") :]
-        await _handle_decision(stream, checkpoint_dir, lite, run_id, "approved")
+        await _handle_decision(
+            stream,
+            checkpoint_dir,
+            lite,
+            run_id,
+            "approved",
+            provided_token=headers.get("x-agentloom-token"),
+            expected_token=token,
+        )
     elif method == "POST" and path.startswith("/reject/"):
         run_id = path[len("/reject/") :]
-        await _handle_decision(stream, checkpoint_dir, lite, run_id, "rejected")
+        await _handle_decision(
+            stream,
+            checkpoint_dir,
+            lite,
+            run_id,
+            "rejected",
+            provided_token=headers.get("x-agentloom-token"),
+            expected_token=token,
+        )
     else:
         await _send_response(stream, 404, {"error": "not found"})
 
 
-async def _handle_webhook(stream: anyio.abc.SocketStream, body: str) -> None:
-    """Receive and log an incoming webhook notification."""
+async def _handle_webhook(
+    stream: anyio.abc.SocketStream, body: str, content_type: str | None
+) -> None:
+    """Receive, validate, and log an incoming webhook notification.
+
+    Pre-0.5.0 the handler acknowledged any body with ``200 received`` —
+    it never parsed it, so a CI suite using the callback server to
+    assert "the workflow sent X" could not tell a correct payload from
+    garbage. A malformed JSON body now returns ``400`` so the sender
+    sees the failure; a missing ``Content-Type`` is still accepted (the
+    server is a notification sink) but logs a warning.
+    """
+    if content_type is None:
+        logger.warning("Webhook POST /webhook received with no Content-Type header")
+    stripped = body.strip()
+    if not stripped:
+        # An empty body is a bare ping — accept it without complaint.
+        logger.info("Webhook received: (empty body)")
+        await _send_response(stream, 200, {"status": "received"})
+        return
     try:
-        payload = json.loads(body) if body.strip() else {}
-    except json.JSONDecodeError:
-        payload = {"raw": body}
+        payload = json.loads(stripped)
+    except json.JSONDecodeError as e:
+        logger.warning("Malformed webhook body: %s", e)
+        await _send_response(stream, 400, {"error": f"invalid JSON: {e}"})
+        return
+    if not isinstance(payload, dict):
+        await _send_response(stream, 400, {"error": "body must be a JSON object"})
+        return
     logger.info("Webhook received: %s", json.dumps(payload, indent=2))
     typer.echo(f"\n[WEBHOOK] Notification received: {json.dumps(payload)}")
     await _send_response(stream, 200, {"status": "received"})
@@ -153,6 +224,9 @@ async def _handle_decision(
     lite: bool,
     run_id: str,
     decision: str,
+    *,
+    provided_token: str | None = None,
+    expected_token: str | None = None,
 ) -> None:
     from agentloom.checkpointing.file import FileCheckpointer
     from agentloom.cli.run import _setup_observer, _setup_providers
@@ -162,11 +236,25 @@ async def _handle_decision(
     from agentloom.tools.registry import ToolRegistry
     from agentloom.tools.sandbox import ToolSandbox
 
+    # Optional shared-secret gate. Only enforced when the server was
+    # started with ``--token``; otherwise approve/reject stay open
+    # (loopback-only is the assumed default deployment).
+    if expected_token is not None and provided_token != expected_token:
+        await _send_response(stream, 401, {"error": "invalid or missing X-AgentLoom-Token"})
+        return
+
     checkpointer = FileCheckpointer(checkpoint_dir=checkpoint_dir)
     try:
         checkpoint_data = await checkpointer.load(run_id)
     except KeyError:
         await _send_response(stream, 404, {"error": f"no checkpoint for run '{run_id}'"})
+        return
+    except ValueError as e:
+        # ``FileCheckpointer`` rejects a run_id that would escape the
+        # checkpoint directory (path traversal). Pre-0.5.0 this
+        # ``ValueError`` was uncaught and surfaced as a 500 with a stack
+        # trace in the server log; return a clean 400 instead.
+        await _send_response(stream, 400, {"error": f"invalid run id: {e}"})
         return
 
     if checkpoint_data.status != "paused":
@@ -243,7 +331,14 @@ async def _handle_decision(
 
 async def _send_response(stream: anyio.abc.SocketStream, status: int, body: dict[str, Any]) -> None:
     """Write a minimal HTTP/1.1 JSON response."""
-    phrases = {200: "OK", 202: "Accepted", 400: "Bad Request", 404: "Not Found", 409: "Conflict"}
+    phrases = {
+        200: "OK",
+        202: "Accepted",
+        400: "Bad Request",
+        401: "Unauthorized",
+        404: "Not Found",
+        409: "Conflict",
+    }
     phrase = phrases.get(status, "Unknown")
     payload = json.dumps(body).encode()
     header = (

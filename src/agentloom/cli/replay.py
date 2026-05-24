@@ -26,8 +26,23 @@ def replay(
     observability: bool = typer.Option(
         False, "--observability", help="Enable observability (disabled by default in replay)."
     ),
+    allow_default_fallback: bool = typer.Option(
+        False,
+        "--allow-default-fallback",
+        help=(
+            "Return the placeholder response on a recording miss instead of "
+            "failing. Off by default — a replay miss should be a hard error."
+        ),
+    ),
 ) -> None:
-    """Replay a workflow using previously recorded LLM responses (no API calls)."""
+    """Replay a workflow using previously recorded LLM responses (no API calls).
+
+    Replay is strict by default: a request that misses the recording, or
+    matches a step whose prompt drifted since capture, raises
+    ``RecordingMismatchError``. Pass ``--allow-default-fallback`` to
+    restore the pre-0.5.0 lenient behaviour (placeholder response on a
+    miss).
+    """
     anyio.run(
         _run_async,
         workflow_path,
@@ -42,4 +57,5 @@ def replay(
         ".agentloom/checkpoints",
         recording,  # mock_responses
         None,  # record
+        not allow_default_fallback,  # mock_strict
     )

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from agentloom.tools.base import BaseTool
+
+logger = logging.getLogger("agentloom.tools.registry")
 
 
 class ToolInfo:
@@ -22,10 +25,27 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
 
-    def register(self, tool: BaseTool) -> None:
-        """Register a tool instance."""
+    def register(self, tool: BaseTool, *, replace: bool = False) -> None:
+        """Register a tool instance.
+
+        Args:
+            tool: The tool to register.
+            replace: When ``False`` (default), registering a name that is
+                already taken logs a warning before overwriting — silent
+                clobbering is how a custom tool subclassed under a
+                builtin's name (e.g. ``http_request``) used to displace
+                the builtin with zero feedback. Pass ``replace=True`` to
+                override deliberately and silence the warning.
+        """
         if not tool.name:
             raise ValueError("Tool must have a 'name' attribute")
+        if tool.name in self._tools and not replace:
+            logger.warning(
+                "Tool %r is already registered; the previous registration is "
+                "being overwritten. Pass replace=True to ToolRegistry.register "
+                "to do this deliberately and silence this warning.",
+                tool.name,
+            )
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> BaseTool:

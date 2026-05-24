@@ -206,7 +206,7 @@ class TestCallbackServer:
                 responses.append((status, body))
 
         body = json.dumps({"run_id": "abc", "step_id": "gate", "status": "awaiting_approval"})
-        await _handle_webhook(FakeStream(), body)  # type: ignore[arg-type]
+        await _handle_webhook(FakeStream(), body, "application/json")  # type: ignore[arg-type]
 
         assert len(responses) == 1
         status, resp_body = responses[0]
@@ -254,8 +254,11 @@ class TestCallbackServer:
                 status = int(text.split(" ")[1])
                 responses.append((status, body))
 
-        await _handle_webhook(FakeStream(), "not valid json {{{")  # type: ignore[arg-type]
-        assert responses[0][0] == 200
+        await _handle_webhook(FakeStream(), "not valid json {{{", "application/json")  # type: ignore[arg-type]
+        # A malformed JSON body is now rejected with 400 instead of the
+        # pre-0.5.0 silent 200 "received".
+        assert responses[0][0] == 400
+        assert "invalid JSON" in responses[0][1]["error"]
 
     @pytest.mark.anyio()
     async def test_decision_not_paused_409(self, tmp_path: Path) -> None:
@@ -549,3 +552,169 @@ class TestCallbackServerEdgeCases:
         stream = self._make_chunk_stream([raw])
         await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
         assert b"400 Bad Request" in b"".join(stream._sent)
+
+    @pytest.mark.anyio()
+    async def test_client_disconnect_mid_body_does_not_hang(self, tmp_path: Path) -> None:
+        # The client announces a Content-Length but disconnects before
+        # sending the full body. The read loop must break on the empty
+        # chunk and route the (partial) request rather than block forever.
+        from agentloom.cli.callback_server import _handle_request
+
+        # Content-Length claims 30 bytes; we send only 5 and then EOF.
+        headers = b"POST /webhook HTTP/1.1\r\nContent-Length: 30\r\n\r\n"
+        stream = self._make_chunk_stream([headers, b"hello"])
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        # Got *some* response — the partial body was treated as JSON and
+        # rejected with 400 ("invalid JSON"), not silently hung.
+        sent = b"".join(stream._sent)
+        assert sent, "handler must respond even on truncated body"
+        assert b"400 Bad Request" in sent
+
+
+class TestWebhookBodyValidation:
+    """F73: POST /webhook validates the body — malformed JSON returns
+    400, a non-object body returns 400, a missing Content-Type warns
+    but is still accepted."""
+
+    @staticmethod
+    def _capture_stream():
+        class FakeStream:
+            def __init__(self) -> None:
+                self.responses: list[tuple[int, dict]] = []
+
+            async def send(self, data: bytes) -> None:
+                text = data.decode()
+                body_start = text.index("\r\n\r\n") + 4
+                self.responses.append((int(text.split(" ")[1]), json.loads(text[body_start:])))
+
+        return FakeStream()
+
+    @pytest.mark.anyio()
+    async def test_valid_json_accepted(self) -> None:
+        from agentloom.cli.callback_server import _handle_webhook
+
+        stream = self._capture_stream()
+        await _handle_webhook(stream, json.dumps({"run_id": "r"}), "application/json")  # type: ignore[arg-type]
+        assert stream.responses[0][0] == 200
+
+    @pytest.mark.anyio()
+    async def test_invalid_json_returns_400(self) -> None:
+        from agentloom.cli.callback_server import _handle_webhook
+
+        stream = self._capture_stream()
+        await _handle_webhook(stream, "{not json", "application/json")  # type: ignore[arg-type]
+        assert stream.responses[0][0] == 400
+        assert "invalid JSON" in stream.responses[0][1]["error"]
+
+    @pytest.mark.anyio()
+    async def test_non_object_body_returns_400(self) -> None:
+        from agentloom.cli.callback_server import _handle_webhook
+
+        stream = self._capture_stream()
+        await _handle_webhook(stream, "[1, 2, 3]", "application/json")  # type: ignore[arg-type]
+        assert stream.responses[0][0] == 400
+        assert "JSON object" in stream.responses[0][1]["error"]
+
+    @pytest.mark.anyio()
+    async def test_missing_content_type_warns_but_accepts(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from agentloom.cli.callback_server import _handle_webhook
+
+        stream = self._capture_stream()
+        with caplog.at_level("WARNING"):
+            await _handle_webhook(stream, json.dumps({"x": 1}), None)  # type: ignore[arg-type]
+        assert stream.responses[0][0] == 200
+        assert any("Content-Type" in rec.message for rec in caplog.records)
+
+    @pytest.mark.anyio()
+    async def test_empty_body_accepted_as_ping(self) -> None:
+        # A bare ping (empty body, no JSON to parse) is a valid keep-alive
+        # signal — the server logs it and returns 200 without complaint.
+        from agentloom.cli.callback_server import _handle_webhook
+
+        stream = self._capture_stream()
+        await _handle_webhook(stream, "", "application/json")  # type: ignore[arg-type]
+        assert stream.responses[0][0] == 200
+        assert stream.responses[0][1]["status"] == "received"
+
+    @pytest.mark.anyio()
+    async def test_whitespace_only_body_accepted_as_ping(self) -> None:
+        # Same contract for a body of only whitespace.
+        from agentloom.cli.callback_server import _handle_webhook
+
+        stream = self._capture_stream()
+        await _handle_webhook(stream, "   \n\t  ", "application/json")  # type: ignore[arg-type]
+        assert stream.responses[0][0] == 200
+
+
+class TestCallbackPathTraversal:
+    """F73: a path-traversal run_id on POST /approve returns a clean 400
+    instead of a 500 with a stack trace."""
+
+    @staticmethod
+    def _capture_stream():
+        class FakeStream:
+            def __init__(self) -> None:
+                self.responses: list[tuple[int, dict]] = []
+
+            async def send(self, data: bytes) -> None:
+                text = data.decode()
+                body_start = text.index("\r\n\r\n") + 4
+                self.responses.append((int(text.split(" ")[1]), json.loads(text[body_start:])))
+
+        return FakeStream()
+
+    @pytest.mark.anyio()
+    async def test_path_traversal_run_id_returns_400(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_decision
+
+        stream = self._capture_stream()
+        await _handle_decision(
+            stream,
+            str(tmp_path),
+            True,
+            "../../etc/passwd",
+            "approved",  # type: ignore[arg-type]
+        )
+        assert stream.responses[0][0] == 400
+        assert "invalid run id" in stream.responses[0][1]["error"]
+
+    @pytest.mark.anyio()
+    async def test_token_auth_rejects_missing_header(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "run-tok", status="paused", paused_step_id="gate")
+
+        from agentloom.cli.callback_server import _handle_decision
+
+        stream = self._capture_stream()
+        # Server configured with a token; request provides none -> 401.
+        await _handle_decision(
+            stream,
+            str(tmp_path),
+            True,
+            "run-tok",
+            "approved",  # type: ignore[arg-type]
+            provided_token=None,
+            expected_token="s3cret",
+        )
+        assert stream.responses[0][0] == 401
+
+    @pytest.mark.anyio()
+    async def test_token_auth_accepts_matching_header(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "run-tok2", status="success", paused_step_id=None)
+
+        from agentloom.cli.callback_server import _handle_decision
+
+        stream = self._capture_stream()
+        # Matching token clears the gate; the 409 (not paused) proves we
+        # got past the auth check rather than being rejected at 401.
+        await _handle_decision(
+            stream,
+            str(tmp_path),
+            True,
+            "run-tok2",
+            "approved",  # type: ignore[arg-type]
+            provided_token="s3cret",
+            expected_token="s3cret",
+        )
+        assert stream.responses[0][0] == 409

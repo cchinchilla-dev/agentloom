@@ -54,7 +54,7 @@ class ToolStep(BaseStep):
 
         state_snapshot = await context.state_manager.get_state_snapshot()
         try:
-            resolved_args = self._resolve_args(step.tool_args, state_snapshot)
+            resolved_args = self._resolve_args(step.tool_args, state_snapshot, step.id)
         except (KeyError, ValueError, IndexError) as e:
             # Template rendering can raise on a typo in a placeholder, a
             # literal ``{`` in a JSON snippet, or a stray index. Surface
@@ -86,11 +86,15 @@ class ToolStep(BaseStep):
         )
 
     @staticmethod
-    def _resolve_args(args: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    def _resolve_args(args: dict[str, Any], state: dict[str, Any], step_id: str) -> dict[str, Any]:
         """Resolve argument values that reference state variables.
 
         * ``"state.<key>"`` — resolved by ``StateManager._resolve_key``
-          (preserves object identity, not string conversion).
+          (preserves object identity, not string conversion). A path
+          that does not exist in state raises a non-retryable
+          ``StepError`` naming the missing key — pre-0.5.0 it resolved
+          to ``None`` and the tool surfaced a confusing downstream
+          ``TypeError`` instead.
         * Strings matching :data:`_PLACEHOLDER_RE` (``{state.foo}``,
           ``{name}``, ``{name:.2f}``, ``{name!r}``) — rendered with the
           same ``SafeFormatDict`` / ``build_template_vars`` pipeline as
@@ -111,6 +115,17 @@ class ToolStep(BaseStep):
             if isinstance(value, str):
                 if value.startswith("state."):
                     path = value[len("state.") :]
+                    if not StateManager.key_exists(state, path):
+                        # Fail fast and non-retryably: a missing state
+                        # key never appears on a retry, and a tool that
+                        # receives ``None`` for a required arg surfaces
+                        # an opaque ``TypeError`` four attempts later.
+                        raise StepError(
+                            step_id,
+                            f"tool_args reference 'state.{path}' but no such key "
+                            f"exists in workflow state",
+                            is_retryable=False,
+                        )
                     resolved[key] = StateManager._resolve_key(state, path)
                 elif _PLACEHOLDER_RE.search(value):
                     resolved[key] = value.format_map(SafeFormatDict(template_vars))

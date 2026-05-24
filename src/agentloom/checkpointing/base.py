@@ -7,6 +7,12 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+# Checkpoint file format version this runtime writes and can resume.
+# A checkpoint whose ``schema_version`` exceeds this was written by a
+# newer AgentLoom; ``WorkflowEngine.from_checkpoint`` refuses it with a
+# clear upgrade hint rather than silently mis-resuming.
+CURRENT_CHECKPOINT_SCHEMA_VERSION = 1
+
 
 class CheckpointData(BaseModel):
     """Serializable snapshot of a workflow execution.
@@ -18,6 +24,11 @@ class CheckpointData(BaseModel):
 
     workflow_name: str
     run_id: str
+    # Format version. Defaults to the current version so checkpoints
+    # written before this field existed (no key in the JSON) load as
+    # v1. A value ABOVE the runtime's ``CURRENT_CHECKPOINT_SCHEMA_VERSION``
+    # is refused at resume time.
+    schema_version: int = CURRENT_CHECKPOINT_SCHEMA_VERSION
     workflow_definition: dict[str, Any] = Field(
         description="Serialized WorkflowDefinition for reconstruction on resume.",
     )

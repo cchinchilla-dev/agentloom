@@ -288,3 +288,46 @@ class TestPermissionErrorPath:
         wf = _make_workflow()
         result = await writer.record(_make_result(wf), wf, run_id="r")
         assert result is None
+
+
+class TestUnwritableRunsDir:
+    """F13: a non-writable runs dir is only noisy when the operator
+    explicitly chose it. The default ``./agentloom_runs`` failing inside
+    a read-only container is expected — debug log, no per-run warning."""
+
+    async def test_default_dir_failure_is_silent(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.delenv(RunHistoryWriter.ENV_VAR, raising=False)
+        writer = RunHistoryWriter()  # default dir — not explicitly chosen
+
+        async def _fake_run_sync(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise OSError(30, "Read-only file system")
+
+        monkeypatch.setattr("anyio.to_thread.run_sync", _fake_run_sync)
+        wf = _make_workflow()
+        with caplog.at_level("WARNING"):
+            result = await writer.record(_make_result(wf), wf, run_id="r")
+        assert result is None
+        # No WARNING for the default-dir case — only a debug line.
+        assert not any(
+            "run history" in rec.message.lower() and rec.levelname == "WARNING"
+            for rec in caplog.records
+        )
+
+    async def test_explicit_dir_failure_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # An explicitly-chosen dir (passed to the constructor) keeps the
+        # warning — the operator asked for that location.
+        writer = RunHistoryWriter(runs_dir=tmp_path / "explicit")
+
+        async def _fake_run_sync(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise OSError(30, "Read-only file system")
+
+        monkeypatch.setattr("anyio.to_thread.run_sync", _fake_run_sync)
+        wf = _make_workflow()
+        with caplog.at_level("WARNING"):
+            result = await writer.record(_make_result(wf), wf, run_id="r")
+        assert result is None
+        assert any("Failed to write run history" in rec.message for rec in caplog.records)

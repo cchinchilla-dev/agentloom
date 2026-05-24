@@ -12,11 +12,10 @@ config:
     enabled: true
     allow_network: true
     allowed_domains:
-      - placehold.co
       - httpbin.org
 
 state:
-  trusted_url: "https://placehold.co/200x200/blue/white.png?text=OK"
+  trusted_url: "https://httpbin.org/image/png"
 
 steps:
   - id: analyze_trusted
