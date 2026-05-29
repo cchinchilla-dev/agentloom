@@ -170,6 +170,8 @@ class AnthropicProvider(BaseProvider):
     ) -> ProviderResponse:
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
+        agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
+        agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs(
             "anthropic", "complete", kwargs, _ANTHROPIC_EXTRA_PAYLOAD_KEYS
         )
@@ -192,6 +194,16 @@ class AnthropicProvider(BaseProvider):
             if mapped_choice is not None:
                 extras["tool_choice"] = mapped_choice
         system_prompt, filtered_messages = self._format_messages(messages)
+
+        # Anthropic has no native ``response_format``; prefill the assistant
+        # turn with ``"{"`` so the model continues the JSON from there.
+        if agentloom_response_schema is not None:
+            from agentloom.steps._structured import anthropic_system_prefix
+
+            system_prompt = (system_prompt or "") + anthropic_system_prefix(
+                agentloom_response_schema, agentloom_step_id
+            )
+            filtered_messages = [*filtered_messages, {"role": "assistant", "content": "{"}]
 
         payload: dict[str, Any] = {
             "model": model,
@@ -224,6 +236,10 @@ class AnthropicProvider(BaseProvider):
                 # Extended-thinking trace. Captured whenever present; callers
                 # that don't want it simply ignore ``reasoning_content``.
                 reasoning_parts.append(block.get("thinking", "") or block.get("text", ""))
+
+        # Reattach the prefilled ``"{"`` — Anthropic only echoes the continuation.
+        if agentloom_response_schema is not None and not content.lstrip().startswith("{"):
+            content = "{" + content
 
         usage_data = data.get("usage", {})
         # Anthropic rolls extended-thinking tokens into ``output_tokens``
@@ -272,6 +288,8 @@ class AnthropicProvider(BaseProvider):
         # too, otherwise ``--stream`` + ``tools=`` crashes on extras validation.
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
+        agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
+        agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs("anthropic", "stream", kwargs, _ANTHROPIC_EXTRA_PAYLOAD_KEYS)
         # Stream does not yet capture ``thinking`` deltas (separate work);
         # the return value is intentionally discarded here.
@@ -288,6 +306,14 @@ class AnthropicProvider(BaseProvider):
                 extras["tool_choice"] = mapped_choice
         system_prompt, filtered_messages = self._format_messages(messages)
 
+        if agentloom_response_schema is not None:
+            from agentloom.steps._structured import anthropic_system_prefix
+
+            system_prompt = (system_prompt or "") + anthropic_system_prefix(
+                agentloom_response_schema, agentloom_step_id
+            )
+            filtered_messages = [*filtered_messages, {"role": "assistant", "content": "{"}]
+
         payload: dict[str, Any] = {
             "model": model,
             "messages": filtered_messages,
@@ -301,11 +327,13 @@ class AnthropicProvider(BaseProvider):
             payload["temperature"] = temperature
 
         sr = StreamResponse(model=model, provider="anthropic")
+        prefill_json = agentloom_response_schema is not None
         prompt_tokens = 0
         completion_tokens = 0
 
         async def _generate() -> AsyncIterator[str]:
             nonlocal prompt_tokens, completion_tokens
+            first_text_chunk = True
             async with self._client.stream("POST", "/messages", json=payload) as resp:
                 if resp.status_code != 200:
                     await resp.aread()
@@ -327,6 +355,13 @@ class AnthropicProvider(BaseProvider):
                     elif event_type == "content_block_delta":
                         text = data.get("delta", {}).get("text", "")
                         if text:
+                            if (
+                                prefill_json
+                                and first_text_chunk
+                                and not text.lstrip().startswith("{")
+                            ):
+                                text = "{" + text
+                            first_text_chunk = False
                             yield text
                     elif event_type == "message_delta":
                         delta = data.get("delta", {})
