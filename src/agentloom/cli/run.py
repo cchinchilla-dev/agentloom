@@ -109,11 +109,18 @@ async def _run_async(
     mock_strict: bool = False,
 ) -> None:
     """Async implementation of the run command."""
+    import sys
+
     from agentloom.core.engine import WorkflowEngine
     from agentloom.providers.gateway import ProviderGateway
     from agentloom.tools.builtins import register_builtins
     from agentloom.tools.registry import ToolRegistry
     from agentloom.tools.sandbox import ToolSandbox
+
+    # Prepend CWD so dotted imports from workflow YAML resolve.
+    cwd = str(Path.cwd())
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
 
     try:
         workflow = WorkflowParser.from_yaml(workflow_path)
