@@ -127,6 +127,69 @@ class ToolChoiceByName(BaseModel):
     name: str
 
 
+class ResponseSchema(BaseModel):
+    """Structured-output contract for an ``llm_call`` step.
+
+    Three modes: ``json_object`` (any JSON), ``json_schema`` (inline
+    schema), ``pydantic`` (dotted-path model; parsed value is the
+    instance). Providers with a native API (OpenAI, Google, Ollama
+    0.5+) enforce server-side; Anthropic uses prefill + client-side
+    validation.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: Literal["pydantic", "json_schema", "json_object"] = "json_object"
+    model: str | None = None
+    # ``schema_`` avoids shadowing Pydantic's deprecated ``BaseModel.schema()``;
+    # YAML authors write ``schema:`` via the alias.
+    schema_: dict[str, Any] | None = Field(default=None, alias="schema")
+    name: str | None = None
+    description: str | None = None
+    strict: bool = True
+
+    @model_validator(mode="after")
+    def _validate_mode_specific_fields(self) -> ResponseSchema:
+        """Refuse companion fields that don't match the chosen mode."""
+        if self.type == "pydantic":
+            if not self.model:
+                raise ValueError(
+                    "response_schema.type='pydantic' requires a 'model' dotted path "
+                    "(e.g. 'examples.schemas.Classification')."
+                )
+            if self.schema_ is not None:
+                raise ValueError(
+                    "response_schema.type='pydantic' must not also set 'schema'; "
+                    "the schema is derived from the Pydantic model."
+                )
+        elif self.type == "json_schema":
+            if self.model is not None:
+                raise ValueError(
+                    "response_schema.type='json_schema' must not set 'model'; "
+                    "the model field is only meaningful in pydantic mode."
+                )
+            if not self.schema_:
+                raise ValueError(
+                    "response_schema.type='json_schema' requires an inline 'schema' object."
+                )
+            if self.schema_.get("additionalProperties") is True:
+                raise ValueError(
+                    "response_schema: 'additionalProperties: true' is incompatible with "
+                    "OpenAI's strict json_schema mode. Set it to false (or remove the "
+                    "key — strict mode treats it as false by default)."
+                )
+        elif self.model is not None or self.schema_ is not None:
+            raise ValueError(
+                "response_schema.type='json_object' must not set 'model' or "
+                "'schema'; neither is meaningful when no schema is enforced."
+            )
+        return self
+
+
+class ResponseSchemaConfigError(ValueError):
+    """Workflow-author error in a :class:`ResponseSchema` — never retried."""
+
+
 class StepDefinition(BaseModel):
     """Definition of a single workflow step.
 
@@ -199,6 +262,21 @@ class StepDefinition(BaseModel):
     tools: list[ToolDefinition] = Field(default_factory=list)
     tool_choice: Literal["auto", "required", "none"] | ToolChoiceByName = "auto"
     max_tool_iterations: int = Field(default=5, ge=1)
+
+    # Constrains the reply to a JSON shape; parsed value lands on state.
+    response_schema: ResponseSchema | None = None
+
+    @model_validator(mode="after")
+    def _validate_tools_and_response_schema_are_exclusive(self) -> StepDefinition:
+        """Refuse ``tools`` + ``response_schema`` — they compete for the next turn."""
+        if self.type == StepType.LLM_CALL and self.tools and self.response_schema is not None:
+            raise ValueError(
+                f"Step {self.id!r}: 'tools' and 'response_schema' cannot be set "
+                f"on the same llm_call step. Pick one — either let the model "
+                f"call tools (free-form reply) or constrain its reply to a "
+                f"JSON schema (no tool dispatch)."
+            )
+        return self
 
 
 class SandboxConfig(BaseModel):

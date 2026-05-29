@@ -27,6 +27,7 @@ dependencies = [
     "pyyaml>=6.0",
     "typer>=0.9",
     "anyio>=4.0",
+    "jsonschema>=4.0",
 ]
 
 [project.optional-dependencies]
