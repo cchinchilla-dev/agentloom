@@ -1,0 +1,15 @@
+{
+  "_version": 2,
+  "classify": {
+    "content": "{\"label\": \"complaint\", \"confidence\": 0.92, \"rationale\": \"The user reports a missing order and a broken tracking page — a service failure complaint, not a question or feedback.\"}",
+    "model": "gpt-4o-mini",
+    "usage": {
+      "prompt_tokens": 48,
+      "completion_tokens": 36,
+      "total_tokens": 84
+    },
+    "cost_usd": 0.0,
+    "latency_ms": 0,
+    "finish_reason": "stop"
+  }
+}

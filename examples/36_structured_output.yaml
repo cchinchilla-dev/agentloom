@@ -1,0 +1,40 @@
+name: structured-output-classifier
+version: "1.0"
+description: |
+  Demonstrates Pydantic-typed structured output. The model classifies a
+  user message into one of four intents (question / complaint / feedback /
+  request) and returns a Pydantic ``Classification`` instance with a
+  confidence score and rationale.
+
+  Runs offline against the committed recording fixture. With
+  ``--provider openai --model gpt-4o-mini`` the model uses OpenAI's
+  strict ``response_format={"type": "json_schema", ...}`` mode for
+  server-side schema enforcement. ``--provider google``, ``--provider
+  anthropic``, and ``--provider ollama`` route through the equivalent
+  per-provider mechanism (Gemini ``responseSchema``, Anthropic prefill,
+  Ollama ``format`` schema).
+
+  Producing a fresh recording:
+    agentloom run examples/36_structured_output.yaml --provider openai \\
+      --model gpt-4o-mini --record recordings/structured_output.json
+
+config:
+  provider: mock
+  model: gpt-4o-mini
+  responses_file: recordings/structured_output.json
+  latency_model: constant
+  latency_ms: 0
+
+state:
+  message: "My order from yesterday never arrived and the tracking page just spins forever."
+
+steps:
+  - id: classify
+    type: llm_call
+    system_prompt: |
+      You classify customer messages. Pick the single best intent label.
+    prompt: "Classify this message: {state.message}"
+    response_schema:
+      type: pydantic
+      model: examples.structured_output_schemas.Classification
+    output: classification
