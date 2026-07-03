@@ -242,6 +242,68 @@ The dispatched tool runs through the existing sandbox (#105), so `http_request`,
 
 The legacy `tool` step (static DAG node, author chooses the tool) keeps working unchanged — `tools=` on `llm_call` is the new dynamic, model-driven path.
 
+**Structured output:**
+
+`response_schema` constrains the model's reply to a known JSON shape and parses it before writing to state. The step uses the provider's native structured-output API where one exists (OpenAI strict `response_format`, Google `responseSchema`, Ollama `format`) and falls back to prefill + client-side validation on providers that don't (Anthropic). On a validation failure the step retries within the existing `retry.max_retries` budget, appending the previous bad response plus the validator's error to the next turn so the model can fix its own output without restarting the workflow.
+
+Three modes pick the precision / portability trade-off per step:
+
+```yaml
+# 1. Pydantic — typed output. ``state.classification`` holds a Pydantic instance.
+- id: classify
+  type: llm_call
+  prompt: "Classify the intent: {state.user_input}"
+  response_schema:
+    type: pydantic
+    model: examples.structured_output_schemas.Classification
+  output: classification
+
+# 2. Inline JSON Schema — the model must conform, no Python coupling.
+- id: extract
+  type: llm_call
+  prompt: "Extract fields from: {state.text}"
+  response_schema:
+    type: json_schema
+    schema:
+      type: object
+      properties:
+        name: { type: string }
+        date: { type: string, format: date }
+      required: [name, date]
+      additionalProperties: false
+  output: extracted
+
+# 3. Free-form JSON — any JSON object, no enforcement.
+- id: brainstorm
+  type: llm_call
+  prompt: "Suggest five ideas for: {state.topic}"
+  response_schema:
+    type: json_object
+  output: ideas
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | `"pydantic" \| "json_schema" \| "json_object"` | `"json_object"` | `pydantic` coerces to a Pydantic model instance; `json_schema` validates against an inline JSON Schema; `json_object` enforces "any JSON object" with no schema. |
+| `model` | `string` | — | Dotted Python path to a Pydantic `BaseModel` subclass (e.g. `examples.schemas.Classification` or `pkg.module:Classification`). Required for `type: pydantic`. The CLI adds the current working directory to `sys.path` before parsing so paths resolve from the repo root. |
+| `schema` | `dict` | — | Inline JSON Schema object. Required for `type: json_schema`. `additionalProperties: true` is refused at parse time so the same schema works against OpenAI's strict mode. |
+| `name` | `string` | step id | Optional schema name; OpenAI's strict `json_schema` mode requires one. Defaults to the step id, which is unique within a workflow. |
+| `strict` | `bool` | `true` | Whether the provider's native strict mode is requested (OpenAI sets `"strict": true` on the `json_schema` payload). |
+| `description` | `string` | — | Free-form description forwarded to providers that surface it (OpenAI). |
+
+The parsed value lands in `state[output]` directly — for `pydantic` mode it's the model instance, for the other modes it's the parsed dict. Downstream templates can navigate it with `{state.classification.label}` without re-parsing on every read. The raw JSON string is still available on `StepResult.output` for callers that need it.
+
+**Cross-provider matrix:**
+
+| Provider | Native API | Behavior |
+|----------|-----------|----------|
+| OpenAI | `response_format={"type": "json_schema", "json_schema": {...}}` (strict) or `{"type": "json_object"}` | Server-side schema enforcement; the model can't emit invalid JSON. Requires `gpt-4o-2024-08-06+` for strict mode. |
+| Google Gemini | `generationConfig.responseSchema` + `responseMimeType: "application/json"` | Server-side enforcement. The adapter strips Pydantic-emitted `title` / `examples` / `default` keys that Gemini's parser rejects. |
+| Ollama | `format: "json"` (free-form) or `format: <schema>` (strict, Ollama 0.5+) | Model-side enforcement; quality varies by model. |
+| Anthropic | _No native API._ Prefill + system-prompt instructions + client-side validation. | Best-effort: the assistant turn is prefilled with `"{"` so the model continues from there. Validation failures trigger the same retry-with-feedback loop. |
+
+`response_schema` is compatible with `tools=` and `thinking=` — they layer cleanly. Streaming + structured output is supported with one caveat: validation only runs after the stream closes (a mid-stream parse on a partial JSON fragment fails for benign reasons), and a failure surfaces as a step error rather than a retry-with-feedback turn.
+
 **Retry config:**
 
 | Field | Type | Default | Description |

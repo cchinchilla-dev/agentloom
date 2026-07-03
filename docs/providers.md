@@ -13,6 +13,7 @@ AgentLoom ships with four providers. The gateway routes requests based on model 
 | Audio input | :material-check: | :material-close: | :material-check: | :material-close: |
 | Reasoning token count | :material-check: (o-series, implicit) | :material-close: (rolled into `output_tokens`) | :material-check: (Gemini 2.5+, opt-in) | :material-close: (no `eval_count` split) |
 | Reasoning content (trace) | :material-close: (server-side only) | :material-check: (`type="thinking"` blocks) | :material-check: (`includeThoughts` opt-in) | :material-check: (Ollama 0.9+ `message.thinking`) |
+| Structured output (native) | :material-check: (strict `response_format`, `gpt-4o-2024-08-06+`) | :material-close: (prefill fallback) | :material-check: (`responseSchema`) | :material-check: (Ollama 0.5+ `format` schema) |
 | Cost tracking | :material-check: | :material-check: | :material-check: | Free (local) |
 
 ## Configuration

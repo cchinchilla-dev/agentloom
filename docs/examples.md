@@ -311,3 +311,19 @@ agentloom run examples/35_tool_calling.yaml --lite
 # Real call: pass --provider + --model to drive a live model
 agentloom run examples/35_tool_calling.yaml --provider openai --model gpt-4o-mini
 ```
+
+### 36 — Structured output (Pydantic)
+
+Classifies a customer message into one of four intents and returns a Pydantic `Classification` instance with a confidence score and rationale. `state.classification` holds the typed model instance directly — downstream templates can reference `{state.classification.label}` without re-parsing on every read.
+
+**Demonstrates:** `response_schema` with `type: pydantic`, dotted-path model resolution from the repo root, OpenAI strict `response_format` (when run live), MockProvider replay against a committed recording.
+
+```bash
+# Mock-replay against the committed recording (no API calls)
+agentloom run examples/36_structured_output.yaml --lite
+
+# Real call: --provider openai uses strict json_schema; --provider google
+# uses responseSchema; --provider anthropic uses prefill + client-side
+# validation; --provider ollama uses Ollama 0.5+ format schema.
+agentloom run examples/36_structured_output.yaml --provider openai --model gpt-4o-mini
+```
