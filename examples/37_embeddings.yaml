@@ -1,0 +1,33 @@
+name: embeddings-demo
+version: "1.0"
+description: |
+  Embeds a small corpus of documents via the ``embed`` step type.
+
+  Runs offline against the committed recording (mock provider). With
+  ``--provider openai --model text-embedding-3-small`` it hits the real
+  API; ``--provider google --model gemini-embedding-001`` and
+  ``--provider ollama --model nomic-embed-text`` also work out of the box.
+
+  Producing a fresh recording:
+    agentloom run examples/37_embeddings.yaml --provider openai \\
+      --model text-embedding-3-small --record recordings/embeddings.json
+
+config:
+  provider: mock
+  model: text-embedding-3-small
+  responses_file: recordings/embeddings.json
+  latency_model: constant
+  latency_ms: 0
+
+state:
+  documents:
+    - "AgentLoom is a Python framework for LLM workflow orchestration."
+    - "Embeddings turn text into fixed-length vectors for similarity search."
+    - "Structured output constrains the model's reply to a JSON schema."
+
+steps:
+  - id: vectorize
+    type: embed
+    inputs: state.documents
+    dimensions: 8
+    output: vectors
