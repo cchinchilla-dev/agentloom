@@ -182,9 +182,10 @@ class TestSchemaTranslators:
         assert translate_for_openai(rs, "step") == {"type": "json_object"}
 
     def test_google_translation_drops_pydantic_titles(self) -> None:
-        # Gemini's ``responseSchema`` parser refuses Pydantic-emitted ``title`` /
-        # ``examples`` / ``default`` keys with HTTP 400. The translator drops them
-        # so portable schemas don't have to be re-edited per provider.
+        # Gemini's ``responseSchema`` parser 400s on ``title`` / ``examples`` /
+        # ``default`` (Pydantic noise) and on ``additionalProperties`` (which
+        # ``_normalize_schema_for_strict`` adds for OpenAI). The translator
+        # drops all four so portable schemas don't need per-provider edits.
         rs = ResponseSchema(
             type="json_schema",
             schema_={
@@ -200,6 +201,10 @@ class TestSchemaTranslators:
         assert "title" not in schema
         assert "title" not in schema["properties"]["x"]
         assert "default" not in schema["properties"]["x"]
+        # ``additionalProperties: false`` lands transitively from the strict
+        # normalizer; Gemini's schema dialect doesn't accept it.
+        assert "additionalProperties" not in schema
+        assert "additionalProperties" not in schema["properties"]["x"]
 
     def test_ollama_json_object_returns_literal_json(self) -> None:
         # Free-form mode → just the string ``"json"`` (Ollama's documented

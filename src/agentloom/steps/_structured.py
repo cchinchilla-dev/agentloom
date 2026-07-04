@@ -187,8 +187,10 @@ def translate_for_google(
     return "application/json", _strip_unsupported_google_keys(schema)
 
 
-# Gemini's ``responseSchema`` parser 400s on these Pydantic-emitted keys.
-_GOOGLE_DROP_KEYS = frozenset({"title", "examples", "default"})
+# Gemini's ``responseSchema`` parser 400s on these keys (Pydantic-emitted
+# noise plus ``additionalProperties``, which our strict normalizer adds for
+# OpenAI but Gemini's schema dialect doesn't understand).
+_GOOGLE_DROP_KEYS = frozenset({"title", "examples", "default", "additionalProperties"})
 
 
 def _strip_unsupported_google_keys(schema: dict[str, Any]) -> dict[str, Any]:
