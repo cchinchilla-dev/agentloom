@@ -13,7 +13,12 @@ import httpx
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
 from agentloom.providers._http import raise_for_status, validate_extra_kwargs
-from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers.base import (
+    BaseProvider,
+    EmbeddingResponse,
+    ProviderResponse,
+    StreamResponse,
+)
 from agentloom.providers.multimodal import (
     AudioBlock,
     DocumentBlock,
@@ -379,6 +384,22 @@ class AnthropicProvider(BaseProvider):
 
         sr._set_iterator(_generate())
         return sr
+
+    async def embed(
+        self,
+        inputs: list[str],
+        model: str,
+        dimensions: int | None = None,
+        **kwargs: Any,
+    ) -> EmbeddingResponse:
+        # Anthropic ships no first-party embeddings endpoint; the gateway
+        # catches ``NotImplementedError`` and falls back to the next candidate.
+        raise NotImplementedError(
+            "Anthropic does not offer a native embeddings API. Use OpenAI "
+            "'text-embedding-3-*', Google 'gemini-embedding-001', a local "
+            "Ollama embedding model, or Voyage AI (Anthropic's recommended "
+            "third-party provider)."
+        )
 
     def supports_model(self, model: str) -> bool:
         return "claude" in model
