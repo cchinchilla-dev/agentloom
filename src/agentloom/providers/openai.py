@@ -159,11 +159,19 @@ class OpenAIProvider(BaseProvider):
         # don't have to know provider-specific shapes.
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
+        agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
+        agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs("openai", "complete", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
         # ``thinking_config`` is accepted at the step layer for YAML
         # uniformity but has no chat-completions equivalent — drop it
         # before splatting extras into the request body.
         extras.pop("thinking_config", None)
+        if agentloom_response_schema is not None:
+            from agentloom.steps._structured import translate_for_openai
+
+            extras["response_format"] = translate_for_openai(
+                agentloom_response_schema, agentloom_step_id
+            )
         if agentloom_tools:
             from agentloom.steps._tools import (
                 translate_tool_choice_for_openai,
@@ -247,8 +255,16 @@ class OpenAIProvider(BaseProvider):
         # ``agentloom_tool_choice`` and the request never leaves the client.
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
+        agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
+        agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs("openai", "stream", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
         extras.pop("thinking_config", None)
+        if agentloom_response_schema is not None:
+            from agentloom.steps._structured import translate_for_openai
+
+            extras["response_format"] = translate_for_openai(
+                agentloom_response_schema, agentloom_step_id
+            )
         if agentloom_tools:
             from agentloom.steps._tools import (
                 translate_tool_choice_for_openai,

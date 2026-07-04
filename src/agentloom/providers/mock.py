@@ -251,7 +251,11 @@ class MockProvider(BaseProvider):
         **kwargs: Any,
     ) -> ProviderResponse:
         step_id = kwargs.get("step_id")
-        extra_kwargs = {k: v for k, v in kwargs.items() if k not in ("step_id",)}
+        # Strip identifiers that aren't part of the request hash.
+        extra_kwargs = {
+            k: v for k, v in kwargs.items() if k not in ("step_id", "agentloom_step_id")
+        }
+        has_response_schema = "agentloom_response_schema" in extra_kwargs
         entry = self._lookup(step_id, messages, model, temperature, max_tokens, extra_kwargs)
         if entry is None:
             # Strict (replay) mode: a miss is a hard error. Pre-0.5.0 the
@@ -299,8 +303,10 @@ class MockProvider(BaseProvider):
                 step_id,
                 model,
             )
+            # Schema-bound steps need JSON-shaped fallback.
+            fallback_content = "{}" if has_response_schema else self.default_response
             return ProviderResponse(
-                content=self.default_response,
+                content=fallback_content,
                 model=model,
                 provider=self.name,
                 usage=TokenUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),

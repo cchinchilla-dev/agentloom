@@ -190,8 +190,17 @@ class GoogleProvider(BaseProvider):
     ) -> ProviderResponse:
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
+        agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
+        agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs("google", "complete", kwargs, _GOOGLE_EXTRA_PAYLOAD_KEYS)
         thinking_payload = _build_thinking_config_payload(extras.pop("thinking_config", None))
+        if agentloom_response_schema is not None:
+            from agentloom.steps._structured import translate_for_google
+
+            mime_type, schema = translate_for_google(agentloom_response_schema, agentloom_step_id)
+            extras["response_mime_type"] = mime_type
+            if schema is not None:
+                extras["response_schema"] = schema
         if agentloom_tools:
             from agentloom.steps._tools import translate_tools_for_google
 
@@ -304,8 +313,17 @@ class GoogleProvider(BaseProvider):
         # ``--stream`` + ``tools=`` is not rejected by extras validation.
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
+        agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
+        agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs("google", "stream", kwargs, _GOOGLE_EXTRA_PAYLOAD_KEYS)
         thinking_payload = _build_thinking_config_payload(extras.pop("thinking_config", None))
+        if agentloom_response_schema is not None:
+            from agentloom.steps._structured import translate_for_google
+
+            mime_type, schema = translate_for_google(agentloom_response_schema, agentloom_step_id)
+            extras["response_mime_type"] = mime_type
+            if schema is not None:
+                extras["response_schema"] = schema
         if agentloom_tools:
             from agentloom.steps._tools import translate_tools_for_google
 

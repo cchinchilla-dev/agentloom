@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import time
 from typing import Any
 
-from agentloom.core.models import Attachment, StepDefinition
+from agentloom.core.models import Attachment, ResponseSchema, StepDefinition
 from agentloom.core.results import PromptMetadata, StepResult, StepStatus
 from agentloom.core.templates import SafeFormatDict, build_template_vars
 from agentloom.exceptions import StepError
@@ -183,6 +184,88 @@ class LLMCallStep(BaseStep):
             return {}
         return {"thinking_config": cfg}
 
+    @staticmethod
+    async def _validate_structured_output(
+        *,
+        response: ProviderResponse,
+        response_schema: ResponseSchema,
+        step: StepDefinition,
+        messages: list[dict[str, Any]],
+        context: StepContext,
+        model: str,
+        provider_kwargs: dict[str, Any],
+    ) -> ProviderResponse:
+        """Parse + validate; retry within ``step.retry.max_retries``."""
+        import jsonschema  # type: ignore[import-untyped]
+        from pydantic import ValidationError as PydanticValidationError
+
+        from agentloom.core.models import ResponseSchemaConfigError
+        from agentloom.steps._structured import (
+            extract_parsed,
+            format_validation_feedback,
+            validate_parsed,
+        )
+
+        # Only "model emitted bad output" exceptions trigger retry;
+        # everything else escapes to the gateway's own resilience layer.
+        ValidationFailure = (
+            json.JSONDecodeError,
+            PydanticValidationError,
+            jsonschema.ValidationError,
+            TypeError,
+        )
+
+        attempts_remaining = max(0, step.retry.max_retries)
+        current_response = response
+        gateway = context.provider_gateway
+        if gateway is None:
+            raise StepError(step.id, "No provider gateway configured")
+        while True:
+            try:
+                parsed = extract_parsed(current_response.content)
+                coerced = validate_parsed(parsed, response_schema, step.id)
+            except ResponseSchemaConfigError as exc:
+                raise StepError(step.id, str(exc), is_retryable=False) from exc
+            except ValidationFailure as exc:
+                if attempts_remaining <= 0:
+                    raise StepError(
+                        step.id,
+                        f"Structured output failed validation after "
+                        f"{step.retry.max_retries + 1} attempts: {exc}",
+                        is_retryable=False,
+                    ) from exc
+                attempts_remaining -= 1
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": current_response.content or "",
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": format_validation_feedback(exc, step.id),
+                    }
+                )
+                logger.warning(
+                    "Step %r: structured-output validation failed, retrying "
+                    "(%d attempts left). Error: %s",
+                    step.id,
+                    attempts_remaining,
+                    exc,
+                )
+                current_response = await gateway.complete(
+                    messages=messages,
+                    model=model,
+                    temperature=step.temperature,
+                    max_tokens=step.max_tokens,
+                    step_id=step.id,
+                    **provider_kwargs,
+                )
+                continue
+            current_response.parsed = coerced
+            return current_response
+
     async def execute(self, context: StepContext) -> StepResult:
         step = context.step_definition
         start = time.monotonic()
@@ -290,6 +373,10 @@ class LLMCallStep(BaseStep):
                 choice = {"name": choice.name}
             provider_kwargs["agentloom_tool_choice"] = choice
 
+        if step.response_schema is not None:
+            provider_kwargs["agentloom_response_schema"] = step.response_schema
+            provider_kwargs["agentloom_step_id"] = step.id
+
         # Tool-call loop: re-prompt with tool results until the model
         # stops requesting tools or we exhaust ``max_tool_iterations``.
         # Costs and tokens accumulate across iterations; only the final
@@ -301,6 +388,24 @@ class LLMCallStep(BaseStep):
                 messages=messages,
                 model=model,
                 provider_kwargs=provider_kwargs,
+            )
+            if step.response_schema is not None:
+                response = await self._validate_structured_output(
+                    response=response,
+                    response_schema=step.response_schema,
+                    step=step,
+                    messages=messages,
+                    context=context,
+                    model=model,
+                    provider_kwargs=provider_kwargs,
+                )
+        except StepError as e:
+            duration = (time.monotonic() - start) * 1000
+            return StepResult(
+                step_id=step.id,
+                status=StepStatus.FAILED,
+                error=str(e),
+                duration_ms=duration,
             )
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
@@ -314,7 +419,9 @@ class LLMCallStep(BaseStep):
         duration = (time.monotonic() - start) * 1000
 
         if step.output:
-            await context.state_manager.set(step.output, response.content)
+            # Structured steps store the parsed value; free-form ones the raw string.
+            value: Any = response.parsed if step.response_schema is not None else response.content
+            await context.state_manager.set(step.output, value)
 
         prompt_metadata = _build_prompt_metadata(
             context.workflow_name, step.id, step.prompt, rendered_prompt
@@ -349,6 +456,9 @@ class LLMCallStep(BaseStep):
         if context.provider_gateway is None:
             raise StepError(step.id, "No provider gateway configured")
         provider_kwargs = self._build_thinking_kwargs(step)
+        if step.response_schema is not None:
+            provider_kwargs["agentloom_response_schema"] = step.response_schema
+            provider_kwargs["agentloom_step_id"] = step.id
         try:
             sr = await context.provider_gateway.stream(
                 messages=messages,
@@ -407,8 +517,40 @@ class LLMCallStep(BaseStep):
         response = sr.to_provider_response()
         duration = (time.monotonic() - start) * 1000
 
+        if step.response_schema is not None:
+            # Parse once at end-of-stream; no mid-stream retry.
+            import jsonschema
+            from pydantic import ValidationError as PydanticValidationError
+
+            from agentloom.core.models import ResponseSchemaConfigError
+            from agentloom.steps._structured import extract_parsed, validate_parsed
+
+            try:
+                parsed = extract_parsed(response.content)
+                response.parsed = validate_parsed(parsed, step.response_schema, step.id)
+            except ResponseSchemaConfigError as e:
+                return StepResult(
+                    step_id=step.id,
+                    status=StepStatus.FAILED,
+                    error=str(e),
+                    duration_ms=duration,
+                )
+            except (
+                json.JSONDecodeError,
+                PydanticValidationError,
+                jsonschema.ValidationError,
+                TypeError,
+            ) as e:
+                return StepResult(
+                    step_id=step.id,
+                    status=StepStatus.FAILED,
+                    error=f"Structured-output validation failed: {e}",
+                    duration_ms=duration,
+                )
+
         if step.output:
-            await context.state_manager.set(step.output, response.content)
+            value: Any = response.parsed if step.response_schema is not None else response.content
+            await context.state_manager.set(step.output, value)
 
         prompt_metadata = _build_prompt_metadata(
             context.workflow_name, step.id, step.prompt, rendered_prompt

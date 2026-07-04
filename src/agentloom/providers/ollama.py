@@ -163,8 +163,14 @@ class OllamaProvider(BaseProvider):
     ) -> ProviderResponse:
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
+        agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
+        agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs("ollama", "complete", kwargs, _OLLAMA_EXTRA_PAYLOAD_KEYS)
         think_param, capture_reasoning = _pop_thinking_config(extras)
+        if agentloom_response_schema is not None:
+            from agentloom.steps._structured import translate_for_ollama
+
+            extras["format"] = translate_for_ollama(agentloom_response_schema, agentloom_step_id)
         if agentloom_tools:
             from agentloom.steps._tools import translate_tools_for_ollama
 
@@ -258,8 +264,14 @@ class OllamaProvider(BaseProvider):
         # model-side support decides whether the call is honored.
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
+        agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
+        agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs("ollama", "stream", kwargs, _OLLAMA_EXTRA_PAYLOAD_KEYS)
         think_param, capture_reasoning = _pop_thinking_config(extras)
+        if agentloom_response_schema is not None:
+            from agentloom.steps._structured import translate_for_ollama
+
+            extras["format"] = translate_for_ollama(agentloom_response_schema, agentloom_step_id)
         if agentloom_tools:
             from agentloom.steps._tools import translate_tools_for_ollama
 
