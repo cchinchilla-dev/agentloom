@@ -189,6 +189,12 @@ class MetricName:
     TOOL_CALLS_TOTAL = "agentloom_tool_calls_total"
     TOOL_CALL_DURATION_SECONDS = "agentloom_tool_call_duration_seconds"
 
+    # Embedding calls. Counter tagged by provider + model; histogram
+    # captures the requested output dimensionality so dashboards can
+    # spot workflows over-paying for large vectors.
+    EMBEDDING_CALLS_TOTAL = "agentloom_embedding_calls_total"
+    EMBEDDING_DIMENSIONS = "agentloom_embedding_dimensions"
+
     # Resilience gauges
     CIRCUIT_BREAKER_STATE = "agentloom_circuit_breaker_state"
     BUDGET_REMAINING_USD = "agentloom_budget_remaining_usd"

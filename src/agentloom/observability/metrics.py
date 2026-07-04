@@ -66,6 +66,8 @@ class MetricsManager:
         self._ttft_histogram: Any = None
         self._tool_call_counter: Any = None
         self._tool_call_histogram: Any = None
+        self._embedding_counter: Any = None
+        self._embedding_dimensions_histogram: Any = None
         self._mock_replay_counter: Any = None
         self._recording_capture_counter: Any = None
         self._recording_latency_histogram: Any = None
@@ -165,6 +167,16 @@ class MetricsManager:
             "agentloom_tool_call_duration_seconds",
             description="Tool-call execution duration",
             unit="s",
+        )
+        # Embedding calls tagged by provider + model; dimensions histogram
+        # captures the requested output vector size.
+        self._embedding_counter = meter.create_counter(
+            "agentloom_embedding_calls_total",
+            description="Total embedding API calls",
+        )
+        self._embedding_dimensions_histogram = meter.create_histogram(
+            "agentloom_embedding_dimensions",
+            description="Requested embedding vector dimensions",
         )
         # Canonical OTel GenAI metric — replaces the AgentLoom-prefixed
         # ``agentloom_time_to_first_token_seconds`` with the spec name.
@@ -294,6 +306,17 @@ class MetricsManager:
             "Tool-call execution duration",
             ["tool_name"],
             buckets=[0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60],
+        )
+        self._prom_counters["embeddings"] = prom.Counter(
+            "agentloom_embedding_calls_total",
+            "Total embedding API calls",
+            ["provider", "model"],
+        )
+        self._prom_histograms["embedding_dimensions"] = prom.Histogram(
+            "agentloom_embedding_dimensions",
+            "Requested embedding vector dimensions",
+            ["provider", "model"],
+            buckets=[64, 128, 256, 384, 512, 768, 1024, 1536, 3072],
         )
         self._prom_histograms["time_to_first_chunk"] = prom.Histogram(
             "gen_ai_client_operation_time_to_first_chunk_seconds",
@@ -507,6 +530,23 @@ class MetricsManager:
             self._prom_histograms["tool_call_duration"].labels(tool_name=tool_name).observe(
                 duration_s
             )
+
+    def record_embedding_call(self, provider: str, model: str, dimensions: int) -> None:
+        """Record an embedding call and the requested vector size."""
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._embedding_counter.add(1, {"provider": provider, "model": model})
+            if dimensions:
+                self._embedding_dimensions_histogram.record(
+                    dimensions, {"provider": provider, "model": model}
+                )
+        else:  # pragma: no cover — prom fallback
+            self._prom_counters["embeddings"].labels(provider=provider, model=model).inc()
+            if dimensions:
+                self._prom_histograms["embedding_dimensions"].labels(
+                    provider=provider, model=model
+                ).observe(dimensions)
 
     def record_stream_response(self, provider: str, model: str) -> None:
         if not self._enabled:

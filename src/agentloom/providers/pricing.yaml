@@ -266,3 +266,23 @@ deepseek-r1:
 mistral:
   input: 0.0
   output: 0.0
+
+# --- Embeddings (output: 0.0) ---
+text-embedding-3-small:
+  input: 0.00002
+  output: 0.0
+text-embedding-3-large:
+  input: 0.00013
+  output: 0.0
+gemini-embedding-001:
+  input: 0.00015
+  output: 0.0
+gemini-embedding-2:
+  input: 0.00020
+  output: 0.0
+nomic-embed-text:
+  input: 0.0
+  output: 0.0
+mxbai-embed-large:
+  input: 0.0
+  output: 0.0
