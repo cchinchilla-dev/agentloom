@@ -19,7 +19,7 @@ import anyio
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import RecordingMismatchError
-from agentloom.providers.base import BaseProvider, ProviderResponse
+from agentloom.providers.base import BaseProvider, EmbeddingResponse, ProviderResponse
 
 logger = logging.getLogger("agentloom.providers.mock")
 
@@ -113,6 +113,21 @@ def validate_recording_schema(raw: object, source: str) -> dict[str, Any]:
             f"list of response objects, got {type(value).__name__}"
         )
     return raw
+
+
+def _pseudo_vector(text: str, dim: int) -> list[float]:
+    """Deterministic pseudo-embedding derived from the input hash.
+
+    Not a real embedding — same input always yields the same vector so
+    tests can assert on shape without mocking the wire. Values live in
+    ``[-1, 0.9921875]`` (asymmetric because ``(255-128)/128`` is not
+    exactly 1). The SHA-256 digest is 32 bytes; asking for ``dim > 32``
+    cycles the same bytes so downstream cosine-similarity code sees only
+    32 unique values regardless of dim — fine for shape checks, not for
+    benchmarking against real vectors.
+    """
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    return [(digest[i % len(digest)] - 128) / 128.0 for i in range(dim)]
 
 
 class MockProvider(BaseProvider):
@@ -343,6 +358,69 @@ class MockProvider(BaseProvider):
             cost_usd=float(entry.get("cost_usd", 0.0)),
             finish_reason=entry.get("finish_reason", "stop"),
             tool_calls=tool_calls,
+        )
+
+    async def embed(
+        self,
+        inputs: list[str],
+        model: str,
+        dimensions: int | None = None,
+        **kwargs: Any,
+    ) -> EmbeddingResponse:
+        """Serve embeddings from a recording or synthesize deterministic vectors.
+
+        Recording shape: an entry keyed by ``step_id`` (or the batch hash)
+        with an ``embeddings: list[list[float]]`` field. When missing and
+        not in strict mode, we synthesize hash-derived vectors so tests
+        stay reproducible without needing a fixture per prompt.
+        """
+        step_id = kwargs.get("step_id")
+        extra_kwargs = {
+            k: v for k, v in kwargs.items() if k not in ("step_id", "agentloom_step_id")
+        }
+        entry: dict[str, Any] | None = None
+        if step_id and step_id in self._responses:
+            candidate = self._responses[step_id]
+            if isinstance(candidate, dict) and "embeddings" in candidate:
+                entry = candidate
+        if entry is None:
+            request_hash = prompt_hash(
+                [{"embed_inputs": inputs, "model": model, "dimensions": dimensions}],
+                model,
+                None,
+                None,
+                extra_kwargs,
+            )
+            candidate = self._responses.get(request_hash)
+            if isinstance(candidate, dict) and "embeddings" in candidate:
+                entry = candidate
+        if entry is None and self.strict:
+            raise RecordingMismatchError(
+                f"No embed recording for step {step_id!r} (model {model!r}). "
+                f"Re-record with `agentloom run --record`, or pass "
+                f"`--allow-default-fallback` for pseudo-vectors."
+            )
+        if entry is not None:
+            vectors = [list(v) for v in entry["embeddings"]]
+            usage_data = entry.get("usage", {}) or {}
+            prompt_tokens = int(usage_data.get("prompt_tokens", 0))
+            return EmbeddingResponse(
+                embeddings=vectors,
+                model=str(entry.get("model", model)),
+                provider=str(entry.get("provider", self.name)),
+                usage=TokenUsage(prompt_tokens=prompt_tokens, total_tokens=prompt_tokens),
+                cost_usd=float(entry.get("cost_usd", 0.0)),
+                raw_response=entry,
+            )
+        # Deterministic fallback: hash-derived pseudo-vector per input.
+        dim = dimensions or 8
+        vectors = [_pseudo_vector(text, dim) for text in inputs]
+        return EmbeddingResponse(
+            embeddings=vectors,
+            model=model,
+            provider=self.name,
+            usage=TokenUsage(),
+            cost_usd=0.0,
         )
 
     def supports_model(self, model: str) -> bool:

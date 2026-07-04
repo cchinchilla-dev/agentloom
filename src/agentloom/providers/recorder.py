@@ -15,7 +15,12 @@ from typing import Any, Protocol, runtime_checkable
 
 import anyio
 
-from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers.base import (
+    BaseProvider,
+    EmbeddingResponse,
+    ProviderResponse,
+    StreamResponse,
+)
 from agentloom.providers.mock import prompt_hash
 
 
@@ -223,6 +228,55 @@ class RecordingProvider(BaseProvider):
 
         outer_sr._set_iterator(_tap())
         return outer_sr
+
+    async def embed(
+        self,
+        inputs: list[str],
+        model: str,
+        dimensions: int | None = None,
+        **kwargs: Any,
+    ) -> EmbeddingResponse:
+        step_id = kwargs.get("step_id")
+        extra_kwargs = {k: v for k, v in kwargs.items() if k != "step_id"}
+        start = time.perf_counter()
+        response = await self._wrapped.embed(
+            inputs=inputs,
+            model=model,
+            dimensions=dimensions,
+            **self._wrapped_kwargs(extra_kwargs, step_id),
+        )
+        latency_ms = (time.perf_counter() - start) * 1000.0
+
+        # Key by step_id when present, else by the embed-request hash so
+        # two embed calls with the same inputs collide onto one entry.
+        key = (
+            step_id
+            if step_id
+            else prompt_hash(
+                [{"embed_inputs": inputs, "model": model, "dimensions": dimensions}],
+                model,
+                None,
+                None,
+                extra_kwargs,
+            )
+        )
+        entry = {
+            "embeddings": [list(v) for v in response.embeddings],
+            "model": response.model,
+            "provider": response.provider,
+            "usage": response.usage.model_dump(),
+            "cost_usd": response.cost_usd,
+            "latency_ms": latency_ms,
+        }
+        async with self._write_lock:
+            self._recorded[key] = entry
+        await self._flush()
+        if self._observer is not None:
+            with contextlib.suppress(Exception):  # pragma: no cover
+                self._observer.on_recording_capture(
+                    step_id or "", response.provider, response.model, latency_ms / 1000.0
+                )
+        return response
 
     def supports_model(self, model: str) -> bool:
         return self._wrapped.supports_model(model)
