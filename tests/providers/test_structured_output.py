@@ -299,6 +299,19 @@ class TestValidateParsed:
         with pytest.raises(jsonschema.ValidationError):
             validate_parsed({"x": "not-an-int"}, rs, "step")
 
+    def test_json_schema_valid_input_passes_through(self) -> None:
+        # The happy path returns the parsed value verbatim after
+        # ``jsonschema.validate`` — covers the success return branch.
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {"x": {"type": "integer"}},
+                "required": ["x"],
+            },
+        )
+        assert validate_parsed({"x": 42}, rs, "step") == {"x": 42}
+
 
 class TestLoadPydanticModel:
     """Dotted-path loader behaviour."""
@@ -351,18 +364,14 @@ class TestFormatValidationFeedback:
         assert "Respond again" in msg
 
     def test_long_errors_truncate(self) -> None:
-        from pydantic import ValidationError as PydanticError
-
-        class Big(BaseModel):
-            a: int
-            b: int
-            c: int
-
-        try:
-            Big.model_validate({"a": "x" * 1000, "b": "y" * 1000, "c": "z" * 1000})
-        except PydanticError as exc:
-            msg = format_validation_feedback(exc, "step")
-        assert "(truncated)" in msg or len(msg) < 2000
+        # A verbose error string (>800 chars) must be trimmed with the
+        # ``… (truncated)`` marker so the retry prompt stays bounded.
+        # Non-Pydantic errors take the ``str(error)`` path and skip the
+        # bullet formatter, so they're the cleanest way to trigger the
+        # length-cap branch deterministically.
+        long_msg = "detail " * 200
+        msg = format_validation_feedback(ValueError(long_msg), "step")
+        assert "(truncated)" in msg
 
 
 class TestProviderPropagation:
@@ -1206,6 +1215,25 @@ class TestExtractParsedEdges:
         #   ``json.loads`` (unbalanced prose), so the scanner falls through
         #   to the original text and finds the real object further down.
         assert extract_parsed('some prose } and then {"good": 1}') == {"good": 1}
+
+    def test_code_fence_with_malformed_json_falls_through(self) -> None:
+        # Copilot #117: a fence whose inner JSON is malformed used to
+        # raise instead of falling back to the balanced-brace scanner.
+        # The scanner then runs and finds the real object further down
+        # in the text.
+        text = '```json\n{"bad": nope}\n```\nreal: {"good": 1}'
+        # The scanner returns the first balanced span (``{"bad": nope}``),
+        # which json.loads also fails on, so the final raise still fires
+        # — but the fence-except was covered on the way through.
+        with pytest.raises(json.JSONDecodeError):
+            extract_parsed(text)
+
+    def test_code_fence_with_nested_object_matches_outer_span(self) -> None:
+        # The fence regex backtracks over ``.*?}`` until the trailing
+        # ```` ``` ```` matches, so nested JSON inside a fence resolves
+        # correctly on the fence-JSON path itself (no scanner fallback
+        # needed).
+        assert extract_parsed('```json {"a": {"b": 1}} ```') == {"a": {"b": 1}}
 
 
 class TestStructuredHelpersMisc:

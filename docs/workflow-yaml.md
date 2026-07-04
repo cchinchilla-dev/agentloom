@@ -302,7 +302,7 @@ The parsed value lands in `state[output]` directly — for `pydantic` mode it's 
 | Ollama | `format: "json"` (free-form) or `format: <schema>` (strict, Ollama 0.5+) | Model-side enforcement; quality varies by model. |
 | Anthropic | _No native API._ Prefill + system-prompt instructions + client-side validation. | Best-effort: the assistant turn is prefilled with `"{"` so the model continues from there. Validation failures trigger the same retry-with-feedback loop. |
 
-`response_schema` is compatible with `tools=` and `thinking=` — they layer cleanly. Streaming + structured output is supported with one caveat: validation only runs after the stream closes (a mid-stream parse on a partial JSON fragment fails for benign reasons), and a failure surfaces as a step error rather than a retry-with-feedback turn.
+`response_schema` layers cleanly with `thinking=`. It is **not** compatible with `tools=` on the same `llm_call` step — the parser refuses that combination since the two features compete for the assistant's next turn (tool call vs JSON object) and the validation-retry loop bypasses tool dispatch. Streaming + structured output is supported with one caveat: validation only runs after the stream closes (a mid-stream parse on a partial JSON fragment fails for benign reasons), and a failure surfaces as a step error rather than a retry-with-feedback turn.
 
 **Retry config:**
 

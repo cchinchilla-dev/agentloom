@@ -246,7 +246,10 @@ def extract_parsed(content: str) -> Any:
         pass
     fenced = _JSON_CODE_FENCE_RE.search(text)
     if fenced:
-        return json.loads(fenced.group(1))
+        try:
+            return json.loads(fenced.group(1))
+        except json.JSONDecodeError:
+            pass
     # Anthropic prefill: response continues after the prefilled ``"{"``.
     if not text.startswith("{"):
         candidate = "{" + text

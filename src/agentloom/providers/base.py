@@ -89,7 +89,9 @@ class ProviderResponse(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
     # Parsed structured output (dict or Pydantic instance). ``None`` for
     # free-form steps. Populated by ``LLMCallStep``, not the adapters.
-    parsed: Any = None
+    # Typed ``object | None`` — callers treat it as opaque; consumers
+    # that need a specific shape do their own ``isinstance`` narrowing.
+    parsed: object | None = None
 
 
 class StreamResponse:
