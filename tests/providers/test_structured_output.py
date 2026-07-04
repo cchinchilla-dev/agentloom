@@ -1058,6 +1058,267 @@ class TestToolsAndResponseSchemaAreExclusive:
         )
 
 
+class TestProviderStreamingPropagation:
+    """Streaming adapters must translate ``agentloom_response_schema`` on stream()."""
+
+    @respx.mock
+    async def test_openai_stream_forwards_response_format(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            captured["payload"] = json.loads(request.content)
+            body = 'data: {"choices":[{"delta":{"content":"{\\"x\\":1}"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(200, content=body.encode())
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=_handler)
+        provider = OpenAIProvider(api_key="sk-test")
+        rs = ResponseSchema(type="json_object")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-4o-mini",
+            agentloom_response_schema=rs,
+            agentloom_step_id="s",
+        )
+        async for _ in sr:
+            pass
+        assert captured["payload"]["response_format"] == {"type": "json_object"}
+        await provider.close()
+
+    @respx.mock
+    async def test_anthropic_stream_prefills_and_forwards_schema(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            captured["payload"] = json.loads(request.content)
+            body = (
+                "event: content_block_delta\n"
+                'data: {"type":"content_block_delta","delta":{"text":"\\"x\\":1}"}}\n\n'
+                "event: message_delta\n"
+                'data: {"type":"message_delta","delta":'
+                '{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n'
+            )
+            return httpx.Response(200, content=body.encode())
+
+        respx.post("https://api.anthropic.com/v1/messages").mock(side_effect=_handler)
+        provider = AnthropicProvider(api_key="anth-test")
+        rs = ResponseSchema(
+            type="pydantic", model="tests.providers.test_structured_output._Classification"
+        )
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-3-5-sonnet-20240620",
+            agentloom_response_schema=rs,
+            agentloom_step_id="s",
+        )
+        chunks: list[str] = []
+        async for chunk in sr:
+            chunks.append(chunk)
+        # First chunk gets the prefilled ``{`` reattached.
+        assert chunks[0].startswith("{")
+        # Payload includes the prefill assistant turn and the JSON-only system prompt.
+        msgs = captured["payload"]["messages"]
+        assert msgs[-1] == {"role": "assistant", "content": "{"}
+        assert "JSON" in captured["payload"]["system"]
+        await provider.close()
+
+    @respx.mock
+    async def test_google_stream_forwards_generation_config_schema(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            captured["payload"] = json.loads(request.content)
+            body = (
+                'data: {"candidates":[{"content":{"parts":[{"text":"{\\"x\\":1}"}]},'
+                '"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,'
+                '"candidatesTokenCount":2,"totalTokenCount":3}}\n\n'
+            )
+            return httpx.Response(200, content=body.encode())
+
+        respx.post(url__regex=r".+streamGenerateContent.+").mock(side_effect=_handler)
+        provider = GoogleProvider(api_key="g-test")
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]},
+        )
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gemini-1.5-flash",
+            agentloom_response_schema=rs,
+            agentloom_step_id="s",
+        )
+        async for _ in sr:
+            pass
+        gen_cfg = captured["payload"]["generationConfig"]
+        assert gen_cfg["responseMimeType"] == "application/json"
+        assert "responseSchema" in gen_cfg
+        await provider.close()
+
+    @respx.mock
+    async def test_ollama_stream_forwards_format(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            captured["payload"] = json.loads(request.content)
+            body = (
+                '{"message":{"role":"assistant","content":"{}"}, "done":false}\n'
+                '{"done":true,"done_reason":"stop","prompt_eval_count":1,"eval_count":2}\n'
+            )
+            return httpx.Response(200, content=body.encode())
+
+        respx.post("http://localhost:11434/api/chat").mock(side_effect=_handler)
+        provider = OllamaProvider(base_url="http://localhost:11434")
+        rs = ResponseSchema(type="json_object")
+        sr = await provider.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="llama3.1",
+            agentloom_response_schema=rs,
+            agentloom_step_id="s",
+        )
+        async for _ in sr:
+            pass
+        # ``json_object`` mode → literal ``"json"``.
+        assert captured["payload"]["format"] == "json"
+        await provider.close()
+
+
+class TestExtractParsedEdges:
+    """Balanced-brace scanner branches not covered elsewhere."""
+
+    def test_scan_ignores_escaped_quote_inside_string(self) -> None:
+        # An escaped quote must not close string-mode — the ``}`` that
+        # follows inside the string is still ignored. Prose prefix forces
+        # the scanner to run (the top-level ``json.loads`` fails first).
+        assert extract_parsed(r'note: {"key": "he said \" then }", "n": 1}') == {
+            "key": 'he said " then }',
+            "n": 1,
+        }
+
+    def test_scan_handles_backslash_before_regular_char(self) -> None:
+        # ``\n`` (literal backslash-n) inside a JSON string — escape flag
+        # must be set on ``\`` and reset on ``n``. Prose prefix forces
+        # the scanner path.
+        assert extract_parsed(r'note: {"k": "a\nb"}') == {"k": "a\nb"}
+
+    def test_stray_close_and_prefill_candidate_fallthrough(self) -> None:
+        # Two branches covered by one input:
+        # - The ``}`` in prose (before any ``{``) is skipped at depth zero.
+        # - The prefill candidate ``{`` + text produces a span that fails
+        #   ``json.loads`` (unbalanced prose), so the scanner falls through
+        #   to the original text and finds the real object further down.
+        assert extract_parsed('some prose } and then {"good": 1}') == {"good": 1}
+
+
+class TestStructuredHelpersMisc:
+    """Remaining single-line branches in :mod:`_structured`."""
+
+    def test_schema_name_explicit_wins(self) -> None:
+        # Explicit ``name`` takes precedence over the pydantic-derived one.
+        from agentloom.steps._structured import schema_name_for
+
+        rs = ResponseSchema(type="json_object", name="ExplicitName")
+        assert schema_name_for(rs, "step") == "ExplicitName"
+
+    def test_openai_translation_carries_description(self) -> None:
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+            description="Free-form doc",
+        )
+        out = translate_for_openai(rs, "step")
+        assert out["json_schema"]["description"] == "Free-form doc"
+
+    def test_anthropic_prefix_json_object_mode_has_no_schema(self) -> None:
+        # json_object mode → the prompt has no rendered schema block.
+        from agentloom.steps._structured import anthropic_system_prefix
+
+        rs = ResponseSchema(type="json_object")
+        prefix = anthropic_system_prefix(rs, "step")
+        assert "JSON object only" in prefix
+        assert "```json" not in prefix
+
+    def test_ollama_translation_pydantic_returns_schema(self) -> None:
+        # ``translate_for_ollama`` with pydantic mode should return the
+        # generated schema dict, not the literal ``"json"``.
+        rs = ResponseSchema(
+            type="pydantic", model="tests.providers.test_structured_output._Classification"
+        )
+        out = translate_for_ollama(rs, "step")
+        assert isinstance(out, dict)
+        assert out["type"] == "object"
+
+
+class TestStreamingValidationErrorPaths:
+    """Streaming end-of-stream validation surfaces failures uniformly."""
+
+    async def test_stream_response_schema_config_error_fails_step(self, tmp_path: Any) -> None:
+        # A ``ResponseSchemaConfigError`` (e.g. unresolvable dotted path)
+        # during streaming end-of-stream validation must surface as
+        # ``StepStatus.FAILED`` with the config error message.
+        recording = tmp_path / "rec.json"
+        recording.write_text(
+            json.dumps(
+                {
+                    "_version": 2,
+                    "classify": {
+                        "content": '{"any": "shape"}',
+                        "model": "gpt-4o-mini",
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+                        "cost_usd": 0.0,
+                        "latency_ms": 0,
+                    },
+                }
+            )
+        )
+        wf = _workflow_with_schema(
+            schema=ResponseSchema(
+                type="pydantic",
+                # Path resolves but the target is not a Pydantic subclass —
+                # ``ResponseSchemaConfigError`` fires during validation.
+                model="collections:OrderedDict",
+            ),
+            responses_file=str(recording),
+        )
+        wf.config.stream = True
+        gw = ProviderGateway()
+        gw.register(MockProvider(responses_file=recording, workflow_name=wf.name), priority=0)
+        status, _ = await _run(wf, gw)
+        assert status == WorkflowStatus.FAILED
+
+
+class TestCLISysPathPrepend:
+    """CLI prepends CWD so dotted-path Pydantic models resolve from the repo root."""
+
+    def test_cli_run_inserts_cwd_at_index_zero(self, tmp_path: Any, monkeypatch: Any) -> None:
+        # Drive the CLI with a minimal mock workflow; after ``run`` returns,
+        # the tmp cwd must be at ``sys.path[0]`` so a workflow that ships
+        # a schema module next to the YAML can be imported.
+        import sys
+
+        from typer.testing import CliRunner
+
+        from agentloom.cli.main import app
+
+        wf = tmp_path / "wf.yaml"
+        wf.write_text(
+            "name: cwd-path-test\n"
+            "config: {provider: mock, model: gpt-4o-mini}\n"
+            "steps:\n"
+            "  - {id: s, type: llm_call, prompt: hi}\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        # Baseline: tmp cwd is not yet on sys.path.
+        target = str(tmp_path.resolve())
+        if target in sys.path:
+            sys.path.remove(target)
+        runner = CliRunner()
+        result = runner.invoke(app, ["run", str(wf), "--lite"])
+        assert result.exit_code == 0
+        assert sys.path[0] == target
+        # Idempotency: a second invocation must not stack a duplicate.
+        runner.invoke(app, ["run", str(wf), "--lite"])
+        assert sys.path.count(target) == 1
+
+
 class TestResponseSchemaCompanionFieldRefusal:
     """Audit fix LOW: companion fields must match the mode."""
 
