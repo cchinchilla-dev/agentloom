@@ -14,7 +14,12 @@ import httpx
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
 from agentloom.providers._http import raise_for_status, validate_extra_kwargs
-from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers.base import (
+    BaseProvider,
+    EmbeddingResponse,
+    ProviderResponse,
+    StreamResponse,
+)
 from agentloom.providers.multimodal import (
     AudioBlock,
     DocumentBlock,
@@ -343,6 +348,35 @@ class OllamaProvider(BaseProvider):
 
         sr._set_iterator(_generate())
         return sr
+
+    async def embed(
+        self,
+        inputs: list[str],
+        model: str,
+        dimensions: int | None = None,
+        **kwargs: Any,
+    ) -> EmbeddingResponse:
+        kwargs.pop("agentloom_step_id", None)
+        # Ollama's ``/api/embed`` (0.1.29+) takes a list; older ``/api/embeddings``
+        # is single-input. Use the batch endpoint — it degrades to a single
+        # embed cleanly when the server is old.
+        payload: dict[str, Any] = {"model": model, "input": inputs}
+        try:
+            response = await self._client.post("/api/embed", json=payload)
+        except httpx.HTTPError as e:
+            raise ProviderError("ollama", f"HTTP error: {e}") from e
+        raise_for_status("ollama", response)
+        data = response.json()
+        vectors: list[list[float]] = data.get("embeddings") or []
+        prompt_tokens = data.get("prompt_eval_count", 0)
+        return EmbeddingResponse(
+            embeddings=vectors,
+            model=data.get("model", model),
+            provider="ollama",
+            usage=TokenUsage(prompt_tokens=prompt_tokens, total_tokens=prompt_tokens),
+            cost_usd=0.0,
+            raw_response=data,
+        )
 
     def supports_model(self, model: str) -> bool:
         # Ollama accepts any model name — it downloads on demand if not present.

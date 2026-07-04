@@ -13,7 +13,12 @@ import httpx
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
 from agentloom.providers._http import raise_for_status, validate_extra_kwargs
-from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers.base import (
+    BaseProvider,
+    EmbeddingResponse,
+    ProviderResponse,
+    StreamResponse,
+)
 from agentloom.providers.multimodal import (
     AudioBlock,
     DocumentBlock,
@@ -417,8 +422,56 @@ class GoogleProvider(BaseProvider):
         sr._set_iterator(_generate())
         return sr
 
+    async def embed(
+        self,
+        inputs: list[str],
+        model: str,
+        dimensions: int | None = None,
+        **kwargs: Any,
+    ) -> EmbeddingResponse:
+        kwargs.pop("agentloom_step_id", None)
+        # ``task_type`` is documented (RETRIEVAL_QUERY / RETRIEVAL_DOCUMENT / etc).
+        extras = validate_extra_kwargs("google", "embed", kwargs, frozenset({"task_type", "title"}))
+        requests_body: list[dict[str, Any]] = []
+        for text in inputs:
+            item: dict[str, Any] = {
+                "model": f"models/{model}",
+                "content": {"parts": [{"text": text}]},
+            }
+            if dimensions is not None:
+                item["outputDimensionality"] = dimensions
+            if "task_type" in extras:
+                item["taskType"] = extras["task_type"]
+            if "title" in extras:
+                item["title"] = extras["title"]
+            requests_body.append(item)
+        url = f"/models/{model}:batchEmbedContents?key={self.api_key}"
+        try:
+            response = await self._client.post(url, json={"requests": requests_body})
+        except httpx.HTTPError as e:
+            raise ProviderError("google", f"HTTP error: {e}") from e
+        raise_for_status("google", response)
+        data = response.json()
+        vectors = [entry["values"] for entry in data.get("embeddings", [])]
+        # Gemini's ``batchEmbedContents`` does not return per-token usage.
+        # Approximate by summing word counts so the cost estimate is a
+        # coarse-but-non-zero signal; the ``raw_response`` carries the truth.
+        approx_tokens = sum(len(t.split()) for t in inputs)
+        return EmbeddingResponse(
+            embeddings=vectors,
+            model=model,
+            provider="google",
+            usage=TokenUsage(prompt_tokens=approx_tokens, total_tokens=approx_tokens),
+            cost_usd=calculate_cost(model, approx_tokens, 0),
+            raw_response=data,
+        )
+
     def supports_model(self, model: str) -> bool:
-        return "gemini" in model
+        return (
+            "gemini" in model
+            or model.startswith("text-embedding-")
+            or model.startswith("embedding-")
+        )
 
     async def close(self) -> None:
         await self._client.aclose()
