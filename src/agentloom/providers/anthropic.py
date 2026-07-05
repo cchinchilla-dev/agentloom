@@ -12,7 +12,7 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
-from agentloom.providers._http import raise_for_status, validate_extra_kwargs
+from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
@@ -224,7 +224,7 @@ class AnthropicProvider(BaseProvider):
         try:
             response = await self._client.post("/messages", json=payload)
         except httpx.HTTPError as e:
-            raise ProviderError("anthropic", f"HTTP error: {e}") from e
+            raise ProviderError("anthropic", format_http_error(e)) from e
 
         raise_for_status("anthropic", response)
 

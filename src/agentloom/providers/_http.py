@@ -19,6 +19,23 @@ if TYPE_CHECKING:
 _PASSTHROUGH_KWARGS = frozenset({"step_id"})
 
 
+def format_http_error(exc: BaseException) -> str:
+    """Format an ``httpx.HTTPError`` for a ``ProviderError`` message.
+
+    ``httpx.ReadTimeout`` / ``ConnectTimeout`` / ``ConnectError`` on the
+    async client return an empty ``str(e)``, which surfaces as
+    ``"HTTP error: "`` — useless for debugging. Fall back to the class
+    name (with any repr detail) when the message is empty.
+    """
+    msg = str(exc).strip()
+    if not msg:
+        rep = repr(exc)
+        # ``repr(ReadTimeout(''))`` = ``ReadTimeout('')`` — keep the class
+        # name so at least the failure mode is visible.
+        msg = rep if rep and rep != type(exc).__name__ + "()" else type(exc).__name__
+    return f"{type(exc).__name__}: {msg}"
+
+
 def parse_retry_after(value: str | None) -> float | None:
     """Parse the ``Retry-After`` header as seconds. HTTP-date form is not
     supported — upstream providers we talk to use integer seconds."""

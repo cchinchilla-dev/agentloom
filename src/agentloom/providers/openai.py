@@ -13,7 +13,7 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
-from agentloom.providers._http import raise_for_status, validate_extra_kwargs
+from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
@@ -206,7 +206,7 @@ class OpenAIProvider(BaseProvider):
         try:
             response = await self._client.post("/chat/completions", json=payload)
         except httpx.HTTPError as e:
-            raise ProviderError("openai", f"HTTP error: {e}") from e
+            raise ProviderError("openai", format_http_error(e)) from e
 
         raise_for_status("openai", response)
 
@@ -389,7 +389,7 @@ class OpenAIProvider(BaseProvider):
             try:
                 response = await self._client.post("/embeddings", json=payload)
             except httpx.HTTPError as e:
-                raise ProviderError("openai", f"HTTP error: {e}") from e
+                raise ProviderError("openai", format_http_error(e)) from e
             raise_for_status("openai", response)
             data = response.json()
             # Sort by ``index`` so parallel-shape guarantees hold even if

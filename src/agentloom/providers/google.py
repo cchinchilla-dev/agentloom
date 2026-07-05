@@ -12,7 +12,7 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
-from agentloom.providers._http import raise_for_status, validate_extra_kwargs
+from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
@@ -249,7 +249,7 @@ class GoogleProvider(BaseProvider):
         try:
             response = await self._client.post(url, json=payload)
         except httpx.HTTPError as e:
-            raise ProviderError("google", f"HTTP error: {e}") from e
+            raise ProviderError("google", format_http_error(e)) from e
 
         raise_for_status("google", response)
 
@@ -449,7 +449,7 @@ class GoogleProvider(BaseProvider):
         try:
             response = await self._client.post(url, json={"requests": requests_body})
         except httpx.HTTPError as e:
-            raise ProviderError("google", f"HTTP error: {e}") from e
+            raise ProviderError("google", format_http_error(e)) from e
         raise_for_status("google", response)
         data = response.json()
         vectors = [entry["values"] for entry in data.get("embeddings", [])]

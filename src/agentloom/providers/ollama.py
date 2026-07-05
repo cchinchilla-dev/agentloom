@@ -13,7 +13,7 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
-from agentloom.providers._http import raise_for_status, validate_extra_kwargs
+from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
@@ -211,7 +211,7 @@ class OllamaProvider(BaseProvider):
         try:
             response = await self._client.post("/api/chat", json=payload)
         except httpx.HTTPError as e:
-            raise ProviderError("ollama", f"HTTP error: {e}") from e
+            raise ProviderError("ollama", format_http_error(e)) from e
 
         raise_for_status("ollama", response)
 
@@ -364,7 +364,7 @@ class OllamaProvider(BaseProvider):
         try:
             response = await self._client.post("/api/embed", json=payload)
         except httpx.HTTPError as e:
-            raise ProviderError("ollama", f"HTTP error: {e}") from e
+            raise ProviderError("ollama", format_http_error(e)) from e
         raise_for_status("ollama", response)
         data = response.json()
         vectors: list[list[float]] = data.get("embeddings") or []

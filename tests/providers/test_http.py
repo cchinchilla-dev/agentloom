@@ -7,6 +7,7 @@ import pytest
 
 from agentloom.exceptions import ProviderError, RateLimitError
 from agentloom.providers._http import (
+    format_http_error,
     parse_retry_after,
     raise_for_status,
     validate_extra_kwargs,
@@ -92,3 +93,34 @@ class TestValidateExtraKwargs:
                 {"bogus": 1},
                 frozenset({"top_p"}),
             )
+
+
+class TestFormatHttpError:
+    """``format_http_error`` must surface something useful even when ``str(e)`` is empty."""
+
+    def test_empty_str_falls_back_to_class_name(self) -> None:
+        # ``httpx.ReadTimeout`` on the async client returns ``str(e) == ''``.
+        # Pre-fix ``f"HTTP error: {e}"`` yielded ``"HTTP error: "`` — the
+        # error type must survive the format now.
+        exc = httpx.ReadTimeout("")
+        out = format_http_error(exc)
+        assert "ReadTimeout" in out
+        assert out.strip() != "ReadTimeout:"
+
+    def test_non_empty_message_preserved(self) -> None:
+        exc = httpx.ConnectError("connection refused")
+        out = format_http_error(exc)
+        assert "ConnectError" in out
+        assert "connection refused" in out
+
+    def test_repr_used_when_str_empty_but_repr_informative(self) -> None:
+        # ``httpx.ReadTimeout("")`` has an empty ``str`` but a repr of
+        # ``ReadTimeout('')``; the formatter picks something up either way.
+        exc = httpx.ReadTimeout("")
+        assert format_http_error(exc)
+
+    def test_class_name_always_leads(self) -> None:
+        # Every formatted message must begin with the exception class name
+        # so log grep patterns can hunt for the specific failure mode.
+        for exc_cls in (httpx.ReadTimeout, httpx.ConnectError, httpx.ConnectTimeout):
+            assert format_http_error(exc_cls("boom")).startswith(exc_cls.__name__)
