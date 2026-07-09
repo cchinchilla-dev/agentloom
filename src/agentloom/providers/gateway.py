@@ -11,7 +11,12 @@ from typing import Any
 import anyio
 
 from agentloom.exceptions import CircuitOpenError, ProviderError, RateLimitError
-from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers.base import (
+    BaseProvider,
+    EmbeddingResponse,
+    ProviderResponse,
+    StreamResponse,
+)
 from agentloom.providers.multimodal import estimate_content_tokens
 from agentloom.resilience.circuit_breaker import CircuitBreaker, CircuitState
 from agentloom.resilience.rate_limiter import RateLimiter
@@ -504,6 +509,179 @@ class ProviderGateway:
         raise ProviderError(
             "gateway",
             f"All providers failed for model '{model}': " + "; ".join(errors),
+        )
+
+    async def embed(
+        self,
+        inputs: list[str],
+        model: str,
+        dimensions: int | None = None,
+        **kwargs: Any,
+    ) -> EmbeddingResponse:
+        """Route an embedding request with the same fallback stack as ``complete``.
+
+        Providers that raise ``NotImplementedError`` (Anthropic) are
+        skipped cleanly — they don't count as failures against the
+        circuit breaker or the retry budget.
+        """
+        step_id: str | None = kwargs.pop("step_id", None)
+        candidates = self._get_candidates(model)
+        if not candidates:
+            raise ProviderError("gateway", f"No provider registered for model '{model}'")
+
+        errors: list[str] = []
+        for attempt_idx, entry in enumerate(candidates):
+            if entry.circuit_breaker._maybe_transition_to_half_open() == CircuitState.OPEN:
+                msg = f"Provider '{entry.provider.name}' circuit is open"
+                errors.append(msg)
+                logger.warning(msg)
+                continue
+
+            attempt_started = False
+            attempt_start = 0.0
+            if step_id is not None and self._observer:
+                start_hook = getattr(self._observer, "on_provider_call_start", None)
+                if start_hook:
+                    attempt_start = anyio.current_time()
+                    start_hook(
+                        step_id=step_id,
+                        provider=entry.provider.name,
+                        model=model,
+                        attempt=attempt_idx,
+                        temperature=None,
+                        max_tokens=None,
+                        stream=False,
+                    )
+                    attempt_started = True
+
+            try:
+                if entry.rate_limiter:
+                    estimated_tokens = sum(estimate_content_tokens(t) for t in inputs)
+                    await entry.rate_limiter.acquire(token_count=estimated_tokens)
+
+                call_kwargs = dict(kwargs)
+                if step_id is not None and getattr(entry.provider, "accepts_step_id", False):
+                    call_kwargs["step_id"] = step_id
+
+                async def _call(
+                    e: ProviderEntry = entry, ck: dict[str, Any] = call_kwargs
+                ) -> EmbeddingResponse:
+                    result = await e.provider.embed(
+                        inputs=inputs, model=model, dimensions=dimensions, **ck
+                    )
+                    # Providers must return one vector per input in order.
+                    # A mismatch means a partial response / bug / schema
+                    # drift — treating it as a ``ProviderError`` inside the
+                    # CB-wrapped call makes the breaker count it as a
+                    # failure and the fallback chain retry on the next
+                    # candidate rather than silently writing misaligned
+                    # vectors to state.
+                    if len(result.embeddings) != len(inputs):
+                        raise ProviderError(
+                            e.provider.name,
+                            (
+                                f"embed returned {len(result.embeddings)} vectors "
+                                f"for {len(inputs)} inputs — provider contract violation"
+                            ),
+                        )
+                    return result
+
+                response = await entry.circuit_breaker.call(
+                    _call, exclude=(RateLimitError, NotImplementedError)
+                )
+                if entry.rate_limiter and response.usage.prompt_tokens:
+                    await entry.rate_limiter.consume_response_tokens(response.usage.prompt_tokens)
+
+                if attempt_started and self._observer:
+                    end_hook = getattr(self._observer, "on_provider_call_end", None)
+                    if end_hook:
+                        end_hook(
+                            step_id=step_id,
+                            provider=entry.provider.name,
+                            model=response.model or model,
+                            latency_s=anyio.current_time() - attempt_start,
+                            attempt=attempt_idx,
+                            prompt_tokens=response.usage.prompt_tokens,
+                            completion_tokens=0,
+                            reasoning_tokens=0,
+                            finish_reason=None,
+                            stream=False,
+                        )
+                logger.debug(
+                    "Provider '%s' returned embeddings for model '%s'", entry.provider.name, model
+                )
+                return response
+
+            except NotImplementedError as e:
+                # Skip cleanly — provider opted out (Anthropic). No CB /
+                # retry-budget impact and no ``on_provider_error`` — a
+                # missing capability isn't a failure.
+                msg = f"Provider '{entry.provider.name}' has no embeddings: {e}"
+                errors.append(msg)
+                logger.debug(msg)
+                if attempt_started and self._observer:
+                    end_hook = getattr(self._observer, "on_provider_call_end", None)
+                    if end_hook:
+                        end_hook(
+                            step_id=step_id,
+                            provider=entry.provider.name,
+                            model=model,
+                            latency_s=anyio.current_time() - attempt_start,
+                            attempt=attempt_idx,
+                            error="NotImplementedError",
+                            stream=False,
+                        )
+                continue
+            except CircuitOpenError:
+                msg = f"Provider '{entry.provider.name}' circuit is open"
+                errors.append(msg)
+                logger.warning(msg)
+                continue
+            except RateLimitError as e:
+                # Throttled, not faulty — same treatment as ``stream``:
+                # do not record a breaker failure, do not fire
+                # ``on_provider_error`` (a healthy provider being throttled
+                # is not a fault). Try the next candidate.
+                msg = f"Provider '{entry.provider.name}' rate-limited: {e}"
+                errors.append(msg)
+                logger.warning(msg)
+                if attempt_started and self._observer:
+                    end_hook = getattr(self._observer, "on_provider_call_end", None)
+                    if end_hook:
+                        end_hook(
+                            step_id=step_id,
+                            provider=entry.provider.name,
+                            model=model,
+                            latency_s=anyio.current_time() - attempt_start,
+                            attempt=attempt_idx,
+                            error="RateLimitError",
+                            stream=False,
+                        )
+                continue
+            except Exception as e:
+                msg = f"Provider '{entry.provider.name}' failed: {e}"
+                errors.append(msg)
+                logger.warning(msg)
+                if attempt_started and self._observer:
+                    end_hook = getattr(self._observer, "on_provider_call_end", None)
+                    if end_hook:
+                        end_hook(
+                            step_id=step_id,
+                            provider=entry.provider.name,
+                            model=model,
+                            latency_s=anyio.current_time() - attempt_start,
+                            attempt=attempt_idx,
+                            error=type(e).__name__,
+                            stream=False,
+                        )
+                if self._observer:
+                    error_hook = getattr(self._observer, "on_provider_error", None)
+                    if error_hook:
+                        error_hook(entry.provider.name, type(e).__name__)
+                continue
+
+        raise ProviderError(
+            "gateway", f"All providers failed for embed on model '{model}': " + "; ".join(errors)
         )
 
     def _get_candidates(self, model: str) -> list[ProviderEntry]:

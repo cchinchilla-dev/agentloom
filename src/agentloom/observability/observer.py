@@ -342,6 +342,25 @@ class WorkflowObserver:
             )
             self._tracing.end_span(span)
 
+    def on_embedding_call(
+        self,
+        *,
+        provider: str,
+        model: str,
+        dimensions: int,
+        input_count: int,
+        prompt_tokens: int,
+        **kwargs: Any,
+    ) -> None:
+        """Record an embedding call (counter + dimensions histogram).
+
+        Trace attribution rides on the parent step span; this hook only
+        emits the metric surface — the step span already carries provider,
+        model, and cost.
+        """
+        if self._metrics:
+            self._metrics.record_embedding_call(provider, model, dimensions)
+
     def on_provider_error(
         self,
         provider: str,

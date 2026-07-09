@@ -1,21 +1,26 @@
-# Model pricing table (USD per 1K tokens) — updated May 2026
-# Override by setting AGENTLOOM_PRICING_FILE to your own YAML path.
+# Model pricing (USD per 1K tokens) — updated July 2026.
+# Override with AGENTLOOM_PRICING_FILE=/path/to/your.yaml.
 #
-# Reasoning models: o-series (OpenAI), Claude with extended thinking, and
-# Gemini 2.5+ thinking all bill chain-of-thought tokens at the OUTPUT rate.
-# ``calculate_cost`` adds ``reasoning_tokens`` to ``completion_tokens``
-# before applying ``output_cost_per_1k`` — no separate "reasoning" rate is
-# needed in this table.
+# Reasoning tokens (o-series, Claude thinking, Gemini thinking) bill at
+# the ``output`` rate — ``calculate_cost`` folds them into completion.
+# Gemini Pro tiered pricing is flattened to the ≤200K tier.
 
-# OpenAI — GPT-5.5 (April 2026, flagship)
+# --- OpenAI ---
+gpt-5.6-sol:
+  input: 0.00500
+  output: 0.03000
+gpt-5.6-terra:
+  input: 0.00250
+  output: 0.01500
+gpt-5.6-luna:
+  input: 0.00100
+  output: 0.00600
 gpt-5.5:
   input: 0.00500
   output: 0.03000
 gpt-5.5-pro:
   input: 0.03000
   output: 0.18000
-
-# OpenAI — GPT-5.4 (March 2026)
 gpt-5.4:
   input: 0.00250
   output: 0.01500
@@ -28,8 +33,6 @@ gpt-5.4-nano:
 gpt-5.4-pro:
   input: 0.03000
   output: 0.18000
-
-# OpenAI — GPT-5.1/5.2/5.3 (codex / interim, late 2025–early 2026)
 gpt-5.3-codex:
   input: 0.00175
   output: 0.01400
@@ -51,8 +54,6 @@ gpt-5.1-codex:
 gpt-5.1-codex-max:
   input: 0.00125
   output: 0.01000
-
-# OpenAI — GPT-5 (August 2025 GA)
 gpt-5:
   input: 0.00125
   output: 0.01000
@@ -68,8 +69,6 @@ gpt-5-nano:
 gpt-5-pro:
   input: 0.01500
   output: 0.12000
-
-# OpenAI — GPT-4.1 family (April 2025, long-context)
 gpt-4.1:
   input: 0.00200
   output: 0.00800
@@ -79,18 +78,12 @@ gpt-4.1-mini:
 gpt-4.1-nano:
   input: 0.00010
   output: 0.00040
-
-# OpenAI — GPT-4o family (legacy)
 gpt-4o:
   input: 0.00250
   output: 0.01000
 gpt-4o-mini:
   input: 0.00015
   output: 0.00060
-
-# OpenAI — reasoning models (o-series). Reasoning tokens are billed at
-# ``output`` rate — see header comment. ``*-pro`` are premium tiers;
-# ``*-deep-research`` variants run extended thought loops at higher rates.
 o1:
   input: 0.01500
   output: 0.06000
@@ -119,23 +112,22 @@ o4-mini-deep-research:
   input: 0.00200
   output: 0.00800
 
-# Anthropic — Claude 4.7 (April 2026, latest Opus tier)
+# --- Anthropic ---
+# Undated aliases (``claude-sonnet-4-5``) resolve to the latest dated SKU
+# via longest-prefix match. Sonnet 5 carries intro pricing until
+# 2026-08-31, then jumps to 0.00300 / 0.01500.
+claude-opus-4-8:
+  input: 0.00500
+  output: 0.02500
 claude-opus-4-7:
   input: 0.00500
   output: 0.02500
-
-# Anthropic — Claude 4.6 (Feb 2026)
 claude-opus-4-6:
   input: 0.00500
   output: 0.02500
 claude-sonnet-4-6:
   input: 0.00300
   output: 0.01500
-
-# Anthropic — Claude 4.5 (Sept-Nov 2025). Aliases without the date suffix
-# match callers that pin to the family name (e.g. ``claude-sonnet-4-5``).
-# The prefix-match in ``calculate_cost`` runs longest-first, so dated
-# entries still take precedence when both are present.
 claude-opus-4-5-20251101:
   input: 0.00500
   output: 0.02500
@@ -154,30 +146,15 @@ claude-haiku-4-5-20251001:
 claude-haiku-4-5:
   input: 0.00100
   output: 0.00500
-
-# Anthropic — Claude 3.7 Sonnet (Feb 2025, first reasoning Claude)
-claude-3-7-sonnet:
-  input: 0.00300
-  output: 0.01500
-
-# Anthropic — Claude 3.5 (legacy)
-claude-haiku-3-5-20241022:
-  input: 0.00080
-  output: 0.00400
-claude-haiku-3-5:
-  input: 0.00080
-  output: 0.00400
-
-# Anthropic — Claude 3 (legacy)
-claude-opus-3:
-  input: 0.01500
-  output: 0.07500
-claude-haiku-3:
-  input: 0.00025
-  output: 0.00125
-
-# Anthropic — Claude 4.1 / 4 (legacy). Aliases without dates resolve
-# the same family/version pin used by callers that don't snapshot.
+claude-sonnet-5:
+  input: 0.00200
+  output: 0.01000
+claude-fable-5:
+  input: 0.01000
+  output: 0.05000
+claude-mythos-5:
+  input: 0.01000
+  output: 0.05000
 claude-opus-4-1-20250805:
   input: 0.01500
   output: 0.07500
@@ -196,58 +173,46 @@ claude-sonnet-4-20250514:
 claude-sonnet-4-0:
   input: 0.00300
   output: 0.01500
+claude-haiku-3-5-20241022:
+  input: 0.00080
+  output: 0.00400
+claude-haiku-3-5:
+  input: 0.00080
+  output: 0.00400
 
-# Google — Gemini 3 (2026). ``-preview`` aliases land before the GA name
-# for callers pinning to the preview SKU; rates are identical.
-gemini-3.1-pro:
-  input: 0.00200
-  output: 0.01200
+# --- Google Gemini ---
+gemini-3.5-flash:
+  input: 0.00150
+  output: 0.00900
 gemini-3.1-pro-preview:
   input: 0.00200
   output: 0.01200
-gemini-3-pro-preview:
+gemini-3.1-pro:
   input: 0.00200
   output: 0.01200
-gemini-3-pro:
-  input: 0.00200
-  output: 0.01200
-gemini-3-flash:
-  input: 0.00050
-  output: 0.00300
-gemini-3.1-flash-image-preview:
-  input: 0.00050
-  output: 0.00300
-
-# Google — Gemini 3.1 Flash Lite (2026)
 gemini-3.1-flash-lite:
   input: 0.00025
   output: 0.00150
-gemini-3.1-flash-lite-preview:
-  input: 0.00025
-  output: 0.00150
-
-# Google — Gemini 2.5 (mid 2025)
+gemini-3.1-flash-image:
+  input: 0.00050
+  output: 0.00300
+gemini-3-flash-preview:
+  input: 0.00050
+  output: 0.00300
+gemini-3-pro-image:
+  input: 0.00200
+  output: 0.01200
 gemini-2.5-pro:
   input: 0.00125
   output: 0.01000
 gemini-2.5-flash:
   input: 0.00030
   output: 0.00250
-
-# Google — Gemini 2.5 Flash Lite (2025)
 gemini-2.5-flash-lite:
   input: 0.00010
   output: 0.00040
 
-# Google — Gemini 2.0 (deprecated, sunset June 2026)
-gemini-2.0-flash:
-  input: 0.00015
-  output: 0.00060
-gemini-2.0-flash-lite:
-  input: 0.000075
-  output: 0.00030
-
-# Ollama (local — free)
+# --- Ollama (local — free) ---
 qwen3:
   input: 0.0
   output: 0.0
@@ -264,5 +229,25 @@ deepseek-r1:
   input: 0.0
   output: 0.0
 mistral:
+  input: 0.0
+  output: 0.0
+
+# --- Embeddings (output: 0.0) ---
+text-embedding-3-small:
+  input: 0.00002
+  output: 0.0
+text-embedding-3-large:
+  input: 0.00013
+  output: 0.0
+gemini-embedding-001:
+  input: 0.00015
+  output: 0.0
+gemini-embedding-2:
+  input: 0.00020
+  output: 0.0
+nomic-embed-text:
+  input: 0.0
+  output: 0.0
+mxbai-embed-large:
   input: 0.0
   output: 0.0

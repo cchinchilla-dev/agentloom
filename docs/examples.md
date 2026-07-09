@@ -327,3 +327,19 @@ agentloom run examples/36_structured_output.yaml --lite
 # validation; --provider ollama uses Ollama 0.5+ format schema.
 agentloom run examples/36_structured_output.yaml --provider openai --model gpt-4o-mini
 ```
+
+### 37 — Embeddings
+
+Vectorises a small corpus of documents via the new `embed` step type. `state.vectors` holds a `list[list[float]]` after the run — plug it straight into a similarity search or a downstream evaluator.
+
+**Demonstrates:** `embed` step, dotted-path `inputs: state.documents`, per-batch cost tracking, `MockProvider` replay against a committed recording, `NotImplementedError` skip behaviour when Anthropic sits earlier in the fallback chain.
+
+```bash
+# Mock-replay against the committed recording (no API calls)
+agentloom run examples/37_embeddings.yaml --lite
+
+# Real calls:
+agentloom run examples/37_embeddings.yaml --provider openai --model text-embedding-3-small
+agentloom run examples/37_embeddings.yaml --provider google --model gemini-embedding-001
+agentloom run examples/37_embeddings.yaml --provider ollama --model nomic-embed-text
+```

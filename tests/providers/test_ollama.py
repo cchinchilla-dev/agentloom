@@ -450,7 +450,10 @@ class TestOllamaBaseURLResolution:
             side_effect=httpx.ConnectError("connection refused")
         )
         provider = OllamaProvider()
-        with pytest.raises(ProviderError, match="HTTP error"):
+        # Post-fix: the message begins with the exception class name so log
+        # greps can spot the failure mode even when ``str(exc)`` is empty
+        # (async httpx ReadTimeout in particular has an empty str repr).
+        with pytest.raises(ProviderError, match="ConnectError"):
             await provider.complete(messages=[{"role": "user", "content": "x"}], model="phi4")
         await provider.close()
 

@@ -12,8 +12,13 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
-from agentloom.providers._http import raise_for_status, validate_extra_kwargs
-from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
+from agentloom.providers.base import (
+    BaseProvider,
+    EmbeddingResponse,
+    ProviderResponse,
+    StreamResponse,
+)
 from agentloom.providers.multimodal import (
     AudioBlock,
     DocumentBlock,
@@ -244,7 +249,7 @@ class GoogleProvider(BaseProvider):
         try:
             response = await self._client.post(url, json=payload)
         except httpx.HTTPError as e:
-            raise ProviderError("google", f"HTTP error: {e}") from e
+            raise ProviderError("google", format_http_error(e)) from e
 
         raise_for_status("google", response)
 
@@ -417,8 +422,58 @@ class GoogleProvider(BaseProvider):
         sr._set_iterator(_generate())
         return sr
 
+    async def embed(
+        self,
+        inputs: list[str],
+        model: str,
+        dimensions: int | None = None,
+        **kwargs: Any,
+    ) -> EmbeddingResponse:
+        kwargs.pop("agentloom_step_id", None)
+        # ``task_type`` is documented (RETRIEVAL_QUERY / RETRIEVAL_DOCUMENT / etc).
+        extras = validate_extra_kwargs("google", "embed", kwargs, frozenset({"task_type", "title"}))
+        requests_body: list[dict[str, Any]] = []
+        for text in inputs:
+            item: dict[str, Any] = {
+                "model": f"models/{model}",
+                "content": {"parts": [{"text": text}]},
+            }
+            if dimensions is not None:
+                item["outputDimensionality"] = dimensions
+            if "task_type" in extras:
+                item["taskType"] = extras["task_type"]
+            if "title" in extras:
+                item["title"] = extras["title"]
+            requests_body.append(item)
+        url = f"/models/{model}:batchEmbedContents?key={self.api_key}"
+        try:
+            response = await self._client.post(url, json={"requests": requests_body})
+        except httpx.HTTPError as e:
+            raise ProviderError("google", format_http_error(e)) from e
+        raise_for_status("google", response)
+        data = response.json()
+        vectors = [entry["values"] for entry in data.get("embeddings", [])]
+        # Gemini's ``batchEmbedContents`` does not return per-token usage.
+        # Approximate with a ~1.3 tokens/word factor so the cost estimate and
+        # the rate-limiter budget bias slightly high rather than low; the
+        # ``raw_response`` carries the truth for callers who need to audit.
+        approx_tokens = int(sum(len(t.split()) for t in inputs) * 1.3)
+        return EmbeddingResponse(
+            embeddings=vectors,
+            model=model,
+            provider="google",
+            usage=TokenUsage(prompt_tokens=approx_tokens, total_tokens=approx_tokens),
+            cost_usd=calculate_cost(model, approx_tokens, 0),
+            raw_response=data,
+        )
+
     def supports_model(self, model: str) -> bool:
-        return "gemini" in model
+        # ``gemini-*`` covers both generation and ``gemini-embedding-*``.
+        # ``embedding-*`` is Google's older bare-name namespace (e.g.
+        # ``embedding-001``). ``text-embedding-*`` is OpenAI territory —
+        # keep it out of this matcher so gateway fallback doesn't ship
+        # OpenAI model strings to Gemini and vice-versa.
+        return "gemini" in model or model.startswith("embedding-")
 
     async def close(self) -> None:
         await self._client.aclose()

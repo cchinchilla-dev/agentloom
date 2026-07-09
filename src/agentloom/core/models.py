@@ -18,6 +18,7 @@ class StepType(StrEnum):
     ROUTER = "router"
     SUBWORKFLOW = "subworkflow"
     APPROVAL_GATE = "approval_gate"
+    EMBED = "embed"
 
 
 class Attachment(BaseModel):
@@ -265,6 +266,15 @@ class StepDefinition(BaseModel):
 
     # Constrains the reply to a JSON shape; parsed value lands on state.
     response_schema: ResponseSchema | None = None
+
+    # Embed step fields — ``inputs`` is a dotted state path (e.g.
+    # ``state.documents``) that resolves to a ``list[str]``; ``dimensions``
+    # requests a truncated vector on providers that honour it (OpenAI
+    # ``text-embedding-3-*``, Google ``gemini-embedding-001``). ``ge=1``
+    # rejects ``0`` / negative at parse time so failures don't leak to
+    # provider-specific 400s at runtime.
+    inputs: str | None = None
+    dimensions: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _validate_tools_and_response_schema_are_exclusive(self) -> StepDefinition:

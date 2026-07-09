@@ -13,8 +13,13 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
-from agentloom.providers._http import raise_for_status, validate_extra_kwargs
-from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
+from agentloom.providers.base import (
+    BaseProvider,
+    EmbeddingResponse,
+    ProviderResponse,
+    StreamResponse,
+)
 from agentloom.providers.multimodal import (
     AudioBlock,
     DocumentBlock,
@@ -201,7 +206,7 @@ class OpenAIProvider(BaseProvider):
         try:
             response = await self._client.post("/chat/completions", json=payload)
         except httpx.HTTPError as e:
-            raise ProviderError("openai", f"HTTP error: {e}") from e
+            raise ProviderError("openai", format_http_error(e)) from e
 
         raise_for_status("openai", response)
 
@@ -355,7 +360,64 @@ class OpenAIProvider(BaseProvider):
         "o1",
     )
 
+    # OpenAI accepts up to 2048 inputs per call; we chunk conservatively so
+    # a single failure only re-runs a bounded slice.
+    _EMBED_BATCH_SIZE: int = 100
+
+    async def embed(
+        self,
+        inputs: list[str],
+        model: str,
+        dimensions: int | None = None,
+        **kwargs: Any,
+    ) -> EmbeddingResponse:
+        kwargs.pop("agentloom_step_id", None)
+        extras = validate_extra_kwargs(
+            "openai", "embed", kwargs, frozenset({"encoding_format", "user"})
+        )
+        all_vectors: list[list[float]] = []
+        prompt_tokens = 0
+        total_tokens = 0
+        cost = 0.0
+        last_raw: dict[str, Any] = {}
+        response_model = model
+        for start in range(0, len(inputs), self._EMBED_BATCH_SIZE):
+            chunk = inputs[start : start + self._EMBED_BATCH_SIZE]
+            payload: dict[str, Any] = {"model": model, "input": chunk, **extras}
+            if dimensions is not None:
+                payload["dimensions"] = dimensions
+            try:
+                response = await self._client.post("/embeddings", json=payload)
+            except httpx.HTTPError as e:
+                raise ProviderError("openai", format_http_error(e)) from e
+            raise_for_status("openai", response)
+            data = response.json()
+            # Sort by ``index`` so parallel-shape guarantees hold even if
+            # the API reorders results across a very large batch.
+            for entry in sorted(data.get("data", []), key=lambda x: x.get("index", 0)):
+                all_vectors.append(entry["embedding"])
+            usage_data = data.get("usage", {})
+            prompt_tokens += usage_data.get("prompt_tokens", 0)
+            total_tokens += usage_data.get("total_tokens", usage_data.get("prompt_tokens", 0))
+            cost += calculate_cost(model, usage_data.get("prompt_tokens", 0), 0)
+            last_raw = data
+            response_model = data.get("model", model)
+        return EmbeddingResponse(
+            embeddings=all_vectors,
+            model=response_model,
+            provider="openai",
+            usage=TokenUsage(prompt_tokens=prompt_tokens, total_tokens=total_tokens),
+            cost_usd=cost,
+            raw_response=last_raw,
+        )
+
     def supports_model(self, model: str) -> bool:
+        # Embeddings are namespaced under ``text-embedding-3-*`` /
+        # ``text-embedding-ada-*`` for OpenAI. Google's ``text-embedding-004``
+        # lives on Gemini, so keep the match narrow to avoid the gateway
+        # sending Google model strings to this adapter on fallback.
+        if model.startswith(("text-embedding-3-", "text-embedding-ada-")):
+            return True
         return any(model.startswith(p) for p in self._SUPPORTED_PREFIXES)
 
     async def close(self) -> None:

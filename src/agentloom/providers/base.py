@@ -94,6 +94,22 @@ class ProviderResponse(BaseModel):
     parsed: object | None = None
 
 
+class EmbeddingResponse(BaseModel):
+    """Unified embedding response from any provider.
+
+    ``embeddings`` is one vector per input, in the same order as the
+    request. ``usage.completion_tokens`` is always ``0`` — embedding APIs
+    only bill input tokens.
+    """
+
+    embeddings: list[list[float]]
+    model: str
+    provider: str
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+    cost_usd: float = 0.0
+    raw_response: dict[str, Any] = Field(default_factory=dict)
+
+
 class StreamResponse:
     """Accumulates streamed text chunks and final metadata from a provider.
 
@@ -261,6 +277,16 @@ class BaseProvider(ABC):
 
         sr._set_iterator(_single_chunk())
         return sr
+
+    async def embed(
+        self,
+        inputs: list[str],
+        model: str,
+        dimensions: int | None = None,
+        **kwargs: Any,
+    ) -> EmbeddingResponse:
+        """Embed a batch of texts. Default: refuse — providers opt in."""
+        raise NotImplementedError(f"Provider {self.name!r} does not implement embeddings.")
 
     def supports_model(self, model: str) -> bool:
         """Check if this provider supports a given model. Override in subclasses."""

@@ -1,0 +1,18 @@
+{
+  "_version": 2,
+  "vectorize": {
+    "model": "text-embedding-3-small",
+    "provider": "openai",
+    "embeddings": [
+      [0.012, -0.043, 0.078, 0.155, -0.201, 0.088, 0.014, -0.126],
+      [-0.041, 0.082, -0.003, 0.194, 0.037, -0.171, 0.099, 0.045],
+      [0.121, -0.015, 0.056, -0.087, 0.203, 0.011, -0.144, 0.062]
+    ],
+    "usage": {
+      "prompt_tokens": 27,
+      "completion_tokens": 0,
+      "total_tokens": 27
+    },
+    "cost_usd": 0.00000054
+  }
+}

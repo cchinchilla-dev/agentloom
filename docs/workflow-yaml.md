@@ -473,6 +473,39 @@ A `subworkflow` containing an `approval_gate` pauses the parent at a fully-quali
 
 Step ids inside `workflow_inline.steps` (or in a workflow referenced via `workflow_path`) live in the child's own namespace — a parent can have `id: classify` and the child can also have `id: classify` without collision. Duplicate-id validation is therefore *lazy*: the parent parse only checks its own top-level steps, and duplicates inside the child are caught when `SubworkflowStep` executes and re-parses the inline definition (raising `Invalid inline subworkflow: ... Duplicate step ids`). For workflows where you want eager validation of the entire nested tree, run `agentloom validate` on the child file separately before referencing it.
 
+### `embed`
+
+Computes vector embeddings for a batch of text strings and writes the result to state. Rides the same fallback chain / circuit breaker / rate limiter as `llm_call`, and a provider that raises `NotImplementedError` (Anthropic) is skipped cleanly — no CB penalty, no retry budget consumed.
+
+```yaml
+- id: vectorize
+  type: embed
+  inputs: state.documents          # dotted state ref → list[str] (or str)
+  model: text-embedding-3-small    # inherits config.model if unset
+  dimensions: 256                  # optional (OpenAI 3-*, Google 004)
+  output: vectors                  # state.vectors = list[list[float]]
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `inputs` | `string` | — | Dotted state reference (e.g. `state.documents`). Resolves to a `list[str]` or a single `str` (auto-batched to one). No template rendering — just a state lookup. |
+| `model` | `string` | inherited | Embedding model name (e.g. `text-embedding-3-small`, `text-embedding-004`, `nomic-embed-text`). Falls back to `config.model` when unset. |
+| `dimensions` | `int` | model's full size | Requests truncated vectors. Honoured by OpenAI `text-embedding-3-*` and Google `text-embedding-004`; ignored by providers that don't support it. |
+| `output` | `string` | — | State key that receives the `list[list[float]]` result. |
+
+**Cross-provider matrix:**
+
+| Provider | Endpoint | Default model | Notes |
+|----------|-----------|----------------|-------|
+| OpenAI | `POST /v1/embeddings` | `text-embedding-3-small` | `dimensions` supported. Auto-batched at 100 inputs per request. |
+| Google | `POST /models/{model}:batchEmbedContents` | `gemini-embedding-001` | `dimensions` → `outputDimensionality`. `task_type` and `title` kwargs forwarded. Usage is approximated from word counts (Gemini doesn't return per-token counts on batch embed). Older `text-embedding-004` is deprecated and no longer available on `v1beta`. |
+| Ollama | `POST /api/embed` | model-dependent (e.g. `nomic-embed-text`) | Batch native (Ollama 0.1.29+). Cost is `0.0` (local). |
+| Anthropic | _None._ | — | Raises `NotImplementedError` with a hint pointing to OpenAI / Google / Ollama / Voyage AI. The gateway skips cleanly to the next candidate. |
+
+The `MockProvider` serves embeddings from a recording keyed by `step_id` (with an `embeddings: list[list[float]]` field) or synthesises deterministic hash-derived pseudo-vectors when no recording matches (`--allow-default-fallback`, the default outside `agentloom replay`). Strict mode raises `RecordingMismatchError` on a miss.
+
+`agentloom_embedding_calls_total{provider, model}` counter and `agentloom_embedding_dimensions{provider, model}` histogram land on the metrics surface whenever observability is enabled.
+
 ---
 
 ## Streaming
