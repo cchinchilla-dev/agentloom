@@ -454,9 +454,10 @@ class GoogleProvider(BaseProvider):
         data = response.json()
         vectors = [entry["values"] for entry in data.get("embeddings", [])]
         # Gemini's ``batchEmbedContents`` does not return per-token usage.
-        # Approximate by summing word counts so the cost estimate is a
-        # coarse-but-non-zero signal; the ``raw_response`` carries the truth.
-        approx_tokens = sum(len(t.split()) for t in inputs)
+        # Approximate with a ~1.3 tokens/word factor so the cost estimate and
+        # the rate-limiter budget bias slightly high rather than low; the
+        # ``raw_response`` carries the truth for callers who need to audit.
+        approx_tokens = int(sum(len(t.split()) for t in inputs) * 1.3)
         return EmbeddingResponse(
             embeddings=vectors,
             model=model,
@@ -467,11 +468,12 @@ class GoogleProvider(BaseProvider):
         )
 
     def supports_model(self, model: str) -> bool:
-        return (
-            "gemini" in model
-            or model.startswith("text-embedding-")
-            or model.startswith("embedding-")
-        )
+        # ``gemini-*`` covers both generation and ``gemini-embedding-*``.
+        # ``embedding-*`` is Google's older bare-name namespace (e.g.
+        # ``embedding-001``). ``text-embedding-*`` is OpenAI territory —
+        # keep it out of this matcher so gateway fallback doesn't ship
+        # OpenAI model strings to Gemini and vice-versa.
+        return "gemini" in model or model.startswith("embedding-")
 
     async def close(self) -> None:
         await self._client.aclose()

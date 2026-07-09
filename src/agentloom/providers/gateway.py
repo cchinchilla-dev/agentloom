@@ -566,9 +566,25 @@ class ProviderGateway:
                 async def _call(
                     e: ProviderEntry = entry, ck: dict[str, Any] = call_kwargs
                 ) -> EmbeddingResponse:
-                    return await e.provider.embed(
+                    result = await e.provider.embed(
                         inputs=inputs, model=model, dimensions=dimensions, **ck
                     )
+                    # Providers must return one vector per input in order.
+                    # A mismatch means a partial response / bug / schema
+                    # drift — treating it as a ``ProviderError`` inside the
+                    # CB-wrapped call makes the breaker count it as a
+                    # failure and the fallback chain retry on the next
+                    # candidate rather than silently writing misaligned
+                    # vectors to state.
+                    if len(result.embeddings) != len(inputs):
+                        raise ProviderError(
+                            e.provider.name,
+                            (
+                                f"embed returned {len(result.embeddings)} vectors "
+                                f"for {len(inputs)} inputs — provider contract violation"
+                            ),
+                        )
+                    return result
 
                 response = await entry.circuit_breaker.call(
                     _call, exclude=(RateLimitError, NotImplementedError)

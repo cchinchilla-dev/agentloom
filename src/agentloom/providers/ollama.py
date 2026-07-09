@@ -357,9 +357,11 @@ class OllamaProvider(BaseProvider):
         **kwargs: Any,
     ) -> EmbeddingResponse:
         kwargs.pop("agentloom_step_id", None)
-        # Ollama's ``/api/embed`` (0.1.29+) takes a list; older ``/api/embeddings``
-        # is single-input. Use the batch endpoint — it degrades to a single
-        # embed cleanly when the server is old.
+        # Ollama's ``/api/embed`` (0.1.29+) takes a list input. Older
+        # ``/api/embeddings`` (singular) is single-input only; we do NOT
+        # fall back to it. Older servers surface as a clear HTTP error
+        # from ``raise_for_status`` rather than silently returning one
+        # vector for a many-input batch.
         payload: dict[str, Any] = {"model": model, "input": inputs}
         try:
             response = await self._client.post("/api/embed", json=payload)

@@ -412,9 +412,13 @@ class OpenAIProvider(BaseProvider):
         )
 
     def supports_model(self, model: str) -> bool:
-        return any(model.startswith(p) for p in self._SUPPORTED_PREFIXES) or model.startswith(
-            "text-embedding-"
-        )
+        # Embeddings are namespaced under ``text-embedding-3-*`` /
+        # ``text-embedding-ada-*`` for OpenAI. Google's ``text-embedding-004``
+        # lives on Gemini, so keep the match narrow to avoid the gateway
+        # sending Google model strings to this adapter on fallback.
+        if model.startswith(("text-embedding-3-", "text-embedding-ada-")):
+            return True
+        return any(model.startswith(p) for p in self._SUPPORTED_PREFIXES)
 
     async def close(self) -> None:
         await self._client.aclose()
