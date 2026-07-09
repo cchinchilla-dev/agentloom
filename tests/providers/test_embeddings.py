@@ -1348,3 +1348,151 @@ class TestStepDefinitionDimensionsValidation:
             dimensions=256,
         )
         assert s.dimensions == 256
+
+
+class TestProviderCompleteHTTPErrorPathsUseFormatter:
+    """The ``format_http_error`` swap in ``complete()`` also needs coverage."""
+
+    @respx.mock
+    async def test_openai_complete_wraps_http_error(self) -> None:
+        # The same helper migration in commit 7 covers the ``complete()``
+        # callsite too — an ``httpx.ConnectError`` there must surface the
+        # exception class in the ``ProviderError`` message.
+        from agentloom.exceptions import ProviderError
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=httpx.ConnectError("boom")
+        )
+        p = OpenAIProvider(api_key="k")
+        with pytest.raises(ProviderError, match="ConnectError"):
+            await p.complete(messages=[{"role": "user", "content": "hi"}], model="gpt-4o-mini")
+        await p.close()
+
+    @respx.mock
+    async def test_anthropic_complete_wraps_http_error(self) -> None:
+        from agentloom.exceptions import ProviderError
+
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            side_effect=httpx.ConnectError("boom")
+        )
+        p = AnthropicProvider(api_key="k")
+        with pytest.raises(ProviderError, match="ConnectError"):
+            await p.complete(
+                messages=[{"role": "user", "content": "hi"}],
+                model="claude-haiku-4-5-20251001",
+            )
+        await p.close()
+
+    @respx.mock
+    async def test_google_complete_wraps_http_error(self) -> None:
+        from agentloom.exceptions import ProviderError
+
+        respx.post(url__regex=r".+generateContent.+").mock(side_effect=httpx.ConnectError("boom"))
+        p = GoogleProvider(api_key="k")
+        with pytest.raises(ProviderError, match="ConnectError"):
+            await p.complete(
+                messages=[{"role": "user", "content": "hi"}],
+                model="gemini-2.5-flash",
+            )
+        await p.close()
+
+
+class TestMockEmbedHashLookup:
+    """Recordings without ``step_id`` keys fall back to hash-based lookup."""
+
+    async def test_embed_recording_keyed_by_hash_still_serves(self, tmp_path: Any) -> None:
+        # The ``step_id`` lookup misses; the hash-based fallback picks up
+        # a recording keyed by ``prompt_hash({embed_inputs, model, ...})``.
+        # This is the path CLI tools use when they record without a
+        # step-scoped key.
+        from agentloom.providers.mock import prompt_hash
+
+        h = prompt_hash(
+            [{"embed_inputs": ["hello"], "model": "text-embedding-3-small", "dimensions": None}],
+            "text-embedding-3-small",
+            None,
+            None,
+            {},
+        )
+        rec = tmp_path / "rec.json"
+        rec.write_text(
+            json.dumps(
+                {
+                    "_version": 2,
+                    h: {
+                        "embeddings": [[0.42]],
+                        "model": "text-embedding-3-small",
+                        "usage": {"prompt_tokens": 1, "total_tokens": 1},
+                        "cost_usd": 0.0,
+                    },
+                }
+            )
+        )
+        provider = MockProvider(responses_file=rec)
+        r = await provider.embed(
+            inputs=["hello"],
+            model="text-embedding-3-small",
+            step_id="unregistered-step",
+        )
+        assert r.embeddings == [[0.42]]
+
+
+class TestGatewayEmbedCircuitOpenMidCall:
+    """``CircuitOpenError`` raised inside ``_call`` (race) falls back cleanly."""
+
+    async def test_circuit_open_error_during_call_moves_to_next_candidate(self) -> None:
+        # The pre-check catches the common case, but the CB can trip mid-
+        # call when another concurrent request opens it. The dedicated
+        # ``except CircuitOpenError`` branch inside ``embed`` handles that
+        # race — a fake CB that raises on call() proves it.
+        from agentloom.exceptions import CircuitOpenError
+
+        class _FakeCB:
+            state = "OPEN"
+
+            def _maybe_transition_to_half_open(self) -> Any:
+                # Pretend the CB is closed at pre-check time so we reach
+                # the actual call (which then raises).
+                from agentloom.providers.gateway import CircuitState
+
+                return CircuitState.CLOSED
+
+            async def call(self, fn: Any, exclude: Any = None) -> Any:
+                raise CircuitOpenError("throttled")
+
+        class _First(BaseProvider):
+            name = "first"
+
+            def supports_model(self, model: str) -> bool:
+                return True
+
+            async def complete(self, messages, model, **kwargs):  # type: ignore[override]
+                raise NotImplementedError
+
+            async def embed(self, inputs, model, dimensions=None, **kwargs):  # type: ignore[override]
+                return EmbeddingResponse(
+                    embeddings=[[0.0]] * len(inputs), model=model, provider=self.name
+                )
+
+        class _Second(BaseProvider):
+            name = "second"
+
+            def supports_model(self, model: str) -> bool:
+                return True
+
+            async def complete(self, messages, model, **kwargs):  # type: ignore[override]
+                raise NotImplementedError
+
+            async def embed(self, inputs, model, dimensions=None, **kwargs):  # type: ignore[override]
+                return EmbeddingResponse(
+                    embeddings=[[9.9]] * len(inputs), model=model, provider=self.name
+                )
+
+        gw = ProviderGateway()
+        gw.register(_First(), priority=0)
+        gw.register(_Second(), priority=1)
+        # Replace the first entry's CB so ``circuit_breaker.call(...)``
+        # raises even though the pre-check passed.
+        gw._providers[0].circuit_breaker = _FakeCB()  # type: ignore[assignment]
+        r = await gw.embed(inputs=["hi"], model="x")
+        assert r.provider == "second"
