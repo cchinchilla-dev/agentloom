@@ -126,9 +126,16 @@ class SpanAttr:
     # stay clear of attribute-size limits and easy to filter in OTLP).
     PROMPT_CAPTURED_EVENT = "agentloom.prompt.captured"
 
-    # Conversation (reserved for the conversation primitive in later phases)
+    # Conversation primitive (#119). Turn / token counts ride on the
+    # per-``llm_call`` step span so a Jaeger view of a chat workflow shows
+    # both the message count and the estimated token spend at a glance.
+    # ``trimmed_messages`` records how many turns the trim policy removed
+    # or folded into the summary this turn — a value >0 correlates with a
+    # ``conversation_trims_total`` counter emission.
     CONVERSATION_TURN_COUNT = "agentloom.conversation.turn_count"
     CONVERSATION_TOKEN_COUNT = "agentloom.conversation.token_count"
+    CONVERSATION_TRIMMED_MESSAGES = "agentloom.conversation.trimmed_messages"
+    CONVERSATION_EVENT = "agentloom.conversation.turn"
 
     # Approval gate / webhook / record-replay
     APPROVAL_DECISION = "agentloom.approval_gate.decision"
@@ -194,6 +201,13 @@ class MetricName:
     # spot workflows over-paying for large vectors.
     EMBEDDING_CALLS_TOTAL = "agentloom_embedding_calls_total"
     EMBEDDING_DIMENSIONS = "agentloom_embedding_dimensions"
+
+    # Conversation primitive (#119). ``conversation_trims_total`` fires
+    # whenever a trim policy drops or summarises at least one turn;
+    # ``conversation_message_count`` records the visible-turn count after
+    # each ``llm_call`` so dashboards can plot conversation growth.
+    CONVERSATION_TRIMS_TOTAL = "agentloom_conversation_trims_total"
+    CONVERSATION_MESSAGE_COUNT = "agentloom_conversation_message_count"
 
     # Resilience gauges
     CIRCUIT_BREAKER_STATE = "agentloom_circuit_breaker_state"
