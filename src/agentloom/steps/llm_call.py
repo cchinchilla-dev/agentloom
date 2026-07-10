@@ -7,9 +7,17 @@ import json
 import logging
 import re
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from agentloom.core.models import Attachment, ResponseSchema, StepDefinition
+from agentloom.core.models import (
+    Attachment,
+    Conversation,
+    Message,
+    ResponseSchema,
+    StepDefinition,
+    ToolCallSpec,
+)
 from agentloom.core.results import PromptMetadata, StepResult, StepStatus
 from agentloom.core.templates import SafeFormatDict, build_template_vars
 from agentloom.exceptions import StepError
@@ -19,6 +27,12 @@ from agentloom.providers.multimodal import (
     ContentBlock,
     build_multimodal_content,
     resolve_attachments,
+)
+from agentloom.steps._conversation import (
+    TrimResult,
+    apply_trim_policy_async,
+    load_conversation,
+    to_provider_messages,
 )
 from agentloom.steps.base import BaseStep, StepContext
 
@@ -170,6 +184,155 @@ class LLMCallStep(BaseStep):
         return response
 
     @staticmethod
+    def _resolve_path(state: dict[str, Any], path: str) -> Any:
+        """Resolve a dotted state path, tolerating a leading ``state.``.
+
+        Workflows write ``conversation: state.chat`` for symmetry with the
+        rest of the DSL; the state manager stores under the un-prefixed
+        key ``chat``. This helper accepts both so a workflow author using
+        ``chat`` and one using ``state.chat`` both resolve to the same
+        conversation.
+        """
+        from agentloom.core.state import StateManager
+
+        key = path
+        if key.startswith("state."):
+            key = key[len("state.") :]
+        return StateManager._resolve_key(state, key, None)
+
+    @staticmethod
+    def _strip_state_prefix(path: str) -> str:
+        """Strip a leading ``state.`` from a dotted path for ``set()``."""
+        return path[len("state.") :] if path.startswith("state.") else path
+
+    @staticmethod
+    def _append_assistant_reply(
+        convo: Conversation, response: ProviderResponse, speaker: str | None = None
+    ) -> None:
+        """Persist the model's final reply + any tool decisions.
+
+        Tool-loop intermediate turns (tool_result / next assistant call)
+        are intentionally NOT stored — the conversation records the
+        semantic exchange (user turn → assistant answer) plus the tool
+        decisions the assistant made along the way, not the mechanical
+        wire-format back-and-forth. The next ``llm_call`` re-renders
+        provider-specific messages from the conversation's canonical form,
+        so intermediate turns would be redundant and would drift out of
+        sync when the wire shape evolves.
+
+        ``speaker`` tags the reply with ``Message.name`` so a multi-agent
+        conversation records which agent produced each assistant turn.
+        """
+        tool_calls = [
+            ToolCallSpec(id=tc.id, name=tc.name, arguments=tc.arguments)
+            for tc in response.tool_calls
+        ]
+        convo.messages.append(
+            Message(
+                role="assistant",
+                content=response.content or "",
+                name=speaker,
+                tool_calls=tool_calls,
+            )
+        )
+
+    async def _persist_conversation(
+        self,
+        context: StepContext,
+        step: StepDefinition,
+        conversation: Conversation,
+        trim_result: TrimResult | None,
+        response_model: str,
+    ) -> None:
+        """Serialize the conversation back to state and emit observability.
+
+        The value is stored as a plain dict (Pydantic's ``model_dump``) so
+        checkpoint round-trip stays JSON-friendly; the next ``llm_call``
+        re-validates through :class:`Conversation` at load time. Observer
+        hooks fire even when trimming was a no-op so dashboards can
+        distinguish steady-state cost from trim-hot conversations.
+        """
+        assert step.conversation is not None  # narrowed by caller
+        key = self._strip_state_prefix(step.conversation)
+        await context.state_manager.set(key, conversation.model_dump())
+
+        observer = context.observer
+        if observer is None:
+            return
+        attach = getattr(observer, "attach_step_event", None)
+        if callable(attach):
+            attrs: dict[str, Any] = {
+                SpanAttr.CONVERSATION_TURN_COUNT: len(conversation.messages),
+                SpanAttr.CONVERSATION_TOKEN_COUNT: conversation.token_count(response_model),
+            }
+            if trim_result is not None:
+                attrs[SpanAttr.CONVERSATION_TRIMMED_MESSAGES] = trim_result.trimmed_count
+            attach(step.id, SpanAttr.CONVERSATION_EVENT, attrs)
+        on_conv = getattr(observer, "on_conversation_turn", None)
+        if callable(on_conv):
+            try:
+                on_conv(
+                    step_id=step.id,
+                    conversation_key=self._strip_state_prefix(step.conversation),
+                    turn_count=len(conversation.messages),
+                    token_count=conversation.token_count(response_model),
+                    trim_policy=(trim_result.policy if trim_result else ""),
+                    trimmed_count=(trim_result.trimmed_count if trim_result else 0),
+                )
+            except Exception:  # pragma: no cover — observability best-effort
+                logger.debug("on_conversation_turn hook failed", exc_info=True)
+
+    @staticmethod
+    def _make_summarizer(
+        context: StepContext, step: StepDefinition, model: str
+    ) -> Callable[[list[Message]], Awaitable[str]]:
+        """Build the async summariser the ``summarize_oldest`` trim policy uses.
+
+        Returns a callable that renders the folded turns into a compact
+        transcript and asks the gateway for a summary — the extra LLM call
+        the issue calls for (#119). The call is deliberately cheap
+        (``max_tokens=256``, temperature 0.3) and reuses the step's own
+        model. When the gateway is missing or the call raises, the trim
+        layer catches it and falls back to a deterministic concatenation
+        so the budget contract still holds.
+        """
+
+        async def _summarize(folded: list[Message]) -> str:
+            gateway = context.provider_gateway
+            if gateway is None:
+                return ""
+            transcript_lines = []
+            for m in folded:
+                speaker = m.name or m.role
+                body = (m.content or "").strip()
+                if body:
+                    transcript_lines.append(f"{speaker}: {body}")
+            transcript = "\n".join(transcript_lines)
+            if not transcript:
+                return ""
+            summarize_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You compress conversation history. Summarize the following "
+                        "turns into a few concise sentences that preserve names, "
+                        "decisions, and open questions. Reply with the summary only."
+                    ),
+                },
+                {"role": "user", "content": transcript},
+            ]
+            resp = await gateway.complete(
+                messages=summarize_messages,
+                model=model,
+                temperature=0.3,
+                max_tokens=256,
+                step_id=f"{step.id}::summarize",
+            )
+            return (resp.content or "").strip()
+
+        return _summarize
+
+    @staticmethod
     def _build_thinking_kwargs(step: StepDefinition) -> dict[str, Any]:
         """Forward ``StepDefinition.thinking`` to the gateway as a config object.
 
@@ -273,7 +436,10 @@ class LLMCallStep(BaseStep):
         if context.provider_gateway is None:
             raise StepError(step.id, "No provider gateway configured")
 
-        if not step.prompt:
+        # A conversation-backed llm_call may omit ``prompt`` — the trailing
+        # user turn already lives in the loaded messages. Free-form calls
+        # still require it.
+        if not step.prompt and not step.conversation:
             raise StepError(step.id, "LLM call step requires a 'prompt' field")
 
         model = step.model or context.workflow_model
@@ -282,7 +448,9 @@ class LLMCallStep(BaseStep):
         template_vars = build_template_vars(state_snapshot)
 
         try:
-            rendered_prompt = step.prompt.format_map(SafeFormatDict(template_vars))
+            rendered_prompt = (
+                step.prompt.format_map(SafeFormatDict(template_vars)) if step.prompt else ""
+            )
             rendered_system = None
             if step.system_prompt:
                 rendered_system = step.system_prompt.format_map(SafeFormatDict(template_vars))
@@ -305,7 +473,8 @@ class LLMCallStep(BaseStep):
                     safe_state = _redact_state(state_snapshot, context.redaction_policy)
                     safe_vars = build_template_vars(safe_state)
                     try:
-                        captured_prompt = step.prompt.format_map(SafeFormatDict(safe_vars))
+                        if step.prompt:
+                            captured_prompt = step.prompt.format_map(SafeFormatDict(safe_vars))
                         if step.system_prompt:
                             captured_system = step.system_prompt.format_map(
                                 SafeFormatDict(safe_vars)
@@ -343,11 +512,63 @@ class LLMCallStep(BaseStep):
             except Exception as e:
                 raise StepError(step.id, f"Attachment resolution error: {e}") from e
 
+        conversation: Conversation | None = None
+        trim_result: TrimResult | None = None
+        if step.conversation:
+            try:
+                raw_convo = self._resolve_path(state_snapshot, step.conversation)
+            except (KeyError, ValueError) as e:
+                raise StepError(
+                    step.id, f"Conversation path {step.conversation!r} unreadable: {e}"
+                ) from e
+            try:
+                conversation = load_conversation(raw_convo)
+            except (TypeError, ValueError) as e:
+                raise StepError(
+                    step.id, f"Conversation at {step.conversation!r} malformed: {e}"
+                ) from e
+
         messages: list[dict[str, Any]] = []
-        if rendered_system:
-            messages.append({"role": "system", "content": rendered_system})
-        user_content = build_multimodal_content(rendered_prompt, content_blocks)
-        messages.append({"role": "user", "content": user_content})
+        if conversation is not None:
+            # System-turn handling: a single-agent conversation gets the
+            # system prompt inserted once at the head. A multi-agent
+            # conversation (``speaker`` set) re-asserts the current
+            # speaker's system prompt on THIS turn via a transient system
+            # message that is NOT persisted — otherwise agent B would
+            # inherit agent A's instructions from the shared history.
+            transient_system: dict[str, Any] | None = None
+            if rendered_system:
+                if step.speaker:
+                    transient_system = {"role": "system", "content": rendered_system}
+                elif not any(m.role == "system" for m in conversation.messages):
+                    conversation.messages.insert(0, Message(role="system", content=rendered_system))
+            if rendered_prompt:
+                conversation.messages.append(
+                    Message(role="user", content=rendered_prompt, name=step.speaker)
+                )
+            trim_result = await apply_trim_policy_async(
+                conversation,
+                model,
+                summarizer=self._make_summarizer(context, step, model),
+            )
+            messages = to_provider_messages(conversation)
+            if transient_system is not None:
+                # Re-assert the speaker's instruction at the head so the
+                # model reads it as the operative system message for this
+                # turn, ahead of the shared history + any summary prefix.
+                messages.insert(0, transient_system)
+            # Content blocks live only for THIS turn — they're not part of
+            # the persisted conversation (base64 payloads would balloon
+            # the checkpoint). Hoist them onto the trailing provider
+            # message so per-provider ``_format_messages`` picks up the
+            # ``list[ContentBlock]`` shape via ``build_multimodal_content``.
+            if content_blocks and messages:
+                messages[-1]["content"] = build_multimodal_content(rendered_prompt, content_blocks)
+        else:
+            if rendered_system:
+                messages.append({"role": "system", "content": rendered_system})
+            user_content = build_multimodal_content(rendered_prompt, content_blocks)
+            messages.append({"role": "user", "content": user_content})
 
         if context.stream:
             return await self._execute_stream(
@@ -358,6 +579,8 @@ class LLMCallStep(BaseStep):
                 start,
                 len(content_blocks),
                 rendered_prompt=rendered_prompt,
+                conversation=conversation,
+                trim_result=trim_result,
             )
 
         provider_kwargs = self._build_thinking_kwargs(step)
@@ -423,8 +646,17 @@ class LLMCallStep(BaseStep):
             value: Any = response.parsed if step.response_schema is not None else response.content
             await context.state_manager.set(step.output, value)
 
+        if conversation is not None:
+            self._append_assistant_reply(conversation, response, step.speaker)
+            await self._persist_conversation(
+                context, step, conversation, trim_result, response.model
+            )
+
         prompt_metadata = _build_prompt_metadata(
-            context.workflow_name, step.id, step.prompt, rendered_prompt
+            context.workflow_name,
+            step.id,
+            step.prompt or "",
+            rendered_prompt,
         )
         prompt_metadata.finish_reason = response.finish_reason
 
@@ -451,6 +683,8 @@ class LLMCallStep(BaseStep):
         attachment_count: int,
         *,
         rendered_prompt: str = "",
+        conversation: Conversation | None = None,
+        trim_result: TrimResult | None = None,
     ) -> StepResult:
         """Execute the LLM call in streaming mode."""
         if context.provider_gateway is None:
@@ -552,8 +786,17 @@ class LLMCallStep(BaseStep):
             value: Any = response.parsed if step.response_schema is not None else response.content
             await context.state_manager.set(step.output, value)
 
+        if conversation is not None:
+            self._append_assistant_reply(conversation, response, step.speaker)
+            await self._persist_conversation(
+                context, step, conversation, trim_result, response.model
+            )
+
         prompt_metadata = _build_prompt_metadata(
-            context.workflow_name, step.id, step.prompt, rendered_prompt
+            context.workflow_name,
+            step.id,
+            step.prompt or "",
+            rendered_prompt,
         )
         prompt_metadata.finish_reason = response.finish_reason
 
