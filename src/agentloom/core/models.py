@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from agentloom.resilience.retry import DEFAULT_RETRYABLE_STATUS_CODES
 
@@ -107,6 +107,142 @@ class ThinkingConfig(BaseModel):
     budget_tokens: int | None = None
     level: Literal["low", "medium", "high"] | None = None
     capture_reasoning: bool = True
+
+
+class ToolCallSpec(BaseModel):
+    """A tool decision persisted inside a :class:`Message`.
+
+    Structurally identical to :class:`agentloom.providers.base.ToolCall`
+    but re-declared here to avoid a circular import from ``core`` into
+    ``providers``. Conversion helpers on :class:`Message` translate to /
+    from the provider-side ``ToolCall`` when the LLM step needs to emit
+    the wire-format assistant turn.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class Message(BaseModel):
+    """A single turn inside a :class:`Conversation`.
+
+    ``role`` follows the OpenAI/Anthropic chat conventions:
+
+    - ``system``: instruction turn (usually kept as the first message and
+      never trimmed away by the built-in policies).
+    - ``user``: end-user (or simulated user) input.
+    - ``assistant``: model reply — may carry ``tool_calls`` when the model
+      picked one or more tools.
+    - ``tool``: result of a previous tool call, paired with
+      ``tool_call_id``.
+
+    ``name`` is optional and identifies the speaker for multi-agent
+    threads (e.g. ``alice`` vs ``bob``). Providers that support ``name``
+    (OpenAI, some Anthropic tool-loop shapes) forward it; providers that
+    don't drop it silently with a debug log.
+
+    ``metadata`` carries free-form turn-level annotations (timestamp,
+    agent_id, tool call index) that ride along the checkpoint but never
+    reach the provider.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str = ""
+    name: str | None = None
+    tool_call_id: str | None = None
+    tool_calls: list[ToolCallSpec] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def token_count(self, model: str = "") -> int:
+        """Rough token-count estimate for budget bookkeeping.
+
+        Not authoritative — the value is only ever used to decide whether
+        the conversation exceeds ``token_budget`` before a call, so a
+        conservative under-count is fine. The heuristic follows the same
+        1 token ≈ 4 characters approximation the OpenAI docs recommend
+        for English + light per-message overhead (role marker + name
+        marker) so single-word turns don't hash to 0 tokens. ``model`` is
+        accepted for forward compatibility with a tokenizer-backed
+        implementation but currently ignored.
+        """
+        del model
+        char_count = len(self.content)
+        for call in self.tool_calls:
+            char_count += len(call.name)
+            # Approximate JSON length of the tool arguments without paying
+            # the ``json.dumps`` cost on every trim check.
+            for key, value in call.arguments.items():
+                char_count += len(str(key)) + len(str(value)) + 4
+        overhead = 4  # role marker
+        if self.name:
+            overhead += 2 + len(self.name)
+        if self.tool_call_id:
+            overhead += 4 + len(self.tool_call_id)
+        return max(1, (char_count + 3) // 4 + overhead)
+
+
+class Conversation(BaseModel):
+    """A typed multi-turn conversation stored in workflow state.
+
+    Workflows reference a conversation by dotted state path
+    (``conversation: state.chat``) on an ``llm_call`` step. The engine
+    loads the messages, calls the provider with the full history, and
+    appends the assistant reply (plus any tool calls) back into the same
+    state key.
+
+    ``token_budget`` bounds the message list; ``trim_policy`` decides how
+    to shrink it when the budget is exceeded. When ``None``, the
+    conversation grows unbounded (checkpoint size is the effective cap).
+
+    ``summary`` is populated when the ``summarize_oldest`` policy runs,
+    so a resumed workflow can rebuild the "here's what happened earlier"
+    context without re-summarizing.
+
+    See :class:`agentloom.steps.llm_call.LLMCallStep` for how the
+    conversation is consumed at step-execute time.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    messages: list[Message] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    token_budget: int | None = Field(default=None, ge=1)
+    trim_policy: Literal["drop_oldest", "drop_pairs", "summarize_oldest"] = "drop_oldest"
+    summary: str | None = None
+
+    @field_validator("messages", mode="before")
+    @classmethod
+    def _coerce_message_dicts(cls, value: Any) -> Any:
+        """Accept plain-dict messages from YAML/checkpoint payloads.
+
+        Pydantic normally handles this via ``model_validate``, but keeping
+        the coercion explicit lets us survive minor schema drift — a
+        recording made before ``metadata`` existed still round-trips
+        without a manual migration.
+        """
+        if not isinstance(value, list):
+            return value
+        coerced: list[Any] = []
+        for entry in value:
+            if isinstance(entry, Message):
+                coerced.append(entry)
+                continue
+            if isinstance(entry, dict):
+                coerced.append({k: v for k, v in entry.items() if v is not None or k == "content"})
+                continue
+            coerced.append(entry)
+        return coerced
+
+    def token_count(self, model: str = "") -> int:
+        """Sum of per-message token estimates.
+
+        Delegates to :meth:`Message.token_count`; see there for the
+        heuristic's caveats.
+        """
+        return sum(m.token_count(model) for m in self.messages)
 
 
 class ToolDefinition(BaseModel):
@@ -275,6 +411,26 @@ class StepDefinition(BaseModel):
     # provider-specific 400s at runtime.
     inputs: str | None = None
     dimensions: int | None = Field(default=None, ge=1)
+
+    # Conversation-history primitive. ``conversation`` is a dotted state
+    # path (e.g. ``state.chat``) that resolves to a :class:`Conversation`.
+    # The step loads the messages, appends the rendered ``prompt`` as a
+    # user turn (skipped when ``prompt`` is empty and the conversation
+    # already has a trailing user message), sends the full list to the
+    # provider, and appends the assistant reply (plus any tool calls)
+    # back to the same path before persisting. When set, ``output`` is
+    # still honoured but stores the raw assistant text — the conversation
+    # itself carries the structured turn.
+    conversation: str | None = None
+    # Multi-agent speaker name. When set (only meaningful with
+    # ``conversation``), the appended user turn and the assistant reply
+    # are tagged with ``Message.name`` so a shared conversation can carry
+    # several distinct agents (OpenAI forwards ``name`` natively; the
+    # other adapters prepend ``"[<speaker>] …"`` inline). Also lets the
+    # step's ``system_prompt`` re-assert each turn — without a speaker the
+    # system turn is inserted once, but a multi-agent workflow needs each
+    # agent's own instruction on its turn.
+    speaker: str | None = None
 
     @model_validator(mode="after")
     def _validate_tools_and_response_schema_are_exclusive(self) -> StepDefinition:
