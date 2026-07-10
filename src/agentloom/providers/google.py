@@ -142,7 +142,13 @@ class GoogleProvider(BaseProvider):
     def _format_messages(
         messages: list[dict[str, Any]],
     ) -> tuple[str | None, list[dict[str, Any]]]:
-        """Convert internal messages to Gemini contents + system instruction."""
+        """Convert internal messages to Gemini contents + system instruction.
+
+        Gemini has no ``name`` field on turns — a multi-agent conversation
+        loses attribution at the wire. When ``name`` is present it is
+        prepended to the turn's leading text part as ``"[<name>] …"`` so
+        the model still sees who spoke.
+        """
         system_instruction: str | None = None
         contents: list[dict[str, Any]] = []
         for msg in messages:
@@ -159,9 +165,11 @@ class GoogleProvider(BaseProvider):
                 contents.append(msg)
                 continue
             role = "user" if msg["role"] == "user" else "model"
+            name = msg.get("name")
             content = msg.get("content", "")
             if isinstance(content, str):
-                contents.append({"role": role, "parts": [{"text": content}]})
+                text = f"[{name}] {content}" if name else content
+                contents.append({"role": role, "parts": [{"text": text}]})
             else:
                 parts: list[dict[str, Any]] = []
                 for block in content:
@@ -182,6 +190,8 @@ class GoogleProvider(BaseProvider):
                             "Google Gemini does not support URL passthrough for images. "
                             "Use fetch: local instead.",
                         )
+                if name:
+                    parts.insert(0, {"text": f"[{name}]"})
                 contents.append({"role": role, "parts": parts})
         return system_instruction, contents
 

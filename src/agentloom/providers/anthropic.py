@@ -102,7 +102,14 @@ class AnthropicProvider(BaseProvider):
     def _format_messages(
         messages: list[dict[str, Any]],
     ) -> tuple[str | None, list[dict[str, Any]]]:
-        """Extract system prompt and convert content blocks to Anthropic format."""
+        """Extract system prompt and convert content blocks to Anthropic format.
+
+        Anthropic's Messages API has no native ``name`` field on turns;
+        when a message carries one (multi-agent conversations), the
+        speaker gets prepended to the content as ``"[<name>] …"`` so the
+        model still sees who spoke instead of losing the attribution.
+        System-turn names are ignored — there is no ambiguity there.
+        """
         system_prompt: str | None = None
         formatted: list[dict[str, Any]] = []
         for msg in messages:
@@ -110,9 +117,11 @@ class AnthropicProvider(BaseProvider):
                 content = msg.get("content", "")
                 system_prompt = content if isinstance(content, str) else str(content)
                 continue
+            name = msg.get("name")
             content = msg.get("content", "")
             if isinstance(content, str):
-                formatted.append({"role": msg["role"], "content": content})
+                text = f"[{name}] {content}" if name else content
+                formatted.append({"role": msg["role"], "content": text})
             else:
                 parts: list[dict[str, Any]] = []
                 for block in content:
@@ -162,6 +171,8 @@ class AnthropicProvider(BaseProvider):
                             "anthropic",
                             "Anthropic does not support audio attachments.",
                         )
+                if name:
+                    parts.insert(0, {"type": "text", "text": f"[{name}]"})
                 formatted.append({"role": msg["role"], "content": parts})
         return system_prompt, formatted
 
