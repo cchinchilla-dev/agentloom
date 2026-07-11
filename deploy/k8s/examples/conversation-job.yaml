@@ -1,0 +1,133 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conversation-script
+  namespace: agentloom
+data:
+  validate_conversation.py: |
+    """Functional validation of the Conversation primitive (#119) in Kubernetes."""
+
+    import anyio
+
+    from agentloom.core.engine import WorkflowEngine
+    from agentloom.core.models import (
+        Conversation,
+        Message,
+        StepDefinition,
+        StepType,
+        WorkflowConfig,
+        WorkflowDefinition,
+    )
+    from agentloom.core.results import TokenUsage, WorkflowStatus
+    from agentloom.providers.base import BaseProvider, ProviderResponse
+    from agentloom.providers.gateway import ProviderGateway
+
+
+    class EchoProvider(BaseProvider):
+        name = "echo"
+        async def complete(self, messages, model, **kwargs):
+            last_user = next(
+                (m for m in reversed(messages) if m.get("role") == "user"),
+                {"content": ""},
+            )
+            return ProviderResponse(
+                content=f"echo::{last_user['content']}",
+                model=model,
+                provider="echo",
+                usage=TokenUsage(prompt_tokens=5, completion_tokens=7, total_tokens=12),
+                cost_usd=0.0,
+                finish_reason="stop",
+            )
+        def supports_model(self, model):
+            return True
+
+
+    def _wf():
+        return WorkflowDefinition(
+            name="conversation-k8s",
+            config=WorkflowConfig(provider="echo", model="mock-model"),
+            state={
+                "chat": Conversation(
+                    messages=[Message(role="system", content="Be brief.")],
+                    token_budget=800,
+                    trim_policy="drop_pairs",
+                ).model_dump()
+            },
+            steps=[
+                StepDefinition(
+                    id="alice", type=StepType.LLM_CALL,
+                    conversation="state.chat", speaker="alice",
+                    system_prompt="You are Alice.",
+                    prompt="What's a haiku?",
+                ),
+                StepDefinition(
+                    id="bob", type=StepType.LLM_CALL,
+                    depends_on=["alice"],
+                    conversation="state.chat", speaker="bob",
+                    system_prompt="You are Bob.",
+                    prompt="Give me an example.",
+                ),
+                StepDefinition(
+                    id="alice2", type=StepType.LLM_CALL,
+                    depends_on=["bob"],
+                    conversation="state.chat", speaker="alice",
+                    prompt="Now one about Kubernetes.",
+                ),
+            ],
+        )
+
+
+    async def main() -> None:
+        gw = ProviderGateway()
+        gw.register(EchoProvider(), models=["mock-model"])
+        engine = WorkflowEngine(_wf(), provider_gateway=gw)
+        result = await engine.run()
+        assert result.status == WorkflowStatus.SUCCESS, result.status
+        chat = Conversation.model_validate(result.final_state["chat"])
+        # system + 3 user + 3 assistant = 7 messages
+        assert len(chat.messages) == 7, f"expected 7 messages, got {len(chat.messages)}"
+        assert chat.messages[0].role == "system"
+        # Multi-agent: user + assistant turns carry the speaker name.
+        assert chat.messages[1].name == "alice", chat.messages[1].name
+        assert chat.messages[3].name == "bob", chat.messages[3].name
+        assert chat.messages[-1].content.startswith("echo::"), chat.messages[-1].content
+        print("[ok] conversation-k8s validation passed:")
+        for m in chat.messages:
+            speaker = m.name or "-"
+            print(f"  [{speaker}] {m.role}: {m.content[:50]}")
+
+
+    anyio.run(main)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: conversation-validation
+  namespace: agentloom
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: agentloom
+      restartPolicy: Never
+      containers:
+        - name: validator
+          image: ghcr.io/cchinchilla-dev/agentloom:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/scripts/validate_conversation.py"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: conversation-script
