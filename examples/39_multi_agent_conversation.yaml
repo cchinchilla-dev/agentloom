@@ -1,0 +1,58 @@
+name: multi-agent-conversation
+version: "1.0"
+description: |
+  Two agents (``alice`` the planner and ``bob`` the critic) exchange
+  messages in a shared conversation. Each ``llm_call`` sets a distinct
+  ``system_prompt`` for its speaker and tags the appended turn with the
+  ``Message.name`` field so downstream providers preserve attribution
+  (OpenAI natively; Anthropic / Gemini / Ollama prepend ``"[alice] …"``
+  since their APIs lack a ``name`` slot).
+
+  Runs offline against the committed recording. Fresh recording:
+
+    agentloom run examples/39_multi_agent_conversation.yaml \\
+      --provider openai --model gpt-4o-mini \\
+      --record recordings/multi_agent_conversation.json
+
+config:
+  provider: mock
+  model: mock-model
+  responses_file: recordings/multi_agent_conversation.json
+  latency_model: constant
+  latency_ms: 0
+
+state:
+  chat:
+    messages:
+      - role: system
+        content: "Alice proposes a plan; Bob critiques it in one sentence."
+    token_budget: 1200
+    trim_policy: drop_pairs
+  plan_prompt: "Propose a 3-step plan to migrate an Express API to FastAPI."
+
+steps:
+  - id: alice_proposes
+    type: llm_call
+    conversation: state.chat
+    speaker: alice                  # tags the turn with Message.name
+    system_prompt: "You are Alice, a pragmatic backend planner. Speak in bullets."
+    prompt: "{state.plan_prompt}"
+    output: plan
+
+  - id: bob_critiques
+    type: llm_call
+    depends_on: [alice_proposes]
+    conversation: state.chat
+    speaker: bob
+    system_prompt: "You are Bob, a security-focused reviewer. Reply in one sentence."
+    prompt: "Critique Alice's plan focusing on data-loss risk."
+    output: critique
+
+  - id: alice_revises
+    type: llm_call
+    depends_on: [bob_critiques]
+    conversation: state.chat
+    speaker: alice
+    system_prompt: "You are Alice, incorporating Bob's critique. Reply in bullets."
+    prompt: "Revise the plan taking Bob's critique into account."
+    output: revised_plan

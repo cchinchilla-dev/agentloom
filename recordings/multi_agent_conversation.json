@@ -1,0 +1,27 @@
+{
+  "_version": 2,
+  "alice_proposes": {
+    "content": "- audit express routes\n- port handlers to fastapi endpoints\n- run parity tests in shadow mode",
+    "model": "gpt-4o-mini",
+    "provider": "openai",
+    "usage": {"prompt_tokens": 42, "completion_tokens": 28, "total_tokens": 70},
+    "cost_usd": 0.0000112,
+    "finish_reason": "stop"
+  },
+  "bob_critiques": {
+    "content": "Skipping a live traffic-mirror phase risks silent data loss during cutover.",
+    "model": "gpt-4o-mini",
+    "provider": "openai",
+    "usage": {"prompt_tokens": 84, "completion_tokens": 20, "total_tokens": 104},
+    "cost_usd": 0.0000116,
+    "finish_reason": "stop"
+  },
+  "alice_revises": {
+    "content": "- audit express routes\n- port handlers to fastapi endpoints\n- run shadow-mode traffic mirroring for one week before cutover\n- rerun parity tests continuously",
+    "model": "gpt-4o-mini",
+    "provider": "openai",
+    "usage": {"prompt_tokens": 128, "completion_tokens": 36, "total_tokens": 164},
+    "cost_usd": 0.0000148,
+    "finish_reason": "stop"
+  }
+}
