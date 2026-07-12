@@ -174,6 +174,8 @@ Sends a prompt to an LLM and stores the response.
 | `stream` | `bool` | `null` | Override workflow-level streaming setting |
 | `attachments` | `list[Attachment]` | `[]` | Multi-modal inputs (see [Providers](providers.md#multi-modal-attachments)) |
 | `thinking` | `ThinkingConfig` | `null` | Extended-thinking / reasoning config (see [Reasoning models](providers.md#reasoning-models)) |
+| `conversation` | `string` | `null` | Dotted state path to a `Conversation` — enables multi-turn history + token-budget trimming (see [Conversation history](#conversation-history)) |
+| `speaker` | `string` | `null` | Multi-agent speaker name (only with `conversation`). Tags the turn with `Message.name` and re-asserts `system_prompt` per turn |
 | `output` | `string` | `null` | State key to store result |
 | `timeout` | `float` | `null` | Per-step timeout in seconds |
 | `depends_on` | `list[string]` | `[]` | Step IDs that must complete first |
@@ -505,6 +507,100 @@ Computes vector embeddings for a batch of text strings and writes the result to 
 The `MockProvider` serves embeddings from a recording keyed by `step_id` (with an `embeddings: list[list[float]]` field) or synthesises deterministic hash-derived pseudo-vectors when no recording matches (`--allow-default-fallback`, the default outside `agentloom replay`). Strict mode raises `RecordingMismatchError` on a miss.
 
 `agentloom_embedding_calls_total{provider, model}` counter and `agentloom_embedding_dimensions{provider, model}` histogram land on the metrics surface whenever observability is enabled.
+
+---
+
+## Conversation history
+
+Multi-turn chats and multi-agent dialogues share history across `llm_call` steps via the `conversation` primitive. A `Conversation` lives under any state key you choose; each step that references it loads the messages, appends the rendered `prompt` as the next user turn, sends the full list to the provider, and appends the assistant reply (with any `tool_calls`) back to the same key. Checkpointing serialises the full envelope so a resumed workflow picks the history up unchanged.
+
+```yaml
+state:
+  chat:
+    messages:
+      - role: system
+        content: "You are a concise assistant."
+    token_budget: 8000       # optional; unbounded when unset
+    trim_policy: drop_pairs  # drop_oldest | drop_pairs | summarize_oldest
+
+steps:
+  - id: turn_1
+    type: llm_call
+    conversation: state.chat        # NEW — dotted state ref
+    prompt: "Recommend one Python CLI library."
+    output: reply_1
+
+  - id: turn_2
+    type: llm_call
+    depends_on: [turn_1]
+    conversation: state.chat        # same key → same history
+    prompt: "Any second choice for larger apps?"
+    output: reply_2
+```
+
+The `Conversation` envelope:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `messages` | `list[Message]` | `[]` | Ordered turn list. Each entry has `role` (`system` / `user` / `assistant` / `tool`), `content`, optional `name` (multi-agent), `tool_call_id`, `tool_calls`, `metadata`. |
+| `token_budget` | `int` | `null` | Soft cap on estimated tokens. Trimming runs before the call when exceeded. `null` = unbounded (checkpoint size is the effective cap). |
+| `trim_policy` | `string` | `drop_oldest` | `drop_oldest` (remove from the head, pin system prefix), `drop_pairs` (remove oldest `user`+`assistant` pair together), `summarize_oldest` (fold oldest turns into `conversation.summary`). |
+| `summary` | `string` | `null` | Populated by `summarize_oldest`. Injected on the wire as a labelled `system` context block *after* the conversation's own system prefix (never ahead of it), so a summary can't override the real system prompt. |
+| `metadata` | `dict` | `{}` | Free-form annotations that ride along the checkpoint but never reach the provider. |
+
+**Behaviour on the `llm_call` step:**
+
+- `prompt` is optional when `conversation` is set — but then the conversation must already end on a `user` or `tool` turn the provider can answer. Ending on a `system` or `assistant` turn raises a `StepError` instead of shipping a request the model can't continue.
+- `system_prompt` is prepended once as a `system` message if none exists yet in the conversation. With a `speaker:` set (multi-agent), the system prompt is re-asserted as a transient per-turn message instead — never persisted — so each agent gets its own instruction without clobbering the shared history.
+- `speaker:` (optional) tags this step's user turn and assistant reply with `Message.name`, letting one conversation carry several distinct agents. See [multi-agent](#multi-agent-conversations) below.
+- The step's `output` still stores the raw assistant text (structured-output mode stores the parsed value); the `Conversation` carries the semantic turn.
+- Tool loops (`tools:`) run mechanically inside the step; only the final assistant text answer lands in the conversation. The tool calls and their `tool_result` turns stay out — persisting a tool-call turn without its paired result would make the next request malformed (OpenAI requires each `tool_calls` message be followed by its `role="tool"` results), so keeping only the answer is both semantically clean and replay-safe.
+- Attachments (`attachments:`) still work with a conversation — the resolved image / PDF / audio blocks ride on the current turn's provider message but are **not** persisted into the conversation (base64 payloads would balloon the checkpoint).
+- Providers translate the wire shape per API: OpenAI forwards `name` verbatim (multi-agent friendly); Anthropic, Google, and Ollama have no native `name` slot and prepend the speaker inline as `"[<name>] …"`.
+
+**`summarize_oldest` triggers an extra LLM call.** When the trim policy is `summarize_oldest` and the budget is exceeded, the step asks the same model to compress the oldest turns into a few sentences (a cheap `max_tokens=256` call keyed `<step_id>::summarize`), storing the result in `conversation.summary`. The summary rides on the next turn as a synthetic `system` prefix. If the summariser call fails, the policy degrades to a deterministic `"<speaker>: <body>"` concatenation so the budget contract still holds — the step never fails because of a summariser error.
+
+### Multi-agent conversations
+
+Set a distinct `speaker:` per step to run several agents over one shared conversation:
+
+```yaml
+state:
+  chat:
+    messages:
+      - role: system
+        content: "Alice plans; Bob critiques."
+    token_budget: 4000
+    trim_policy: drop_pairs
+
+steps:
+  - id: alice_plans
+    type: llm_call
+    conversation: state.chat
+    speaker: alice
+    system_prompt: "You are Alice, a pragmatic planner."
+    prompt: "Draft a migration plan."
+    output: plan
+
+  - id: bob_reviews
+    type: llm_call
+    depends_on: [alice_plans]
+    conversation: state.chat
+    speaker: bob
+    system_prompt: "You are Bob, a security reviewer. One sentence."
+    prompt: "Critique the plan."
+    output: critique
+```
+
+Each turn is tagged with its speaker's `Message.name`; OpenAI forwards it natively, the other providers prepend `"[alice] …"` inline. Because `speaker:` makes `system_prompt` a transient per-turn message, Bob never inherits Alice's instructions from the shared history.
+
+Observability wires a `on_conversation_turn` hook on the workflow observer that emits:
+
+- `agentloom_conversation_trims_total{policy, conversation_key}` counter — fires whenever the trim policy actually removed at least one turn.
+- `agentloom_conversation_message_count{conversation_key}` histogram — the visible-message count after each turn.
+- Span attributes `agentloom.conversation.turn_count`, `agentloom.conversation.token_count`, `agentloom.conversation.trimmed_messages` on the step span.
+
+Examples: `examples/38_chatbot_conversation.yaml` (single-user chat) and `examples/39_multi_agent_conversation.yaml` (Alice-vs-Bob dialogue).
 
 ---
 

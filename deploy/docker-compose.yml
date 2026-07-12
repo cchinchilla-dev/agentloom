@@ -25,8 +25,15 @@ services:
     env_file:
       - path: ../.env
         required: false
-    volumes:
-      - ../examples:/workflows:ro
+    # Both the ``examples/`` tree and the committed ``recordings/``
+    # fixtures live inside the image at ``/workflows`` and
+    # ``/workflows/recordings`` respectively, so the mock-provider
+    # examples run offline without extra mounts. Uncomment / edit the
+    # volumes block to point at your own workflow directory instead —
+    # e.g. ``../my-workflows:/workflows/custom:ro``.
+    #
+    # volumes:
+    #   - ../my-workflows:/workflows/custom:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     profiles: ["run"]

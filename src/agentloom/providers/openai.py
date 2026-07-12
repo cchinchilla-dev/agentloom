@@ -103,7 +103,15 @@ class OpenAIProvider(BaseProvider):
 
     @staticmethod
     def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Convert internal content blocks to OpenAI's vision/audio format."""
+        """Convert internal content blocks to OpenAI's vision/audio format.
+
+        ``name`` on a message is forwarded verbatim — OpenAI's chat
+        completions endpoint accepts ``name`` on any role for multi-agent
+        threads and rejects only characters outside ``[A-Za-z0-9_-]``.
+        The conversation primitive is expected to have already normalized
+        speaker names; anything the model would reject surfaces as a
+        request-time 400 rather than being silently stripped here.
+        """
         formatted: list[dict[str, Any]] = []
         for msg in messages:
             # Tool-loop messages (assistant with ``tool_calls``, role=``tool``
@@ -115,7 +123,7 @@ class OpenAIProvider(BaseProvider):
                 continue
             content = msg.get("content", "")
             if isinstance(content, str):
-                formatted.append({"role": msg["role"], "content": content})
+                entry: dict[str, Any] = {"role": msg["role"], "content": content}
             else:
                 parts: list[dict[str, Any]] = []
                 for block in content:
@@ -148,7 +156,10 @@ class OpenAIProvider(BaseProvider):
                             "openai",
                             "OpenAI does not support PDF attachments in chat completions.",
                         )
-                formatted.append({"role": msg["role"], "content": parts})
+                entry = {"role": msg["role"], "content": parts}
+            if msg.get("name"):
+                entry["name"] = msg["name"]
+            formatted.append(entry)
         return formatted
 
     async def complete(

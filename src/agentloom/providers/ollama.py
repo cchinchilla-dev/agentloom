@@ -117,7 +117,12 @@ class OllamaProvider(BaseProvider):
 
     @staticmethod
     def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Convert internal content blocks to Ollama's images format."""
+        """Convert internal content blocks to Ollama's images format.
+
+        Ollama's chat API has no ``name`` field. Multi-agent conversation
+        turns carry the speaker inline (``"[<name>] …"``) so the model
+        still sees who's talking; the field is silently dropped otherwise.
+        """
         formatted: list[dict[str, Any]] = []
         for msg in messages:
             # Tool-loop messages (assistant with ``tool_calls``, role=``tool``
@@ -127,9 +132,11 @@ class OllamaProvider(BaseProvider):
             if "tool_calls" in msg or msg.get("role") == "tool":
                 formatted.append(msg)
                 continue
+            name = msg.get("name")
             content = msg.get("content", "")
             if isinstance(content, str):
-                formatted.append({"role": msg["role"], "content": content})
+                text = f"[{name}] {content}" if name else content
+                formatted.append({"role": msg["role"], "content": text})
             else:
                 text_parts: list[str] = []
                 images: list[str] = []
@@ -149,10 +156,10 @@ class OllamaProvider(BaseProvider):
                             "Ollama does not support URL passthrough for images. "
                             "Use fetch: local instead.",
                         )
-                entry: dict[str, Any] = {
-                    "role": msg["role"],
-                    "content": " ".join(text_parts),
-                }
+                joined = " ".join(text_parts)
+                if name:
+                    joined = f"[{name}] {joined}" if joined else f"[{name}]"
+                entry: dict[str, Any] = {"role": msg["role"], "content": joined}
                 if images:
                     entry["images"] = images
                 formatted.append(entry)

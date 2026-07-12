@@ -361,6 +361,40 @@ class WorkflowObserver:
         if self._metrics:
             self._metrics.record_embedding_call(provider, model, dimensions)
 
+    def on_conversation_turn(
+        self,
+        *,
+        step_id: str,
+        conversation_key: str,
+        turn_count: int,
+        token_count: int,
+        trim_policy: str = "",
+        trimmed_count: int = 0,
+        **kwargs: Any,
+    ) -> None:
+        """Record a conversation turn — span attrs + metrics.
+
+        Called by :class:`agentloom.steps.llm_call.LLMCallStep` after each
+        conversation-backed ``llm_call`` completes. Fires the message-count
+        histogram and (when the trim policy actually removed a message)
+        the trims counter; also stamps the current step span with turn +
+        token counts so a Jaeger trace shows conversation growth alongside
+        the LLM call it belongs to.
+        """
+        if self._metrics:
+            self._metrics.record_conversation_turn(
+                conversation_key,
+                turn_count,
+                trim_policy=trim_policy,
+                trimmed_count=trimmed_count,
+            )
+        span = self._step_spans.get(step_id)
+        if span:
+            span.set_attribute(SpanAttr.CONVERSATION_TURN_COUNT, turn_count)
+            span.set_attribute(SpanAttr.CONVERSATION_TOKEN_COUNT, token_count)
+            if trimmed_count:
+                span.set_attribute(SpanAttr.CONVERSATION_TRIMMED_MESSAGES, trimmed_count)
+
     def on_provider_error(
         self,
         provider: str,

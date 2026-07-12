@@ -178,6 +178,18 @@ class MetricsManager:
             "agentloom_embedding_dimensions",
             description="Requested embedding vector dimensions",
         )
+        # Conversation primitive (#119). Trims counter fires per trim pass
+        # (labeled by policy + conversation state-key). Message-count
+        # histogram fires on every ``llm_call`` that touched a conversation
+        # so dashboards can plot the growth curve independently of trims.
+        self._conversation_trims_counter = meter.create_counter(
+            "agentloom_conversation_trims_total",
+            description="Total conversation trim-policy invocations",
+        )
+        self._conversation_message_histogram = meter.create_histogram(
+            "agentloom_conversation_message_count",
+            description="Visible message count after each conversation turn",
+        )
         # Canonical OTel GenAI metric — replaces the AgentLoom-prefixed
         # ``agentloom_time_to_first_token_seconds`` with the spec name.
         self._time_to_first_chunk_histogram = meter.create_histogram(
@@ -317,6 +329,17 @@ class MetricsManager:
             "Requested embedding vector dimensions",
             ["provider", "model"],
             buckets=[64, 128, 256, 384, 512, 768, 1024, 1536, 3072],
+        )
+        self._prom_counters["conversation_trims"] = prom.Counter(  # pragma: no cover
+            "agentloom_conversation_trims_total",
+            "Total conversation trim-policy invocations",
+            ["policy", "conversation_key"],
+        )
+        self._prom_histograms["conversation_message_count"] = prom.Histogram(  # pragma: no cover
+            "agentloom_conversation_message_count",
+            "Visible message count after each conversation turn",
+            ["conversation_key"],
+            buckets=[1, 2, 4, 8, 16, 32, 64, 128, 256],
         )
         self._prom_histograms["time_to_first_chunk"] = prom.Histogram(
             "gen_ai_client_operation_time_to_first_chunk_seconds",
@@ -530,6 +553,41 @@ class MetricsManager:
             self._prom_histograms["tool_call_duration"].labels(tool_name=tool_name).observe(
                 duration_s
             )
+
+    def record_conversation_turn(
+        self,
+        conversation_key: str,
+        message_count: int,
+        *,
+        trim_policy: str = "",
+        trimmed_count: int = 0,
+    ) -> None:
+        """Record a conversation turn — visible-message histogram + trim counter.
+
+        The counter fires only when the trim policy actually removed a
+        message so steady-state chats don't inflate the ``no_trim`` label
+        every turn. ``conversation_key`` is the state path (stripped of a
+        leading ``state.``) so dashboards can split growth curves by
+        conversation.
+        """
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._conversation_message_histogram.record(
+                message_count, {"conversation_key": conversation_key}
+            )
+            if trim_policy and trimmed_count > 0:
+                self._conversation_trims_counter.add(
+                    1, {"policy": trim_policy, "conversation_key": conversation_key}
+                )
+        else:  # pragma: no cover — prom fallback
+            self._prom_histograms["conversation_message_count"].labels(
+                conversation_key=conversation_key
+            ).observe(message_count)
+            if trim_policy and trimmed_count > 0:
+                self._prom_counters["conversation_trims"].labels(
+                    policy=trim_policy, conversation_key=conversation_key
+                ).inc()
 
     def record_embedding_call(self, provider: str, model: str, dimensions: int) -> None:
         """Record an embedding call and the requested vector size."""

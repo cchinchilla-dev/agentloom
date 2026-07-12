@@ -63,8 +63,12 @@ RUN groupadd --gid 1000 agentloom \
 # Stage the wheel for the install step in the child stages
 COPY --from=builder /build/dist/*.whl /tmp/
 
-# Copy example workflows so validate works out of the box
+# Copy example workflows so validate works out of the box. Recordings
+# ride alongside so the mock-provider examples (embeddings, conversation,
+# structured output) resolve their ``responses_file: recordings/…`` paths
+# against the container's WORKDIR without a runtime mount.
 COPY examples/ /workflows/
+COPY recordings/ /workflows/recordings/
 
 WORKDIR /workflows
 

@@ -1,0 +1,27 @@
+{
+  "_version": 2,
+  "turn_1": {
+    "content": "Typer is a great pick — it's built on Click and uses type hints for arg parsing.",
+    "model": "gpt-4o-mini",
+    "provider": "openai",
+    "usage": {"prompt_tokens": 28, "completion_tokens": 24, "total_tokens": 52},
+    "cost_usd": 0.0000094,
+    "finish_reason": "stop"
+  },
+  "turn_2": {
+    "content": "For larger apps, click is a solid runner-up with a wider ecosystem of plugins.",
+    "model": "gpt-4o-mini",
+    "provider": "openai",
+    "usage": {"prompt_tokens": 64, "completion_tokens": 22, "total_tokens": 86},
+    "cost_usd": 0.0000104,
+    "finish_reason": "stop"
+  },
+  "turn_3": {
+    "content": "You're welcome — happy building!",
+    "model": "gpt-4o-mini",
+    "provider": "openai",
+    "usage": {"prompt_tokens": 96, "completion_tokens": 8, "total_tokens": 104},
+    "cost_usd": 0.0000096,
+    "finish_reason": "stop"
+  }
+}

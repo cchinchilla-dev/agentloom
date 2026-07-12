@@ -11,9 +11,25 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+from pydantic import BaseModel
 
 from agentloom.core.results import StepResult, StepStatus
 from agentloom.exceptions import StateWriteError
+
+
+def _json_default(obj: Any) -> Any:
+    """JSON ``default`` that survives Pydantic models on checkpoint write.
+
+    ``json.dumps(..., default=str)`` collapsed Pydantic instances to their
+    ``repr`` (``role='user' content='hi'``) which then failed to deserialize
+    on restore. Route through ``model_dump()`` so a :class:`Conversation`
+    or :class:`Message` stored under a state key round-trips losslessly
+    across a save + load cycle.
+    """
+    if isinstance(obj, BaseModel):
+        return obj.model_dump()
+    return str(obj)
+
 
 _SEGMENT_RE = re.compile(r"^([^\[]*)((?:\[-?\d+\])*)$")
 _INDEX_RE = re.compile(r"\[(-?\d+)\]")
@@ -177,7 +193,7 @@ class StateManager:
 
         def _write(p: Path, payload: dict[str, Any]) -> None:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(json.dumps(payload, indent=2, default=str))
+            p.write_text(json.dumps(payload, indent=2, default=_json_default))
 
         await anyio.to_thread.run_sync(partial(_write, Path(path), data))
 

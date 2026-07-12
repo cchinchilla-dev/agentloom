@@ -1,0 +1,54 @@
+name: chatbot-conversation
+version: "1.0"
+description: |
+  Multi-turn chatbot that keeps state across llm_call steps via the
+  Conversation primitive (#119). Each step loads ``state.chat``, appends
+  the rendered ``prompt`` as the next user turn, calls the model, and
+  writes the assistant reply back — the checkpointer picks the whole
+  history up transparently on resume.
+
+  Runs offline against the committed recording (mock provider). Point
+  ``--provider openai --model gpt-4o-mini`` or ``--provider anthropic
+  --model claude-3-5-haiku-latest`` at the same file to exercise a real
+  API. Producing a fresh recording:
+
+    agentloom run examples/38_chatbot_conversation.yaml \\
+      --provider openai --model gpt-4o-mini \\
+      --record recordings/chatbot_conversation.json
+
+config:
+  provider: mock
+  model: mock-model
+  responses_file: recordings/chatbot_conversation.json
+  latency_model: constant
+  latency_ms: 0
+
+state:
+  chat:
+    messages:
+      - role: system
+        content: "You are a concise, cheerful assistant."
+    token_budget: 800
+    trim_policy: drop_pairs
+
+steps:
+  - id: turn_1
+    type: llm_call
+    conversation: state.chat
+    prompt: "Hi! Recommend one Python library for CLI apps."
+    system_prompt: "You are a concise, cheerful assistant."
+    output: reply_1
+
+  - id: turn_2
+    type: llm_call
+    depends_on: [turn_1]
+    conversation: state.chat
+    prompt: "Any second choice for larger apps?"
+    output: reply_2
+
+  - id: turn_3
+    type: llm_call
+    depends_on: [turn_2]
+    conversation: state.chat
+    prompt: "Great, thanks!"
+    output: reply_3

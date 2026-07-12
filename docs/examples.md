@@ -1,6 +1,6 @@
 # Examples
 
-28 example workflows covering basic patterns to production-grade pipelines. All examples run with Ollama (free, local) or any cloud provider.
+39 example workflows covering basic patterns to production-grade pipelines. All examples run with Ollama (free, local) or any cloud provider.
 
 ```bash
 # Validate any example
@@ -342,4 +342,33 @@ agentloom run examples/37_embeddings.yaml --lite
 agentloom run examples/37_embeddings.yaml --provider openai --model text-embedding-3-small
 agentloom run examples/37_embeddings.yaml --provider google --model gemini-embedding-001
 agentloom run examples/37_embeddings.yaml --provider ollama --model nomic-embed-text
+```
+
+### 38 — Chatbot conversation
+
+A three-turn chatbot that shares message history across steps via the new `conversation` primitive. Each `llm_call` loads `state.chat`, appends the rendered prompt as a user turn, calls the model, and writes the assistant reply back — the token-budget trim policy (`drop_pairs`) fires only when the running conversation exceeds `token_budget`.
+
+**Demonstrates:** `conversation: state.chat` field on `llm_call`, `token_budget` + `trim_policy: drop_pairs`, `system_prompt` auto-prepending on the first turn, checkpoint round-trip of the `Conversation` envelope.
+
+```bash
+# Mock-replay against the committed recording (no API calls)
+agentloom run examples/38_chatbot_conversation.yaml --lite
+
+# Real calls:
+agentloom run examples/38_chatbot_conversation.yaml --provider openai --model gpt-4o-mini
+agentloom run examples/38_chatbot_conversation.yaml --provider anthropic --model claude-3-5-haiku-latest
+```
+
+### 39 — Multi-agent conversation
+
+Two agents (`alice` the planner and `bob` the critic) exchange three turns in a shared `Conversation`. Each step sets its own `system_prompt` for the speaker; per-provider translation forwards `Message.name` verbatim on OpenAI and prepends `"[alice] …"` inline on Anthropic / Google / Ollama so downstream attribution is preserved regardless of provider.
+
+**Demonstrates:** multi-agent threading in one `Conversation`, distinct `system_prompt` per speaker, `Message.name` propagation across providers, `drop_pairs` trim policy scaled to a longer running dialogue.
+
+```bash
+# Mock-replay against the committed recording (no API calls)
+agentloom run examples/39_multi_agent_conversation.yaml --lite
+
+# Real calls (any provider that supports chat completions):
+agentloom run examples/39_multi_agent_conversation.yaml --provider openai --model gpt-4o-mini
 ```
