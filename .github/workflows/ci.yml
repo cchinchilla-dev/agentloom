@@ -41,11 +41,20 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group dev --all-extras
       - run: uv run pytest --cov=agentloom --cov-report=xml --cov-report=term-missing
+      # Coverage upload is informational — the test suite is the quality
+      # gate. The uploader verifies its own downloaded CLI's GPG signature,
+      # and that step has been failing persistently ("gpg: no valid OpenPGP
+      # data found" → "Can't check signature: No public key"), turning every
+      # post-merge push CI red even though all tests passed. ``fail_ci_if_error``
+      # only governs upload errors, not this binary-verification failure, so
+      # ``continue-on-error`` is what actually keeps a Codecov infra failure
+      # from blocking main. The codecov/patch status check still reports on PRs.
       - uses: codecov/codecov-action@18283e04ce6e62d37312384ff67231eb8fd56d24  # v5
         if: matrix.python-version == '3.12'
+        continue-on-error: true
         with:
           files: coverage.xml
-          fail_ci_if_error: ${{ github.event_name == 'push' }}
+          fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
