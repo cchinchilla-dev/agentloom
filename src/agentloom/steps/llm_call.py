@@ -16,7 +16,6 @@ from agentloom.core.models import (
     Message,
     ResponseSchema,
     StepDefinition,
-    ToolCallSpec,
 )
 from agentloom.core.results import PromptMetadata, StepResult, StepStatus
 from agentloom.core.templates import SafeFormatDict, build_template_vars
@@ -209,31 +208,30 @@ class LLMCallStep(BaseStep):
     def _append_assistant_reply(
         convo: Conversation, response: ProviderResponse, speaker: str | None = None
     ) -> None:
-        """Persist the model's final reply + any tool decisions.
+        """Persist the model's final text answer into the conversation.
 
-        Tool-loop intermediate turns (tool_result / next assistant call)
-        are intentionally NOT stored — the conversation records the
-        semantic exchange (user turn → assistant answer) plus the tool
-        decisions the assistant made along the way, not the mechanical
-        wire-format back-and-forth. The next ``llm_call`` re-renders
-        provider-specific messages from the conversation's canonical form,
-        so intermediate turns would be redundant and would drift out of
-        sync when the wire shape evolves.
+        Only the semantic answer is stored — NOT the tool calls made during
+        the tool loop, and NOT the intermediate ``tool_result`` turns. Two
+        reasons:
 
-        ``speaker`` tags the reply with ``Message.name`` so a multi-agent
-        conversation records which agent produced each assistant turn.
+        * **Replay safety.** An assistant turn carrying ``tool_calls`` is
+          only valid on the wire when each call is immediately followed by
+          its paired ``role="tool"`` result (OpenAI 400s otherwise). Since
+          the conversation deliberately drops the mechanical tool-result
+          turns, persisting the ``tool_calls`` alongside them would make the
+          *next* ``llm_call`` render a malformed request. Storing the final
+          answer only keeps every persisted history replayable.
+        * **Semantic thread.** The conversation records the exchange the
+          next turn actually needs — "user asked X, assistant answered Y" —
+          not the wire-format back-and-forth of how Y was produced.
+
+        A normal tool loop ends with a final response whose ``tool_calls``
+        is already empty (the model stopped calling tools and answered), so
+        this is also what happens in practice. ``speaker`` tags the reply
+        with ``Message.name`` for multi-agent attribution.
         """
-        tool_calls = [
-            ToolCallSpec(id=tc.id, name=tc.name, arguments=tc.arguments)
-            for tc in response.tool_calls
-        ]
         convo.messages.append(
-            Message(
-                role="assistant",
-                content=response.content or "",
-                name=speaker,
-                tool_calls=tool_calls,
-            )
+            Message(role="assistant", content=response.content or "", name=speaker)
         )
 
     async def _persist_conversation(
@@ -542,10 +540,31 @@ class LLMCallStep(BaseStep):
                     transient_system = {"role": "system", "content": rendered_system}
                 elif not any(m.role == "system" for m in conversation.messages):
                     conversation.messages.insert(0, Message(role="system", content=rendered_system))
-            if rendered_prompt:
+            appended_user_turn = bool(rendered_prompt)
+            if appended_user_turn:
                 conversation.messages.append(
                     Message(role="user", content=rendered_prompt, name=step.speaker)
                 )
+            else:
+                # No prompt this turn — the conversation must already end on
+                # a turn the provider can answer (a ``user`` message, or a
+                # ``tool`` result awaiting synthesis). Ending on ``system``
+                # or ``assistant`` means the model would be asked to continue
+                # after its own turn, which most providers reject. Surface a
+                # clear StepError rather than shipping a malformed request.
+                last_answerable = next(
+                    (m for m in reversed(conversation.messages) if m.role != "system"),
+                    None,
+                )
+                if last_answerable is None or last_answerable.role not in ("user", "tool"):
+                    raise StepError(
+                        step.id,
+                        "conversation-backed llm_call has no 'prompt' and the "
+                        "conversation does not end on a 'user' or 'tool' turn "
+                        "(last non-system role: "
+                        f"{last_answerable.role if last_answerable else 'none'}). "
+                        "Set 'prompt' or ensure the conversation ends with a user turn.",
+                    )
             trim_result = await apply_trim_policy_async(
                 conversation,
                 model,
@@ -558,11 +577,14 @@ class LLMCallStep(BaseStep):
                 # turn, ahead of the shared history + any summary prefix.
                 messages.insert(0, transient_system)
             # Content blocks live only for THIS turn — they're not part of
-            # the persisted conversation (base64 payloads would balloon
-            # the checkpoint). Hoist them onto the trailing provider
-            # message so per-provider ``_format_messages`` picks up the
+            # the persisted conversation (base64 payloads would balloon the
+            # checkpoint). Hoist them onto the user turn we just appended so
+            # per-provider ``_format_messages`` picks up the
             # ``list[ContentBlock]`` shape via ``build_multimodal_content``.
-            if content_blocks and messages:
+            # Guarded on ``appended_user_turn`` so we never overwrite a
+            # trailing assistant / tool message (which would drop its text
+            # and attach blocks to a non-user role).
+            if content_blocks and appended_user_turn and messages:
                 messages[-1]["content"] = build_multimodal_content(rendered_prompt, content_blocks)
         else:
             if rendered_system:

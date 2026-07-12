@@ -20,13 +20,17 @@ from agentloom.core.models import (
 )
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.results import StepStatus, TokenUsage
-from agentloom.core.state import StateManager
+from agentloom.core.state import StateManager, _json_default
 from agentloom.observability.metrics import MetricsManager
 from agentloom.observability.observer import WorkflowObserver
 from agentloom.observability.schema import SpanAttr
 from agentloom.providers.base import ProviderResponse, ToolCall
 from agentloom.providers.gateway import ProviderGateway
 from agentloom.steps._conversation import (
+    _apply_summary,
+    _drop_oldest,
+    _drop_pairs,
+    _summarize_oldest,
     apply_trim_policy,
     apply_trim_policy_async,
     load_conversation,
@@ -507,7 +511,12 @@ class TestLLMCallWithConversation:
         chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
         assert len(chat.messages) == 2
 
-    async def test_tool_calls_persist_across_turns(self) -> None:
+    async def test_tool_calls_not_persisted_replay_safe(self) -> None:
+        # Replay safety: an assistant turn carrying tool_calls is only valid
+        # on the wire when followed by its paired tool-result turns. The
+        # conversation drops those, so it must NOT persist the tool_calls
+        # either — otherwise the next llm_call would render a malformed
+        # request. Only the final text answer is stored.
         class ToolProvider(MockProvider):
             async def complete(
                 self,
@@ -517,10 +526,8 @@ class TestLLMCallWithConversation:
                 max_tokens: int | None = None,
                 **kwargs: Any,
             ) -> ProviderResponse:
-                # No follow-up: just report a tool decision and skip
-                # execution (no tool_registry configured).
                 return ProviderResponse(
-                    content="I need to call get_time.",
+                    content="It is noon UTC.",
                     model=model,
                     provider="mock",
                     usage=TokenUsage(prompt_tokens=5, completion_tokens=10, total_tokens=15),
@@ -546,7 +553,9 @@ class TestLLMCallWithConversation:
 
         chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
         assert chat.messages[-1].role == "assistant"
-        assert chat.messages[-1].tool_calls[0].name == "get_time"
+        assert chat.messages[-1].content == "It is noon UTC."
+        # tool_calls are NOT persisted (replay safety).
+        assert chat.messages[-1].tool_calls == []
 
     async def test_multi_agent_name_propagates_to_openai_payload(self) -> None:
         provider = MockProvider(responses={"who": "assistant reply"})
@@ -1181,3 +1190,336 @@ class TestStreamingConversation:
         chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
         assert chat.messages[0].name == "bob"
         assert chat.messages[1].name == "bob"
+
+
+# ---- Copilot review fixes -------------------------------------------------
+
+
+class TestSummaryPositioning:
+    def test_summary_lands_after_system_prefix(self) -> None:
+        # Copilot-2: a model-generated summary must not sit ahead of the
+        # workflow's real system prompt (it could override the instruction).
+        c = Conversation(
+            messages=[
+                Message(role="system", content="You are strict."),
+                Message(role="user", content="q1"),
+                Message(role="assistant", content="a1"),
+            ],
+            summary="earlier context",
+        )
+        wire = to_provider_messages(c)
+        assert wire[0]["role"] == "system"
+        assert wire[0]["content"] == "You are strict."  # real system prompt first
+        assert wire[1]["role"] == "system"
+        assert "earlier context" in wire[1]["content"]  # summary trails it
+        assert wire[2]["role"] == "user"
+
+    def test_summary_appended_when_all_system(self) -> None:
+        # All-system conversation with a summary → summary appended at the end.
+        c = Conversation(
+            messages=[Message(role="system", content="sys only")],
+            summary="ctx",
+        )
+        wire = to_provider_messages(c)
+        assert wire[0]["content"] == "sys only"
+        assert wire[-1]["role"] == "system"
+        assert "ctx" in wire[-1]["content"]
+
+
+class TestPromptOmittedGuard:
+    async def test_raises_when_conversation_ends_on_assistant(self) -> None:
+        from agentloom.exceptions import StepError
+
+        gw = ProviderGateway()
+        gw.register(MockProvider(), models=["mock-model"])
+        ctx = _make_context(
+            StepDefinition(id="turn", type=StepType.LLM_CALL, conversation="state.chat"),
+            state={
+                "chat": {
+                    "messages": [
+                        {"role": "user", "content": "hi"},
+                        {"role": "assistant", "content": "hello"},
+                    ]
+                }
+            },
+            gateway=gw,
+        )
+        with pytest.raises(StepError, match="does not end on a 'user' or 'tool' turn"):
+            await LLMCallStep().execute(ctx)
+
+    async def test_raises_when_conversation_empty_and_no_prompt(self) -> None:
+        from agentloom.exceptions import StepError
+
+        gw = ProviderGateway()
+        gw.register(MockProvider(), models=["mock-model"])
+        ctx = _make_context(
+            StepDefinition(id="turn", type=StepType.LLM_CALL, conversation="state.chat"),
+            state={"chat": {"messages": []}},
+            gateway=gw,
+        )
+        with pytest.raises(StepError, match="last non-system role: none"):
+            await LLMCallStep().execute(ctx)
+
+    async def test_raises_on_unreadable_conversation_path(self) -> None:
+        from agentloom.exceptions import StepError
+
+        gw = ProviderGateway()
+        gw.register(MockProvider(), models=["mock-model"])
+        # An empty path segment (``state..chat``) makes the state resolver
+        # raise ValueError, surfaced as a clear StepError rather than a crash.
+        ctx = _make_context(
+            StepDefinition(
+                id="turn", type=StepType.LLM_CALL, prompt="hi", conversation="state..chat"
+            ),
+            state={"chat": {"messages": []}},
+            gateway=gw,
+        )
+        with pytest.raises(StepError, match="unreadable"):
+            await LLMCallStep().execute(ctx)
+
+    async def test_ok_when_conversation_ends_on_tool_turn(self) -> None:
+        provider = MockProvider(responses={})
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+        ctx = _make_context(
+            StepDefinition(id="turn", type=StepType.LLM_CALL, conversation="state.chat"),
+            state={
+                "chat": {
+                    "messages": [
+                        {"role": "user", "content": "what time?"},
+                        {"role": "tool", "content": "12:00", "tool_call_id": "c1"},
+                    ]
+                }
+            },
+            gateway=gw,
+        )
+        result = await LLMCallStep().execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+
+
+class TestSingleAgentSystemInsert:
+    async def test_system_prompt_inserted_once_and_persisted(self) -> None:
+        provider = MockProvider(responses={"go": "ok"})
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+        ctx = _make_context(
+            StepDefinition(
+                id="turn",
+                type=StepType.LLM_CALL,
+                prompt="go",
+                system_prompt="You are helpful.",
+                conversation="state.chat",
+            ),
+            state={"chat": {"messages": []}},
+            gateway=gw,
+        )
+        await LLMCallStep().execute(ctx)
+        chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
+        # Single-agent: the system prompt IS persisted, exactly once, at head.
+        assert chat.messages[0].role == "system"
+        assert chat.messages[0].content == "You are helpful."
+        assert sum(1 for m in chat.messages if m.role == "system") == 1
+
+    async def test_attachments_ignored_without_user_turn(self, tmp_path: Path) -> None:
+        # prompt omitted + attachments + a conversation ending on a user turn:
+        # the attachment hoist must NOT overwrite the trailing user message.
+        png = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+            b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00"
+            b"\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        img = tmp_path / "pixel.png"
+        img.write_bytes(png)
+
+        captured: dict[str, Any] = {}
+
+        class SpyProvider(MockProvider):
+            async def complete(
+                self,
+                messages: list[dict[str, Any]],
+                model: str,
+                temperature: float | None = None,
+                max_tokens: int | None = None,
+                **kwargs: Any,
+            ) -> ProviderResponse:
+                captured["messages"] = messages
+                return await super().complete(messages, model, temperature, max_tokens, **kwargs)
+
+        provider = SpyProvider(responses={})
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+        ctx = _make_context(
+            StepDefinition(
+                id="turn",
+                type=StepType.LLM_CALL,
+                conversation="state.chat",
+                attachments=[Attachment(type="image", source=str(img), fetch="local")],
+            ),
+            state={"chat": {"messages": [{"role": "user", "content": "keep this"}]}},
+            gateway=gw,
+        )
+        result = await LLMCallStep().execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+        # The trailing user text is preserved (not overwritten by the hoist).
+        assert captured["messages"][-1]["content"] == "keep this"
+
+
+class TestObserverConversationSpan:
+    class _FakeSpan:
+        def __init__(self) -> None:
+            self.attrs: dict[str, Any] = {}
+
+        def set_attribute(self, key: str, value: Any) -> None:
+            self.attrs[key] = value
+
+        def end(self) -> None:
+            pass
+
+    class _FakeTracing:
+        def __init__(self, span: Any) -> None:
+            self._span = span
+
+        def start_span(self, name: str, attributes: dict[str, Any] | None = None) -> Any:
+            return self._span
+
+        def end_span(self, span: Any) -> None:
+            pass
+
+    def test_on_conversation_turn_stamps_span_and_metrics(self) -> None:
+        span = self._FakeSpan()
+        metrics = MetricsManager(enabled=True)
+        obs = WorkflowObserver(tracing=self._FakeTracing(span), metrics=metrics)
+        obs.on_step_start("turn", "llm_call")
+        obs.on_conversation_turn(
+            step_id="turn",
+            conversation_key="chat",
+            turn_count=4,
+            token_count=120,
+            trim_policy="drop_pairs",
+            trimmed_count=2,
+        )
+        assert span.attrs[SpanAttr.CONVERSATION_TURN_COUNT] == 4
+        assert span.attrs[SpanAttr.CONVERSATION_TOKEN_COUNT] == 120
+        assert span.attrs[SpanAttr.CONVERSATION_TRIMMED_MESSAGES] == 2
+
+    def test_on_conversation_turn_no_span_is_safe(self) -> None:
+        # No step span registered → metrics still fire, no crash.
+        obs = WorkflowObserver(tracing=None, metrics=MetricsManager(enabled=True))
+        obs.on_conversation_turn(
+            step_id="missing", conversation_key="chat", turn_count=1, token_count=1
+        )
+
+
+class TestJsonDefault:
+    def test_pydantic_model_dumped(self) -> None:
+        out = _json_default(Message(role="user", content="hi"))
+        assert out == {
+            "role": "user",
+            "content": "hi",
+            "name": None,
+            "tool_call_id": None,
+            "tool_calls": [],
+            "metadata": {},
+        }
+
+    def test_non_model_falls_back_to_str(self) -> None:
+        assert _json_default({1, 2}) in ("{1, 2}", "{2, 1}")
+
+
+class TestTokenCountOverhead:
+    def test_name_adds_overhead(self) -> None:
+        plain = Message(role="user", content="hi").token_count()
+        named = Message(role="user", content="hi", name="alice").token_count()
+        assert named > plain
+
+    def test_tool_call_id_adds_overhead(self) -> None:
+        plain = Message(role="tool", content="ok").token_count()
+        keyed = Message(role="tool", content="ok", tool_call_id="call_123").token_count()
+        assert keyed > plain
+
+
+class TestConversationCoerceEdges:
+    def test_non_list_messages_passes_through_then_fails(self) -> None:
+        with pytest.raises(ValueError):
+            Conversation.model_validate({"messages": "not-a-list"})
+
+    def test_non_dict_entry_passes_through_then_fails(self) -> None:
+        with pytest.raises(ValueError):
+            Conversation.model_validate({"messages": [123]})
+
+
+class TestAsyncSummarizeOverPinned:
+    async def test_async_folded_empty_over_pinned_prefix(self) -> None:
+        # Async path: system prefix already over budget → nothing to fold.
+        convo = Conversation(
+            messages=[Message(role="system", content="verbose " * 100)],
+            token_budget=5,
+            trim_policy="summarize_oldest",
+        )
+        result = await apply_trim_policy_async(convo, "mock-model")
+        assert result.summarized_count == 0
+        assert convo.summary is None
+
+
+class TestInternalTrimGuards:
+    # The per-policy helpers carry a defensive ``token_budget is None`` guard
+    # that ``apply_trim_policy`` normally short-circuits before reaching them.
+    # Call them directly so the guard stays covered if a future caller skips
+    # the top-level check.
+    def test_drop_oldest_budget_none_guard(self) -> None:
+        convo = Conversation(messages=[Message(role="user", content="hi")])
+        assert _drop_oldest(convo, "m").policy == "drop_oldest"
+
+    def test_drop_pairs_budget_none_guard(self) -> None:
+        convo = Conversation(messages=[Message(role="user", content="hi")])
+        assert _drop_pairs(convo, "m").policy == "drop_pairs"
+
+    def test_summarize_budget_none_guard(self) -> None:
+        convo = Conversation(messages=[Message(role="user", content="hi")])
+        assert _summarize_oldest(convo, "m", None).policy == "summarize_oldest"
+
+    def test_apply_summary_empty_folded_noop(self) -> None:
+        convo = Conversation(messages=[Message(role="user", content="hi")])
+        result = _apply_summary(convo, [], "unused")
+        assert result.trimmed_count == 0
+
+    def test_apply_trim_policy_unknown_policy_raises(self) -> None:
+        # Bypass Pydantic validation to simulate an unwired future policy.
+        convo = Conversation.model_construct(
+            messages=[Message(role="user", content="q " * 40)],
+            token_budget=5,
+            trim_policy="teleport",
+            summary=None,
+            metadata={},
+        )
+        with pytest.raises(ValueError, match="Unknown trim_policy"):
+            apply_trim_policy(convo, "mock-model")
+
+
+class TestProviderNameMultimodal:
+    def test_anthropic_prepends_name_on_multimodal(self) -> None:
+        from agentloom.providers.anthropic import AnthropicProvider
+        from agentloom.providers.multimodal import TextBlock
+
+        _, formatted = AnthropicProvider._format_messages(
+            [{"role": "user", "content": [TextBlock(text="hi")], "name": "bob"}]
+        )
+        assert formatted[0]["content"][0] == {"type": "text", "text": "[bob]"}
+
+    def test_google_prepends_name_on_multimodal(self) -> None:
+        from agentloom.providers.google import GoogleProvider
+        from agentloom.providers.multimodal import TextBlock
+
+        _, formatted = GoogleProvider._format_messages(
+            [{"role": "user", "content": [TextBlock(text="hi")], "name": "carla"}]
+        )
+        assert formatted[0]["parts"][0] == {"text": "[carla]"}
+
+    def test_ollama_prepends_name_on_multimodal(self) -> None:
+        from agentloom.providers.multimodal import TextBlock
+        from agentloom.providers.ollama import OllamaProvider
+
+        formatted = OllamaProvider._format_messages(
+            [{"role": "user", "content": [TextBlock(text="hi")], "name": "dan"}]
+        )
+        assert formatted[0]["content"].startswith("[dan]")

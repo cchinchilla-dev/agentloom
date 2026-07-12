@@ -319,14 +319,29 @@ def to_provider_messages(convo: Conversation) -> list[dict[str, Any]]:
 
     Drops ``metadata`` and other AgentLoom-only fields — they'd be
     rejected by ``validate_extra_kwargs`` on providers with strict
-    request bodies. Adds a leading ``system`` turn built from
-    ``conversation.summary`` when present so the model still sees the
-    trimmed context.
+    request bodies.
+
+    When ``conversation.summary`` is present it is injected as a ``system``
+    turn *after* the conversation's own leading system prefix, not before
+    it. The workflow's real system prompt must stay the highest-priority
+    instruction — placing a model-generated summary ahead of it would let
+    summary text (which can contain instruction-like phrasing) override
+    the operative system prompt. The summary is a clearly-labelled context
+    block that sits between the system prefix and the first non-system turn.
     """
     out: list[dict[str, Any]] = []
-    if convo.summary:
-        out.append({"role": "system", "content": f"Summary of earlier turns:\n{convo.summary}"})
+    summary_entry: dict[str, Any] | None = (
+        {"role": "system", "content": f"Summary of earlier turns:\n{convo.summary}"}
+        if convo.summary
+        else None
+    )
+    summary_inserted = summary_entry is None
     for msg in convo.messages:
+        if not summary_inserted and msg.role != "system":
+            # First non-system turn — drop the summary in ahead of it so it
+            # trails the pinned system prefix.
+            out.append(summary_entry)  # type: ignore[arg-type]
+            summary_inserted = True
         entry: dict[str, Any] = {"role": msg.role, "content": msg.content}
         if msg.name:
             entry["name"] = msg.name
@@ -335,4 +350,7 @@ def to_provider_messages(convo: Conversation) -> list[dict[str, Any]]:
         if msg.tool_calls:
             entry["tool_calls"] = [tc.model_dump() for tc in msg.tool_calls]
         out.append(entry)
+    if not summary_inserted:
+        # Conversation was empty or all-system — append the summary at the end.
+        out.append(summary_entry)  # type: ignore[arg-type]
     return out

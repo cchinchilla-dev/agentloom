@@ -545,16 +545,16 @@ The `Conversation` envelope:
 | `messages` | `list[Message]` | `[]` | Ordered turn list. Each entry has `role` (`system` / `user` / `assistant` / `tool`), `content`, optional `name` (multi-agent), `tool_call_id`, `tool_calls`, `metadata`. |
 | `token_budget` | `int` | `null` | Soft cap on estimated tokens. Trimming runs before the call when exceeded. `null` = unbounded (checkpoint size is the effective cap). |
 | `trim_policy` | `string` | `drop_oldest` | `drop_oldest` (remove from the head, pin system prefix), `drop_pairs` (remove oldest `user`+`assistant` pair together), `summarize_oldest` (fold oldest turns into `conversation.summary`). |
-| `summary` | `string` | `null` | Populated by `summarize_oldest`. Prepended to the wire as a synthetic `system` turn so the model still sees prior context. |
+| `summary` | `string` | `null` | Populated by `summarize_oldest`. Injected on the wire as a labelled `system` context block *after* the conversation's own system prefix (never ahead of it), so a summary can't override the real system prompt. |
 | `metadata` | `dict` | `{}` | Free-form annotations that ride along the checkpoint but never reach the provider. |
 
 **Behaviour on the `llm_call` step:**
 
-- `prompt` is optional when `conversation` is set — the trailing user turn may already live in `messages`.
+- `prompt` is optional when `conversation` is set — but then the conversation must already end on a `user` or `tool` turn the provider can answer. Ending on a `system` or `assistant` turn raises a `StepError` instead of shipping a request the model can't continue.
 - `system_prompt` is prepended once as a `system` message if none exists yet in the conversation. With a `speaker:` set (multi-agent), the system prompt is re-asserted as a transient per-turn message instead — never persisted — so each agent gets its own instruction without clobbering the shared history.
 - `speaker:` (optional) tags this step's user turn and assistant reply with `Message.name`, letting one conversation carry several distinct agents. See [multi-agent](#multi-agent-conversations) below.
 - The step's `output` still stores the raw assistant text (structured-output mode stores the parsed value); the `Conversation` carries the semantic turn.
-- Tool loops (`tools:`) run mechanically inside the step; only the final assistant reply plus its `tool_calls` decisions land in the conversation — intermediate `tool_result` messages stay out to keep the semantic thread clean.
+- Tool loops (`tools:`) run mechanically inside the step; only the final assistant text answer lands in the conversation. The tool calls and their `tool_result` turns stay out — persisting a tool-call turn without its paired result would make the next request malformed (OpenAI requires each `tool_calls` message be followed by its `role="tool"` results), so keeping only the answer is both semantically clean and replay-safe.
 - Attachments (`attachments:`) still work with a conversation — the resolved image / PDF / audio blocks ride on the current turn's provider message but are **not** persisted into the conversation (base64 payloads would balloon the checkpoint).
 - Providers translate the wire shape per API: OpenAI forwards `name` verbatim (multi-agent friendly); Anthropic, Google, and Ollama have no native `name` slot and prepend the speaker inline as `"[<name>] …"`.
 
