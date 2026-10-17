@@ -1,6 +1,6 @@
 """Single source of truth for OTel span, attribute, and metric names.
 
-Downstream trace consumers (AgentTest, Grafana dashboards, Jaeger plugins)
+Downstream trace consumers (AgentAnvil, Grafana dashboards, Jaeger plugins)
 parse these strings. Every span name, span attribute, and metric name used
 anywhere in the engine lives here — no raw string literals for telemetry
 keys allowed outside this module.

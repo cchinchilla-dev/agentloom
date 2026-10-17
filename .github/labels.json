@@ -13,6 +13,7 @@
   {"name": "help wanted", "color": "008672", "description": "Extra attention needed"},
   {"name": "wontfix", "color": "ffffff", "description": "This will not be worked on"},
   {"name": "duplicate", "color": "cfd3d7", "description": "Duplicate issue"},
+  {"name": "pinned", "color": "006b75", "description": "Exempt from the stale bot"},
   {"name": "ci", "color": "bfd4f2", "description": "CI/CD changes"},
   {"name": "dependencies", "color": "0366d6", "description": "Dependency updates"},
   {"name": "internal", "color": "ededed", "description": "Internal refactoring"},
