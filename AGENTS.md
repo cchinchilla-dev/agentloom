@@ -23,7 +23,7 @@ Project rules for contributors and AI coding assistants. Any assistant that read
 
 **Templates**: `str.format_map()` with `SafeFormatDict`. No Jinja2, no f-strings with user input.
 
-**Observability**: optional via `[observability]` extra. Core code never imports from `observability/` directly — use `compat.try_import()` so it degrades to noops.
+**Observability**: optional via `[observability]` extra. Code that needs the extra (OpenTelemetry, Prometheus) is reached only through `compat.try_import()`, so core degrades to noops. The dependency-free modules (`observability/schema.py`, `observability/quality.py`) may be imported directly; the engine does so to attach the quality emitter.
 
 **Tests**: `respx` for HTTP mocking, `pytest-asyncio` auto mode. Mocks over real API calls.
 
@@ -51,7 +51,7 @@ Reviews (local assistant passes during development, and automated PR review) che
 1. **Async safety** — any `asyncio.` import or raw asyncio primitive.
 2. **Types** — `Any` in public signatures; data structures that are not Pydantic models.
 3. **Provider isolation** — vendor SDK imports; providers must stay thin httpx adapters.
-4. **Observability decoupling** — core modules importing `observability/` instead of `compat.try_import()`.
+4. **Observability decoupling** — core modules importing code that needs the `[observability]` extra without `compat.try_import()` (the dependency-free `schema` and `quality` modules are fine).
 5. **Template safety** — Jinja2 or f-strings over user input instead of `SafeFormatDict`.
 6. **Tests** — real network calls, sleeps used for synchronisation, assertions that cannot fail.
 7. **Public API changes** without a `CHANGELOG.md` entry; version bumps that skip one of `pyproject.toml` / `CHANGELOG.md` / `__version__`.
