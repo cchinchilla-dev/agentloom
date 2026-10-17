@@ -22,7 +22,7 @@ So the commit message prefix (`bump version to`) is load-bearing. Don't paraphra
    - Read current from `pyproject.toml` and `src/agentloom/__init__.py`.
    - Compute new version per semver.
 
-2. **Roadmap validation** — if a planning issue exists for this version, validate it's complete:
+2. **Roadmap validation** — if a planning issue exists for this version (see the `roadmap` skill), validate it's complete:
 
    ```bash
    ROADMAP=$(gh issue list --label release --search "ship <X.Y.Z> in:title" --state all --json number -q '.[0].number')

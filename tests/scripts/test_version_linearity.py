@@ -143,3 +143,11 @@ def test_version_linearity_passes_when_init_version_matches(tmp_path: Path, scri
     _write_package(tmp_path, version="1.2.3", init_version="1.2.3")
     code, _ = script.check(tmp_path)
     assert code == 0
+
+
+def test_version_linearity_fails_when_named_package_has_no_version(tmp_path: Path, script) -> None:
+    _write_package(tmp_path, version="1.2.3", init_version="1.2.3")
+    (tmp_path / "src" / "pkg" / "__init__.py").write_text('"""No version here."""\n')
+    code, message = script.check(tmp_path)
+    assert code == 1
+    assert "src/pkg/__init__.py has no __version__" in message

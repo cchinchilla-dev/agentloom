@@ -21,16 +21,17 @@ def latest_changelog_version(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def package_version(root: Path, project: dict[str, object]) -> tuple[str, str] | None:
-    """Return (path, version) for `__version__` in src/<name>/__init__.py, or None if absent."""
+def package_version(root: Path, project: dict[str, object]) -> tuple[str, str | None] | None:
+    """Return (path, `__version__`) of src/<name>/__init__.py; None if [project].name is unset."""
     name = project.get("name")
     if not isinstance(name, str):
         return None
     init = root / "src" / name.replace("-", "_") / "__init__.py"
+    path = init.relative_to(root).as_posix()
     if not init.exists():
-        return None
+        return path, None
     match = INIT_VERSION_RE.search(init.read_text())
-    return (init.relative_to(root).as_posix(), match.group(1)) if match else None
+    return path, match.group(1) if match else None
 
 
 def check(root: Path) -> tuple[int, str]:
@@ -57,8 +58,12 @@ def check(root: Path) -> tuple[int, str]:
     if declared != latest:
         return 1, f"version mismatch: pyproject.toml={declared} vs CHANGELOG.md={latest}"
     init = package_version(root, project)
-    if init is not None and init[1] != declared:
-        return 1, f"version mismatch: pyproject.toml={declared} vs {init[0]}={init[1]}"
+    if init is not None:
+        path, version = init
+        if version is None:
+            return 1, f"{path} has no __version__ assignment"
+        if version != declared:
+            return 1, f"version mismatch: pyproject.toml={declared} vs {path}={version}"
     return 0, f"version-linearity OK: {declared}"
 
 
