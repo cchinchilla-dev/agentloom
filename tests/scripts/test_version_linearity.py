@@ -123,3 +123,23 @@ def test_check_against_real_repo_passes() -> None:
     module = _load_script()
     code, message = module.check(repo_root)
     assert code == 0, message
+
+
+def _write_package(tmp_path: Path, *, version: str, init_version: str) -> None:
+    (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "pkg"\nversion = "{version}"\n')
+    (tmp_path / "CHANGELOG.md").write_text(f"## [{version}] - 2026-10-17\n")
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "src" / "pkg" / "__init__.py").write_text(f'__version__ = "{init_version}"\n')
+
+
+def test_version_linearity_fails_when_init_version_drifts(tmp_path: Path, script) -> None:
+    _write_package(tmp_path, version="1.2.3", init_version="1.2.2")
+    code, message = script.check(tmp_path)
+    assert code == 1
+    assert "src/pkg/__init__.py=1.2.2" in message
+
+
+def test_version_linearity_passes_when_init_version_matches(tmp_path: Path, script) -> None:
+    _write_package(tmp_path, version="1.2.3", init_version="1.2.3")
+    code, _ = script.check(tmp_path)
+    assert code == 0

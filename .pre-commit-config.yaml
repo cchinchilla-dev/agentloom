@@ -1,7 +1,23 @@
+# Local hooks run the tools pinned in uv.lock, so a commit is checked exactly like CI.
+# `system` instead of `unsupported` keeps pre-commit 3.x (the pyproject minimum) working.
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.4.8
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix]
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        files: ^(src|tests)/  # same paths CI checks
       - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        files: ^(src|tests)/  # same paths CI checks
+      - id: version-linearity
+        name: version linearity (pyproject.toml, CHANGELOG.md, __version__)
+        entry: uv run python scripts/check_version_linearity.py
+        language: system
+        files: ^(pyproject\.toml|CHANGELOG\.md|src/[^/]+/__init__\.py)$
+        pass_filenames: false

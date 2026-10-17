@@ -1,6 +1,6 @@
 # Examples
 
-39 example workflows covering basic patterns to production-grade pipelines. All examples run with Ollama (free, local) or any cloud provider.
+37 example workflows, numbered 01–39, covering basic patterns to production-grade pipelines. Most run with Ollama (free, local) or any cloud provider; the multi-modal ones need a provider that supports the attachment type, examples 35–39 run offline against recordings committed under `recordings/`, and 31–32 replay a recording you capture first.
 
 ```bash
 # Validate any example
@@ -264,6 +264,32 @@ agentloom runs
 agentloom resume <run_id> --lite
 ```
 
+## Human-in-the-loop
+
+### 29 — Approval Gate
+
+Drafts an email, pauses at an `approval_gate` until a human decides, then finishes according to the decision. A timeout with `on_timeout: reject` lets the callback server close stale approvals.
+
+**Demonstrates:** `approval_gate`, `agentloom runs`, `agentloom resume --approve` / `--reject`.
+
+```bash
+agentloom run examples/29_approval_gate.yaml --checkpoint -s topic="project update"
+agentloom runs                          # status: paused
+agentloom resume <run_id> --approve     # or --reject
+```
+
+### 30 — Approval Gate with Webhook
+
+Same flow with a `notify` webhook: when the gate pauses, a POST goes to the configured URL so Slack, CI, or a dashboard can act on it. The default URL points at a local `agentloom callback-server`.
+
+**Demonstrates:** `notify`, `agentloom callback-server`.
+
+```bash
+agentloom callback-server --port 8642 &
+agentloom run examples/30_approval_gate_webhook.yaml --checkpoint
+curl -X POST http://localhost:8642/approve/<run_id>
+```
+
 ## Testing & Replay
 
 ### 31 — Record and Replay
@@ -297,6 +323,9 @@ agentloom run examples/32_yaml_mock.yaml --lite
 ```
 
 ## Tool calling
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
 
 ### 35 — Native tool/function calling
 
@@ -356,7 +385,7 @@ agentloom run examples/38_chatbot_conversation.yaml --lite
 
 # Real calls:
 agentloom run examples/38_chatbot_conversation.yaml --provider openai --model gpt-4o-mini
-agentloom run examples/38_chatbot_conversation.yaml --provider anthropic --model claude-3-5-haiku-latest
+agentloom run examples/38_chatbot_conversation.yaml --provider anthropic --model claude-haiku-4-5-20251001
 ```
 
 ### 39 — Multi-agent conversation

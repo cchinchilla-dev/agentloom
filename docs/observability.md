@@ -198,6 +198,9 @@ AgentLoom-specific counters live alongside the canonical OTel GenAI client histo
 
 ## Span schema
 
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+
 AgentLoom emits a three-level span hierarchy: **workflow → step → provider call** (and **tool call** when a step invokes a registered tool). Every span / attribute / metric name is centralised in `agentloom.observability.schema` so downstream consumers (Grafana dashboards, AgentAnvil, Jaeger plugins) parse a stable contract.
 
 ### Hierarchy
@@ -276,6 +279,9 @@ AgentLoom's internal provider names map to the canonical OTel registry values: `
 
 ### Quality annotations
 
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+
 Workflow spans capture latency, tokens, and cost — but not output *correctness*. The `WorkflowResult.annotate()` API attaches post-hoc quality scores so evaluators or human reviewers can correlate execution performance with output quality.
 
 ```python
@@ -299,6 +305,9 @@ The workflow span is already closed by the time `result.annotate()` runs, so ret
 In Grafana / Jaeger, a query like `workflow.run_id="<id>" AND name=~"quality:.*"` lists every annotation attached to a run; `agentloom.quality.score < 3` surfaces low-quality outputs across runs to diagnose regressions.
 
 ### Per-run history records
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
 
 The engine writes a JSON record to `./agentloom_runs/<run_id>.json` after every workflow execution (success or failure). Records are intentionally small and self-contained so post-hoc debugging never requires replaying the workflow:
 

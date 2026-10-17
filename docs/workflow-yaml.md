@@ -116,6 +116,9 @@ Templates render `tool` step args through the same renderer as `prompt` fields, 
 
 ### `state_schema` — per-key redaction
 
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+
 Sensitive state values can be flagged so they never land in a checkpoint, webhook body, or trace span. The plaintext stays in memory so the active workflow can still use it.
 
 ```yaml
@@ -182,6 +185,9 @@ Sends a prompt to an LLM and stores the response.
 
 **Thinking config:**
 
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | `bool` | `false` | Activate provider-side reasoning |
@@ -215,6 +221,9 @@ Reasoning tokens are billed at the output rate. `TokenUsage.reasoning_tokens` an
 
 **Tool calling:**
 
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+
 The model can pick tools at runtime. Declare them on the step; the engine dispatches via the workflow's `ToolRegistry`, feeds results back, and re-prompts until the model stops asking for tools.
 
 ```yaml
@@ -245,6 +254,9 @@ The dispatched tool runs through the existing sandbox (#105), so `http_request`,
 The legacy `tool` step (static DAG node, author chooses the tool) keeps working unchanged — `tools=` on `llm_call` is the new dynamic, model-driven path.
 
 **Structured output:**
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
 
 `response_schema` constrains the model's reply to a known JSON shape and parses it before writing to state. The step uses the provider's native structured-output API where one exists (OpenAI strict `response_format`, Google `responseSchema`, Ollama `format`) and falls back to prefill + client-side validation on providers that don't (Anthropic). On a validation failure the step retries within the existing `retry.max_retries` budget, appending the previous bad response plus the validator's error to the next turn so the model can fix its own output without restarting the workflow.
 
@@ -475,7 +487,38 @@ A `subworkflow` containing an `approval_gate` pauses the parent at a fully-quali
 
 Step ids inside `workflow_inline.steps` (or in a workflow referenced via `workflow_path`) live in the child's own namespace — a parent can have `id: classify` and the child can also have `id: classify` without collision. Duplicate-id validation is therefore *lazy*: the parent parse only checks its own top-level steps, and duplicates inside the child are caught when `SubworkflowStep` executes and re-parses the inline definition (raising `Invalid inline subworkflow: ... Duplicate step ids`). For workflows where you want eager validation of the entire nested tree, run `agentloom validate` on the child file separately before referencing it.
 
+### `approval_gate`
+
+Pauses the workflow until a human approves or rejects. The run is checkpointed at the gate and resumed with the decision, which the step writes to `output` as `"approved"` or `"rejected"`.
+
+```yaml
+- id: approve
+  type: approval_gate
+  depends_on: [draft]
+  output: decision                 # "approved" | "rejected"
+  timeout_seconds: 3600            # optional, enforced by the callback server
+  on_timeout: reject               # optional: approve | reject
+  notify:                          # optional webhook sent when the gate pauses
+    url: "https://hooks.example.com/agentloom"
+    headers: {X-Source: agentloom}  # optional, sent as-is
+    body_template: null            # optional JSON body template (see below)
+    timeout: 30.0
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `timeout_seconds` | `int` | `null` | Seconds before `on_timeout` applies. Enforced by `agentloom callback-server`, not by the engine |
+| `on_timeout` | `approve \| reject` | `null` | Automatic decision when the timeout expires |
+| `notify` | `WebhookConfig` | `null` | POST sent before pausing so Slack, CI, or a dashboard can act on the pending approval |
+
+`body_template` is rendered with the workflow state plus `run_id`, `step_id`, and `workflow_name`, after the workflow's redaction policy is applied; literal braces in a JSON body must be written as `{{` / `}}`. Without a template the webhook sends a default JSON payload.
+
+The run must be checkpointed (`agentloom run --checkpoint`). Resume it from the CLI with `agentloom resume <run_id> --approve` (or `--reject`), or over HTTP through the [callback server](deployment.md#approval-callback-server). `notify.url` goes through the workflow [sandbox](#sandbox) like any other network call. Examples [29](examples.md#29-approval-gate) and [30](examples.md#30-approval-gate-with-webhook) show both paths.
+
 ### `embed`
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
 
 Computes vector embeddings for a batch of text strings and writes the result to state. Rides the same fallback chain / circuit breaker / rate limiter as `llm_call`, and a provider that raises `NotImplementedError` (Anthropic) is skipped cleanly — no CB penalty, no retry budget consumed.
 
@@ -511,6 +554,9 @@ The `MockProvider` serves embeddings from a recording keyed by `step_id` (with a
 ---
 
 ## Conversation history
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
 
 Multi-turn chats and multi-agent dialogues share history across `llm_call` steps via the `conversation` primitive. A `Conversation` lives under any state key you choose; each step that references it loads the messages, appends the rendered `prompt` as the next user turn, sends the full list to the provider, and appends the assistant reply (with any `tool_calls`) back to the same key. Checkpointing serialises the full envelope so a resumed workflow picks the history up unchanged.
 

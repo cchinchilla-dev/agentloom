@@ -9,7 +9,7 @@ description: |
 
   Runs offline against the committed recording (mock provider). Point
   ``--provider openai --model gpt-4o-mini`` or ``--provider anthropic
-  --model claude-3-5-haiku-latest`` at the same file to exercise a real
+  --model claude-haiku-4-5-20251001`` at the same file to exercise a real
   API. Producing a fresh recording:
 
     agentloom run examples/38_chatbot_conversation.yaml \\

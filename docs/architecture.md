@@ -18,6 +18,9 @@ AgentLoom is a **deterministic workflow orchestrator** — not an autonomous age
 |  +--------+ +---------+ +------+ +------------+     |
 |  |LLM Call| |Tool Exec| |Router| | Subworkflow|     |
 |  +--------+ +---------+ +------+ +------------+     |
+|  +---------------+ +-------+                        |
+|  | Approval Gate | | Embed |                        |
+|  +---------------+ +-------+                        |
 +-----------------------------------------------------+
 |                  Provider Gateway                   |
 |  +-----------------------------------------------+  |
@@ -132,6 +135,9 @@ The gateway routes requests based on model name and manages resilience:
 See [Providers](providers.md) for provider-specific details.
 
 ## Collaborator protocols
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
 
 The engine talks to its collaborators (state manager, provider gateway, tool registry, observer, checkpointer, stream callback) through `typing.Protocol` shapes declared in `core/protocols.py` rather than concrete classes:
 

@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+
+{# The site is built from main: flag that it runs ahead of the PyPI release. Remove once 0.5.0 ships. #}
+{% block announce %}
+These docs track <code>main</code>, which includes the unreleased 0.5.0. <code>pip install agentloom</code> installs 0.4.0; sections marked <strong>New in 0.5.0</strong> are not in it yet.
+{% endblock %}
