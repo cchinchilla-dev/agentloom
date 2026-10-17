@@ -1,8 +1,6 @@
 name: E2E — Ollama
 
 on:
-  schedule:
-    - cron: "30 4 * * 1"  # Weekly, Monday 04:30 UTC
   push:
     branches: ["release/**"]
   pull_request:

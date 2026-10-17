@@ -198,7 +198,7 @@ AgentLoom-specific counters live alongside the canonical OTel GenAI client histo
 
 ## Span schema
 
-AgentLoom emits a three-level span hierarchy: **workflow → step → provider call** (and **tool call** when a step invokes a registered tool). Every span / attribute / metric name is centralised in `agentloom.observability.schema` so downstream consumers (Grafana dashboards, AgentTest, Jaeger plugins) parse a stable contract.
+AgentLoom emits a three-level span hierarchy: **workflow → step → provider call** (and **tool call** when a step invokes a registered tool). Every span / attribute / metric name is centralised in `agentloom.observability.schema` so downstream consumers (Grafana dashboards, AgentAnvil, Jaeger plugins) parse a stable contract.
 
 ### Hierarchy
 

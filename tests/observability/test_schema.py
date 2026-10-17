@@ -1,6 +1,6 @@
 """Regression tests for the centralized OTel schema module.
 
-These pin the public string values so downstream consumers (AgentTest,
+These pin the public string values so downstream consumers (AgentAnvil,
 Grafana dashboards) can depend on them. A rename here should be a
 deliberate, reviewed change — not an accidental edit to a comment.
 """

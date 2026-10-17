@@ -10,18 +10,20 @@ permissions:
 
 jobs:
   stale:
-    name: Close stale issues
+    name: Close stale questions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/stale@b5d41d4e1d5dceea10e7104786b73624c18a190f  # v10
         with:
-          days-before-issue-stale: 60
-          days-before-issue-close: 14
+          # Only issues waiting on the reporter; roadmap and backlog issues are never touched
+          only-issue-labels: "question"
+          days-before-issue-stale: 30
+          days-before-issue-close: 7
           stale-issue-label: stale
           stale-issue-message: >
-            This issue has been automatically marked as stale because it has not had
-            activity in the last 60 days. It will be closed in 14 days if no further
-            activity occurs.
-          close-issue-message: Closed due to inactivity.
+            This question has been automatically marked as stale because it has had no
+            activity in the last 30 days while waiting for more information. It will be
+            closed in 7 days if no further activity occurs.
+          close-issue-message: Closed because the requested information was not provided. Feel free to reopen with the details.
           days-before-pr-stale: -1
           exempt-issue-labels: "pinned,help wanted,good first issue"
