@@ -12,7 +12,7 @@ Releases go through a **pull request**, same as any other change. No direct push
 CI does the tagging and publishing once the PR merges:
 
 - `.github/workflows/auto-tag.yml` watches `main` for commits whose message starts with `bump version to` → reads the version from `pyproject.toml` and pushes `v<X.Y.Z>`.
-- `.github/workflows/release.yml` runs when Auto Tag completes (`workflow_run`), not on the tag push: a tag pushed with the workflow's `GITHUB_TOKEN` does not trigger other workflows. It resolves the tag, builds the wheel, creates a GitHub Release with auto-generated notes, and publishes to PyPI via OIDC. `workflow_dispatch` is the manual fallback; it releases the `v*` tag at the head of the dispatched ref, or the nearest earlier one, so always dispatch it on `main`.
+- `.github/workflows/release.yml` runs when Auto Tag completes (`workflow_run`), not on the tag push: a tag pushed with the workflow's `GITHUB_TOKEN` does not trigger other workflows. It resolves the tag, builds the wheel, creates a GitHub Release with auto-generated notes, and publishes to PyPI via OIDC. `workflow_dispatch` is the manual fallback. Dispatched on a tag ref, it releases exactly that tag; dispatched on a branch, it falls back to the nearest `v*` tag, which may not be the one that failed.
 
 So the commit message prefix (`bump version to`) is load-bearing. Don't paraphrase it.
 
@@ -22,7 +22,7 @@ So the commit message prefix (`bump version to`) is load-bearing. Don't paraphra
    - Read current from `pyproject.toml` and `src/agentloom/__init__.py`.
    - Compute new version per semver.
 
-2. **Roadmap validation** — if a planning issue exists for this version, validate it's complete:
+2. **Roadmap validation** — if a planning issue exists for this version (see the `roadmap` skill), validate it's complete:
 
    ```bash
    ROADMAP=$(gh issue list --label release --search "ship <X.Y.Z> in:title" --state all --json number -q '.[0].number')
@@ -68,4 +68,4 @@ So the commit message prefix (`bump version to`) is load-bearing. Don't paraphra
 
    Pushing `release/<X.Y.Z>` also starts the e2e Ollama workflow. It is not a required check; read its result before merging.
 
-9. **Post-release** — report PR URL, tag, GitHub Release URL, and PyPI job status. If Auto Tag or Release fails, inspect with the `ci-status` skill first. If the tag exists but Release did not run, or failed before publishing, re-run it with `gh workflow run release.yml --ref main` (ask authorization first). Never move, delete or recreate tags by hand. If a roadmap issue was referenced, confirm it closed automatically via the `Closes #NNN` in the merged PR.
+9. **Post-release** — report PR URL, tag, GitHub Release URL, and PyPI job status. If Auto Tag or Release fails, inspect with the `ci-status` skill first. If the tag exists but Release did not run, or failed before publishing, re-run it on that tag with `gh workflow run release.yml --ref v<X.Y.Z>` (ask authorization first). Never move, delete or recreate tags by hand. If a roadmap issue was referenced, confirm it closed automatically via the `Closes #NNN` in the merged PR.
