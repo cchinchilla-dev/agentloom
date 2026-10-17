@@ -1,0 +1,81 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Light pass on pull requests: the deep review happens during development (see CONTRIBUTING.md).
+# Correctness, security and repo rules only; CI already runs ruff, mypy and pytest.
+# Only non-default keys are set. Review rules come from AGENTS.md, which CodeRabbit reads by default.
+tone_instructions: >-
+  Be brief and concrete. Comment only on bugs, security problems, broken contracts or
+  violations of the Review guidelines in AGENTS.md. Skip formatting and lint nits.
+
+reviews:
+  high_level_summary: false
+  in_progress_fortune: false
+  enable_prompt_for_ai_agents: false
+  changed_files_summary: false
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  related_issues: false
+  related_prs: false
+  suggested_labels: false # labels come from pr-labeler.yml
+  suggested_reviewers: false
+  path_filters:
+    - "!uv.lock"
+    - "!recordings/**"
+    - "!docs/images/**"
+  path_instructions:
+    - path: ".github/workflows/**"
+      instructions: >-
+        Third-party actions must be pinned to a full commit SHA with a version comment, permissions
+        must be least-privilege, and pull_request_target must never check out pull request code.
+    - path: "deploy/**"
+      instructions: >-
+        Kubernetes manifests must keep the restricted Pod Security Standard (non-root, read-only
+        root filesystem, no privilege escalation) and pin images by digest.
+    - path: "{pyproject.toml,CHANGELOG.md,src/*/__init__.py}"
+      instructions: >-
+        A version bump must change pyproject.toml, the top CHANGELOG.md entry and __version__
+        together (the version-linearity CI job fails otherwise).
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: "off"
+  tools:
+    ruff:
+      enabled: false
+    pylint:
+      enabled: false
+    flake8:
+      enabled: false
+    markdownlint:
+      enabled: false
+    languagetool:
+      enabled: false
+    yamllint:
+      enabled: false
+  finishing_touches: # no bot commits on contributor or maintainer branches
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+
+knowledge_base:
+  learnings:
+    scope: local
+  issues:
+    scope: local
+
+issue_enrichment: # issues are triaged by the maintainer, not by a bot
+  planning:
+    enabled: false
+    auto_planning:
+      enabled: false

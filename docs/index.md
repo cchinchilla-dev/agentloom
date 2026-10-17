@@ -98,7 +98,7 @@ steps:
 
     ```bash
     export ANTHROPIC_API_KEY=sk-ant-...
-    agentloom run my_workflow.yaml --provider anthropic --model claude-sonnet-4-20250514
+    agentloom run my_workflow.yaml --provider anthropic --model claude-sonnet-4-6
     ```
 
 === "Google"
@@ -123,8 +123,10 @@ agentloom visualize my_workflow.yaml   # render the DAG
 | [Providers](providers.md) | Supported providers, models, and multi-modal capabilities |
 | [Workflow YAML](workflow-yaml.md) | Full reference for step types, config, routing, and attachments |
 | [Python DSL](python-dsl.md) | Build workflows programmatically |
+| [CLI reference](cli.md) | Every `agentloom` command and option |
 | [Graph API](graph-api.md) | Analyze, visualize, and export workflow DAGs |
+| [Testing & Replay](testing-and-replay.md) | Record real runs and replay them offline, deterministically |
 | [Observability](observability.md) | Traces, metrics, and Grafana dashboards |
-| [Examples](examples.md) | 27 example workflows from basic to production-grade |
+| [Examples](examples.md) | 37 example workflows from basic to production-grade |
 | [Deployment](deployment.md) | Docker, Kubernetes, Helm, Terraform, and ArgoCD |
 | [Changelog](changelog.md) | Version history and release notes |

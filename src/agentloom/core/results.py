@@ -143,7 +143,7 @@ class WorkflowResult(BaseModel):
     # ``PrivateAttr`` excludes it from serialization so ``model_dump()`` /
     # JSON output stays a pure data snapshot, and the indirection keeps
     # ``core/results.py`` free of any ``observability/`` import (per the
-    # ``CLAUDE.md`` layering rule — "core code never imports from
+    # ``AGENTS.md`` layering rule — "core code never imports from
     # observability/ directly"). When set, ``annotate()`` invokes the
     # emitter so the issue #59 contract — "metadata exported as OTel span
     # attributes, visible in Jaeger" — holds without the caller threading

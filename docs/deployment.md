@@ -224,12 +224,13 @@ curl -X POST -H "X-AgentLoom-Token: $CALLBACK_SECRET" http://host:8642/approve/<
 |----------|---------|--------------|
 | `ci.yml` | Push / PR to `main` | Lint, type check, test, Docker build, K8s validation, Helm lint |
 | `docker.yml` | Push to `main` / tags `v*` | Build multi-arch image, push to GHCR |
-| `release.yml` | Tags `v*` | Build wheel, GitHub release, publish to PyPI |
-| `docs.yml` | Push to `main` (docs/mkdocs.yml) | Build and deploy documentation to GitHub Pages |
-| `e2e-ollama.yml` | Weekly / `release/**` / `e2e` label | Ollama integration tests against live Docker instance |
+| `auto-tag.yml` | Push to `main` | Tag `vX.Y.Z` when the commit is a `bump version to X.Y.Z` release |
+| `release.yml` | Tags `v*` / after Auto Tag | Build wheel, GitHub release, publish to PyPI |
+| `docs.yml` | Push to `main` (docs, mkdocs.yml, overrides, CHANGELOG, CONTRIBUTING) | Build and deploy documentation to GitHub Pages |
+| `e2e-ollama.yml` | `release/**` / `e2e` label / manual | Ollama integration tests against live Docker instance |
 | `pr-labeler.yml` | PR opened/updated | Auto-label PRs based on file paths |
 | `labels.yml` | Push to `main` (labels.json) | Sync GitHub labels from config |
-| `stale.yml` | Weekly (Monday 9am UTC) | Mark/close stale issues |
+| `stale.yml` | Weekly (Monday 9am UTC) | Close unanswered `question` issues |
 
 ### Image tags
 

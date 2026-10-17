@@ -1,45 +1,42 @@
 {
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
   "permissions": {
     "allow": [
       "Bash(uv run pytest*)",
       "Bash(uv run ruff*)",
       "Bash(uv run mypy*)",
       "Bash(uv run agentloom*)",
+      "Bash(uv run python scripts/check_version_linearity.py)",
+      "Bash(uv lock --check)",
+      "Bash(make check)",
       "Bash(git status*)",
       "Bash(git diff*)",
       "Bash(git log*)",
       "Bash(git add*)",
+      "Bash(gh pr view*)",
+      "Bash(gh pr list*)",
+      "Bash(gh pr diff*)",
+      "Bash(gh pr checks*)",
+      "Bash(gh issue view*)",
+      "Bash(gh issue list*)",
+      "Bash(gh label list*)",
+      "Bash(gh run list*)",
+      "Bash(gh run view*)",
+      "Bash(gh run watch*)"
+    ],
+    "ask": [
       "Bash(git commit*)",
-      "Bash(gh pr *)",
-      "Bash(gh issue *)",
-      "Bash(gh run *)"
+      "Bash(gh pr create*)",
+      "Bash(gh issue create*)"
     ],
     "deny": [
-      "Bash(rm -rf /)",
-      "Bash(git push --force*)",
+      "Bash(git push --force)",
+      "Bash(git push --force *)",
+      "Bash(git push -f*)",
       "Bash(git reset --hard*)"
     ]
-  },
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "file=$(echo $TOOL_INPUT | jq -r '.file_path // empty') && [ -n \"$file\" ] && [[ \"$file\" == *.py ]] && cd /Users/Admin/Workspace/agentloom && uv run ruff format \"$file\" 2>/dev/null; exit 0"
-          }
-        ]
-      }
-    ]
-  },
-  "mcpServers": {
-    "github": {
-      "command": "gh",
-      "args": ["copilot", "mcp"],
-      "env": {
-        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
-      }
-    }
   }
 }

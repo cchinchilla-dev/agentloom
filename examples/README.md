@@ -218,6 +218,16 @@ agentloom runs
 agentloom resume <run_id> --lite
 ```
 
+### 29 — Approval Gate
+Drafts an email, pauses at an `approval_gate` until a human approves or
+rejects, then finishes according to the decision.
+Demonstrates: `approval_gate`, `--checkpoint`, `agentloom resume --approve` / `--reject`.
+
+### 30 — Approval Gate with Webhook
+Same flow with a `notify` webhook that POSTs to a local
+`agentloom callback-server` when the gate pauses.
+Demonstrates: `notify`, `agentloom callback-server`, HTTP approval.
+
 ### 31 — Record & Replay
 Two-step workflow. Run once with `--record` to capture real LLM responses to
 a JSON file, then replay offline forever with `--mock-responses` — no network,
@@ -232,3 +242,16 @@ agentloom run examples/31_record_and_replay.yaml --record recordings/run1.json
 # Replay offline — no network, no key, no cost
 agentloom run examples/31_record_and_replay.yaml --mock-responses recordings/run1.json
 ```
+
+### 32 — YAML-configured MockProvider
+Same workflow as 31 with `provider: mock` and `responses_file` in the YAML, so a
+plain `agentloom run` replays the recording you captured with 31.
+Demonstrates: `provider: mock`, `responses_file`, `latency_model: replay`.
+
+### 35–39 — Tool calling, structured output, embeddings, conversations (0.5.0, unreleased)
+Native tool calling (35), structured output with a Pydantic schema (36), the
+`embed` step (37), a chatbot sharing history through `conversation` (38), and a
+multi-agent conversation (39). Each runs offline against a recording committed
+under `recordings/`; pass `--provider` and `--model` to call a live model.
+
+Full descriptions and commands: [docs/examples](https://cchinchilla-dev.github.io/agentloom/examples/).

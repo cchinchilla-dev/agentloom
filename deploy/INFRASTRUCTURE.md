@@ -255,12 +255,15 @@ The Application CRD configures:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | Push / PR to `main` | Lint, type check, test (458 tests), Docker build, K8s validation, Helm lint |
+| `ci.yml` | Push / PR to `main` | Lint, type check, test, Docker build, K8s validation, Helm lint |
 | `docker.yml` | Push to `main` / tags `v*` | Build multi-arch image, push to GHCR, smoke test on PRs |
-| `release.yml` | Tags `v*` | Build wheel, create GitHub release, publish to PyPI |
+| `auto-tag.yml` | Push to `main` | Tag `vX.Y.Z` when the commit is a `bump version to X.Y.Z` release |
+| `release.yml` | Tags `v*` / after Auto Tag | Build wheel, create GitHub release, publish to PyPI |
+| `docs.yml` | Push to `main` (docs, mkdocs.yml, overrides, CHANGELOG, CONTRIBUTING) | Build and deploy documentation to GitHub Pages |
+| `e2e-ollama.yml` | `release/**` / `e2e` label / manual | Ollama integration tests against live Docker instance |
 | `pr-labeler.yml` | PR opened/updated | Auto-label PRs based on file paths |
 | `labels.yml` | Push to `main` (labels.json) | Sync GitHub labels from config |
-| `stale.yml` | Weekly (Monday 9am UTC) | Mark/close stale issues |
+| `stale.yml` | Weekly (Monday 9am UTC) | Close unanswered `question` issues |
 
 ### Image tags
 

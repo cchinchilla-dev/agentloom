@@ -43,3 +43,10 @@ site/
 recordings/
 .agentloom/
 agentloom_runs/
+
+# Agent instructions are versioned here even when a global gitignore excludes these names
+!AGENTS.md
+!CLAUDE.md
+!.claude/
+# Personal assistant overrides stay local
+CLAUDE.local.md

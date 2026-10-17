@@ -18,4 +18,5 @@ htmlcov/
 .idea/
 .vscode/
 .claude/
+.agents/
 deploy/

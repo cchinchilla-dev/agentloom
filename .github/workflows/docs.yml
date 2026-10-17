@@ -6,6 +6,9 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "overrides/**"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
 
 concurrency:
   group: docs-${{ github.ref }}

@@ -185,7 +185,7 @@ class WorkflowEngine:
         workflow name so subsequent ``result.annotate(...)`` calls publish
         a ``quality:<target>`` OTel span without the caller threading any
         infrastructure through. Keeps ``core/results.py`` free of any
-        ``observability/`` import (per ``CLAUDE.md`` layering rule) — the
+        ``observability/`` import (per ``AGENTS.md`` layering rule) — the
         engine is the only module that knits the two together.
         """
         if self.observer is None:

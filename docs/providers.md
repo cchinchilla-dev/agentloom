@@ -6,7 +6,7 @@ AgentLoom ships with four providers. The gateway routes requests based on model 
 
 | Capability | OpenAI | Anthropic | Google | Ollama |
 |---|---|---|---|---|
-| Models | `gpt-*`, `o3*`, `o4*` | `claude*` | `gemini*` | Any local model |
+| Models | `gpt-*`, `o1*`, `o3*`, `o4*`, `text-embedding-*` | `claude*` | `gemini*` | Any local model |
 | Streaming | SSE | SSE | SSE | NDJSON |
 | Image input | :material-check: | :material-check: | :material-check: | :material-check: |
 | PDF input | :material-close: | :material-check: | :material-check: | :material-close: |
@@ -30,7 +30,7 @@ config:
 Or override at runtime via CLI:
 
 ```bash
-agentloom run workflow.yaml --provider anthropic --model claude-sonnet-4-20250514
+agentloom run workflow.yaml --provider anthropic --model claude-sonnet-4-6
 ```
 
 ## Environment variables
@@ -129,6 +129,9 @@ Pre-0.5.0 the rule was "append `/v1` unless the URL ends literally in `/v1`", wh
 
 ## Non-retryable errors
 
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+
 The resilience layer short-circuits the retry loop when an exception carries `is_retryable = False`. Pre-0.5.0 these errors burned the full retry budget (up to 127 s of backoff per workflow) before surfacing the same failure the first attempt returned.
 
 | Exception | Reason |
@@ -189,6 +192,9 @@ A `source` may be an RFC 2397 `data:` URL — `data:image/png;base64,iVBORw0KGgo
 `data:` URLs make no network call and open no file, so they are **allowed unconditionally** even when `sandbox.enabled: true` — the threat model for inline content is the workflow author, not a remote host. The 20 MB size limit still applies to the decoded payload.
 
 ## Reasoning models
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
 
 OpenAI o-series (`o1`, `o3`, `o4-mini`) and Anthropic Claude with extended thinking produce internal *reasoning tokens* before the final answer. Providers bill these at the output rate, so cost accounting must include them.
 
@@ -255,6 +261,9 @@ Command argument validation also covers flag-embedded paths: `tee --output=/etc/
     `allowed_paths: ["/dev"]` grants access to every device node — `/dev/null`, `/dev/console`, `/dev/mem` on Linux — and a tool that opens a file descriptor against an unexpected device can hang the workflow or leak data. Pick the tightest sub-directory you actually need (`/dev/null` if you only want to discard output) instead of the whole tree.
 
 ### State redaction
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
 
 Sensitive state values (API keys, passwords, tokens) can be flagged so they never land in a persisted artefact:
 

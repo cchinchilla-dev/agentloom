@@ -1,9 +1,9 @@
 <p align="center">
   <a href="https://github.com/cchinchilla-dev/agentloom">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_dark.png">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_white.png">
-      <img src="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_white.png" alt="AgentLoom">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_light.svg">
+      <img src="https://raw.githubusercontent.com/cchinchilla-dev/agentloom/main/docs/images/header_light.svg" alt="AgentLoom">
     </picture>
   </a>
 </p>
@@ -53,7 +53,6 @@ Existing frameworks (LangGraph, CrewAI, AutoGen) treat observability and resilie
 | Circuit breaker | No | No | No | **Built-in** |
 | Cost tracking | No | No | No | **Native with budgets** |
 | Multi-provider fallback | Manual | No | No | **Automatic** |
-| Checkpoint & resume | No | No | No | **Built-in** |
 | Deterministic replay | No | No | No | **Built-in (record + mock)** |
 | Dependencies | Heavy | Medium | Medium | **Minimal** |
 
@@ -63,8 +62,8 @@ Existing frameworks (LangGraph, CrewAI, AutoGen) treat observability and resilie
 # Install
 pip install agentloom
 
-# Install with observability (OTel + Prometheus)
-pip install agentloom[all]
+# Install with all extras (OTel + Prometheus observability, graph export)
+pip install "agentloom[all]"
 
 # Run a workflow
 export OPENAI_API_KEY=sk-...
@@ -94,13 +93,16 @@ agentloom resume <run_id> # resume from checkpoint
 |                   Workflow Engine                   |
 |  +-----------+  +-----------+  +---------------+    |
 |  |DAG Parser |  | Scheduler |  | State Manager |    |
-|  |& Validator|  |  (anyio)  |  |  (Pydantic)   |    |
+|  |& Validator|  |  (anyio)  |  |  (dict+lock)  |    |
 |  +-----------+  +-----------+  +---------------+    |
 +-----------------------------------------------------+
 |                   Step Executors                    |
 |  +--------+ +---------+ +------+ +------------+     |
 |  |LLM Call| |Tool Exec| |Router| | Subworkflow|     |
 |  +--------+ +---------+ +------+ +------------+     |
+|  +---------------+ +-------+                        |
+|  | Approval Gate | | Embed |                        |
+|  +---------------+ +-------+                        |
 +-----------------------------------------------------+
 |                  Provider Gateway                   |
 |  +-----------------------------------------------+  |
@@ -121,7 +123,7 @@ Four providers are included out of the box. The gateway routes requests based on
 
 | Capability | OpenAI | Anthropic | Google | Ollama |
 |---|---|---|---|---|
-| Models | `gpt-*`, `o3*`, `o4*` | `claude*` | `gemini*` | Any local model |
+| Models | `gpt-*`, `o1*`, `o3*`, `o4*`, `text-embedding-*` | `claude*` | `gemini*` | Any local model |
 | Streaming | SSE | SSE | SSE | NDJSON |
 | Image input | yes | yes | yes | yes |
 | PDF input | -- | yes | yes | -- |
@@ -362,6 +364,24 @@ agentloom resume <run_id>
 ```
 
 Checkpoints are stored as JSON files in `.agentloom/checkpoints/` by default. The backend is pluggable — implement `BaseCheckpointer` to store checkpoints in Redis, S3, or any other backend. In Kubernetes, mount a PersistentVolumeClaim to share checkpoints across Jobs.
+
+### Human-in-the-loop
+
+An `approval_gate` step pauses a checkpointed run until someone approves or rejects it, from the CLI or over HTTP through `agentloom callback-server`. An optional webhook notifies Slack, CI, or a dashboard when the gate pauses.
+
+```yaml
+- id: approve
+  type: approval_gate
+  depends_on: [draft]
+  timeout_seconds: 3600     # enforced by the callback server
+  on_timeout: reject
+  output: decision          # "approved" | "rejected"
+```
+
+```bash
+agentloom run workflow.yaml --checkpoint
+agentloom resume <run_id> --approve   # or --reject
+```
 
 ## Testing & Replay
 

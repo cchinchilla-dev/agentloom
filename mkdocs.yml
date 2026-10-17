@@ -6,8 +6,9 @@ repo_name: cchinchilla-dev/agentloom
 
 theme:
   name: material
-  logo: images/logo_transparecy.png
-  favicon: images/logo_transparecy.png
+  custom_dir: overrides
+  logo: images/logo.svg
+  favicon: images/logo.svg
   palette:
     - scheme: default
       primary: deep purple
@@ -40,6 +41,7 @@ nav:
   - Workflow YAML: workflow-yaml.md
   - Python DSL: python-dsl.md
   - Graph API: graph-api.md
+  - CLI reference: cli.md
   - Examples: examples.md
   - Testing & Replay: testing-and-replay.md
   - Observability: observability.md

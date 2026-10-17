@@ -1,13 +1,15 @@
-.PHONY: install install-all test test-cov lint format typecheck check run validate info build clean \
+.PHONY: install install-all test test-cov lint format format-check typecheck version check run validate info build clean \
        docker-build docker-build-obs docker-run docker-stack docker-stack-down \
        k8s-validate helm-lint helm-template
 
 # Development
 install:
 	uv sync --group dev
+	uv run pre-commit install
 
 install-all:
 	uv sync --group dev --all-extras
+	uv run pre-commit install
 
 # Quality
 test:
@@ -22,10 +24,17 @@ lint:
 format:
 	uv run ruff format src/ tests/
 
+format-check:
+	uv run ruff format --check src/ tests/
+
 typecheck:
 	uv run mypy src/
 
-check: lint typecheck test
+version:
+	uv run python scripts/check_version_linearity.py
+
+# Same gates as CI (K8s manifests: make k8s-validate helm-lint)
+check: lint format-check typecheck test-cov version
 
 # CLI shortcuts
 run:
