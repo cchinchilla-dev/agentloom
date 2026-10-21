@@ -20,7 +20,7 @@ Wrap any real provider and capture every completion to a JSON file:
 agentloom run workflow.yaml --record recordings/run1.json
 ```
 
-The file is flushed **per call**, so a crashed workflow still leaves a partial recording. Re-running against the same path accumulates entries — it never clobbers.
+The file is flushed **per call**, so a crashed workflow still leaves a partial recording. Re-running against the same path keeps the entries it does not touch; a step recorded again replaces its old entry.
 
 The captured format is directly loadable by `MockProvider`:
 
@@ -30,15 +30,19 @@ The captured format is directly loadable by `MockProvider`:
   "summarize": {
     "content": "The article argues that...",
     "model": "claude-sonnet-4-20250514",
+    "provider": "anthropic",
     "usage": {"prompt_tokens": 412, "completion_tokens": 88, "total_tokens": 500},
     "cost_usd": 0.00264,
     "latency_ms": 1843.2,
-    "finish_reason": "stop"
+    "finish_reason": "stop",
+    "request_hash": "9f2c41…"
   }
 }
 ```
 
 Entries sit at the top level alongside the `_version` metadata key, keyed by the step's `step_id` when available, or by the request hash (SHA-256 of model + temperature + max_tokens + extra + serialized messages) otherwise. Streaming responses are keyed under the same hash as the equivalent `complete()` call and persist the joined chunk content in the same entry shape, so a recording captures both modes uniformly.
+
+A step called more than once in one run (the turns of a `tools:` loop, or a step inside a loop) is stored as a list of such entries in call order. A turn in which the model asked for tools carries `tool_calls`, each with `id`, `name` and `arguments`.
 
 !!! info "v1 ↔ v2 compatibility"
     The reader treats any top-level key starting with `_` as metadata, so v1 recordings (0.4.x, no underscore-prefixed keys) load against 0.5.0+ without errors. Recordings keyed by `step_id` continue to replay unchanged. v1 recordings keyed only by the **legacy messages-only request hash** will not match under 0.5.0+, because the fallback hash inputs now include `model`, `temperature`, `max_tokens`, and `extra` — regenerate them against 0.5.0+ to replay. New recordings are always written with `_version: 2`.
@@ -109,7 +113,7 @@ mock = MockProvider(
 
 `MockProvider` resolves each call in this order:
 
-1. **`step_id` match** — if the caller passes `step_id=` and that key exists in the fixture
+1. **`step_id` match** — if the caller passes `step_id=` and that key exists in the fixture. A list entry is served turn by turn: lenient replay walks a cursor and repeats the last turn; strict replay (`agentloom replay`) serves only a turn whose `request_hash` matches the request, trying the next turn first. A retried step therefore replays from its own turns, and a changed prompt or tool output fails instead of replaying stale data. Hand-written lists without `request_hash` keep the cursor.
 2. **Prompt hash match** — SHA-256 of the serialized messages list
 3. **Default response** — returns `default_response` (defaults to `"Mock response"`) with zero cost/usage
 
@@ -177,14 +181,15 @@ The stock Grafana dashboard includes a **Mock & Replay** row with:
 
 ## Concurrency & merge semantics
 
-If a workflow registers multiple providers each wrapped with `RecordingProvider` pointing to the same file (e.g. primary + fallback via the gateway), `_flush()` reads existing on-disk content and merges it with the in-memory buffer before writing.
+If a workflow registers multiple providers each wrapped with `RecordingProvider` pointing to the same file (e.g. primary + fallback via the gateway), each recorder holds only what it captured and `_flush()` merges that over the on-disk content, so recorders never revert each other's keys.
 
 This is **best-effort**, not concurrency-safe: the implementation is a read-merge-write cycle without locking, so true concurrent writers (multiple processes, or parallel flushes across tasks) can still lose updates. In practice it covers the common case — recorders inside the same run flushing sequentially per call — but if you need strict guarantees, use a single writer or serialize access externally.
 
 ## Limitations & gotchas
 
-- **Streaming is passthrough only.** `RecordingProvider.stream()` delegates to the wrapped provider and does **not** capture tokens. Replay of streamed runs is not supported yet.
-- **`step_id` must be unique within a workflow** for the step-id matching to be useful. Steps run inside a loop share the same `step_id` and will collide — use prompt-hash matching or give each iteration a distinct id.
+- **Streaming through the gateway.** `RecordingProvider.stream()` records one entry with the joined content and the tool calls, but the `StreamResponse` a step receives from the gateway carries only usage, cost, finish reason and model.
+- **A run is the recorder's lifetime.** Reusing one gateway for several `engine.run()` calls appends every run's calls to the same list of turns. If the gateway falls back to another provider in the middle of a loop, each provider's recorder keeps only its own turns and the last one to flush wins: re-record without the fallback.
+- **Tools run for real on replay.** Strict replay compares each turn's request, which includes the earlier tool results, so a tool whose output changes (network, clock, files) fails strict replay from that turn on.
 - **Prompt hashes are sensitive to message formatting.** A trailing space or reordered tool-result block changes the hash. If replay misses, inspect `provider.calls` to see what was tried.
 - **Recordings are not encrypted.** Treat them as you would any captured LLM output — scrub PII before committing.
 - **No built-in TTL.** Recordings live on disk until deleted. For hot-path caching across distributed workers, a pluggable store backend is on the roadmap.

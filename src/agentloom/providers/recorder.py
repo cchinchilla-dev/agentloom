@@ -20,8 +20,9 @@ from agentloom.providers.base import (
     EmbeddingResponse,
     ProviderResponse,
     StreamResponse,
+    ToolCall,
 )
-from agentloom.providers.mock import prompt_hash
+from agentloom.providers.mock import UNHASHED_KWARGS, prompt_hash
 
 
 @runtime_checkable
@@ -39,6 +40,12 @@ class RecordingProvider(BaseProvider):
     Responses are keyed by ``step_id`` when present, otherwise by the SHA-256
     hash of the serialized messages. The file is flushed on every call so a
     crashed workflow still leaves a partial recording on disk.
+
+    Each entry keeps the response's provider and ``tool_calls``. When one run records the
+    same ``step_id`` more than once (the turns of a tool loop), the entry
+    becomes a list of turns in order, the form ``MockProvider`` replays with
+    its per-step cursor. The first capture of a key in a run replaces whatever
+    an earlier run left under it, so runs never mix.
     """
 
     # The recorder keys captures by step id — the gateway must forward
@@ -57,20 +64,20 @@ class RecordingProvider(BaseProvider):
         self._wrapped = wrapped
         self.output_path = Path(output_path)
         self._observer = observer
-        self._recorded: dict[str, dict[str, Any]] = {}
+        self._recorded: dict[str, Any] = {}
+        # Captures per key in this run: the second capture of a step turns
+        # its entry into a list of turns.
+        self._captures: dict[str, int] = {}
         # Serializes both mutations of ``_recorded`` and the flush-to-disk
         # path so concurrent ``complete()`` calls from parallel DAG layers
         # neither drop entries (read-modify-write race across threads) nor
         # raise ``RuntimeError: dictionary changed size during iteration``.
         self._write_lock = anyio.Lock()
-        if self.output_path.exists():
-            try:
-                existing = json.loads(self.output_path.read_text())
-                if isinstance(existing, dict):
-                    # Strip the metadata envelope when reading v2+ files.
-                    self._recorded = {k: v for k, v in existing.items() if not k.startswith("_")}
-            except json.JSONDecodeError:
-                pass
+        # ``_recorded`` holds only this recorder's captures: ``_flush_sync``
+        # merges them over the file, so keys written by earlier runs or by
+        # other recorders on the same path survive, and a step recorded
+        # again replaces its old entry instead of being reverted by a
+        # recorder that loaded the file before it.
 
     def _key(
         self,
@@ -96,12 +103,27 @@ class RecordingProvider(BaseProvider):
             return {**extra_kwargs, "step_id": step_id}
         return dict(extra_kwargs)
 
+    def _store(self, key: str, entry: dict[str, Any], by_step_id: bool) -> None:
+        """Record ``entry`` under ``key``; call with ``_write_lock`` held.
+
+        Only step-id keys grow into lists: ``MockProvider`` reads the list
+        form by step id, while a hash key names one exact request.
+        """
+        seen = self._captures.get(key, 0)
+        if seen == 0 or not by_step_id:
+            self._recorded[key] = entry
+        elif seen == 1:
+            self._recorded[key] = [self._recorded[key], entry]
+        else:
+            self._recorded[key].append(entry)
+        self._captures[key] = seen + 1
+
     async def _flush(self) -> None:
         async with self._write_lock:
             snapshot = dict(self._recorded)
             await anyio.to_thread.run_sync(self._flush_sync, snapshot)
 
-    def _flush_sync(self, snapshot: dict[str, dict[str, Any]]) -> None:
+    def _flush_sync(self, snapshot: dict[str, Any]) -> None:
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         # Merge with any existing on-disk content so concurrent recorders
         # (e.g. wrapping multiple providers in a gateway) don't clobber
@@ -126,7 +148,7 @@ class RecordingProvider(BaseProvider):
         **kwargs: Any,
     ) -> ProviderResponse:
         step_id = kwargs.get("step_id")
-        extra_kwargs = {k: v for k, v in kwargs.items() if k != "step_id"}
+        extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
         start = time.perf_counter()
         # Forward ``step_id`` to the wrapped provider only when it
         # consumes it (another mock / recorder). An HTTP adapter would
@@ -144,6 +166,7 @@ class RecordingProvider(BaseProvider):
         entry = {
             "content": response.content,
             "model": response.model,
+            "provider": response.provider,
             "usage": response.usage.model_dump(),
             "cost_usd": response.cost_usd,
             "latency_ms": latency_ms,
@@ -153,8 +176,10 @@ class RecordingProvider(BaseProvider):
             # detect a prompt that drifted from its recording (F28).
             "request_hash": prompt_hash(messages, model, temperature, max_tokens, extra_kwargs),
         }
+        if response.tool_calls:
+            entry["tool_calls"] = _tool_calls(response.tool_calls)
         async with self._write_lock:
-            self._recorded[key] = entry
+            self._store(key, entry, by_step_id=bool(step_id))
         await self._flush()
         if self._observer is not None:
             # observer must never break capture
@@ -173,7 +198,7 @@ class RecordingProvider(BaseProvider):
         **kwargs: Any,
     ) -> StreamResponse:
         step_id = kwargs.get("step_id")
-        extra_kwargs = {k: v for k, v in kwargs.items() if k != "step_id"}
+        extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
         start = time.perf_counter()
         # Forward ``step_id`` only to a wrapped provider that consumes
         # it — see ``complete`` above.
@@ -202,20 +227,25 @@ class RecordingProvider(BaseProvider):
                 outer_sr.cost_usd = inner_sr.cost_usd
                 outer_sr.finish_reason = inner_sr.finish_reason
                 outer_sr.model = inner_sr.model
+                outer_sr.reasoning_content = inner_sr.reasoning_content
+                outer_sr.tool_calls = list(inner_sr.tool_calls)
 
             latency_ms = (time.perf_counter() - start) * 1000.0
             key = recorder._key(step_id, messages, model, temperature, max_tokens, extra_kwargs)
             entry = {
                 "content": "".join(buffer),
                 "model": inner_sr.model,
+                "provider": inner_sr.provider,
                 "usage": inner_sr.usage.model_dump(),
                 "cost_usd": inner_sr.cost_usd,
                 "latency_ms": latency_ms,
                 "finish_reason": inner_sr.finish_reason,
                 "request_hash": prompt_hash(messages, model, temperature, max_tokens, extra_kwargs),
             }
+            if inner_sr.tool_calls:
+                entry["tool_calls"] = _tool_calls(inner_sr.tool_calls)
             async with recorder._write_lock:
-                recorder._recorded[key] = entry
+                recorder._store(key, entry, by_step_id=bool(step_id))
             await recorder._flush()
             if recorder._observer is not None:
                 with contextlib.suppress(Exception):  # pragma: no cover
@@ -237,7 +267,7 @@ class RecordingProvider(BaseProvider):
         **kwargs: Any,
     ) -> EmbeddingResponse:
         step_id = kwargs.get("step_id")
-        extra_kwargs = {k: v for k, v in kwargs.items() if k != "step_id"}
+        extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
         start = time.perf_counter()
         response = await self._wrapped.embed(
             inputs=inputs,
@@ -284,3 +314,8 @@ class RecordingProvider(BaseProvider):
     async def close(self) -> None:
         await self._flush()
         await self._wrapped.close()
+
+
+def _tool_calls(calls: list[ToolCall]) -> list[dict[str, Any]]:
+    """The shape ``MockProvider`` hydrates back into ``ToolCall`` on replay."""
+    return [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in calls]
