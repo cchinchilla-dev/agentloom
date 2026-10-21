@@ -9,8 +9,14 @@ import anyio
 import pytest
 
 from agentloom.core.engine import WorkflowEngine
-from agentloom.core.models import StepDefinition, StepType, WorkflowConfig, WorkflowDefinition
-from agentloom.core.results import WorkflowStatus
+from agentloom.core.models import (
+    RetryConfig,
+    StepDefinition,
+    StepType,
+    WorkflowConfig,
+    WorkflowDefinition,
+)
+from agentloom.core.results import StepStatus, WorkflowStatus
 from agentloom.observability.noop import NoopSpan
 from agentloom.observability.observer import WorkflowObserver
 from agentloom.observability.schema import SpanAttr, SpanName
@@ -86,6 +92,21 @@ class _BarrierProvider(MockProvider):
             self._all_in.set()
         await self._all_in.wait()
         return await super().complete(messages, model, temperature, max_tokens, **kwargs)
+
+
+class _HangingProvider(MockProvider):
+    """Never answers, so only a timeout ends the call."""
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        await anyio.Event().wait()
+        raise AssertionError("unreachable")
 
 
 def _localize(lang: str) -> dict[str, Any]:
@@ -201,3 +222,41 @@ class TestParallelSubworkflows:
         after = spans[SpanName.STEP.format(step_id="after")]
         assert after.attributes[SpanAttr.WORKFLOW_RUN_ID] == "root"
         assert after.parent is not None and after.parent.span_id == root.context.span_id
+
+    async def test_timed_out_child_hands_the_run_back(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        tracing, exporter = _in_memory_tracing()
+        workflow = WorkflowDefinition(
+            name="parent",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            steps=[
+                StepDefinition(
+                    id="child",
+                    type=StepType.SUBWORKFLOW,
+                    workflow_inline=_localize("es"),
+                    timeout=0.05,
+                    retry=RetryConfig(max_retries=0),
+                ),
+            ],
+        )
+        gateway = ProviderGateway()
+        gateway.register(_HangingProvider(), priority=0)
+        engine = WorkflowEngine(
+            workflow=workflow,
+            provider_gateway=gateway,
+            observer=WorkflowObserver(tracing=tracing),
+            run_id="root",
+        )
+        with caplog.at_level(logging.ERROR, logger="opentelemetry.context"), anyio.fail_after(5):
+            result = await engine.run()
+
+        assert result.step_results["child"].status == StepStatus.TIMEOUT
+        assert "Failed to detach context" not in caplog.text
+        spans = {s.name: s for s in exporter.get_finished_spans()}
+        # The cancelled child never ran its end hook, so the parent's step span was lost.
+        step = spans[SpanName.STEP.format(step_id="child")]
+        assert step.attributes[SpanAttr.WORKFLOW_RUN_ID] == "root"
+        child = spans[SpanName.WORKFLOW.format(workflow_name="localize_es")]
+        assert child.attributes[SpanAttr.WORKFLOW_STATUS] == "cancelled"
+        assert child.parent is not None and child.parent.span_id == step.context.span_id
