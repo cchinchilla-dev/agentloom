@@ -8,6 +8,8 @@ observer and injects it into WorkflowEngine via its ``observer`` parameter.
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Any
 
 from agentloom.observability.schema import (
@@ -18,6 +20,30 @@ from agentloom.observability.schema import (
 )
 
 logger = logging.getLogger("agentloom.observability")
+
+
+@dataclass
+class _RunScope:
+    """Span slots of one workflow run.
+
+    Subworkflow engines share their parent's observer, and parallel children
+    may reuse step ids, so the slots live per run rather than on the observer.
+    """
+
+    owner: WorkflowObserver | None = None
+    parent: _RunScope | None = None
+    run_id: str = ""
+    workflow_span: Any | None = None
+    step_spans: dict[str, Any] = field(default_factory=dict)
+    # Keyed by (step_id, attempt). One step can produce multiple
+    # provider spans when the gateway falls back across providers.
+    provider_spans: dict[tuple[str, int], Any] = field(default_factory=dict)
+
+
+# The run whose task is calling. Each child engine runs in its own task (or
+# inline, between its start and end hooks), so the hooks of a run always find
+# its own scope and start and end every span in the same context.
+_CURRENT_RUN: ContextVar[_RunScope | None] = ContextVar("agentloom_observer_run", default=None)
 
 
 class WorkflowObserver:
@@ -37,13 +63,34 @@ class WorkflowObserver:
     ) -> None:
         self._tracing = tracing
         self._metrics = metrics
-        self._workflow_span: Any | None = None
-        self._step_spans: dict[str, Any] = {}
-        # Keyed by (step_id, attempt). One step can produce multiple
-        # provider spans when the gateway falls back across providers.
-        self._provider_spans: dict[tuple[str, int], Any] = {}
-        self._run_id: str = ""
-        self._workflow_name: str = ""
+        # Hooks called outside any run (no ``on_workflow_start`` yet) use this one.
+        self._root = _RunScope(owner=self)
+
+    def _scope(self) -> _RunScope:
+        scope = _CURRENT_RUN.get()
+        while scope is not None and scope.owner is not self:
+            scope = scope.parent
+        return scope or self._root
+
+    @property
+    def _workflow_span(self) -> Any | None:
+        return self._scope().workflow_span
+
+    @_workflow_span.setter
+    def _workflow_span(self, span: Any | None) -> None:
+        self._scope().workflow_span = span
+
+    @property
+    def _step_spans(self) -> dict[str, Any]:
+        return self._scope().step_spans
+
+    @property
+    def _provider_spans(self) -> dict[tuple[str, int], Any]:
+        return self._scope().provider_spans
+
+    @property
+    def _run_id(self) -> str:
+        return self._scope().run_id
 
     @property
     def tracing(self) -> Any | None:
@@ -56,8 +103,7 @@ class WorkflowObserver:
         return self._tracing
 
     def on_workflow_start(self, workflow_name: str, *, run_id: str = "", **kwargs: Any) -> None:
-        self._run_id = run_id
-        self._workflow_name = workflow_name
+        _CURRENT_RUN.set(_RunScope(owner=self, parent=_CURRENT_RUN.get(), run_id=run_id))
         if self._tracing:
             attrs: dict[str, Any] = {SpanAttr.WORKFLOW_NAME: workflow_name}
             if run_id:
@@ -94,6 +140,9 @@ class WorkflowObserver:
             else:
                 span.end()
             self._workflow_span = None
+        scope = self._scope()
+        if scope is not self._root:
+            _CURRENT_RUN.set(scope.parent)
 
     def on_step_start(
         self,

@@ -732,6 +732,19 @@ class WorkflowEngine:
             await self._finalize_result(result, workflow_name)
             return result
 
+        except BaseException:
+            # Cancelled from outside (a parent step's timeout, a failing sibling): close this
+            # run's workflow span and hand the observer back to the parent before re-raising.
+            if self.observer:
+                self.observer.on_workflow_end(
+                    workflow_name,
+                    "cancelled",
+                    (time.monotonic() - start) * 1000,
+                    0,
+                    self._budget.spent,
+                )
+            raise
+
     async def _execute_step_with_limit(self, step_id: str, limiter: anyio.CapacityLimiter) -> None:
         """Execute a step with concurrency limiting."""
         async with limiter:
