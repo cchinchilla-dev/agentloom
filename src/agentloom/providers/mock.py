@@ -29,6 +29,10 @@ logger = logging.getLogger("agentloom.providers.mock")
 # can detect a prompt that drifted from its recording.
 RECORDING_FORMAT_VERSION = 2
 
+# Call identifiers that never reach the provider; the recorder and the mock
+# both leave them out of the request hash, so a recorded hash matches on replay.
+UNHASHED_KWARGS = ("step_id", "agentloom_step_id")
+
 
 @runtime_checkable
 class MockObserver(Protocol):
@@ -213,38 +217,70 @@ class MockProvider(BaseProvider):
         request_hash = prompt_hash(messages, model, temperature, max_tokens, extra)
         if step_id and step_id in self._responses:
             entry = self._responses[step_id]
-            # List form: pop the next turn (clamp at last so excess
-            # iterations replay the final response — saner than
-            # raising mid-loop). Multi-turn tool loops carry a distinct
-            # prompt per turn, so the drift check below is skipped for
-            # lists — the step_id + cursor is the contract there.
+            # List form: one turn per call, in recorded order. Lenient
+            # replay walks a cursor and clamps at the last turn, so excess
+            # iterations replay the final response. Strict replay of a
+            # recorded loop (turns carry ``request_hash``) serves only a turn
+            # recorded for this exact request (see ``_strict_turn``);
+            # hand-written lists without hashes keep the cursor.
             if isinstance(entry, list):
                 if not entry:
                     return None
                 idx = self._turn_cursor.get(step_id, 0)
+                if self.strict and any(isinstance(t, dict) and "request_hash" in t for t in entry):
+                    return self._strict_turn(step_id, entry, idx, request_hash)
                 turn = entry[min(idx, len(entry) - 1)]
                 self._turn_cursor[step_id] = idx + 1
                 return turn if isinstance(turn, dict) else None
             if not isinstance(entry, dict):
                 return None
-            # Drift check: an entry recorded under a step_id carries the
-            # ``request_hash`` it was captured against. In strict (replay)
-            # mode a mismatch means the workflow's prompt / system prompt
-            # / model / tools spec changed since the recording — refuse
-            # rather than answer with stale data (F28). Recordings made
-            # before this field existed have no ``request_hash`` and are
-            # matched by step_id alone, unchanged.
-            recorded_hash = entry.get("request_hash")
-            if self.strict and isinstance(recorded_hash, str) and recorded_hash != request_hash:
-                raise RecordingMismatchError(
-                    f"Step {step_id!r}: the replayed request (hash "
-                    f"{request_hash[:16]}) does not match the recording "
-                    f"(hash {recorded_hash[:16]}). The prompt, system prompt, "
-                    f"model, or tools spec changed since capture — re-record "
-                    f"the fixture with `agentloom run --record`."
-                )
+            self._check_drift(f"Step {step_id!r}", entry, request_hash)
             return entry
         return self._responses.get(request_hash)
+
+    def _strict_turn(
+        self, step_id: str, turns: list[Any], idx: int, request_hash: str
+    ) -> dict[str, Any]:
+        """Serve the turn recorded for this exact request, or refuse.
+
+        The turn at the cursor is tried first, then the rest from the start:
+        a retried step begins its loop again, and a recording keeps the
+        turns of an attempt that failed midway. The cursor moves only on a
+        match, so an engine retry after a mismatch never slides onto the
+        last turn. A turn without a ``request_hash`` matches any request.
+        """
+        for i in [*range(idx, len(turns)), *range(min(idx, len(turns)))]:
+            turn = turns[i]
+            if isinstance(turn, dict) and turn.get("request_hash") in (None, request_hash):
+                self._turn_cursor[step_id] = i + 1
+                return turn
+        raise RecordingMismatchError(
+            f"Step {step_id!r}: no recorded turn matches the replayed request "
+            f"(hash {request_hash[:16]}). The prompt, system prompt, model, "
+            f"tools spec, or a tool's output changed since capture — tools run "
+            f"for real on replay — re-record the fixture with `agentloom run --record`."
+        )
+
+    def _check_drift(self, where: str, entry: dict[str, Any], request_hash: str) -> None:
+        """Refuse, in strict mode, an entry captured against another request.
+
+        Drift check: an entry recorded under a step_id carries the
+        ``request_hash`` it was captured against. In strict (replay)
+        mode a mismatch means the workflow's prompt / system prompt
+        / model / tools spec changed since the recording — refuse
+        rather than answer with stale data (F28). Recordings made
+        before this field existed have no ``request_hash`` and are
+        matched by step_id alone, unchanged.
+        """
+        recorded_hash = entry.get("request_hash")
+        if self.strict and isinstance(recorded_hash, str) and recorded_hash != request_hash:
+            raise RecordingMismatchError(
+                f"{where}: the replayed request (hash "
+                f"{request_hash[:16]}) does not match the recording "
+                f"(hash {recorded_hash[:16]}). The prompt, system prompt, "
+                f"model, or tools spec changed since capture — re-record "
+                f"the fixture with `agentloom run --record`."
+            )
 
     async def _sleep(self, recorded_ms: float | None) -> None:
         if self.latency_model == "replay" and recorded_ms is not None:
@@ -267,9 +303,7 @@ class MockProvider(BaseProvider):
     ) -> ProviderResponse:
         step_id = kwargs.get("step_id")
         # Strip identifiers that aren't part of the request hash.
-        extra_kwargs = {
-            k: v for k, v in kwargs.items() if k not in ("step_id", "agentloom_step_id")
-        }
+        extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
         has_response_schema = "agentloom_response_schema" in extra_kwargs
         entry = self._lookup(step_id, messages, model, temperature, max_tokens, extra_kwargs)
         if entry is None:
@@ -375,9 +409,7 @@ class MockProvider(BaseProvider):
         stay reproducible without needing a fixture per prompt.
         """
         step_id = kwargs.get("step_id")
-        extra_kwargs = {
-            k: v for k, v in kwargs.items() if k not in ("step_id", "agentloom_step_id")
-        }
+        extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
         entry: dict[str, Any] | None = None
         if step_id and step_id in self._responses:
             candidate = self._responses[step_id]
