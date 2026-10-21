@@ -213,6 +213,8 @@ workflow:<workflow_name>                   # AgentLoom orchestration
 
 A failed primary provider followed by a successful fallback shows up as two sibling `chat <model>` spans under the same `step:*` parent — useful for debugging fallback latency.
 
+A `subworkflow` step nests the child's whole tree under its own `step:<step_id>` span, with the child's `workflow.run_id` (`<parent_run_id>.<step_id>`). Parallel subworkflows share the parent's observer but keep separate trees, even when they reuse step ids.
+
 ### Attribute conventions
 
 Inference spans follow the **canonical OTel GenAI registry** (May 2026 spec). Workflow / step orchestration spans use AgentLoom-specific names.
