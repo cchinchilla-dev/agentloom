@@ -247,11 +247,12 @@ class MockProvider(BaseProvider):
         a retried step begins its loop again, and a recording keeps the
         turns of an attempt that failed midway. The cursor moves only on a
         match, so an engine retry after a mismatch never slides onto the
-        last turn. A turn without a ``request_hash`` matches any request.
+        last turn. A turn without a ``request_hash`` never matches here:
+        only lists with no hashes at all keep the cursor.
         """
         for i in [*range(idx, len(turns)), *range(min(idx, len(turns)))]:
             turn = turns[i]
-            if isinstance(turn, dict) and turn.get("request_hash") in (None, request_hash):
+            if isinstance(turn, dict) and turn.get("request_hash") == request_hash:
                 self._turn_cursor[step_id] = i + 1
                 return turn
         raise RecordingMismatchError(

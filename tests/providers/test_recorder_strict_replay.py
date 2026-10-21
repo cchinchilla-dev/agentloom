@@ -44,6 +44,20 @@ async def test_strict_replay_detects_drift_in_a_list_turn(tmp_path):
         )
 
 
+async def test_strict_replay_refuses_a_hashless_turn_in_a_recorded_list(tmp_path):
+    recording = await _record_loop(tmp_path, [_turn("", ("c1", "t", {})), _turn("end")], 2)
+    data = json.loads(recording.read_text())
+    data["loop"].append(_turn("hand-written"))  # no request_hash
+    recording.write_text(json.dumps(data))
+
+    replay = MockProvider(responses_file=recording, strict=True)
+    await replay.complete(messages=GO, model="m", step_id="loop")
+    with pytest.raises(RecordingMismatchError, match="no recorded turn matches"):
+        await replay.complete(
+            messages=[{"role": "user", "content": "changed"}], model="m", step_id="loop"
+        )
+
+
 async def test_a_retry_after_drift_fails_again_instead_of_serving_the_last_turn(tmp_path):
     recording = await _record_loop(tmp_path, [_turn("", ("c1", "t", {})), _turn("end")], 2)
     replay = MockProvider(responses_file=recording, strict=True)
