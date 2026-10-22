@@ -201,7 +201,7 @@ AgentLoom-specific counters live alongside the canonical OTel GenAI client histo
 !!! info "New in 0.5.0 (unreleased)"
     Available on `main`; the 0.4.0 release on PyPI does not include it yet.
 
-AgentLoom emits a three-level span hierarchy: **workflow → step → provider call** (and **tool call** when a step invokes a registered tool). Every span / attribute / metric name is centralised in `agentloom.observability.schema` so downstream consumers (Grafana dashboards, AgentAnvil, Jaeger plugins) parse a stable contract.
+AgentLoom emits a three-level span hierarchy: **workflow → step → provider call** (and **tool call** when a step invokes a registered tool). Every span / attribute / metric name is centralised in `agentloom.observability.schema` so downstream consumers (Grafana dashboards, AgentAnvil, Jaeger plugins) parse a stable contract. Code outside the runtime imports the same names from `agentloom.contracts.experimental` without loading AgentLoom; that import emits a `FutureWarning`, since the OTel GenAI conventions are still in development ([Public contracts](architecture.md#public-contracts)).
 
 ### Hierarchy
 

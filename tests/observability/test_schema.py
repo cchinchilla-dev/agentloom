@@ -283,8 +283,9 @@ class TestCapturePromptsFlag:
 
 class TestSchemaModuleIsSingleSourceOfTruth:
     """Linter-style guard: span / metric attribute literals only live in
-    ``observability/schema.py`` so external consumers can rely on a stable
-    contract instead of grepping for ad-hoc strings."""
+    ``contracts/_semconv.py`` (re-exported by ``observability/schema.py``) so
+    external consumers can rely on a stable contract instead of grepping for
+    ad-hoc strings."""
 
     def test_no_string_literal_span_attrs_outside_schema_module(self) -> None:
         # Linter-style guard. Targets the high-signal namespaces only —
@@ -306,11 +307,11 @@ class TestSchemaModuleIsSingleSourceOfTruth:
         ]
         offenders: list[tuple[str, int, str]] = []
         for path in src_root.rglob("*.py"):
-            # ``schema.py`` declares the contract; ``metrics.py`` passes
-            # attribute keys as raw strings (OTel SDK requires str keys, not
-            # constants) into histogram observations — its names mirror the
-            # canonical ``gen_ai.*`` registry entries which schema.py owns.
-            if path.name in ("schema.py", "metrics.py"):
+            # ``contracts/_semconv.py`` declares the contract; ``metrics.py``
+            # passes attribute keys as raw strings (OTel SDK requires str keys,
+            # not constants) into histogram observations — its names mirror the
+            # canonical ``gen_ai.*`` registry entries which _semconv.py owns.
+            if path.name in ("_semconv.py", "metrics.py"):
                 continue
             text = path.read_text()
             for line_no, line in enumerate(text.splitlines(), start=1):
@@ -318,7 +319,7 @@ class TestSchemaModuleIsSingleSourceOfTruth:
                     for match in pat.findall(line):
                         offenders.append((str(path.relative_to(src_root)), line_no, match))
         assert not offenders, (
-            "Span / attribute literals found outside schema.py — these must "
+            "Span / attribute literals found outside contracts/_semconv.py — these must "
             "go through ``SpanAttr.*``:\n" + "\n".join(f"  {p}:{ln}  {m}" for p, ln, m in offenders)
         )
 
