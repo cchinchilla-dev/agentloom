@@ -318,6 +318,9 @@ class TestStoppedSteps:
         spans = {s.name: s for s in exporter.get_finished_spans()}
         spend = spans[SpanName.STEP.format(step_id="spend")]
         assert spend.attributes[SpanAttr.STEP_STATUS] == "budget_exceeded"
+        # It answered and was charged before the breach: the span reports what it spent.
+        assert spend.attributes[SpanAttr.STEP_COST_USD] == pytest.approx(0.001)
+        assert spend.attributes[SpanAttr.GEN_AI_USAGE_INPUT_TOKENS] == 10
         wait = spans[SpanName.STEP.format(step_id="wait")]
         assert wait.attributes[SpanAttr.STEP_STATUS] == "cancelled"
 
@@ -345,3 +348,4 @@ class TestStoppedSteps:
             SpanName.STEP.format(step_id="ask")
         ]
         assert step.attributes[SpanAttr.STEP_STATUS] == "failed"
+        assert step.attributes[SpanAttr.STEP_ERROR] == "engine bug"
