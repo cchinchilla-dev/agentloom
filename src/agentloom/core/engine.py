@@ -19,7 +19,7 @@ from agentloom.checkpointing.base import (
     CheckpointData,
 )
 from agentloom.core.dag import DAG
-from agentloom.core.models import StepType, WorkflowDefinition
+from agentloom.core.models import StepDefinition, StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.redact import RedactionPolicy, is_redacted, redact_state
 from agentloom.core.results import (
@@ -776,7 +776,30 @@ class WorkflowEngine:
 
         if self.observer:
             self.observer.on_step_start(step_id, step_def.type.value, stream=should_stream)
+        started = time.monotonic()
+        try:
+            await self._run_step(step_id, step_def, should_stream)
+        except BaseException as exc:
+            # A step cancelled with its layer (a failing sibling, a parent's timeout) or stopped
+            # by a budget breach never reaches on_step_end: close its span here, in its own task.
+            if self.observer:
+                if isinstance(exc, anyio.get_cancelled_exc_class()):
+                    status = "cancelled"
+                elif isinstance(exc, BudgetExceededError):
+                    status = "budget_exceeded"
+                else:
+                    status = "failed"
+                self.observer.on_step_end(
+                    step_id,
+                    step_def.type.value,
+                    status,
+                    (time.monotonic() - started) * 1000,
+                    stream=should_stream,
+                )
+            raise
 
+    async def _run_step(self, step_id: str, step_def: StepDefinition, should_stream: bool) -> None:
+        """Run a started step through its attempts; ``_execute_step`` covers escaping errors."""
         executor_cls = self.step_registry.get(step_def.type)
         executor: BaseStep = executor_cls()
 
