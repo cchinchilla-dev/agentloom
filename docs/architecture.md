@@ -154,6 +154,31 @@ Step code holds a `StepContext` whose collaborator references are typed as `Any`
 
 The engine and `resilience/retry.py` share `compute_backoff` and `is_retryable_exception` — there's a single source of truth for retry waveforms and retryability rules across both step retries and gateway retries.
 
+## Public contracts
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+
+`agentloom.contracts` is the import surface for code that reads AgentLoom's output or wraps its workflows without running them. It imports only pydantic, and the top-level `agentloom` package resolves its own names lazily, so `import agentloom.contracts` loads neither the engine nor its dependencies.
+
+| Module | Holds | Stability |
+|--------|-------|-----------|
+| `agentloom.contracts.stable` | `Message`, `Attachment`, `ToolCall`, `ToolDefinition`, `TokenUsage`, `ProviderResponse`, `WorkflowHandle` | Semantic versioning |
+| `agentloom.contracts.experimental` | `SpanName`, `SpanAttr`, `MetricName`, `GenAIOperationName`, `GenAIProviderName` | May change in a minor release; importing it emits a `FutureWarning` |
+
+The runtime modules that used to define these models (`core.models`, `core.results`, `providers.base`, `observability.schema`) re-export them, so existing imports keep working and both paths give the same class.
+
+`WorkflowHandle` is a structural protocol: `input_schema` and `output_schema` (JSON Schema) and `async run(inputs) -> outputs`. A wrapper around another framework satisfies it without depending on AgentLoom. `agentloom.core.handle.WorkflowAdapter` exposes an AgentLoom workflow through it:
+
+```python
+from agentloom.core.handle import WorkflowAdapter
+
+handle = WorkflowAdapter(workflow, provider_gateway, tool_registry=registry)
+outputs = await handle.run({"question": "..."})
+```
+
+Each `run()` builds a fresh engine seeded with `{**workflow.state, **inputs}` and returns the final state; a failed, timed-out, over-budget or paused run raises `WorkflowError` instead of returning partial state. Workflows do not declare typed inputs yet, so the schemas are permissive objects; `input_schema` names the `state:` keys without their default values, which may be secrets.
+
 ## Design principles
 
 !!! tip "Why not autonomous agents?"

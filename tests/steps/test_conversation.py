@@ -14,7 +14,6 @@ from agentloom.core.models import (
     Message,
     StepDefinition,
     StepType,
-    ToolCallSpec,
     WorkflowConfig,
     WorkflowDefinition,
 )
@@ -70,7 +69,7 @@ class TestMessageModel:
             role="assistant",
             content="ok",
             tool_calls=[
-                ToolCallSpec(
+                ToolCall(
                     id="c1",
                     name="lookup_user",
                     arguments={"id": 123, "verbose": True},
@@ -366,7 +365,7 @@ class TestLoadAndProviderShape:
                 Message(
                     role="assistant",
                     content="",
-                    tool_calls=[ToolCallSpec(id="c1", name="fn", arguments={"k": 1})],
+                    tool_calls=[ToolCall(id="c1", name="fn", arguments={"k": 1})],
                 )
             ]
         )

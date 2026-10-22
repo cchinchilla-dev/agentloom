@@ -7,6 +7,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from agentloom.contracts.stable import Attachment as Attachment
+from agentloom.contracts.stable import Message as Message
+from agentloom.contracts.stable import ToolDefinition as ToolDefinition
 from agentloom.resilience.retry import DEFAULT_RETRYABLE_STATUS_CODES
 
 
@@ -19,25 +22,6 @@ class StepType(StrEnum):
     SUBWORKFLOW = "subworkflow"
     APPROVAL_GATE = "approval_gate"
     EMBED = "embed"
-
-
-class Attachment(BaseModel):
-    """Multi-modal attachment for an LLM call step.
-
-    ``source`` may be a URL, a local file path, or a raw base64 string.
-    Template variables (e.g. ``{state.image_url}``) are resolved at runtime.
-
-    Supported types:
-
-    * ``image`` — JPEG, PNG, GIF, WebP (all providers)
-    * ``pdf`` — PDF documents (Anthropic, Google)
-    * ``audio`` — WAV, MP3, OGG, FLAC (OpenAI, Google)
-    """
-
-    type: Literal["image", "pdf", "audio"] = "image"
-    source: str
-    media_type: str | None = None
-    fetch: Literal["local", "provider"] = "local"
 
 
 class RetryConfig(BaseModel):
@@ -109,81 +93,6 @@ class ThinkingConfig(BaseModel):
     capture_reasoning: bool = True
 
 
-class ToolCallSpec(BaseModel):
-    """A tool decision persisted inside a :class:`Message`.
-
-    Structurally identical to :class:`agentloom.providers.base.ToolCall`
-    but re-declared here to avoid a circular import from ``core`` into
-    ``providers``. Conversion helpers on :class:`Message` translate to /
-    from the provider-side ``ToolCall`` when the LLM step needs to emit
-    the wire-format assistant turn.
-    """
-
-    id: str
-    name: str
-    arguments: dict[str, Any] = Field(default_factory=dict)
-
-
-class Message(BaseModel):
-    """A single turn inside a :class:`Conversation`.
-
-    ``role`` follows the OpenAI/Anthropic chat conventions:
-
-    - ``system``: instruction turn (usually kept as the first message and
-      never trimmed away by the built-in policies).
-    - ``user``: end-user (or simulated user) input.
-    - ``assistant``: model reply — may carry ``tool_calls`` when the model
-      picked one or more tools.
-    - ``tool``: result of a previous tool call, paired with
-      ``tool_call_id``.
-
-    ``name`` is optional and identifies the speaker for multi-agent
-    threads (e.g. ``alice`` vs ``bob``). Providers that support ``name``
-    (OpenAI, some Anthropic tool-loop shapes) forward it; providers that
-    don't drop it silently with a debug log.
-
-    ``metadata`` carries free-form turn-level annotations (timestamp,
-    agent_id, tool call index) that ride along the checkpoint but never
-    reach the provider.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    role: Literal["system", "user", "assistant", "tool"]
-    content: str = ""
-    name: str | None = None
-    tool_call_id: str | None = None
-    tool_calls: list[ToolCallSpec] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    def token_count(self, model: str = "") -> int:
-        """Rough token-count estimate for budget bookkeeping.
-
-        Not authoritative — the value is only ever used to decide whether
-        the conversation exceeds ``token_budget`` before a call, so a
-        conservative under-count is fine. The heuristic follows the same
-        1 token ≈ 4 characters approximation the OpenAI docs recommend
-        for English + light per-message overhead (role marker + name
-        marker) so single-word turns don't hash to 0 tokens. ``model`` is
-        accepted for forward compatibility with a tokenizer-backed
-        implementation but currently ignored.
-        """
-        del model
-        char_count = len(self.content)
-        for call in self.tool_calls:
-            char_count += len(call.name)
-            # Approximate JSON length of the tool arguments without paying
-            # the ``json.dumps`` cost on every trim check.
-            for key, value in call.arguments.items():
-                char_count += len(str(key)) + len(str(value)) + 4
-        overhead = 4  # role marker
-        if self.name:
-            overhead += 2 + len(self.name)
-        if self.tool_call_id:
-            overhead += 4 + len(self.tool_call_id)
-        return max(1, (char_count + 3) // 4 + overhead)
-
-
 class Conversation(BaseModel):
     """A typed multi-turn conversation stored in workflow state.
 
@@ -243,19 +152,6 @@ class Conversation(BaseModel):
         heuristic's caveats.
         """
         return sum(m.token_count(model) for m in self.messages)
-
-
-class ToolDefinition(BaseModel):
-    """LLM-callable tool declared on an ``llm_call`` step.
-
-    ``parameters`` is a JSON Schema object; provider adapters translate it
-    to each API's native shape. ``name`` resolves against the workflow's
-    ``tool_registry`` for dispatch.
-    """
-
-    name: str
-    description: str = ""
-    parameters: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolChoiceByName(BaseModel):

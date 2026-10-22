@@ -35,6 +35,12 @@ class TestGetSet:
         assert await sm.get("x") == 10
         assert await sm.get("y") == 20
 
+    async def test_dotted_set_leaves_the_initial_state_untouched(self) -> None:
+        seed = {"cfg": {"model": "m"}}
+        sm = StateManager(initial_state=seed)
+        await sm.set("cfg.answer", 1)
+        assert seed == {"cfg": {"model": "m"}}
+
     async def test_overwrite_value(self) -> None:
         sm = StateManager(initial_state={"key": "old"})
         await sm.set("key", "new")

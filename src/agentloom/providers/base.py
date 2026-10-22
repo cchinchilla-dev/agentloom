@@ -8,21 +8,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from agentloom.contracts.stable import ProviderResponse as ProviderResponse
+from agentloom.contracts.stable import ToolCall as ToolCall
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
-
-
-class ToolCall(BaseModel):
-    """A function-call decision returned by the model.
-
-    ``id`` round-trips on the follow-up tool-result message (OpenAI:
-    ``tool_call_id``, Anthropic: ``tool_use_id``). ``arguments`` is
-    already JSON-decoded — adapters parse before constructing this.
-    """
-
-    id: str
-    name: str
-    arguments: dict[str, Any] = Field(default_factory=dict)
 
 
 class StreamEvent(BaseModel):
@@ -64,34 +53,6 @@ class StreamDone(StreamEvent):
     """Emitted when the stream finishes; carries the provider's stop reason."""
 
     finish_reason: str = ""
-
-
-class ProviderResponse(BaseModel):
-    """Unified response from any LLM provider."""
-
-    content: str
-    model: str
-    provider: str
-    usage: TokenUsage = Field(default_factory=TokenUsage)
-    cost_usd: float = 0.0
-    raw_response: dict[str, Any] = Field(default_factory=dict)
-    finish_reason: str | None = None
-    # Reasoning / chain-of-thought text. Populated when the provider
-    # exposes the trace and the caller did not opt out via
-    # ``ThinkingConfig.capture_reasoning``. OpenAI o-series keeps the
-    # trace server-side, so this stays ``None``; Anthropic concatenates
-    # ``type="thinking"`` blocks; Gemini surfaces ``thought=true`` parts;
-    # Ollama returns ``message.thinking`` (or strips inline
-    # ``<think>...</think>`` tags as a fallback).
-    reasoning_content: str | None = None
-    # Empty when the model didn't pick a tool. When non-empty, ``content``
-    # may be empty — the LLM step dispatches each call and re-prompts.
-    tool_calls: list[ToolCall] = Field(default_factory=list)
-    # Parsed structured output (dict or Pydantic instance). ``None`` for
-    # free-form steps. Populated by ``LLMCallStep``, not the adapters.
-    # Typed ``object | None`` — callers treat it as opaque; consumers
-    # that need a specific shape do their own ``isinstance`` narrowing.
-    parsed: object | None = None
 
 
 class EmbeddingResponse(BaseModel):
