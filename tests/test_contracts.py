@@ -51,6 +51,16 @@ def test_contracts_import_does_not_warn() -> None:
     assert probe.returncode == 0, probe.stderr
 
 
+def test_top_level_names_resolve_on_first_access() -> None:
+    import agentloom
+    from agentloom.core import graph
+
+    assert agentloom.WorkflowGraph is graph.WorkflowGraph
+    assert set(agentloom.__all__) <= set(dir(agentloom))
+    with pytest.raises(AttributeError, match="no attribute 'missing'"):
+        _ = agentloom.missing
+
+
 @pytest.mark.parametrize(
     ("module", "name"),
     [
@@ -127,9 +137,22 @@ async def test_workflow_adapter_runs_as_handle() -> None:
     handle = WorkflowAdapter(_workflow(_ask("answer")), _gateway(MockProvider({"hi": "hello"})))
     assert isinstance(handle, WorkflowHandle)
     assert handle.input_schema["properties"] == {"question": {}}  # keys, never default values
+    assert handle.output_schema == {"type": "object", "additionalProperties": True}
     outputs = await handle.run({"question": "hi"})
     assert outputs["answer"] == "hello"
     assert outputs["question"] == "hi"
+
+
+async def test_workflow_adapter_runs_leave_the_workflow_state_untouched() -> None:
+    step = StepDefinition(
+        id="a", type=StepType.LLM_CALL, prompt="{state.question}", output="cfg.answer"
+    )
+    workflow = _workflow(step)
+    workflow.state["cfg"] = {}
+    handle = WorkflowAdapter(workflow, _gateway(MockProvider({"hi": "hello"})))
+    for _ in range(2):
+        assert (await handle.run({"question": "hi"}))["cfg"] == {"answer": "hello"}
+    assert workflow.state == {"question": "default", "cfg": {}}
 
 
 @pytest.mark.parametrize(

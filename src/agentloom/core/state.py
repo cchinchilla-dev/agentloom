@@ -76,7 +76,8 @@ class StateManager:
     """
 
     def __init__(self, initial_state: dict[str, Any] | None = None) -> None:
-        self._state: dict[str, Any] = dict(initial_state or {})
+        # Deep: a dotted set mutates nested dicts, which would otherwise be the caller's.
+        self._state: dict[str, Any] = copy.deepcopy(initial_state or {})
         self._step_results: dict[str, StepResult] = {}
         self._step_status: dict[str, StepStatus] = {}
         self._lock = anyio.Lock()

@@ -190,16 +190,13 @@ class WorkflowHandle(Protocol):
     @property
     def input_schema(self) -> dict[str, Any]:
         """JSON Schema of the inputs ``run`` accepts."""
-        ...
 
     @property
     def output_schema(self) -> dict[str, Any]:
         """JSON Schema of the outputs ``run`` returns."""
-        ...
 
     async def run(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Run once with ``inputs`` and return the outputs."""
-        ...
 
 
 __all__ = [
