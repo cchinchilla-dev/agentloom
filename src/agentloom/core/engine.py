@@ -19,7 +19,7 @@ from agentloom.checkpointing.base import (
     CheckpointData,
 )
 from agentloom.core.dag import DAG
-from agentloom.core.models import StepType, WorkflowDefinition
+from agentloom.core.models import StepDefinition, StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.redact import RedactionPolicy, is_redacted, redact_state
 from agentloom.core.results import (
@@ -776,7 +776,46 @@ class WorkflowEngine:
 
         if self.observer:
             self.observer.on_step_start(step_id, step_def.type.value, stream=should_stream)
+        started = time.monotonic()
+        try:
+            await self._run_step(step_id, step_def, should_stream)
+        except BaseException as exc:
+            # A step cancelled with its layer (a failing sibling, a parent's timeout) or stopped
+            # by a budget breach never reaches on_step_end: close its span here, in its own task.
+            if self.observer:
+                error: str | None = str(exc)
+                spent: dict[str, Any] = {}
+                if isinstance(exc, anyio.get_cancelled_exc_class()):
+                    status, error = "cancelled", None
+                elif isinstance(exc, BudgetExceededError):
+                    status = "budget_exceeded"
+                    # The breach is this step's own charge, made after its result was recorded.
+                    with anyio.CancelScope(shield=True):
+                        done = await self.state.get_step_result(step_id)
+                    if done is not None:
+                        spent = {
+                            "cost_usd": done.cost_usd,
+                            "prompt_tokens": done.token_usage.prompt_tokens,
+                            "completion_tokens": done.token_usage.completion_tokens,
+                            "reasoning_tokens": done.token_usage.reasoning_tokens,
+                            "model": done.model,
+                            "provider": done.provider,
+                        }
+                else:
+                    status = "failed"
+                self.observer.on_step_end(
+                    step_id,
+                    step_def.type.value,
+                    status,
+                    (time.monotonic() - started) * 1000,
+                    error=error,
+                    stream=should_stream,
+                    **spent,
+                )
+            raise
 
+    async def _run_step(self, step_id: str, step_def: StepDefinition, should_stream: bool) -> None:
+        """Run a started step through its attempts; ``_execute_step`` covers escaping errors."""
         executor_cls = self.step_registry.get(step_def.type)
         executor: BaseStep = executor_cls()
 

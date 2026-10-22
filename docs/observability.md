@@ -241,7 +241,7 @@ Inference spans follow the **canonical OTel GenAI registry** (May 2026 spec). Wo
 
 | Attribute | Description |
 |-----------|-------------|
-| `step.id`, `step.type`, `step.status` | Step identification |
+| `step.id`, `step.type`, `step.status` | Step identification; `step.status` is the step's result, or `cancelled` / `budget_exceeded` when its layer is cancelled or it breaches the budget |
 | `step.duration_ms`, `step.cost_usd` | Per-step latency / spend |
 | `step.stream`, `step.attachments` | Streaming flag, attachment count |
 | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` | Operation type (`chat` for `llm_call`), provider (e.g. `openai`, `gcp.gemini`), model |
