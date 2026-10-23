@@ -315,6 +315,10 @@ def _setup_generic_openai(gateway: ProviderGateway, config: WorkflowConfig) -> N
 
 def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
     """Setup providers from config-driven discovery."""
+    # The endpoint is the only route: a discovered provider would take mapped models or fallbacks
+    if default_provider == "generic_openai":
+        return
+
     import importlib
 
     from agentloom.config import load_config

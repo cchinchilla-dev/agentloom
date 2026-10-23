@@ -130,6 +130,26 @@ def test_cli_registers_the_endpoint_with_the_key_its_variable_holds(
     assert entry.provider.api_key == "YOUR_VLLM_KEY_HERE"
 
 
+@respx.mock
+async def test_cli_routes_a_cloud_model_name_to_the_endpoint_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agentloom.cli.run import _setup_generic_openai, _setup_providers
+
+    monkeypatch.setenv("OPENAI_API_KEY", "YOUR_OPENAI_KEY_HERE")
+    route = respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(200, json=REPLY)
+    )
+    gateway = ProviderGateway()
+    config = WorkflowConfig(provider="generic_openai", base_url=BASE, model="gpt-4o-mini")
+    _setup_generic_openai(gateway, config)
+    _setup_providers(gateway, config.provider)
+    await gateway.complete(messages=HI, model="gpt-4o-mini")
+    await gateway.close()
+    assert [entry.provider.name for entry in gateway._providers] == ["generic_openai"]
+    assert route.call_count == 1
+
+
 def test_cli_refuses_a_key_variable_that_is_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentloom.cli.run import _setup_generic_openai
 

@@ -127,6 +127,7 @@ config:
 
 - `base_url` is required, and the same [normalization](#openai-base_url-normalization) as OpenAI applies: a bare host gets `/v1`, any other path is kept.
 - Every model name is accepted: the server decides what it serves.
+- Every call goes to `base_url`. The CLI registers no other provider for the workflow, so no step is routed or falls back to OpenAI, Anthropic, Google or Ollama, even when their keys are set.
 - The key is read from the variable `api_key_env` names, never from `OPENAI_API_KEY`, so an OpenAI key is not sent to another server. Without `api_key_env`, requests carry no `Authorization` header.
 - A model missing from the pricing table costs 0. A served model whose name starts like a priced one (`gpt-4o…`) is priced at that rate; override it with `AGENTLOOM_PRICING_FILE`.
 - Streams ask for `stream_options.include_usage`, as with OpenAI. vLLM, LM Studio and recent TGI accept it; an older server may not.

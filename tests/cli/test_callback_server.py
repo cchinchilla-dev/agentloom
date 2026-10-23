@@ -53,8 +53,9 @@ def _write_checkpoint(
     *,
     status: str = "paused",
     paused_step_id: str | None = "gate",
+    workflow: WorkflowDefinition | None = None,
 ) -> None:
-    wf = _make_workflow()
+    wf = workflow or _make_workflow()
     data = CheckpointData(
         workflow_name=wf.name,
         run_id=run_id,
@@ -311,6 +312,45 @@ class TestCallbackServer:
         )
         assert responses[0][0] == 409
         assert "no paused step" in responses[0][1]["error"]
+
+    @pytest.mark.anyio()
+    async def test_decision_generic_openai_key_not_set_500(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key variable missing on the server answers 500, not a dropped connection (#48)."""
+        monkeypatch.delenv("VLLM_API_KEY", raising=False)
+        endpoint = WorkflowConfig(
+            provider="generic_openai",
+            base_url="http://vllm.local:8000/v1",
+            api_key_env="VLLM_API_KEY",
+        )
+        wf = _make_workflow().model_copy(update={"config": endpoint})
+        _write_checkpoint(tmp_path, "run-generic", workflow=wf)
+
+        from agentloom.cli.callback_server import _handle_decision
+
+        responses: list[tuple[int, dict]] = []
+
+        class FakeStream:
+            async def send(self, data: bytes) -> None:
+                text = data.decode()
+                body_start = text.index("\r\n\r\n") + 4
+                body = json.loads(text[body_start:])
+                status = int(text.split(" ")[1])
+                responses.append((status, body))
+
+        await _handle_decision(
+            FakeStream(),
+            str(tmp_path),
+            True,
+            "run-generic",
+            "approved",  # type: ignore[arg-type]
+        )
+        assert len(responses) == 1
+        assert responses[0][0] == 500
+        assert "'VLLM_API_KEY' is not set" in responses[0][1]["error"]
+        saved = json.loads((tmp_path / "run-generic.json").read_text())
+        assert saved["status"] == "paused"
 
 
 class TestCallbackServerHTTP:
