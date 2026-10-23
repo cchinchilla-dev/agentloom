@@ -382,6 +382,9 @@ class WorkflowConfig(BaseModel):
 
     provider: str = "openai"
     model: str = "gpt-4o-mini"
+    # Endpoint of ``provider: generic_openai`` (#48); its key comes from env var ``api_key_env``.
+    base_url: str | None = None
+    api_key_env: str | None = None
     max_retries: int = 3
     budget_usd: float | None = None
     timeout: float | None = None
@@ -419,6 +422,17 @@ class WorkflowConfig(BaseModel):
     capture_prompts: bool = (
         False  # When true, llm_call spans emit a span event with the rendered prompt
     )
+
+    @model_validator(mode="after")
+    def _endpoint_only_for_generic_openai(self) -> WorkflowConfig:
+        if self.provider == "generic_openai":
+            if not self.base_url:
+                raise ValueError("provider 'generic_openai' needs config.base_url")
+        elif self.base_url is not None or self.api_key_env is not None:
+            raise ValueError(
+                "config.base_url and config.api_key_env apply only to provider 'generic_openai'"
+            )
+        return self
 
 
 class StateKeyConfig(BaseModel):

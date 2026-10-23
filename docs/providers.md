@@ -1,6 +1,6 @@
 # Providers
 
-AgentLoom ships with four providers. The gateway routes requests based on model name and falls back automatically when a provider is unavailable.
+AgentLoom ships with four providers, plus `generic_openai` for any OpenAI-compatible endpoint. The gateway routes requests based on model name and falls back automatically when a provider is unavailable.
 
 ## Capability matrix
 
@@ -112,6 +112,27 @@ All provider adapters normalize remote errors to a common taxonomy:
 | network / timeout | `ProviderError` | Counts toward the circuit breaker |
 
 Provider adapters declare an explicit kwargs allowlist for `extra` parameters; unknown kwargs raise a `TypeError` at call time rather than silently reaching the vendor's API. Each adapter exposes its allowlist via a constant (`_OPENAI_EXTRA_PAYLOAD_KEYS`, `_ANTHROPIC_EXTRA_PAYLOAD_KEYS`, `_GOOGLE_GEN_CONFIG_KEYS` + `_GOOGLE_TOPLEVEL_KEYS`, `_OLLAMA_OPTION_KEYS` + `_OLLAMA_TOPLEVEL_KEYS`).
+
+## Generic OpenAI-compatible endpoint
+
+`generic_openai` talks to any server that exposes the OpenAI chat-completions API: vLLM, Text Generation Inference, LM Studio, or a gateway in front of them. It reuses the OpenAI adapter, so streaming, tool calling, structured output and embeddings work as far as the server implements them. Set it in the workflow:
+
+```yaml
+config:
+  provider: generic_openai
+  base_url: "http://vllm-server:8000/v1"
+  model: "meta-llama/Llama-3-70B"
+  api_key_env: "VLLM_API_KEY"  # optional
+```
+
+- `base_url` is required, and the same [normalization](#openai-base_url-normalization) as OpenAI applies: a bare host gets `/v1`, any other path is kept.
+- Every model name is accepted: the server decides what it serves.
+- The key is read from the variable `api_key_env` names, never from `OPENAI_API_KEY`, so an OpenAI key is not sent to another server. Without `api_key_env`, requests carry no `Authorization` header.
+- A model missing from the pricing table costs 0. A served model whose name starts like a priced one (`gpt-4o…`) is priced at that rate; override it with `AGENTLOOM_PRICING_FILE`.
+- Streams ask for `stream_options.include_usage`, as with OpenAI. vLLM, LM Studio and recent TGI accept it; an older server may not.
+- In traces, `gen_ai.provider.name` is `generic_openai`.
+
+From Python, register `agentloom.providers.generic_openai.GenericOpenAIProvider(base_url=...)` on the gateway like any other provider.
 
 ### OpenAI base_url normalization
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -12,8 +13,10 @@ import typer
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.results import WorkflowStatus
 from agentloom.core.state import StateManager
+from agentloom.exceptions import ProviderError
 
 if TYPE_CHECKING:
+    from agentloom.core.models import WorkflowConfig
     from agentloom.observability.observer import WorkflowObserver
     from agentloom.providers.gateway import ProviderGateway
 
@@ -183,6 +186,11 @@ async def _run_async(
             priority=0,
         )
     else:
+        try:
+            _setup_generic_openai(gateway, workflow.config)
+        except ProviderError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1) from e
         _setup_providers(gateway, workflow.config.provider)
         if record is not None:
             from agentloom.providers.recorder import RecordingProvider
@@ -287,6 +295,22 @@ def _setup_observer(lite: bool) -> WorkflowObserver | None:
         return WorkflowObserver(tracing=tracing, metrics=metrics)
 
     return None
+
+
+def _setup_generic_openai(gateway: ProviderGateway, config: WorkflowConfig) -> None:
+    """Register ``provider: generic_openai`` from the workflow's own ``config:`` (#48)."""
+    if config.provider != "generic_openai":
+        return
+    from agentloom.providers.generic_openai import GenericOpenAIProvider
+
+    if not config.base_url:  # ``--provider generic_openai`` on a workflow without one
+        raise ProviderError("generic_openai", "needs config.base_url in the workflow")
+    api_key = os.environ.get(config.api_key_env, "") if config.api_key_env else ""
+    if config.api_key_env and not api_key:
+        raise ProviderError(
+            "generic_openai", f"environment variable {config.api_key_env!r} is not set"
+        )
+    gateway.register(GenericOpenAIProvider(base_url=config.base_url, api_key=api_key), priority=0)
 
 
 def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:

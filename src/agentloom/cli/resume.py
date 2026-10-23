@@ -6,6 +6,7 @@ import anyio
 import typer
 
 from agentloom.core.results import WorkflowStatus
+from agentloom.exceptions import ProviderError
 
 
 def resume(
@@ -58,7 +59,12 @@ async def _resume_async(
     stream: bool,
 ) -> None:
     from agentloom.checkpointing.file import FileCheckpointer
-    from agentloom.cli.run import _print_result, _setup_observer, _setup_providers
+    from agentloom.cli.run import (
+        _print_result,
+        _setup_generic_openai,
+        _setup_observer,
+        _setup_providers,
+    )
     from agentloom.core.engine import WorkflowEngine
     from agentloom.providers.gateway import ProviderGateway
     from agentloom.tools.builtins import register_builtins
@@ -107,6 +113,11 @@ async def _resume_async(
         engine.workflow.config.stream = True
 
     gateway = ProviderGateway()
+    try:
+        _setup_generic_openai(gateway, engine.workflow.config)
+    except ProviderError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e
     _setup_providers(gateway, engine.workflow.config.provider)
     engine.provider_gateway = gateway
 

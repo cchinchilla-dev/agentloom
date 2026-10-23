@@ -229,7 +229,7 @@ async def _handle_decision(
     expected_token: str | None = None,
 ) -> None:
     from agentloom.checkpointing.file import FileCheckpointer
-    from agentloom.cli.run import _setup_observer, _setup_providers
+    from agentloom.cli.run import _setup_generic_openai, _setup_observer, _setup_providers
     from agentloom.core.engine import WorkflowEngine
     from agentloom.providers.gateway import ProviderGateway
     from agentloom.tools.builtins import register_builtins
@@ -279,6 +279,7 @@ async def _handle_decision(
     )
 
     gateway = ProviderGateway()
+    _setup_generic_openai(gateway, engine.workflow.config)
     _setup_providers(gateway, engine.workflow.config.provider)
     engine.provider_gateway = gateway
 
