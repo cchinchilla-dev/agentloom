@@ -35,6 +35,8 @@ steps:                                      # at least one step required
 |--------|------|---------|-------------|
 | `provider` | `string` | `openai` | Default LLM provider |
 | `model` | `string` | `gpt-4o-mini` | Default model for all LLM steps |
+| `base_url` | `string` | `null` | Endpoint of `provider: generic_openai` (required there, refused with any other provider). See [Providers](providers.md#generic-openai-compatible-endpoint) |
+| `api_key_env` | `string` | `null` | Name of the environment variable holding the key for `provider: generic_openai`; without it, requests carry no `Authorization` header |
 | `max_retries` | `int` | `3` | Retry attempts on failure |
 | `budget_usd` | `float` | `null` | Maximum spend in USD |
 | `timeout` | `float` | `null` | Workflow timeout in seconds |

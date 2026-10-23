@@ -82,6 +82,8 @@ class OpenAIProvider(BaseProvider):
     """OpenAI API adapter via httpx (no SDK dependency)."""
 
     name = "openai"
+    # Read when no ``api_key`` is passed; ``None`` reads no variable.
+    _API_KEY_ENV: str | None = "OPENAI_API_KEY"
 
     def __init__(
         self,
@@ -91,15 +93,12 @@ class OpenAIProvider(BaseProvider):
     ) -> None:
         base_url = _normalize_base_url(base_url)
         super().__init__(api_key=api_key, base_url=base_url, **kwargs)
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
-        self._client = httpx.AsyncClient(
-            base_url=self.base_url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=60.0,
-        )
+        env_key = os.environ.get(self._API_KEY_ENV, "") if self._API_KEY_ENV else ""
+        self.api_key = api_key or env_key
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        self._client = httpx.AsyncClient(base_url=self.base_url, headers=headers, timeout=60.0)
 
     @staticmethod
     def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -177,7 +176,7 @@ class OpenAIProvider(BaseProvider):
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
         agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
-        extras = validate_extra_kwargs("openai", "complete", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
+        extras = validate_extra_kwargs(self.name, "complete", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
         # ``thinking_config`` is accepted at the step layer for YAML
         # uniformity but has no chat-completions equivalent — drop it
         # before splatting extras into the request body.
@@ -217,9 +216,9 @@ class OpenAIProvider(BaseProvider):
         try:
             response = await self._client.post("/chat/completions", json=payload)
         except httpx.HTTPError as e:
-            raise ProviderError("openai", format_http_error(e)) from e
+            raise ProviderError(self.name, format_http_error(e)) from e
 
-        raise_for_status("openai", response)
+        raise_for_status(self.name, response)
 
         data = response.json()
         message = data["choices"][0]["message"]
@@ -249,7 +248,7 @@ class OpenAIProvider(BaseProvider):
         return ProviderResponse(
             content=content,
             model=data.get("model", model),
-            provider="openai",
+            provider=self.name,
             usage=usage,
             cost_usd=cost,
             raw_response=data,
@@ -273,7 +272,7 @@ class OpenAIProvider(BaseProvider):
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
         agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
-        extras = validate_extra_kwargs("openai", "stream", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
+        extras = validate_extra_kwargs(self.name, "stream", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
         extras.pop("thinking_config", None)
         if agentloom_response_schema is not None:
             from agentloom.steps._structured import translate_for_openai
@@ -306,13 +305,13 @@ class OpenAIProvider(BaseProvider):
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
 
-        sr = StreamResponse(model=model, provider="openai")
+        sr = StreamResponse(model=model, provider=self.name)
 
         async def _generate() -> AsyncIterator[str]:
             async with self._client.stream("POST", "/chat/completions", json=payload) as resp:
                 if resp.status_code != 200:
                     await resp.aread()
-                    raise_for_status("openai", resp)
+                    raise_for_status(self.name, resp)
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data: "):
@@ -384,7 +383,7 @@ class OpenAIProvider(BaseProvider):
     ) -> EmbeddingResponse:
         kwargs.pop("agentloom_step_id", None)
         extras = validate_extra_kwargs(
-            "openai", "embed", kwargs, frozenset({"encoding_format", "user"})
+            self.name, "embed", kwargs, frozenset({"encoding_format", "user"})
         )
         all_vectors: list[list[float]] = []
         prompt_tokens = 0
@@ -400,8 +399,8 @@ class OpenAIProvider(BaseProvider):
             try:
                 response = await self._client.post("/embeddings", json=payload)
             except httpx.HTTPError as e:
-                raise ProviderError("openai", format_http_error(e)) from e
-            raise_for_status("openai", response)
+                raise ProviderError(self.name, format_http_error(e)) from e
+            raise_for_status(self.name, response)
             data = response.json()
             # Sort by ``index`` so parallel-shape guarantees hold even if
             # the API reorders results across a very large batch.
@@ -416,7 +415,7 @@ class OpenAIProvider(BaseProvider):
         return EmbeddingResponse(
             embeddings=all_vectors,
             model=response_model,
-            provider="openai",
+            provider=self.name,
             usage=TokenUsage(prompt_tokens=prompt_tokens, total_tokens=total_tokens),
             cost_usd=cost,
             raw_response=last_raw,

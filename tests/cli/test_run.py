@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import tempfile
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from typer.testing import CliRunner
 
 from agentloom.cli.main import app
+
+if TYPE_CHECKING:
+    import pytest
 
 runner = CliRunner()
 
@@ -39,6 +43,21 @@ class TestRunCommand:
             result = runner.invoke(app, ["run", f.name, "--state", "bad_format"])
         assert result.exit_code != 0
         assert "key=value" in (result.output + (result.stderr or ""))
+
+    def test_generic_openai_key_variable_not_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unset ``api_key_env`` variable stops the run with a clear error (#48)."""
+        monkeypatch.delenv("VLLM_API_KEY", raising=False)
+        endpoint = (
+            "provider: generic_openai\n"
+            "  base_url: http://vllm.local:8000/v1\n"
+            "  api_key_env: VLLM_API_KEY"
+        )
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(SIMPLE_YAML.replace("provider: mock", endpoint))
+            f.flush()
+            result = runner.invoke(app, ["run", f.name, "--lite"])
+        assert result.exit_code == 1
+        assert "'VLLM_API_KEY' is not set" in (result.output + (result.stderr or ""))
 
 
 class TestRunCheckpoint:

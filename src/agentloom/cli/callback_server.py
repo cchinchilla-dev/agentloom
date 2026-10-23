@@ -229,8 +229,9 @@ async def _handle_decision(
     expected_token: str | None = None,
 ) -> None:
     from agentloom.checkpointing.file import FileCheckpointer
-    from agentloom.cli.run import _setup_observer, _setup_providers
+    from agentloom.cli.run import _setup_generic_openai, _setup_observer, _setup_providers
     from agentloom.core.engine import WorkflowEngine
+    from agentloom.exceptions import ProviderError
     from agentloom.providers.gateway import ProviderGateway
     from agentloom.tools.builtins import register_builtins
     from agentloom.tools.registry import ToolRegistry
@@ -279,6 +280,11 @@ async def _handle_decision(
     )
 
     gateway = ProviderGateway()
+    try:
+        _setup_generic_openai(gateway, engine.workflow.config)
+    except ProviderError as e:
+        await _send_response(stream, 500, {"error": str(e)})
+        return
     _setup_providers(gateway, engine.workflow.config.provider)
     engine.provider_gateway = gateway
 
@@ -338,6 +344,7 @@ async def _send_response(stream: anyio.abc.SocketStream, status: int, body: dict
         401: "Unauthorized",
         404: "Not Found",
         409: "Conflict",
+        500: "Internal Server Error",
     }
     phrase = phrases.get(status, "Unknown")
     payload = json.dumps(body).encode()

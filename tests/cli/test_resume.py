@@ -230,6 +230,24 @@ class TestResumeCommand:
 
         assert result.exit_code != 0
 
+    def test_resume_generic_openai_without_base_url(self, tmp_path: Path) -> None:
+        """``--provider generic_openai`` on a workflow without ``base_url`` fails cleanly (#48)."""
+        _write_checkpoint(tmp_path, "run-generic", status="failed")
+        result = runner.invoke(
+            app,
+            [
+                "resume",
+                "run-generic",
+                "--checkpoint-dir",
+                str(tmp_path),
+                "--provider",
+                "generic_openai",
+                "--lite",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "needs config.base_url" in (result.output + (result.stderr or ""))
+
 
 def _approval_workflow() -> WorkflowDefinition:
     """Workflow with an approval gate."""
