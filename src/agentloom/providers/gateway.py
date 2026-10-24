@@ -6,11 +6,16 @@ import logging
 import os
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 
-from agentloom.exceptions import CircuitOpenError, ProviderError, RateLimitError
+from agentloom.exceptions import (
+    CircuitOpenError,
+    ProviderError,
+    RateLimitError,
+    RecordingMismatchError,
+)
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
@@ -20,6 +25,9 @@ from agentloom.providers.base import (
 from agentloom.providers.multimodal import estimate_content_tokens
 from agentloom.resilience.circuit_breaker import CircuitBreaker, CircuitState
 from agentloom.resilience.rate_limiter import RateLimiter
+
+if TYPE_CHECKING:
+    from agentloom.core.attempts import Attempt
 
 logger = logging.getLogger("agentloom.gateway")
 
@@ -276,6 +284,8 @@ class ProviderGateway:
                     error_hook = getattr(self._observer, "on_provider_error", None)
                     if error_hook:
                         error_hook(entry.provider.name, type(e).__name__)
+                if isinstance(e, RecordingMismatchError):
+                    raise  # a stale recording: no other provider answers in its place
                 continue
 
         raise ProviderError(
@@ -504,6 +514,8 @@ class ProviderGateway:
                     error_hook = getattr(self._observer, "on_provider_error", None)
                     if error_hook:
                         error_hook(entry.provider.name, type(e).__name__)
+                if isinstance(e, RecordingMismatchError):
+                    raise  # a stale recording: no other provider answers in its place
                 continue
 
         raise ProviderError(
@@ -678,6 +690,8 @@ class ProviderGateway:
                     error_hook = getattr(self._observer, "on_provider_error", None)
                     if error_hook:
                         error_hook(entry.provider.name, type(e).__name__)
+                if isinstance(e, RecordingMismatchError):
+                    raise  # a stale recording: no other provider answers in its place
                 continue
 
         raise ProviderError(
@@ -706,6 +720,13 @@ class ProviderGateway:
         if len(self._candidate_cache) > self._candidate_cache_max:
             self._candidate_cache.popitem(last=False)  # evict LRU
         return result
+
+    async def begin_attempt(self, step_id: str, failed: Attempt | None) -> None:
+        """Pass the engine's attempt signal to the providers that record (#164)."""
+        for entry in self._providers:
+            begin = getattr(entry.provider, "begin_attempt", None)
+            if begin is not None:
+                await begin(step_id, failed)
 
     async def close(self) -> None:
         """Close all provider connections."""

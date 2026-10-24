@@ -19,7 +19,7 @@ from agentloom.core.models import (
 )
 from agentloom.core.results import PromptMetadata, StepResult, StepStatus
 from agentloom.core.templates import SafeFormatDict, build_template_vars
-from agentloom.exceptions import StepError
+from agentloom.exceptions import RecordingMismatchError, StepError
 from agentloom.observability.schema import SpanAttr
 from agentloom.providers.base import ProviderResponse
 from agentloom.providers.multimodal import (
@@ -644,6 +644,8 @@ class LLMCallStep(BaseStep):
                     model=model,
                     provider_kwargs=provider_kwargs,
                 )
+        except RecordingMismatchError:
+            raise  # the engine fails a stale replay at once instead of retrying it
         except StepError as e:
             duration = (time.monotonic() - start) * 1000
             return StepResult(
@@ -724,6 +726,8 @@ class LLMCallStep(BaseStep):
                 step_id=step.id,
                 **provider_kwargs,
             )
+        except RecordingMismatchError:
+            raise  # as in ``execute``: a stale replay is not retried
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
             return StepResult(

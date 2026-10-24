@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import AsyncMock, patch
 
 from typer.testing import CliRunner
 
@@ -194,3 +195,69 @@ steps:
                 result = runner.invoke(app, ["run", str(yaml_path), "--lite"])
         assert result.exit_code == 0, f"stdout: {result.output}"
         assert "'answer'" in result.output
+
+
+TOOL_YAML = """\
+name: tool-replay
+config:
+  provider: mock
+  model: mock-model
+steps:
+  - id: ask
+    type: llm_call
+    prompt: "Fetch the page"
+    tools:
+      - name: http_request
+        description: "Fetch a URL"
+        parameters: {type: object, properties: {url: {type: string}}}
+    output: answer
+"""
+
+FETCH = {"name": "http_request", "arguments": {"url": "https://example.com"}}
+
+
+def _tool_turn(content: str, calls: list[dict[str, Any]]) -> dict[str, Any]:
+    turn: dict[str, Any] = {
+        "content": content,
+        "model": "mock-model",
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        "cost_usd": 0.0,
+        "finish_reason": "tool_calls" if calls else "stop",
+    }
+    if calls:
+        turn["tool_calls"] = calls
+    return turn
+
+
+class TestReplayTools:
+    def test_record_tools_then_replay_them_without_running_tools(self, tmp_path: Path) -> None:
+        """``run --record-tools`` stores tool results; ``replay --tools replay`` serves them."""
+        from agentloom.providers.mock import MockProvider
+
+        src = tmp_path / "src.json"
+        loop = [_tool_turn("", [{"id": "c1", **FETCH}]), _tool_turn("fetched", [])]
+        src.write_text(json.dumps({"ask": loop}))
+        workflow = tmp_path / "wf.yaml"
+        workflow.write_text(TOOL_YAML)
+        recording = tmp_path / "rec.json"
+
+        def _wire(gw: Any, default: str) -> None:
+            gw.register(MockProvider(responses_file=src), priority=0)
+
+        page = AsyncMock(return_value=("<html>", True))
+        with (
+            patch("agentloom.cli.run._setup_providers", side_effect=_wire),
+            patch("agentloom.steps._tools._execute", page),
+        ):
+            args = ["run", str(workflow), "--record", str(recording), "--record-tools", "--lite"]
+            recorded = runner.invoke(app, args)
+        assert recorded.exit_code == 0, recorded.output
+        tools = json.loads(recording.read_text())["_tools"]
+        assert tools == {"ask": [{**FETCH, "result": "<html>", "success": True}]}
+
+        never = AsyncMock(side_effect=AssertionError("a replayed tool ran"))
+        with patch("agentloom.steps._tools._execute", never):
+            args = ["replay", str(workflow), "--recording", str(recording), "--tools", "replay"]
+            replayed = runner.invoke(app, args)
+        assert replayed.exit_code == 0, replayed.output
+        never.assert_not_called()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from agentloom.core.attempts import Attempt, enter_attempt
 from agentloom.providers.mock import MockProvider, prompt_hash
 from agentloom.providers.recorder import RecordingProvider
 
@@ -300,3 +301,67 @@ async def test_stream_with_none_iterator_returns_no_chunks(tmp_path):
     chunks = [c async for c in sr]
     assert chunks == []
     await recorder.close()
+
+
+def test_a_recording_is_merged_with_the_shared_lock_held(tmp_path) -> None:
+    # Every writer of a recording (the recorders, the tool tape) merges under one lock (#164).
+    from agentloom.providers.recorder import _FILE_LOCK, merge_into_recording
+
+    held: list[bool] = []
+    merge_into_recording(tmp_path / "rec.json", lambda merged: held.append(_FILE_LOCK.locked()))
+    assert held == [True]
+
+
+async def _turns(recorder: RecordingProvider, step_id: str, *prompts: str) -> None:
+    for prompt in prompts:
+        messages = [{"role": "user", "content": prompt}]
+        await recorder.complete(messages=messages, model="m", step_id=step_id)
+
+
+async def _attempt(recorder: RecordingProvider, failed: Attempt | None = None) -> Attempt:
+    """Start an attempt of step ``s`` the way the engine does; ``failed`` makes it a retry."""
+    running = enter_attempt(())
+    await recorder.begin_attempt("s", failed)
+    return running
+
+
+async def test_a_retry_drops_the_turns_of_the_failed_attempt(tmp_path) -> None:
+    # The engine signals each attempt (#164): a retry forgets what the failed attempt recorded.
+    path = tmp_path / "rec.json"
+    recorder = RecordingProvider(MockProvider(default_response="ok"), path)
+    first = await _attempt(recorder)
+    await _turns(recorder, "s", "a", "b")
+    await _attempt(recorder, first)
+    assert "s" not in json.loads(path.read_text())
+    await _turns(recorder, "s", "c")
+    assert json.loads(path.read_text())["s"]["request_hash"] == prompt_hash(
+        [{"role": "user", "content": "c"}], "m"
+    )
+
+
+async def test_a_retry_keeps_the_turns_of_earlier_runs_of_the_step(tmp_path) -> None:
+    path = tmp_path / "rec.json"
+    recorder = RecordingProvider(MockProvider(default_response="ok"), path)
+    for runs in (["a"], ["b", "c"]):  # the step runs twice in a loop, once per turn list
+        run = await _attempt(recorder)
+        await _turns(recorder, "s", *runs)
+    await _attempt(recorder, run)  # the second run failed: back to one turn
+    assert isinstance(json.loads(path.read_text())["s"], dict)
+    await _turns(recorder, "s", "d", "e")
+    third = await _attempt(recorder)
+    await _turns(recorder, "s", "f")
+    await _attempt(recorder, third)  # a third run fails: its one turn goes
+    hashes = [t["request_hash"] for t in json.loads(path.read_text())["s"]]
+    assert hashes == [prompt_hash([{"role": "user", "content": p}], "m") for p in "ade"]
+
+
+async def test_a_retry_of_an_attempt_that_recorded_nothing_keeps_the_recording(tmp_path) -> None:
+    path = tmp_path / "rec.json"
+    recorder = RecordingProvider(MockProvider(default_response="ok"), path)
+    await _attempt(recorder)
+    await _turns(recorder, "s", "a")
+    second = await _attempt(recorder)  # the second run fails before its first turn
+    await _attempt(recorder, second)
+    assert json.loads(path.read_text())["s"]["request_hash"] == prompt_hash(
+        [{"role": "user", "content": "a"}], "m"
+    )

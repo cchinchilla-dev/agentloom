@@ -12,7 +12,7 @@ import contextlib
 import time
 
 from agentloom.core.results import StepResult, StepStatus
-from agentloom.exceptions import StepError
+from agentloom.exceptions import RecordingMismatchError, StepError
 from agentloom.steps.base import BaseStep, StepContext
 
 
@@ -89,6 +89,8 @@ class EmbedStep(BaseStep):
                 dimensions=step.dimensions,
                 step_id=step.id,
             )
+        except RecordingMismatchError:
+            raise  # the engine fails a stale replay at once instead of retrying it
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
             return StepResult(

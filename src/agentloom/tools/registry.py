@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agentloom.tools.base import BaseTool
+
+if TYPE_CHECKING:
+    from agentloom.providers.tool_tape import ToolTape
 
 logger = logging.getLogger("agentloom.tools.registry")
 
@@ -24,6 +27,8 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
+        # Records or replays the results of tool-loop calls (#164); ``None`` runs them live.
+        self.tape: ToolTape | None = None
 
     def register(self, tool: BaseTool, *, replace: bool = False) -> None:
         """Register a tool instance.

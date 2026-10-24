@@ -228,6 +228,11 @@ class SubworkflowStep(BaseStep):
                     if inner.status == StepStatus.FAILED and inner.error:
                         child_error = f"child step '{inner.step_id}': {inner.error}"
                         break
+        # A child step that failed for good (a stale replay, a sandbox block) fails the
+        # subworkflow for good: running the child again would repeat it, tools included.
+        permanent = status == StepStatus.FAILED and any(
+            inner.error_classification == "permanent" for inner in result.step_results.values()
+        )
 
         from agentloom.core.results import TokenUsage
 
@@ -271,4 +276,5 @@ class SubworkflowStep(BaseStep):
             duration_ms=duration,
             cost_usd=reported_cost,
             token_usage=token_usage,
+            error_classification="permanent" if permanent else None,
         )

@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+from typing import TYPE_CHECKING
+
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import WorkflowDefinition
 from agentloom.core.results import StepResult, StepStatus, WorkflowStatus
 from agentloom.providers.gateway import ProviderGateway
 from tests.conftest import MockProvider
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class TestSimpleWorkflow:
@@ -267,7 +273,7 @@ class TestRetryableStatusCodes:
         assert is_retryable_exception(RuntimeError("boom"), [429, 500]) is True
 
     async def test_engine_does_not_retry_non_retryable_status(
-        self, mock_gateway: ProviderGateway
+        self, mock_gateway: ProviderGateway, caplog: pytest.LogCaptureFixture
     ) -> None:
         """When a step raises a ProviderError with a status not in
         retryable_status_codes, the engine must surface FAILED on the
@@ -312,11 +318,13 @@ class TestRetryableStatusCodes:
             provider_gateway=mock_gateway,
         )
         engine.step_registry.register(StepType.LLM_CALL, FailingStep)
+        caplog.set_level(logging.ERROR, logger="agentloom.engine")
         result = await engine.run()
         assert result.status == WorkflowStatus.FAILED
         assert len(attempts) == 1, (
             f"non-retryable status must not be retried, got {len(attempts)} attempts"
         )
+        assert "Step 's' failed after 1 attempt(s)" in caplog.text
 
     async def test_engine_retries_timeout_error(self, mock_gateway: ProviderGateway) -> None:
         """``TimeoutError`` from a step is treated as transient and retried

@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
-from agentloom.core.models import RetryConfig
-from agentloom.core.results import WorkflowStatus
+from agentloom.core.engine import WorkflowEngine
+from agentloom.core.models import (
+    RetryConfig,
+    StepDefinition,
+    StepType,
+    WorkflowConfig,
+    WorkflowDefinition,
+)
+from agentloom.core.results import StepStatus, WorkflowStatus
 from agentloom.exceptions import RecordingMismatchError
+from agentloom.providers.base import EmbeddingResponse, ProviderResponse
+from agentloom.providers.gateway import ProviderGateway
 from agentloom.providers.mock import MockProvider
 from agentloom.providers.recorder import RecordingProvider
 from tests.providers.test_recorder_tool_loop import (
@@ -113,3 +123,54 @@ async def test_a_second_recorder_on_the_file_keeps_a_re_recorded_step(tmp_path):
     await second.close()  # closes last, as a fallback provider does in the gateway
 
     assert json.loads(recording.read_text())["ask"]["content"] == "new"
+
+
+class _CountingMock(MockProvider):
+    """Counts every request, including the ones the recording refuses."""
+
+    attempts = 0
+
+    async def complete(self, *args: Any, **kwargs: Any) -> ProviderResponse:
+        self.attempts += 1
+        return await super().complete(*args, **kwargs)
+
+    async def embed(self, *args: Any, **kwargs: Any) -> EmbeddingResponse:
+        self.attempts += 1
+        return await super().embed(*args, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        StepDefinition(id="s", type=StepType.LLM_CALL, prompt="hi", output="out"),
+        StepDefinition(id="s", type=StepType.LLM_CALL, prompt="hi", output="out", stream=True),
+        StepDefinition(id="s", type=StepType.EMBED, inputs="state.docs", output="out"),
+        StepDefinition(
+            id="s",
+            type=StepType.SUBWORKFLOW,
+            workflow_inline={
+                "name": "child",
+                "config": {"provider": "mock", "model": "m"},
+                "steps": [{"id": "s", "type": "llm_call", "prompt": "hi", "output": "out"}],
+            },
+        ),
+    ],
+    ids=["complete", "stream", "embed", "subworkflow"],
+)
+async def test_a_replay_mismatch_fails_the_step_without_retries(tmp_path, step):
+    recording = tmp_path / "rec.json"
+    recording.write_text(json.dumps({"_version": 2, "s": {"content": "x", "request_hash": "old"}}))
+    mock = _CountingMock(responses_file=recording, strict=True)
+    gateway = ProviderGateway()
+    gateway.register(mock)
+    workflow = WorkflowDefinition(
+        name="w",
+        config=WorkflowConfig(provider="mock", model="m"),
+        state={"docs": ["a"]},
+        steps=[step],
+    )
+    result = await WorkflowEngine(workflow=workflow, provider_gateway=gateway).run()
+
+    failed = result.step_results["s"]
+    assert (failed.status, failed.error_classification) == (StepStatus.FAILED, "permanent")
+    assert mock.attempts == 1  # no fallback provider, no retry, no second run of a child

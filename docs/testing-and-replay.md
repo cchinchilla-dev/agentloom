@@ -42,7 +42,7 @@ The captured format is directly loadable by `MockProvider`:
 
 Entries sit at the top level alongside the `_version` metadata key, keyed by the step's `step_id` when available, or by the request hash (SHA-256 of model + temperature + max_tokens + extra + serialized messages) otherwise. Streaming responses are keyed under the same hash as the equivalent `complete()` call and persist the joined chunk content in the same entry shape, so a recording captures both modes uniformly.
 
-A step called more than once in one run (the turns of a `tools:` loop, or a step inside a loop) is stored as a list of such entries in call order. A turn in which the model asked for tools carries `tool_calls`, each with `id`, `name` and `arguments`.
+A step called more than once in one run (the turns of a `tools:` loop, or a step inside a loop) is stored as a list of such entries in call order. A turn in which the model asked for tools carries `tool_calls`, each with `id`, `name` and `arguments`. When the engine retries a step, the recorder drops the turns of the failed attempt, those of the steps of a subworkflow that ran inside it included, so the recording holds the attempt that finished.
 
 !!! info "v1 ↔ v2 compatibility"
     The reader treats any top-level key starting with `_` as metadata, so v1 recordings (0.4.x, no underscore-prefixed keys) load against 0.5.0+ without errors. Recordings keyed by `step_id` continue to replay unchanged. v1 recordings keyed only by the **legacy messages-only request hash** will not match under 0.5.0+, because the fallback hash inputs now include `model`, `temperature`, `max_tokens`, and `extra` — regenerate them against 0.5.0+ to replay. New recordings are always written with `_version: 2`.
@@ -65,7 +65,7 @@ Every `llm_call` step resolves from the JSON. No network, no API key, no cost. L
 
 `agentloom replay` runs the mock provider in **strict mode**. A request that misses the recording — or matches a step whose prompt, system prompt, model, or tools spec drifted since capture — raises `RecordingMismatchError` and fails the workflow. This is what makes a green replay trustworthy in CI: pre-0.5.0 the mock provider silently fell through to the placeholder `"Mock response"`, so a replay could pass while answering a prompt the recording no longer matched.
 
-Each recorded entry carries a `request_hash`; on replay the mock compares it against the live request and refuses on a mismatch. Recording files are also validated against the canonical schema when loaded — a malformed file, or one with `_version` below 2, is rejected at startup with a re-record hint.
+Each recorded entry carries a `request_hash`; on replay the mock compares it against the live request and refuses on a mismatch. A mismatch fails its step on the first attempt: the step's retries do not apply, the gateway does not try another provider, and a subworkflow around the step is not run again. Recording files are also validated against the canonical schema when loaded — a malformed file, or one with `_version` below 2, is rejected at startup with a re-record hint.
 
 Pass `--allow-default-fallback` to restore the lenient behaviour (placeholder response on a miss):
 
@@ -89,6 +89,38 @@ config:
 ```
 
 Run it like any normal workflow — `agentloom run workflow.yaml`. Useful for committed fixtures and CI without plumbing flags through shell scripts.
+
+## Recording tool results
+
+Replay serves the recorded LLM responses, but the tools of a `tools:` loop run again. To replay a run whose tools read the clock, call an API or touch files, record their results too:
+
+```bash
+agentloom run workflow.yaml --record recordings/run1.json --record-tools
+agentloom replay workflow.yaml --recording recordings/run1.json --tools replay
+```
+
+`--record-tools` stores each tool call under `_tools`, keyed by step, in call order:
+
+```json
+{
+  "_version": 2,
+  "_tools": {
+    "ask": [
+      {"name": "http_request", "arguments": {"url": "https://example.com"}, "result": "<html>…", "success": true}
+    ]
+  }
+}
+```
+
+`agentloom replay --tools` takes one of three modes:
+
+| Mode | Tools | A call missing from the recording, or a different result |
+|---|---|---|
+| `live` (default) | run | not checked here; the next turn's `request_hash` catches a changed result |
+| `replay` | do not run: the recorded result is served | a missing call raises `RecordingMismatchError` with the step, the call number and the tool |
+| `verify` | run, and their result and `success` flag are compared | raises `RecordingMismatchError` with the call and the hashes of both results |
+
+A call matches the next recorded call of its step with the same tool name and arguments, so a tool called twice gets its two results in order. When the engine retries a step, the failed attempt leaves no trace, nor do the steps of a subworkflow that ran inside it: recording keeps the calls of the attempt that finished, and replay serves again the calls that the failed attempt took. With `--allow-default-fallback`, a missing call runs live and a different result logs a warning. Steps of `type: tool` always run live.
 
 ## Latency models
 
@@ -183,13 +215,13 @@ The stock Grafana dashboard includes a **Mock & Replay** row with:
 
 If a workflow registers multiple providers each wrapped with `RecordingProvider` pointing to the same file (e.g. primary + fallback via the gateway), each recorder holds only what it captured and `_flush()` merges that over the on-disk content, so recorders never revert each other's keys.
 
-This is **best-effort**, not concurrency-safe: the implementation is a read-merge-write cycle without locking, so true concurrent writers (multiple processes, or parallel flushes across tasks) can still lose updates. In practice it covers the common case — recorders inside the same run flushing sequentially per call — but if you need strict guarantees, use a single writer or serialize access externally.
+Within one process, every writer of the file (each `RecordingProvider` and the tool recorder of `--record-tools`) holds a shared lock around its read-merge-write, so parallel steps never drop each other's entries. Writers in separate processes are not coordinated: they can still lose updates, so give each process its own file.
 
 ## Limitations & gotchas
 
 - **Streaming through the gateway.** `RecordingProvider.stream()` records one entry with the joined content and the tool calls, but the `StreamResponse` a step receives from the gateway carries only usage, cost, finish reason and model.
 - **A run is the recorder's lifetime.** Reusing one gateway for several `engine.run()` calls appends every run's calls to the same list of turns. If the gateway falls back to another provider in the middle of a loop, each provider's recorder keeps only its own turns and the last one to flush wins: re-record without the fallback.
-- **Tools run for real on replay.** Strict replay compares each turn's request, which includes the earlier tool results, so a tool whose output changes (network, clock, files) fails strict replay from that turn on.
+- **Tools run for real on replay** unless they were recorded with `--record-tools` and replayed with `--tools replay`. Strict replay compares each turn's request, which includes the earlier tool results, so a live tool whose output changes (network, clock, files) fails strict replay from that turn on. Steps of `type: tool` always run live.
 - **Prompt hashes are sensitive to message formatting.** A trailing space or reordered tool-result block changes the hash. If replay misses, inspect `provider.calls` to see what was tried.
 - **Recordings are not encrypted.** Treat them as you would any captured LLM output — scrub PII before committing.
 - **No built-in TTL.** Recordings live on disk until deleted. For hot-path caching across distributed workers, a pluggable store backend is on the roadmap.
