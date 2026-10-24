@@ -123,7 +123,8 @@ class ToolReplayer:
     """
 
     def __init__(self, path: str | Path, mode: ToolMode, *, strict: bool = True) -> None:
-        recording = validate_recording_schema(json.loads(Path(path).read_text()), str(path))
+        text = Path(path).read_text(encoding="utf-8")
+        recording = validate_recording_schema(json.loads(text), str(path))
         self._recorded: dict[str, list[dict[str, Any]]] = recording.get("_tools", {})
         self.mode = mode
         self.strict = strict

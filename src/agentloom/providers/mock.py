@@ -222,7 +222,7 @@ class MockProvider(BaseProvider):
         self._turn_cursor: dict[str, int] = {}
         if self.responses_file and self.responses_file.exists():
             try:
-                raw = json.loads(self.responses_file.read_text())
+                raw = json.loads(self.responses_file.read_text(encoding="utf-8"))
             except json.JSONDecodeError as e:
                 # A malformed recording file is always an error — pre-0.5.0
                 # the JSON parse failure surfaced raw; now it carries the

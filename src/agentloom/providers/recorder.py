@@ -45,7 +45,7 @@ def merge_into_recording(path: Path, update: Callable[[dict[str, Any]], None]) -
         merged: dict[str, Any] = {"_version": RECORDING_FORMAT_VERSION}
         if path.exists():
             try:
-                existing = json.loads(path.read_text())
+                existing = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(existing, dict):
                     merged.update(existing)
             except json.JSONDecodeError:
