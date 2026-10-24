@@ -163,7 +163,7 @@ The engine and `resilience/retry.py` share `compute_backoff` and `is_retryable_e
 
 | Module | Holds | Stability |
 |--------|-------|-----------|
-| `agentloom.contracts.stable` | `Message`, `Attachment`, `ToolCall`, `ToolDefinition`, `TokenUsage`, `ProviderResponse`, `WorkflowHandle` | Semantic versioning |
+| `agentloom.contracts.stable` | `Message`, `Attachment`, `ToolCall`, `ToolDefinition`, `TokenUsage`, `ProviderResponse`, `ResponseMeta`, `WorkflowHandle` | Semantic versioning |
 | `agentloom.contracts.experimental` | `SpanName`, `SpanAttr`, `MetricName`, `GenAIOperationName`, `GenAIProviderName` | May change in a minor release; importing it emits a `FutureWarning` |
 
 The runtime modules that used to define these models (`core.models`, `core.results`, `providers.base`, `observability.schema`) re-export them, so existing imports keep working and both paths give the same class.

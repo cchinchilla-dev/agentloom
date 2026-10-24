@@ -16,11 +16,12 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import anyio
 
-from agentloom.core.attempts import AttemptLog
+from agentloom.core.attempts import AttemptLog, attempt_number
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
     ProviderResponse,
+    ResponseMeta,
     StreamResponse,
     ToolCall,
 )
@@ -232,6 +233,8 @@ class RecordingProvider(BaseProvider):
         }
         if response.tool_calls:
             entry["tool_calls"] = _tool_calls(response.tool_calls)
+        if meta := _meta(response.meta):
+            entry["meta"] = meta
         async with self._write_lock:
             self._store(key, entry, by_step_id=bool(step_id))
         await self._flush()
@@ -283,6 +286,7 @@ class RecordingProvider(BaseProvider):
                 outer_sr.model = inner_sr.model
                 outer_sr.reasoning_content = inner_sr.reasoning_content
                 outer_sr.tool_calls = list(inner_sr.tool_calls)
+                outer_sr.meta = inner_sr.meta
 
             latency_ms = (time.perf_counter() - start) * 1000.0
             key = recorder._key(step_id, messages, model, temperature, max_tokens, extra_kwargs)
@@ -298,6 +302,8 @@ class RecordingProvider(BaseProvider):
             }
             if inner_sr.tool_calls:
                 entry["tool_calls"] = _tool_calls(inner_sr.tool_calls)
+            if meta := _meta(inner_sr.meta):
+                entry["meta"] = meta
             async with recorder._write_lock:
                 recorder._store(key, entry, by_step_id=bool(step_id))
             await recorder._flush()
@@ -373,3 +379,16 @@ class RecordingProvider(BaseProvider):
 def _tool_calls(calls: list[ToolCall]) -> list[dict[str, Any]]:
     """The shape ``MockProvider`` hydrates back into ``ToolCall`` on replay."""
     return [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in calls]
+
+
+def _meta(meta: ResponseMeta | None) -> dict[str, Any]:
+    """An entry's ``meta``: what the provider reported, and the attempt number after a retry.
+
+    ``attempt`` is this run's: one served by a replayed entry belonged to the run that recorded it.
+    """
+    recorded = (
+        meta.model_dump(mode="json", exclude_defaults=True, exclude={"attempt"}) if meta else {}
+    )
+    if (number := attempt_number()) > 1:
+        recorded["attempt"] = number
+    return recorded

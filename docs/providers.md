@@ -242,6 +242,27 @@ usage.billable_completion_tokens  # completion + reasoning
 !!! warning "Ollama caveat — no token split"
     Ollama exposes a single `eval_count` for all output tokens regardless of whether thinking is active, so `reasoning_tokens` always reports `0` for this provider. Cost is unaffected (local models are free), but `billable_completion_tokens` will not reflect the true thinking volume.
 
+## Response metadata
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+
+`ProviderResponse.meta` (a `ResponseMeta`) reports what a call sent and got back besides the answer, from `complete()` and from a stream once it is exhausted:
+
+- `temperature`, `top_p`, `seed`: the sampling parameters in the request body, after the adapter dropped or renamed what its API does not take. Anthropic takes no `seed`.
+- the identifiers the provider returned, in the table below;
+- `rate_limit`: the response headers whose names start with `x-ratelimit-` or `anthropic-ratelimit-`, and `retry-after`. No other header is kept;
+- `received_at`: when the response headers arrived, in UTC.
+
+| Provider | `system_fingerprint` | `model_version` | `request_id` |
+|----------|----------------------|-----------------|--------------|
+| OpenAI, `generic_openai` | `system_fingerprint` in the body | — | `x-request-id` header |
+| Anthropic | — | — | `request-id` header |
+| Google | — | `modelVersion` in the body | `responseId` in the body |
+| Ollama | — | — | — |
+
+Embedding responses carry no metadata. Recordings keep it in each entry (see [Testing and replay](testing-and-replay.md#recording-a-run)).
+
 ## Security
 
 ### SSRF protection

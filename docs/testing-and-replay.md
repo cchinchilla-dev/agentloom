@@ -35,7 +35,8 @@ The captured format is directly loadable by `MockProvider`:
     "cost_usd": 0.00264,
     "latency_ms": 1843.2,
     "finish_reason": "stop",
-    "request_hash": "9f2c41…"
+    "request_hash": "9f2c41…",
+    "meta": {"temperature": 0.2, "request_id": "req_011C…", "received_at": "2026-10-24T12:00:01Z"}
   }
 }
 ```
@@ -43,6 +44,8 @@ The captured format is directly loadable by `MockProvider`:
 Entries sit at the top level alongside the `_version` metadata key, keyed by the step's `step_id` when available, or by the request hash (SHA-256 of model + temperature + max_tokens + extra + serialized messages) otherwise. Streaming responses are keyed under the same hash as the equivalent `complete()` call and persist the joined chunk content in the same entry shape, so a recording captures both modes uniformly.
 
 A step called more than once in one run (the turns of a `tools:` loop, or a step inside a loop) is stored as a list of such entries in call order. A turn in which the model asked for tools carries `tool_calls`, each with `id`, `name` and `arguments`. When the engine retries a step, the recorder drops the turns of the failed attempt, those of the steps of a subworkflow that ran inside it included, so the recording holds the attempt that finished.
+
+An entry also keeps `meta`, the [response metadata](providers.md#response-metadata) that the provider reported: the sampling parameters sent, the provider's identifiers, its rate-limit headers and when the response arrived. Only the fields set are written. When the engine retried the step, `meta.attempt` holds the attempt number of the step that made the call; a step inside a subworkflow counts its own attempts. An entry with nothing to report has no `meta`. The request hash leaves `meta` out, so recordings with and without it replay the same, and the mock provider serves it back on `ProviderResponse.meta`.
 
 !!! info "v1 ↔ v2 compatibility"
     The reader treats any top-level key starting with `_` as metadata, so v1 recordings (0.4.x, no underscore-prefixed keys) load against 0.5.0+ without errors. Recordings keyed by `step_id` continue to replay unchanged. v1 recordings keyed only by the **legacy messages-only request hash** will not match under 0.5.0+, because the fallback hash inputs now include `model`, `temperature`, `max_tokens`, and `extra` — regenerate them against 0.5.0+ to replay. New recordings are always written with `_version: 2`.

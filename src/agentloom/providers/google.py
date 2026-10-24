@@ -13,6 +13,7 @@ import httpx
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
 from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
+from agentloom.providers._meta import response_meta
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
@@ -314,6 +315,13 @@ class GoogleProvider(BaseProvider):
             raw_response=data,
             finish_reason=finish_reason,
             tool_calls=tool_calls,
+            meta=response_meta(
+                generation_config,
+                response.headers,
+                top_p_key="topP",
+                request_id=data.get("responseId"),
+                model_version=data.get("modelVersion"),
+            ),
         )
 
     async def stream(
@@ -381,6 +389,8 @@ class GoogleProvider(BaseProvider):
                 if resp.status_code != 200:
                     await resp.aread()
                     raise_for_status("google", resp)
+                meta = response_meta(generation_config, resp.headers, top_p_key="topP")
+                sr.meta = meta
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data: "):
@@ -390,6 +400,9 @@ class GoogleProvider(BaseProvider):
                     except json.JSONDecodeError:
                         logger.warning("Malformed SSE chunk, skipping: %s", line[:200])
                         continue
+                    # Every chunk repeats them; the last one wins.
+                    meta.request_id = data.get("responseId", meta.request_id)
+                    meta.model_version = data.get("modelVersion", meta.model_version)
                     candidates = data.get("candidates", [])
                     if candidates:
                         parts = candidates[0].get("content", {}).get("parts", [])

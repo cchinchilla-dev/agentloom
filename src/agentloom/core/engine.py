@@ -862,7 +862,7 @@ class WorkflowEngine:
 
         for attempt in range(max_retries + 1):
             try:
-                running = enter_attempt(outer)
+                running = enter_attempt(outer, attempt + 1)
                 await self._begin_attempt(step_id, previous)
                 previous = running
                 if step_def.timeout:

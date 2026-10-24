@@ -14,6 +14,7 @@ import httpx
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
 from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
+from agentloom.providers._meta import response_meta
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
@@ -260,6 +261,7 @@ class OllamaProvider(BaseProvider):
             raw_response=data,
             finish_reason=data.get("done_reason"),
             tool_calls=tool_calls,
+            meta=response_meta(options, response.headers),
         )
 
     async def stream(
@@ -320,6 +322,7 @@ class OllamaProvider(BaseProvider):
                 if resp.status_code != 200:
                     await resp.aread()
                     raise_for_status("ollama", resp)
+                sr.meta = response_meta(options, resp.headers)
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line:
