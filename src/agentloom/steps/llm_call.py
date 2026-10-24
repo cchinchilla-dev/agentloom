@@ -593,16 +593,23 @@ class LLMCallStep(BaseStep):
             messages.append({"role": "user", "content": user_content})
 
         if context.stream:
-            return await self._execute_stream(
-                context,
-                messages,
-                model,
-                step,
-                start,
-                len(content_blocks),
-                rendered_prompt=rendered_prompt,
-                conversation=conversation,
-                trim_result=trim_result,
+            if not step.tools:
+                return await self._execute_stream(
+                    context,
+                    messages,
+                    model,
+                    step,
+                    start,
+                    len(content_blocks),
+                    rendered_prompt=rendered_prompt,
+                    conversation=conversation,
+                    trim_result=trim_result,
+                )
+            # Adapters do not assemble streamed tool calls yet, so the loop uses complete() (#174).
+            logger.info(
+                "Step %r has tools: its turns run without streaming and the final answer "
+                "reaches the stream callback in one chunk.",
+                step.id,
             )
 
         provider_kwargs = self._build_thinking_kwargs(step)
@@ -662,6 +669,12 @@ class LLMCallStep(BaseStep):
                 error=str(e),
                 duration_ms=duration,
             )
+
+        if context.stream and context.on_stream_chunk and response.content:
+            try:
+                context.on_stream_chunk(step.id, response.content)
+            except Exception:
+                logger.warning("Stream chunk callback failed")
 
         duration = (time.monotonic() - start) * 1000
 
