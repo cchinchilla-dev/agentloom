@@ -681,7 +681,7 @@ Enable streaming at the workflow level, per-step, or via CLI:
 
 Token usage, cost, and time-to-first-token are tracked during streaming.
 
-**Streaming + tools.** A step with `tools: [...]` runs its tool loop the same way when it streams: each turn is a regular call, the tools run between turns, and the final answer reaches the stream callback in one chunk when the loop ends (`agentloom run --stream` prints it then). The turns of a tool loop do not stream yet. `ProviderGateway.stream()` keeps what the adapter reports when its stream ends, `reasoning_content` and `tool_calls` included, so `StreamResponse.to_provider_response()` exposes them; the adapters do not assemble tool calls from their own streams yet, so `tool_calls` comes back only from providers whose `stream()` wraps `complete()`, such as `MockProvider`.
+**Streaming + tools.** A step with `tools: [...]` runs its tool loop the same way when it streams: each turn is a regular call, the tools run between turns, and the final answer reaches the stream callback in one chunk when the loop ends (`agentloom run --stream` prints it then). The turns of a tool loop do not stream yet, so these steps report no time-to-first-token. `ProviderGateway.stream()` keeps what the adapter reports when its stream ends, `reasoning_content` and `tool_calls` included, so `StreamResponse.to_provider_response()` exposes them; the adapters do not assemble tool calls from their own streams yet, so `tool_calls` comes back only from providers whose `stream()` wraps `complete()`, such as `MockProvider`.
 
 ---
 
