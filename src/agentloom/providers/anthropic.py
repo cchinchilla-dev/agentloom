@@ -13,6 +13,7 @@ import httpx
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
 from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
+from agentloom.providers._meta import response_meta
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
@@ -290,6 +291,9 @@ class AnthropicProvider(BaseProvider):
             tool_calls=tool_calls,
             raw_response=data,
             finish_reason=data.get("stop_reason"),
+            meta=response_meta(
+                payload, response.headers, request_id=response.headers.get("request-id")
+            ),
         )
 
     async def stream(
@@ -354,6 +358,9 @@ class AnthropicProvider(BaseProvider):
                 if resp.status_code != 200:
                     await resp.aread()
                     raise_for_status("anthropic", resp)
+                sr.meta = response_meta(
+                    payload, resp.headers, request_id=resp.headers.get("request-id")
+                )
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data: "):

@@ -9,6 +9,7 @@ models (``core.models``, ``core.results``, ``providers.base``) re-export them.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -150,6 +151,29 @@ class TokenUsage(BaseModel):
         return self.completion_tokens + self.reasoning_tokens
 
 
+class ResponseMeta(BaseModel):
+    """What a provider call sent and got back besides the answer.
+
+    The sampling parameters are the ones in the request body, after the
+    adapter dropped or renamed what its API does not take. The identifiers
+    are those the provider returned: ``system_fingerprint`` from
+    OpenAI-compatible servers, ``model_version`` from Gemini, and the
+    request id from a response header or, on Gemini, the body.
+    ``rate_limit`` keeps only the rate-limit and ``retry-after`` headers.
+    ``attempt`` is set in recordings only, when the engine retried the step.
+    """
+
+    temperature: float | None = None
+    top_p: float | None = None
+    seed: int | None = None
+    system_fingerprint: str | None = None
+    model_version: str | None = None
+    request_id: str | None = None
+    rate_limit: dict[str, str] = Field(default_factory=dict)
+    received_at: datetime | None = None
+    attempt: int | None = None
+
+
 class ProviderResponse(BaseModel):
     """Unified response from any LLM provider."""
 
@@ -176,6 +200,9 @@ class ProviderResponse(BaseModel):
     # Typed ``object | None`` — callers treat it as opaque; consumers
     # that need a specific shape do their own ``isinstance`` narrowing.
     parsed: object | None = None
+    # ``None`` when the adapter reports nothing (embeddings, the mock
+    # replaying an entry recorded without it).
+    meta: ResponseMeta | None = None
 
 
 @runtime_checkable
@@ -203,6 +230,7 @@ __all__ = [
     "Attachment",
     "Message",
     "ProviderResponse",
+    "ResponseMeta",
     "TokenUsage",
     "ToolCall",
     "ToolDefinition",

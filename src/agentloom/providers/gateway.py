@@ -419,6 +419,7 @@ class ProviderGateway:
                         _outer.cost_usd = _inner.cost_usd
                         _outer.finish_reason = _inner.finish_reason
                         _outer.model = _inner.model
+                        _outer.meta = _inner.meta
                         if _attempt_started and _observer:
                             end_hook = getattr(_observer, "on_provider_call_end", None)
                             if end_hook:

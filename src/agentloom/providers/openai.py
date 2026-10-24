@@ -14,6 +14,7 @@ import httpx
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
 from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
+from agentloom.providers._meta import response_meta
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
@@ -254,6 +255,12 @@ class OpenAIProvider(BaseProvider):
             raw_response=data,
             finish_reason=data["choices"][0].get("finish_reason"),
             tool_calls=tool_calls,
+            meta=response_meta(
+                payload,
+                response.headers,
+                request_id=response.headers.get("x-request-id"),
+                system_fingerprint=data.get("system_fingerprint"),
+            ),
         )
 
     async def stream(
@@ -312,6 +319,10 @@ class OpenAIProvider(BaseProvider):
                 if resp.status_code != 200:
                     await resp.aread()
                     raise_for_status(self.name, resp)
+                meta = response_meta(
+                    payload, resp.headers, request_id=resp.headers.get("x-request-id")
+                )
+                sr.meta = meta
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data: "):
@@ -324,6 +335,8 @@ class OpenAIProvider(BaseProvider):
                     except json.JSONDecodeError:
                         logger.warning("Malformed SSE chunk, skipping: %s", data_str[:200])
                         continue
+                    if data.get("system_fingerprint"):
+                        meta.system_fingerprint = data["system_fingerprint"]
                     choices = data.get("choices", [])
                     if choices:
                         delta = choices[0].get("delta", {})

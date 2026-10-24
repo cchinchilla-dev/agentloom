@@ -19,7 +19,12 @@ import anyio
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import RecordingMismatchError
-from agentloom.providers.base import BaseProvider, EmbeddingResponse, ProviderResponse
+from agentloom.providers.base import (
+    BaseProvider,
+    EmbeddingResponse,
+    ProviderResponse,
+    ResponseMeta,
+)
 
 logger = logging.getLogger("agentloom.providers.mock")
 
@@ -419,6 +424,7 @@ class MockProvider(BaseProvider):
             cost_usd=float(entry.get("cost_usd", 0.0)),
             finish_reason=entry.get("finish_reason", "stop"),
             tool_calls=tool_calls,
+            meta=ResponseMeta.model_validate(entry["meta"]) if "meta" in entry else None,
         )
 
     async def embed(

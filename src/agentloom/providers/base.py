@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from agentloom.contracts.stable import ProviderResponse as ProviderResponse
+from agentloom.contracts.stable import ResponseMeta as ResponseMeta
 from agentloom.contracts.stable import ToolCall as ToolCall
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError
@@ -100,6 +101,8 @@ class StreamResponse:
         # also populate this list with the assembled calls so non-event
         # consumers can read them after the stream is exhausted.
         self.tool_calls: list[ToolCall] = []
+        # Set by the adapter once the response headers arrive.
+        self.meta: ResponseMeta | None = None
         self._chunks: list[str] = []
         self._accumulated_bytes: int = 0
         self._iterator: AsyncIterator[str] | None = None
@@ -165,6 +168,7 @@ class StreamResponse:
             finish_reason=self.finish_reason,
             reasoning_content=self.reasoning_content,
             tool_calls=list(self.tool_calls),
+            meta=self.meta,
         )
 
 
@@ -232,6 +236,7 @@ class BaseProvider(ABC):
         # the fallback silently lose tool decisions when streamed.
         sr.reasoning_content = response.reasoning_content
         sr.tool_calls = list(response.tool_calls)
+        sr.meta = response.meta
 
         async def _single_chunk() -> AsyncIterator[str]:
             yield response.content

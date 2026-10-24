@@ -70,6 +70,7 @@ def test_top_level_names_resolve_on_first_access() -> None:
         ("agentloom.core.results", "TokenUsage"),
         ("agentloom.providers.base", "ToolCall"),
         ("agentloom.providers.base", "ProviderResponse"),
+        ("agentloom.providers.base", "ResponseMeta"),
     ],
 )
 def test_contracts_reexports_are_identical(module: str, name: str) -> None:

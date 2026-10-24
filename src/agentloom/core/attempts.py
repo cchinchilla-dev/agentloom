@@ -16,6 +16,7 @@ Attempt = tuple[int, ...]
 """The ids of an attempt and of the attempts enclosing it, outermost first."""
 
 _RUNNING: ContextVar[Attempt] = ContextVar("agentloom_attempt", default=())
+_NUMBER: ContextVar[int] = ContextVar("agentloom_attempt_number", default=1)
 _IDS = itertools.count(1)
 
 
@@ -24,13 +25,19 @@ def running_attempt() -> Attempt:
     return _RUNNING.get()
 
 
-def enter_attempt(outer: Attempt) -> Attempt:
-    """Start a new attempt inside ``outer`` and make it the running one.
+def attempt_number() -> int:
+    """Which attempt of its step the running one is, from 1; 1 outside any step (#166)."""
+    return _NUMBER.get()
+
+
+def enter_attempt(outer: Attempt, number: int = 1) -> Attempt:
+    """Start attempt ``number`` of a step inside ``outer`` and make it the running one.
 
     The engine runs each step in a task of its own, so the mark ends with the step.
     """
     attempt = (*outer, next(_IDS))
     _RUNNING.set(attempt)
+    _NUMBER.set(number)
     return attempt
 
 
