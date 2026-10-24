@@ -417,6 +417,8 @@ class ProviderGateway:
                     finally:
                         _outer.usage = _inner.usage
                         _outer.cost_usd = _inner.cost_usd
+                        _outer.reasoning_content = _inner.reasoning_content
+                        _outer.tool_calls = _inner.tool_calls
                         _outer.finish_reason = _inner.finish_reason
                         _outer.model = _inner.model
                         _outer.meta = _inner.meta

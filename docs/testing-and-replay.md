@@ -222,7 +222,6 @@ Within one process, every writer of the file (each `RecordingProvider` and the t
 
 ## Limitations & gotchas
 
-- **Streaming through the gateway.** `RecordingProvider.stream()` records one entry with the joined content and the tool calls, but the `StreamResponse` a step receives from the gateway carries only usage, cost, finish reason and model.
 - **A run is the recorder's lifetime.** Reusing one gateway for several `engine.run()` calls appends every run's calls to the same list of turns. If the gateway falls back to another provider in the middle of a loop, each provider's recorder keeps only its own turns and the last one to flush wins: re-record without the fallback.
 - **Tools run for real on replay** unless they were recorded with `--record-tools` and replayed with `--tools replay`. Strict replay compares each turn's request, which includes the earlier tool results, so a live tool whose output changes (network, clock, files) fails strict replay from that turn on. Steps of `type: tool` always run live.
 - **Prompt hashes are sensitive to message formatting.** A trailing space or reordered tool-result block changes the hash. If replay misses, inspect `provider.calls` to see what was tried.

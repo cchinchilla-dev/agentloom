@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from agentloom.exceptions import ProviderError
-from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
+from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse, ToolCall
 from agentloom.providers.gateway import ProviderGateway
 from tests.conftest import MockProvider
 
@@ -499,6 +499,38 @@ class TestGatewayStreaming:
         assert resp.content == "Mock response"
         assert resp.usage.total_tokens == 30
         assert resp.cost_usd > 0
+
+    async def test_stream_keeps_reasoning_and_tool_calls(self) -> None:
+        class _ToolStream(BaseProvider):
+            name = "tool_stream"
+
+            async def complete(self, **_kw: Any) -> ProviderResponse:  # pragma: no cover
+                raise NotImplementedError
+
+            async def stream(self, **_kw: Any) -> StreamResponse:
+                sr = StreamResponse(model="m", provider=self.name)
+
+                async def _gen() -> AsyncIterator[str]:
+                    yield "Let me check."
+                    # Adapters fill these once the stream ends, as they do usage.
+                    sr.reasoning_content = "The user wants the time."
+                    sr.tool_calls = [ToolCall(id="c1", name="clock", arguments={})]
+
+                sr._set_iterator(_gen())
+                return sr
+
+            def supports_model(self, _m: str) -> bool:
+                return True
+
+        gateway = ProviderGateway()
+        gateway.register(_ToolStream(), models=["m"])
+        sr = await gateway.stream(messages=[{"role": "user", "content": "time?"}], model="m")
+        async for _ in sr:
+            pass
+        resp = sr.to_provider_response()
+        assert resp.content == "Let me check."
+        assert resp.reasoning_content == "The user wants the time."
+        assert resp.tool_calls == [ToolCall(id="c1", name="clock", arguments={})]
 
 
 class TestStreamCancellationDoesNotFailCircuit:
