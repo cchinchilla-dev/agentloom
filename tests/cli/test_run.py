@@ -311,6 +311,14 @@ class TestRunRecordAndReplay:
         combined = result.output + (result.stderr or "")
         assert "mutually exclusive" in combined
 
+    def test_record_tools_needs_record(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(SIMPLE_YAML)
+            f.flush()
+            result = runner.invoke(app, ["run", f.name, "--record-tools"])
+        assert result.exit_code == 2
+        assert "--record-tools needs --record" in (result.output + (result.stderr or ""))
+
     def test_mock_responses_invalid_file_exits_with_error(self) -> None:
         # An unreadable / malformed recording file is a startup error —
         # ``MockProvider.__init__`` raises ValueError and the CLI must

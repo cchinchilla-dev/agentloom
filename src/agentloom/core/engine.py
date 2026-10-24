@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 import uuid
@@ -18,6 +19,7 @@ from agentloom.checkpointing.base import (
     BaseCheckpointer,
     CheckpointData,
 )
+from agentloom.core.attempts import Attempt, enter_attempt, running_attempt
 from agentloom.core.dag import DAG
 from agentloom.core.models import StepDefinition, StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
@@ -750,6 +752,21 @@ class WorkflowEngine:
         async with limiter:
             await self._execute_step(step_id)
 
+    async def _begin_attempt(self, step_id: str, failed: Attempt | None) -> None:
+        """Tell the recorders and the tool tape that a step starts an attempt (#164).
+
+        On a retry, ``failed`` is the attempt it replaces: they forget what
+        it did, the steps of a subworkflow run inside it included, so a
+        recording holds the attempt that finished and a replay starts the
+        step over.
+        """
+        for listener in (self.provider_gateway, getattr(self.tool_registry, "tape", None)):
+            begin = getattr(listener, "begin_attempt", None)
+            if callable(begin):
+                pending = begin(step_id, failed)
+                if inspect.isawaitable(pending):  # a mocked gateway answers with a plain value
+                    await pending
+
     async def _execute_step(self, step_id: str) -> None:
         """Execute a single step with retry and timeout support."""
         step_def = self.workflow.get_step(step_id)
@@ -840,9 +857,14 @@ class WorkflowEngine:
 
         max_retries = step_def.retry.max_retries
         last_result: StepResult | None = None
+        outer = running_attempt()  # a subworkflow's step runs inside its parent's attempt
+        previous: Attempt | None = None
 
         for attempt in range(max_retries + 1):
             try:
+                running = enter_attempt(outer)
+                await self._begin_attempt(step_id, previous)
+                previous = running
                 if step_def.timeout:
                     with anyio.fail_after(step_def.timeout):
                         result = await executor.execute(context)
@@ -928,6 +950,13 @@ class WorkflowEngine:
                 # to observability (the executor wouldn't have set it).
                 if result.error_classification is None:
                     result.error_classification = "transient"
+                if result.error_classification == "permanent":
+                    logger.warning(
+                        "Step '%s' failed with non-retryable error; not retrying: %s",
+                        step_id,
+                        result.error,
+                    )
+                    break
                 if attempt < max_retries:
                     backoff = compute_backoff(
                         step_def.retry.backoff_base,
@@ -1048,8 +1077,8 @@ class WorkflowEngine:
                 )
 
             logger.error(
-                "Step '%s' failed after %d attempts: %s",
+                "Step '%s' failed after %d attempt(s): %s",
                 step_id,
-                max_retries + 1,
+                attempt + 1,  # a non-retryable failure stops before max_retries
                 last_result.error,
             )

@@ -266,6 +266,21 @@ class TestRecordingSchemaValidation:
         provider = MockProvider(responses_file=path)
         assert isinstance(provider._responses["s"], list)
 
+    @pytest.mark.parametrize(
+        ("tools", "message"),
+        [
+            ([], "_tools must map step ids to lists of tool calls"),
+            ({"s": "add"}, "_tools entry 's' must be a list of tool calls"),
+            ({"s": [{"name": "add", "arguments": {}, "result": 5, "success": True}]}, "entry 's'"),
+        ],
+    )
+    async def test_malformed_tools_section_rejected(self, tmp_path, tools, message) -> None:
+        # Recorded tool results (#164) are validated with the rest of the file.
+        path = tmp_path / "tools.json"
+        path.write_text(json.dumps({"_version": 2, "_tools": tools}))
+        with pytest.raises(ValueError, match=message):
+            MockProvider(responses_file=path)
+
     async def test_step_id_entry_with_non_dict_value_falls_through(self, tmp_path) -> None:
         # Recording schema validation rejects non-dict / non-list entries
         # on load, but defensive code in ``_lookup`` still guards against

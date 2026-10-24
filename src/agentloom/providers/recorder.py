@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Collection
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import anyio
 
+from agentloom.core.attempts import AttemptLog
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
@@ -22,7 +24,34 @@ from agentloom.providers.base import (
     StreamResponse,
     ToolCall,
 )
-from agentloom.providers.mock import UNHASHED_KWARGS, prompt_hash
+from agentloom.providers.mock import RECORDING_FORMAT_VERSION, UNHASHED_KWARGS, prompt_hash
+
+if TYPE_CHECKING:
+    from agentloom.core.attempts import Attempt
+
+# Every writer of a recording file in this process holds it: two read-merge-writes at once
+# would drop the key the other one just wrote.
+_FILE_LOCK = threading.Lock()
+
+
+def merge_into_recording(path: Path, update: Callable[[dict[str, Any]], None]) -> None:
+    """Apply ``update`` to the recording at ``path`` and write it back.
+
+    Keys that other writers left in the file survive. Blocking: run it in a
+    worker thread.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _FILE_LOCK:
+        merged: dict[str, Any] = {"_version": RECORDING_FORMAT_VERSION}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(existing, dict):
+                    merged.update(existing)
+            except json.JSONDecodeError:
+                pass
+        update(merged)
+        path.write_text(json.dumps(merged, indent=2, default=str))
 
 
 @runtime_checkable
@@ -68,6 +97,8 @@ class RecordingProvider(BaseProvider):
         # Captures per key in this run: the second capture of a step turns
         # its entry into a list of turns.
         self._captures: dict[str, int] = {}
+        # Captures of each step before an attempt first recorded it: a retry goes back there.
+        self._attempts = AttemptLog()
         # Serializes both mutations of ``_recorded`` and the flush-to-disk
         # path so concurrent ``complete()`` calls from parallel DAG layers
         # neither drop entries (read-modify-write race across threads) nor
@@ -110,6 +141,8 @@ class RecordingProvider(BaseProvider):
         form by step id, while a hash key names one exact request.
         """
         seen = self._captures.get(key, 0)
+        if by_step_id:
+            self._attempts.note(key, seen)
         if seen == 0 or not by_step_id:
             self._recorded[key] = entry
         elif seen == 1:
@@ -118,26 +151,47 @@ class RecordingProvider(BaseProvider):
             self._recorded[key].append(entry)
         self._captures[key] = seen + 1
 
-    async def _flush(self) -> None:
+    async def begin_attempt(self, step_id: str, failed: Attempt | None) -> None:
+        """The engine starts an attempt of ``step_id``; a retry drops the turns of ``failed``.
+
+        Those are the turns that the failed attempt recorded, for the step
+        and for the steps of a subworkflow run inside it. Without this they
+        stay in the recording and strict replay serves them: their tool call
+        ids differ from the retry's, so the next turn's request never
+        matches (#164).
+        """
+        if failed is None:
+            return
+        dropped: list[str] = []
+        async with self._write_lock:
+            taken_back = self._attempts.take_back(failed)
+            for key, start in taken_back.items():
+                if start == 0:
+                    del self._recorded[key]
+                    dropped.append(key)
+                elif start == 1:
+                    self._recorded[key] = self._recorded[key][0]
+                else:
+                    del self._recorded[key][start:]
+                self._captures[key] = start
+        if taken_back:
+            await self._flush(drop=dropped)
+
+    async def _flush(self, drop: Collection[str] = ()) -> None:
         async with self._write_lock:
             snapshot = dict(self._recorded)
-            await anyio.to_thread.run_sync(self._flush_sync, snapshot)
+            await anyio.to_thread.run_sync(self._flush_sync, snapshot, drop)
 
-    def _flush_sync(self, snapshot: dict[str, Any]) -> None:
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+    def _flush_sync(self, snapshot: dict[str, Any], drop: Collection[str] = ()) -> None:
         # Merge with any existing on-disk content so concurrent recorders
         # (e.g. wrapping multiple providers in a gateway) don't clobber
-        # each other on close().
-        merged: dict[str, Any] = {"_version": 2}
-        if self.output_path.exists():
-            try:
-                existing = json.loads(self.output_path.read_text())
-                if isinstance(existing, dict):
-                    merged.update(existing)
-            except json.JSONDecodeError:
-                pass
-        merged.update(snapshot)
-        self.output_path.write_text(json.dumps(merged, indent=2, default=str))
+        # each other on close(). ``drop`` holds keys this run recorded and then took back.
+        def _update(merged: dict[str, Any]) -> None:
+            for key in drop:
+                merged.pop(key, None)
+            merged.update(snapshot)
+
+        merge_into_recording(self.output_path, _update)
 
     async def complete(
         self,

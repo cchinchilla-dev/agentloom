@@ -188,29 +188,19 @@ async def dispatch_tool_calls(
     Failed calls return ``(call, str(exc), False)`` so the model can
     recover on the next turn rather than aborting the loop. When *observer*
     is provided, fires ``on_tool_call`` per call with hashes of the args
-    and result for trace-level observability without leaking PII.
+    and result for trace-level observability without leaking PII. A
+    ``tape`` on the registry (#164) records the results, or serves recorded
+    ones in place of running the tools.
     """
     results: list[tuple[ToolCall, str, bool]] = [None] * len(calls)  # type: ignore[list-item]
+    tape = getattr(tool_registry, "tape", None)
+    served = tape.serve(step_id, calls) if tape is not None else [None] * len(calls)
 
     async def _run(idx: int, call: ToolCall) -> None:
         start = time.monotonic()
-        success = False
-        text: str
-        try:
-            tool = tool_registry.get(call.name)
-        except KeyError as e:
-            text = f"tool '{call.name}' not registered: {e}"
-            results[idx] = (call, text, False)
-        else:
-            try:
-                outcome = await tool.execute(**call.arguments)
-                text = outcome if isinstance(outcome, str) else json.dumps(outcome, default=str)
-                results[idx] = (call, text, True)
-                success = True
-            except Exception as e:  # noqa: BLE001 — reported back to the model
-                logger.warning("Tool '%s' failed: %s", call.name, e)
-                text = f"tool execution failed: {e}"
-                results[idx] = (call, text, False)
+        recorded = served[idx]
+        text, success = recorded if recorded is not None else await _execute(call, tool_registry)
+        results[idx] = (call, text, success)
         if observer is not None:
             hook = getattr(observer, "on_tool_call", None)
             if callable(hook):
@@ -236,7 +226,23 @@ async def dispatch_tool_calls(
         for idx, call in enumerate(calls):
             tg.start_soon(_run, idx, call)
 
+    if tape is not None:
+        await tape.capture(step_id, results)
     return results
+
+
+async def _execute(call: ToolCall, tool_registry: Any) -> tuple[str, bool]:
+    """Run one call; a lookup or execution failure becomes its result text."""
+    try:
+        tool = tool_registry.get(call.name)
+    except KeyError as e:
+        return f"tool '{call.name}' not registered: {e}", False
+    try:
+        outcome = await tool.execute(**call.arguments)
+    except Exception as e:  # noqa: BLE001 — reported back to the model
+        logger.warning("Tool '%s' failed: %s", call.name, e)
+        return f"tool execution failed: {e}", False
+    return (outcome if isinstance(outcome, str) else json.dumps(outcome, default=str)), True
 
 
 def build_assistant_message_with_tool_calls(

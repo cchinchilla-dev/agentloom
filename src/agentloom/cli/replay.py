@@ -12,6 +12,7 @@ import anyio
 import typer
 
 from agentloom.cli.run import _run_async
+from agentloom.providers.tool_tape import ToolMode
 
 
 def replay(
@@ -34,6 +35,14 @@ def replay(
             "failing. Off by default — a replay miss should be a hard error."
         ),
     ),
+    tools: ToolMode = typer.Option(
+        ToolMode.LIVE,
+        "--tools",
+        help=(
+            "Tool calls: `live` runs them, `replay` serves the results recorded with "
+            "--record-tools, `verify` runs them and fails when a result differs."
+        ),
+    ),
 ) -> None:
     """Replay a workflow using previously recorded LLM responses (no API calls).
 
@@ -41,7 +50,8 @@ def replay(
     matches a step whose prompt drifted since capture, raises
     ``RecordingMismatchError``. Pass ``--allow-default-fallback`` to
     restore the pre-0.5.0 lenient behaviour (placeholder response on a
-    miss).
+    miss). ``--tools replay`` and ``--tools verify`` apply the same
+    strictness to tool calls.
     """
     anyio.run(
         _run_async,
@@ -58,4 +68,6 @@ def replay(
         recording,  # mock_responses
         None,  # record
         not allow_default_fallback,  # mock_strict
+        False,  # record_tools
+        tools,
     )

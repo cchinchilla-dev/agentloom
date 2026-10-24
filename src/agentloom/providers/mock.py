@@ -83,12 +83,13 @@ def validate_recording_schema(raw: object, source: str) -> dict[str, Any]:
     """Validate a parsed recording file against the canonical schema.
 
     A recording is a JSON object whose ``_``-prefixed keys are metadata
-    (``_version``) and whose remaining keys map a request key to either a
-    single response object or a list of response objects (multi-turn
-    tool loops). Pre-0.5.0 ``MockProvider`` only checked the top level
-    was a dict, so a corrupt file like ``{"not": "valid"}`` loaded
-    silently and every lookup fell through to ``default_response`` —
-    a replay could pass green against garbage.
+    (``_version``, and ``_tools`` for recorded tool results) and whose
+    remaining keys map a request key to either a single response object or
+    a list of response objects (multi-turn tool loops). Pre-0.5.0
+    ``MockProvider`` only checked the top level was a dict, so a corrupt
+    file like ``{"not": "valid"}`` loaded silently and every lookup fell
+    through to ``default_response`` — a replay could pass green against
+    garbage.
 
     Raises:
         ValueError: On any structural deviation, with the offending key
@@ -106,6 +107,8 @@ def validate_recording_schema(raw: object, source: str) -> dict[str, Any]:
                 f"`agentloom run --record`."
             )
     for key, value in raw.items():
+        if key == "_tools":
+            _validate_tool_section(value, source)
         if key.startswith("_"):
             continue
         if isinstance(value, dict):
@@ -117,6 +120,28 @@ def validate_recording_schema(raw: object, source: str) -> dict[str, Any]:
             f"list of response objects, got {type(value).__name__}"
         )
     return raw
+
+
+_TOOL_CALL_FIELDS = {"name": str, "arguments": dict, "result": str, "success": bool}
+
+
+def _validate_tool_section(value: object, source: str) -> None:
+    """``_tools`` maps a step id to the tool calls it made, in order (#164)."""
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"Recording {source} _tools must map step ids to lists of tool calls, "
+            f"got {type(value).__name__}"
+        )
+    for step_id, calls in value.items():
+        if not isinstance(calls, list) or not all(
+            isinstance(call, dict)
+            and all(isinstance(call.get(f), t) for f, t in _TOOL_CALL_FIELDS.items())
+            for call in calls
+        ):
+            raise ValueError(
+                f"Recording {source} _tools entry {step_id!r} must be a list of tool "
+                f"calls, each with name, arguments, result and success"
+            )
 
 
 def _pseudo_vector(text: str, dim: int) -> list[float]:
@@ -197,7 +222,7 @@ class MockProvider(BaseProvider):
         self._turn_cursor: dict[str, int] = {}
         if self.responses_file and self.responses_file.exists():
             try:
-                raw = json.loads(self.responses_file.read_text())
+                raw = json.loads(self.responses_file.read_text(encoding="utf-8"))
             except json.JSONDecodeError as e:
                 # A malformed recording file is always an error — pre-0.5.0
                 # the JSON parse failure surfaced raw; now it carries the
@@ -258,8 +283,9 @@ class MockProvider(BaseProvider):
         raise RecordingMismatchError(
             f"Step {step_id!r}: no recorded turn matches the replayed request "
             f"(hash {request_hash[:16]}). The prompt, system prompt, model, "
-            f"tools spec, or a tool's output changed since capture — tools run "
-            f"for real on replay — re-record the fixture with `agentloom run --record`."
+            f"tools spec, or the output of a tool run live changed since capture — "
+            f"re-record the fixture with `agentloom run --record` (tools recorded with "
+            f"`--record-tools` replay offline with `agentloom replay --tools replay`)."
         )
 
     def _check_drift(self, where: str, entry: dict[str, Any], request_hash: str) -> None:
