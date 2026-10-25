@@ -186,6 +186,7 @@ class TestNoopObserver:
         obs.on_stream_response("openai", "gpt-4o-mini", 0.3)
         obs.on_tokens("openai", "gpt-4o-mini", 100, 50)
         obs.on_mock_replay("wf", "s1", "step_id")
+        obs.on_mock_fault("wf", "s1", "timeout")
         obs.on_recording_capture("s1", "openai", "gpt-4o-mini", 1.2)
         obs.on_budget_remaining("wf", 0.5)
         obs.on_circuit_state_change("openai", "closed", "open")

@@ -12,8 +12,9 @@ import hashlib
 import json
 import logging
 import random
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, NoReturn, Protocol, runtime_checkable
 
 import anyio
 
@@ -24,7 +25,9 @@ from agentloom.providers.base import (
     EmbeddingResponse,
     ProviderResponse,
     ResponseMeta,
+    StreamResponse,
 )
+from agentloom.providers.mock_faults import StreamCutError, TimeoutFault, parse_fault, raise_fault
 
 logger = logging.getLogger("agentloom.providers.mock")
 
@@ -84,6 +87,11 @@ def prompt_hash(
     return hashlib.sha256(serialized).hexdigest()
 
 
+def _check_fault(entry: dict[str, Any], source: str, key: str) -> None:
+    if "fault" in entry:
+        parse_fault(entry["fault"], f"Recording {source} entry {key!r}")
+
+
 def validate_recording_schema(raw: object, source: str) -> dict[str, Any]:
     """Validate a parsed recording file against the canonical schema.
 
@@ -117,8 +125,11 @@ def validate_recording_schema(raw: object, source: str) -> dict[str, Any]:
         if key.startswith("_"):
             continue
         if isinstance(value, dict):
+            _check_fault(value, source, key)
             continue
         if isinstance(value, list) and all(isinstance(turn, dict) for turn in value):
+            for turn in value:
+                _check_fault(turn, source, key)
             continue
         raise ValueError(
             f"Recording {source} entry {key!r} must be a response object or a "
@@ -287,6 +298,10 @@ class MockProvider(BaseProvider):
         last turn. A turn without a ``request_hash`` never matches here:
         only lists with no hashes at all keep the cursor.
         """
+        # A fault fails the request instead of answering it, so it fires at the cursor (#123).
+        if idx < len(turns) and "fault" in turns[idx]:
+            self._turn_cursor[step_id] = idx + 1
+            return turns[idx]  # type: ignore[no-any-return]
         for i in [*range(idx, len(turns)), *range(min(idx, len(turns)))]:
             turn = turns[i]
             if isinstance(turn, dict) and turn.get("request_hash") == request_hash:
@@ -373,6 +388,8 @@ class MockProvider(BaseProvider):
                 "matched_by": matched_by,
             }
         )
+        if entry is not None and "fault" in entry:
+            await self._fail(step_id, entry)
         if self._observer is not None:
             # observer must never break replay
             with contextlib.suppress(Exception):  # pragma: no cover
@@ -431,6 +448,41 @@ class MockProvider(BaseProvider):
             # The turn as recorded: re-recording a replayed call copies it (#178).
             raw_response=entry,
         )
+
+    async def _fail(self, step_id: str | None, entry: dict[str, Any]) -> NoReturn:
+        """Fail this call as the entry's ``fault`` says (#123)."""
+        fault = parse_fault(entry["fault"], f"Step {step_id!r}")
+        report = getattr(self._observer, "on_mock_fault", None)
+        if report is not None:
+            # observer must never break replay
+            with contextlib.suppress(Exception):  # pragma: no cover
+                report(self._workflow_name, step_id or "", fault.type)
+        if isinstance(fault, TimeoutFault):
+            await anyio.sleep(fault.after_ms / 1000)
+        raise_fault(self.name, fault, str(entry.get("content", "")))
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> StreamResponse:
+        """``complete()`` as one chunk, or the chunks before a ``stream_truncate`` fault cut it."""
+        try:
+            return await super().stream(messages, model, temperature, max_tokens, **kwargs)
+        except StreamCutError as cut:
+            sr = StreamResponse(model=model, provider=self.name)
+            dropped = cut  # ``cut`` is unbound when the ``except`` block ends
+
+            async def _until_cut() -> AsyncIterator[str]:
+                for chunk in dropped.chunks:
+                    yield chunk
+                raise dropped
+
+            sr._set_iterator(_until_cut())
+            return sr
 
     async def embed(
         self,

@@ -69,6 +69,7 @@ class MetricsManager:
         self._embedding_counter: Any = None
         self._embedding_dimensions_histogram: Any = None
         self._mock_replay_counter: Any = None
+        self._mock_fault_counter: Any = None
         self._recording_capture_counter: Any = None
         self._recording_latency_histogram: Any = None
         # LRU-bounded gauges. Workflows that template provider/workflow
@@ -213,6 +214,10 @@ class MetricsManager:
         self._mock_replay_counter = meter.create_counter(
             "agentloom_mock_replays_total",
             description="Total MockProvider replay lookups",
+        )
+        self._mock_fault_counter = meter.create_counter(
+            "agentloom_mock_faults_total",
+            description="Total calls failed by a fault declared in a MockProvider recording",
         )
         self._recording_capture_counter = meter.create_counter(
             "agentloom_recording_captures_total",
@@ -361,6 +366,11 @@ class MetricsManager:
             "agentloom_mock_replays_total",
             "Total MockProvider replay lookups",
             ["workflow", "matched_by"],
+        )
+        self._prom_counters["mock_faults"] = prom.Counter(  # pragma: no cover — prom fallback
+            "agentloom_mock_faults_total",
+            "Total calls failed by a fault declared in a MockProvider recording",
+            ["workflow", "fault_type"],
         )
         self._prom_counters["recording_captures"] = (
             prom.Counter(  # pragma: no cover — prom fallback
@@ -659,6 +669,17 @@ class MetricsManager:
         else:  # pragma: no cover — prom fallback
             self._prom_counters["mock_replays"].labels(
                 workflow=workflow, matched_by=matched_by
+            ).inc()
+
+    def record_mock_fault(self, workflow: str, fault_type: str) -> None:
+        """Record a call failed by a mock recording's fault; no step label, to bound cardinality."""
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._mock_fault_counter.add(1, {"workflow": workflow, "fault_type": fault_type})
+        else:  # pragma: no cover — prom fallback
+            self._prom_counters["mock_faults"].labels(
+                workflow=workflow, fault_type=fault_type
             ).inc()
 
     def record_recording_capture(self, provider: str, model: str, latency_s: float) -> None:

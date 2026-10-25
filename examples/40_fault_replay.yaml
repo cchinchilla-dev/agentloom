@@ -1,0 +1,34 @@
+name: fault-replay
+version: "1.0"
+description: |
+  Deterministic failure replay (#123). The recording declares two faults for
+  ``draft`` before its answer: a 429 rate limit, then a 503. Every run fails
+  the same two calls the same way, and the step's retry policy recovers on the
+  third attempt, through the same gateway and retry paths a real outage takes.
+
+  Runs offline against the committed recording (mock provider):
+
+    agentloom run examples/40_fault_replay.yaml --lite
+
+config:
+  provider: mock
+  model: mock-model
+  responses_file: recordings/fault_replay.json
+  latency_model: constant
+  latency_ms: 0
+
+steps:
+  - id: draft
+    type: llm_call
+    prompt: "Draft a one-line status update for the release."
+    output: draft
+    retry:
+      max_retries: 2
+      backoff_max: 0.2
+      jitter: false
+
+  - id: review
+    type: llm_call
+    depends_on: [draft]
+    prompt: "Tighten this status update: {state.draft}"
+    output: review

@@ -322,6 +322,16 @@ fixtures and CI.
 agentloom run examples/32_yaml_mock.yaml --lite
 ```
 
+### 40 — Fault replay
+
+A recording that fails `draft` with a 429 and then a 503 before it answers. Every run fails the same two calls the same way, and the step's retry policy recovers on the third attempt.
+
+**Demonstrates:** `fault` entries in a recording, deterministic failure replay, `retry` recovering through the gateway.
+
+```bash
+agentloom run examples/40_fault_replay.yaml --lite
+```
+
 ## Tool calling
 
 !!! info "New in 0.5.0 (unreleased)"

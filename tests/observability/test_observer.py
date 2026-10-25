@@ -414,6 +414,15 @@ class TestMockAndRecordingEvents:
         observer.on_mock_replay("my-wf", "step_a", "prompt_hash")
         span.set_attribute.assert_any_call("agentloom.mock.matched_by", "prompt_hash")
 
+    def test_on_mock_fault_records_metric_and_span_attribute(self) -> None:
+        metrics, tracing = MagicMock(), MagicMock()
+        observer = WorkflowObserver(metrics=metrics, tracing=tracing)
+        observer.on_step_start("step_a", "llm_call")
+        span = tracing.start_span.return_value
+        observer.on_mock_fault("my-wf", "step_a", "timeout")
+        metrics.record_mock_fault.assert_called_once_with("my-wf", "timeout")
+        span.set_attribute.assert_any_call("agentloom.mock.fault_type", "timeout")
+
     def test_on_recording_capture_records_metrics(self) -> None:
         metrics = MagicMock()
         observer = WorkflowObserver(metrics=metrics)
@@ -432,6 +441,7 @@ class TestMockAndRecordingEvents:
     def test_no_metrics_no_error(self) -> None:
         observer = WorkflowObserver()
         observer.on_mock_replay("wf", "s", "default")
+        observer.on_mock_fault("wf", "s", "timeout")
         observer.on_recording_capture("s", "p", "m", 0.1)
 
 

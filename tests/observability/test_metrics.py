@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from agentloom.observability.metrics import (
@@ -28,6 +30,7 @@ class TestMetricsDisabled:
         mm.record_stream_response("openai", "gpt-4o-mini")
         mm.record_time_to_first_token("openai", "gpt-4o-mini", 0.1)
         mm.record_mock_replay("wf", "step_id")
+        mm.record_mock_fault("wf", "timeout")
         mm.record_recording_capture("anthropic", "m", 0.5)
         mm.set_budget_remaining("wf", 0.5)
         mm.set_circuit_state("openai", 1)
@@ -247,6 +250,17 @@ class TestMetricsEnabled:
         mm.record_mock_replay("wf", "default")
         if mm._backend == "otel":
             mm.shutdown()
+
+    def test_record_mock_fault(self) -> None:
+        mm = MetricsManager(enabled=True)
+        if mm._backend != "otel":
+            pytest.skip("needs the observability extra")
+        mm._mock_fault_counter = MagicMock()
+        mm.record_mock_fault("wf", "timeout")
+        mm._mock_fault_counter.add.assert_called_once_with(
+            1, {"workflow": "wf", "fault_type": "timeout"}
+        )
+        mm.shutdown()
 
     def test_record_recording_capture(self) -> None:
         mm = MetricsManager(enabled=True)
