@@ -48,6 +48,8 @@ class MockObserver(Protocol):
 
     def on_mock_replay(self, workflow_name: str, step_id: str, matched_by: str) -> None: ...
 
+    def on_mock_fault(self, workflow_name: str, step_id: str, fault_type: str) -> None: ...
+
 
 def _canonical_default(obj: Any) -> Any:
     """JSON ``default`` that handles Pydantic models stably across versions.
@@ -457,6 +459,7 @@ class MockProvider(BaseProvider):
     async def _fail(self, step_id: str | None, entry: dict[str, Any]) -> NoReturn:
         """Fail this call as the entry's ``fault`` says (#123)."""
         fault = parse_fault(entry["fault"], f"Step {step_id!r}")
+        # getattr: an observer written before this hook still replays
         report = getattr(self._observer, "on_mock_fault", None)
         if report is not None:
             # observer must never break replay

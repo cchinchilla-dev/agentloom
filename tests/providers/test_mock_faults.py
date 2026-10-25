@@ -178,6 +178,23 @@ async def test_a_fault_is_reported_to_the_observer(tmp_path: Path) -> None:
     observer.on_mock_replay.assert_called_once_with("wf", "s", "step_id")  # still a lookup
 
 
+async def test_an_observer_without_the_fault_hook_still_replays(tmp_path: Path) -> None:
+    class ReplayOnly:  # written before on_mock_fault existed
+        def __init__(self) -> None:
+            self.replays: list[str] = []
+
+        def on_mock_replay(self, workflow_name: str, step_id: str, matched_by: str) -> None:
+            self.replays.append(step_id)
+
+    observer = ReplayOnly()
+    mock = _mock(tmp_path, {"s": _fault(type="connection_reset")}, observer=observer)
+
+    with pytest.raises(ProviderError, match="ConnectError"):
+        await mock.complete(HI, "m", step_id="s")
+
+    assert observer.replays == ["s"]
+
+
 def _engine(mock: MockProvider, step: StepDefinition) -> tuple[WorkflowEngine, ProviderGateway]:
     gateway = ProviderGateway()
     gateway.register(mock, circuit_fail_threshold=2)
