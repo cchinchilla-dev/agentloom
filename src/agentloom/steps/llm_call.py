@@ -27,6 +27,7 @@ from agentloom.providers.multimodal import (
     build_multimodal_content,
     resolve_attachments,
 )
+from agentloom.resilience.retry import classify_failure
 from agentloom.steps._conversation import (
     TrimResult,
     apply_trim_policy_async,
@@ -660,6 +661,7 @@ class LLMCallStep(BaseStep):
                 status=StepStatus.FAILED,
                 error=str(e),
                 duration_ms=duration,
+                error_classification=classify_failure(e, step.retry.retryable_status_codes),
             )
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
@@ -668,6 +670,7 @@ class LLMCallStep(BaseStep):
                 status=StepStatus.FAILED,
                 error=str(e),
                 duration_ms=duration,
+                error_classification=classify_failure(e, step.retry.retryable_status_codes),
             )
 
         if context.stream and context.on_stream_chunk and response.content:
@@ -748,6 +751,7 @@ class LLMCallStep(BaseStep):
                 status=StepStatus.FAILED,
                 error=str(e),
                 duration_ms=duration,
+                error_classification=classify_failure(e, step.retry.retryable_status_codes),
             )
 
         # TTFT measures wall-clock time from just before the first stream
@@ -778,6 +782,7 @@ class LLMCallStep(BaseStep):
                 status=StepStatus.FAILED,
                 error=str(e),
                 duration_ms=duration,
+                error_classification=classify_failure(e, step.retry.retryable_status_codes),
             )
         finally:
             # Ensure the underlying httpx stream is closed even on partial
@@ -807,6 +812,7 @@ class LLMCallStep(BaseStep):
                     status=StepStatus.FAILED,
                     error=str(e),
                     duration_ms=duration,
+                    error_classification="permanent",  # the schema is wrong, not the answer
                 )
             except (
                 json.JSONDecodeError,

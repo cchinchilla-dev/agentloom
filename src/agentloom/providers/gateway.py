@@ -6,7 +6,7 @@ import logging
 import os
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import anyio
 
@@ -25,6 +25,7 @@ from agentloom.providers.base import (
 from agentloom.providers.multimodal import estimate_content_tokens
 from agentloom.resilience.circuit_breaker import CircuitBreaker, CircuitState
 from agentloom.resilience.rate_limiter import RateLimiter
+from agentloom.resilience.retry import extract_status_code
 
 if TYPE_CHECKING:
     from agentloom.core.attempts import Attempt
@@ -50,6 +51,30 @@ class ProviderEntry:
         self.circuit_breaker = circuit_breaker or CircuitBreaker(name=provider.name)
         self.rate_limiter = rate_limiter
         self.models = models or []
+
+
+class _Failures:
+    """Why each candidate failed, so the final error keeps a status they all share (#182)."""
+
+    def __init__(self) -> None:
+        self._messages: list[str] = []
+        self._statuses: set[int | None] = set()
+        self._last: BaseException | None = None
+
+    def add(self, message: str, exc: BaseException | None = None) -> None:
+        self._messages.append(message)
+        self._statuses.add(None if exc is None else extract_status_code(exc))
+        self._last = exc
+
+    def raise_all(self, summary: str) -> NoReturn:
+        """Raise the gateway's error: a status every candidate failed with, or none."""
+        status = next(iter(self._statuses)) if len(self._statuses) == 1 else None
+        error = ProviderError(
+            "gateway", f"{summary}: " + "; ".join(self._messages), status_code=status
+        )
+        # Chained only with a shared status: a permanent marker on the last failure
+        # must not stop the retries another candidate's transient failure asks for.
+        raise error from (self._last if status is not None else None)
 
 
 class ProviderGateway:
@@ -164,14 +189,14 @@ class ProviderGateway:
                 f"No provider registered for model '{model}'",
             )
 
-        errors: list[str] = []
+        failures = _Failures()
 
         for attempt_idx, entry in enumerate(candidates):
             # Fast-fail when the circuit is open: do NOT consume the rate
             # limiter budget for traffic that will never reach the provider.
             if entry.circuit_breaker._maybe_transition_to_half_open() == CircuitState.OPEN:
                 msg = f"Provider '{entry.provider.name}' circuit is open"
-                errors.append(msg)
+                failures.add(msg)
                 logger.warning(msg)
                 continue
 
@@ -248,7 +273,7 @@ class ProviderGateway:
 
             except CircuitOpenError:
                 msg = f"Provider '{entry.provider.name}' circuit is open"
-                errors.append(msg)
+                failures.add(msg)
                 logger.warning(msg)
                 if attempt_started and self._observer:
                     end_hook = getattr(self._observer, "on_provider_call_end", None)
@@ -266,7 +291,7 @@ class ProviderGateway:
 
             except Exception as e:
                 msg = f"Provider '{entry.provider.name}' failed: {e}"
-                errors.append(msg)
+                failures.add(msg, e)
                 logger.warning(msg)
                 if attempt_started and self._observer:
                     end_hook = getattr(self._observer, "on_provider_call_end", None)
@@ -288,10 +313,7 @@ class ProviderGateway:
                     raise  # a stale recording: no other provider answers in its place
                 continue
 
-        raise ProviderError(
-            "gateway",
-            f"All providers failed for model '{model}': " + "; ".join(errors),
-        )
+        failures.raise_all(f"All providers failed for model '{model}'")
 
     async def stream(
         self,
@@ -320,14 +342,14 @@ class ProviderGateway:
                 f"No provider registered for model '{model}'",
             )
 
-        errors: list[str] = []
+        failures = _Failures()
 
         for attempt_idx, entry in enumerate(candidates):
             try:
                 entry.circuit_breaker.allow_request()
             except CircuitOpenError:
                 msg = f"Provider '{entry.provider.name}' circuit is open"
-                errors.append(msg)
+                failures.add(msg)
                 logger.warning(msg)
                 continue
 
@@ -449,7 +471,7 @@ class ProviderGateway:
 
             except CircuitOpenError:
                 msg = f"Provider '{entry.provider.name}' circuit is open"
-                errors.append(msg)
+                failures.add(msg)
                 logger.warning(msg)
                 if attempt_started and self._observer:
                     end_hook = getattr(self._observer, "on_provider_call_end", None)
@@ -474,7 +496,7 @@ class ProviderGateway:
                 if cb.state == CircuitState.HALF_OPEN and cb._half_open_calls > 0:
                     cb._half_open_calls -= 1
                 msg = f"Provider '{entry.provider.name}' rate-limited: {e}"
-                errors.append(msg)
+                failures.add(msg, e)
                 logger.warning(msg)
                 if attempt_started and self._observer:
                     end_hook = getattr(self._observer, "on_provider_call_end", None)
@@ -511,7 +533,7 @@ class ProviderGateway:
                     f"Provider '{entry.provider.name}' failed to start "
                     f"streaming for model '{model}': {e}"
                 )
-                errors.append(msg)
+                failures.add(msg, e)
                 logger.warning(msg)
                 if self._observer:
                     error_hook = getattr(self._observer, "on_provider_error", None)
@@ -521,10 +543,7 @@ class ProviderGateway:
                     raise  # a stale recording: no other provider answers in its place
                 continue
 
-        raise ProviderError(
-            "gateway",
-            f"All providers failed for model '{model}': " + "; ".join(errors),
-        )
+        failures.raise_all(f"All providers failed for model '{model}'")
 
     async def embed(
         self,
@@ -544,11 +563,11 @@ class ProviderGateway:
         if not candidates:
             raise ProviderError("gateway", f"No provider registered for model '{model}'")
 
-        errors: list[str] = []
+        failures = _Failures()
         for attempt_idx, entry in enumerate(candidates):
             if entry.circuit_breaker._maybe_transition_to_half_open() == CircuitState.OPEN:
                 msg = f"Provider '{entry.provider.name}' circuit is open"
-                errors.append(msg)
+                failures.add(msg)
                 logger.warning(msg)
                 continue
 
@@ -632,7 +651,7 @@ class ProviderGateway:
                 # retry-budget impact and no ``on_provider_error`` — a
                 # missing capability isn't a failure.
                 msg = f"Provider '{entry.provider.name}' has no embeddings: {e}"
-                errors.append(msg)
+                failures.add(msg)  # a skip, like an open circuit: no status of its own
                 logger.debug(msg)
                 if attempt_started and self._observer:
                     end_hook = getattr(self._observer, "on_provider_call_end", None)
@@ -649,7 +668,7 @@ class ProviderGateway:
                 continue
             except CircuitOpenError:
                 msg = f"Provider '{entry.provider.name}' circuit is open"
-                errors.append(msg)
+                failures.add(msg)
                 logger.warning(msg)
                 continue
             except RateLimitError as e:
@@ -658,7 +677,7 @@ class ProviderGateway:
                 # ``on_provider_error`` (a healthy provider being throttled
                 # is not a fault). Try the next candidate.
                 msg = f"Provider '{entry.provider.name}' rate-limited: {e}"
-                errors.append(msg)
+                failures.add(msg, e)
                 logger.warning(msg)
                 if attempt_started and self._observer:
                     end_hook = getattr(self._observer, "on_provider_call_end", None)
@@ -675,7 +694,7 @@ class ProviderGateway:
                 continue
             except Exception as e:
                 msg = f"Provider '{entry.provider.name}' failed: {e}"
-                errors.append(msg)
+                failures.add(msg, e)
                 logger.warning(msg)
                 if attempt_started and self._observer:
                     end_hook = getattr(self._observer, "on_provider_call_end", None)
@@ -697,9 +716,7 @@ class ProviderGateway:
                     raise  # a stale recording: no other provider answers in its place
                 continue
 
-        raise ProviderError(
-            "gateway", f"All providers failed for embed on model '{model}': " + "; ".join(errors)
-        )
+        failures.raise_all(f"All providers failed for embed on model '{model}'")
 
     def _get_candidates(self, model: str) -> list[ProviderEntry]:
         """Get provider candidates for a model, sorted by priority.

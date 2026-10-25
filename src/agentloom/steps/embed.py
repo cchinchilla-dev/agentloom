@@ -13,6 +13,7 @@ import time
 
 from agentloom.core.results import StepResult, StepStatus
 from agentloom.exceptions import RecordingMismatchError, StepError
+from agentloom.resilience.retry import classify_failure
 from agentloom.steps.base import BaseStep, StepContext
 
 
@@ -98,6 +99,7 @@ class EmbedStep(BaseStep):
                 status=StepStatus.FAILED,
                 error=str(e),
                 duration_ms=duration,
+                error_classification=classify_failure(e, step.retry.retryable_status_codes),
             )
 
         duration = (time.monotonic() - start) * 1000
