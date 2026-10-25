@@ -55,15 +55,20 @@ class ReplayCut:
         self.recording = recording
         self.forced = frozenset(forced)
         self.calls: list[CallSource] = []
-        self._missed: set[str] = set()
+        self._missed: set[tuple[str, ...]] = set()
         self._numbers: dict[str, int] = {}
 
-    def _reason(self, step_id: str) -> Literal["forced", "miss"] | None:
+    @staticmethod
+    def _path(step_id: str) -> tuple[str, ...]:
         # A step's own extra calls (``<id>::summarize``) follow the step.
-        own = step_id.split("::", 1)[0]
-        if self.forced.intersection((*running_steps(), own)):
+        return running_steps() or (step_id.split("::", 1)[0],)
+
+    def _reason(self, step_id: str) -> Literal["forced", "miss"] | None:
+        # By path: a subworkflow's step may share its id with a top-level step.
+        path = self._path(step_id)
+        if path[0] in self.forced:
             return "forced"
-        return "miss" if own in self._missed else None
+        return "miss" if path in self._missed else None
 
     def is_live(self, step_id: str) -> bool:
         """Whether ``step_id`` runs live from now on."""
@@ -83,8 +88,7 @@ class ReplayCut:
             try:
                 served = await replay()
             except RecordingMismatchError as exc:
-                if step_id:
-                    self._missed.add(step_id.split("::", 1)[0])
+                self._missed.add(self._path(key))
                 logger.info("Step %r leaves the recording at call %d: %s", key, number, exc)
                 reason = "miss"
             else:
@@ -98,8 +102,9 @@ class ReplayCut:
     def unused_turns(self) -> dict[str, tuple[int, int]]:
         """Steps served only from the recording that left turns unused: ``(served, recorded)``."""
         served = Counter(call.step_id for call in self.calls if call.source == "replay")
+        live = {call.step_id for call in self.calls if call.source == "live"}
         turns = {step: (n, self.recording.recorded_turns(step)) for step, n in served.items()}
-        return {step: t for step, t in turns.items() if t[0] < t[1] and not self.is_live(step)}
+        return {step: t for step, t in turns.items() if t[0] < t[1] and step not in live}
 
     def summary(self) -> list[str]:
         """The call log and any unused turns, one line each, for the CLI."""

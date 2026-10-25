@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import anyio
+
+from agentloom.core.attempts import enter_step
 from agentloom.exceptions import RecordingMismatchError
 from agentloom.providers.base import ToolCall
 from agentloom.providers.mock import MockProvider
@@ -20,22 +23,25 @@ def _cut(tmp_path: Path, entries: dict[str, object], forced: set[str] | None = N
     return ReplayCut(MockProvider(responses_file=path, strict=True), forced or set())
 
 
+async def _recorded() -> str:
+    return "recorded"
+
+
+async def _changed() -> str:
+    raise RecordingMismatchError("the request changed")
+
+
+async def _live() -> str:
+    return "live"
+
+
 async def test_a_step_that_missed_stays_live(tmp_path: Path) -> None:
     cut = _cut(tmp_path, {"s": [{"content": "one"}, {"content": "two"}]})
 
-    async def recorded() -> str:
-        return "recorded"
-
-    async def changed() -> str:
-        raise RecordingMismatchError("the request changed")
-
-    async def live() -> str:
-        return "live"
-
-    assert await cut.route("s", recorded, live) == "recorded"
-    assert await cut.route("s", changed, live) == "live"
+    assert await cut.route("s", _recorded, _live) == "recorded"
+    assert await cut.route("s", _changed, _live) == "live"
     assert (
-        await cut.route("s", recorded, live) == "live"
+        await cut.route("s", _recorded, _live) == "live"
     )  # it would match, but s left the recording
     assert [(c.call, c.source, c.reason) for c in cut.calls] == [
         (1, "replay", "hit"),
@@ -43,6 +49,22 @@ async def test_a_step_that_missed_stays_live(tmp_path: Path) -> None:
         (3, "live", "miss"),
     ]
     assert cut.unused_turns() == {}  # s ran live, so its unserved turns are not a change
+
+
+async def test_a_nested_step_that_missed_reports_no_unused_turns(tmp_path: Path) -> None:
+    cut = _cut(tmp_path, {"s": [{"content": "one"}, {"content": "two"}]})
+
+    async def nested() -> None:
+        enter_step("sub")
+        enter_step("s")
+        await cut.route("s", _recorded, _live)
+        await cut.route("s", _changed, _live)
+        assert await cut.route("s", _recorded, _live) == "live"
+
+    async with anyio.create_task_group() as tg:  # the steps it enters end with its task
+        tg.start_soon(nested)
+
+    assert cut.unused_turns() == {}
 
 
 def test_extra_calls_of_a_step_follow_it(tmp_path: Path) -> None:

@@ -146,6 +146,30 @@ async def test_steps_of_a_forced_subworkflow_run_live(tmp_path: Path) -> None:
     assert _sources(cut) == [("a", 1, "replay", "hit"), ("inner", 1, "live", "forced")]
 
 
+@pytest.mark.parametrize(
+    ("forced", "inner", "expected"),
+    [
+        # Forcing the top-level a leaves the nested a, whose recording matches, replayed.
+        ({"a"}, "I", [("a", 1, "replay", "hit"), ("a", 2, "live", "forced")]),
+        # The nested a missing leaves the top-level a, whose recording matches, replayed.
+        (set(), "I changed", [("a", 1, "live", "miss"), ("a", 2, "replay", "hit")]),
+    ],
+)
+async def test_a_nested_step_named_like_a_top_level_one_keeps_its_own_cut(
+    tmp_path: Path, forced: set[str], inner: str, expected: list[tuple[str, int, str, str]]
+) -> None:
+    def workflow(prompt: str) -> WorkflowDefinition:
+        inline = {"name": "child", "steps": [{"id": "a", "type": "llm_call", "prompt": prompt}]}
+        sub = StepDefinition(id="sub", type=StepType.SUBWORKFLOW, workflow_inline=inline)
+        return _workflow().model_copy(update={"steps": [sub, _step("a", "A", "sub")]})
+
+    path = tmp_path / "rec.json"
+    await _run(workflow("I"), RecordingProvider(_Versioned("v1"), path))
+    _, cut, _ = await _replay(path, forced, workflow(inner))
+
+    assert _sources(cut) == expected
+
+
 def test_cut_steps_rejects_unknown_steps() -> None:
     with pytest.raises(ValueError, match="No step 'x', 'y' in workflow 'cut'"):
         cut_steps(_workflow(), "x", ["a", "y"])
