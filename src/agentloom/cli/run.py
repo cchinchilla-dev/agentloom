@@ -16,9 +16,11 @@ from agentloom.core.state import StateManager
 from agentloom.exceptions import ProviderError
 
 if TYPE_CHECKING:
-    from agentloom.core.models import WorkflowConfig
+    from agentloom.core.models import WorkflowConfig, WorkflowDefinition
     from agentloom.observability.observer import WorkflowObserver
     from agentloom.providers.gateway import ProviderGateway
+    from agentloom.providers.mock import MockProvider
+    from agentloom.providers.replay_or_live import ReplayCut
 
 
 def _parse_state_value(raw: str) -> Any:
@@ -121,6 +123,8 @@ async def _run_async(
     mock_strict: bool = False,
     record_tools: bool = False,
     tool_mode: str = "live",
+    live_from: str | None = None,
+    force_live: list[str] | None = None,
 ) -> None:
     """Async implementation of the run command."""
     import sys
@@ -165,10 +169,13 @@ async def _run_async(
     # Setup observability (unless --lite) — done early so providers can hook into it
     observer = _setup_observer(lite)
 
+    cut = None
     if mock_responses is not None:
         from agentloom.providers.mock import MockProvider
 
-        workflow.config.provider = "mock"
+        live = live_from is not None or bool(force_live)  # a cut keeps the workflow's providers
+        if not live:
+            workflow.config.provider = "mock"
         try:
             mock = MockProvider(
                 responses_file=mock_responses,
@@ -182,7 +189,10 @@ async def _run_async(
             # run green against a fixture that never loaded.
             typer.echo(f"Error: {e}", err=True)
             raise typer.Exit(1) from e
-        gateway.register(mock, priority=0)
+        if live:
+            cut = _setup_cut(gateway, workflow, mock, live_from, force_live or [])
+        else:
+            gateway.register(mock, priority=0)
     elif workflow.config.provider == "mock" and record is None:
         from agentloom.providers.mock import MockProvider
 
@@ -197,12 +207,7 @@ async def _run_async(
             priority=0,
         )
     else:
-        try:
-            _setup_generic_openai(gateway, workflow.config)
-        except ProviderError as e:
-            typer.echo(f"Error: {e}", err=True)
-            raise typer.Exit(1) from e
-        _setup_providers(gateway, workflow.config.provider)
+        _setup_live(gateway, workflow.config)
         if record is not None:
             from agentloom.providers.recorder import RecordingProvider
 
@@ -231,7 +236,12 @@ async def _run_async(
     elif mock_responses is not None and tool_mode != "live":
         from agentloom.providers.tool_tape import ToolMode, ToolReplayer
 
-        tool_registry.tape = ToolReplayer(mock_responses, ToolMode(tool_mode), strict=mock_strict)
+        tool_registry.tape = ToolReplayer(
+            mock_responses,
+            ToolMode(tool_mode),
+            strict=mock_strict,
+            live=cut.is_live if cut is not None else None,
+        )
 
     stream_callback = None
     if stream and not output_json:
@@ -269,10 +279,16 @@ async def _run_async(
     if stream and not output_json:
         typer.echo()  # Newline after streamed output
 
-    if output_json:
+    if output_json and cut is not None:
+        calls = [call.model_dump() for call in cut.calls]
+        typer.echo(json.dumps({**result.model_dump(mode="json"), "calls": calls}, indent=2))
+    elif output_json:
         typer.echo(result.model_dump_json(indent=2))
     else:
         _print_result(result, run_id=engine.run_id)
+        if cut is not None:
+            typer.echo("Calls (replay up to the cut, live after it):")
+            typer.echo("\n".join(cut.summary()))
 
     if observer:
         observer.shutdown()
@@ -314,6 +330,36 @@ def _setup_observer(lite: bool) -> WorkflowObserver | None:
         return WorkflowObserver(tracing=tracing, metrics=metrics)
 
     return None
+
+
+def _setup_live(gateway: ProviderGateway, config: WorkflowConfig) -> None:
+    """Register the workflow's own providers."""
+    try:
+        _setup_generic_openai(gateway, config)
+    except ProviderError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e
+    _setup_providers(gateway, config.provider)
+
+
+def _setup_cut(
+    gateway: ProviderGateway,
+    workflow: WorkflowDefinition,
+    recording: MockProvider,
+    live_from: str | None,
+    force_live: list[str],
+) -> ReplayCut:
+    """Serve the recording through the workflow's own providers, live from the cut on (#165)."""
+    from agentloom.providers.replay_or_live import ReplayCut, ReplayOrLiveProvider, cut_steps
+
+    try:
+        cut = ReplayCut(recording, cut_steps(workflow, live_from, force_live))
+    except ValueError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e
+    _setup_live(gateway, workflow.config)
+    gateway.wrap_providers(lambda provider: ReplayOrLiveProvider(provider, cut))
+    return cut
 
 
 def _setup_generic_openai(gateway: ProviderGateway, config: WorkflowConfig) -> None:

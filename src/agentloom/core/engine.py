@@ -19,7 +19,7 @@ from agentloom.checkpointing.base import (
     BaseCheckpointer,
     CheckpointData,
 )
-from agentloom.core.attempts import Attempt, enter_attempt, running_attempt
+from agentloom.core.attempts import Attempt, enter_attempt, enter_step, running_attempt
 from agentloom.core.dag import DAG
 from agentloom.core.models import StepDefinition, StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
@@ -858,6 +858,7 @@ class WorkflowEngine:
         max_retries = step_def.retry.max_retries
         last_result: StepResult | None = None
         outer = running_attempt()  # a subworkflow's step runs inside its parent's attempt
+        enter_step(step_id)
         previous: Attempt | None = None
 
         for attempt in range(max_retries + 1):

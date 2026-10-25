@@ -1,7 +1,8 @@
 """CLI command: replay a workflow from a recorded responses file.
 
 Thin alias over ``run`` that forces ``provider=mock`` and loads responses
-from the given recording file. Observability is disabled by default.
+from the given recording file, or, with a cut, serves the recording through the
+workflow's own providers. Observability is disabled by default.
 """
 
 from __future__ import annotations
@@ -43,6 +44,17 @@ def replay(
             "--record-tools, `verify` runs them and fails when a result differs."
         ),
     ),
+    live_from: str | None = typer.Option(
+        None,
+        "--live-from",
+        help=(
+            "Serve the steps before this one from the recording, and run it and every step "
+            "that depends on it live, with the workflow's providers and their keys."
+        ),
+    ),
+    force_live: list[str] = typer.Option(
+        [], "--force-live", help="Run this step live even when the recording matches it."
+    ),
 ) -> None:
     """Replay a workflow using previously recorded LLM responses (no API calls).
 
@@ -52,7 +64,18 @@ def replay(
     restore the pre-0.5.0 lenient behaviour (placeholder response on a
     miss). ``--tools replay`` and ``--tools verify`` apply the same
     strictness to tool calls.
+
+    ``--live-from`` and ``--force-live`` cut the replay (#165): those steps run
+    live, and so does any other step from its first call that misses the
+    recording. Every call is listed with where it came from.
     """
+    if allow_default_fallback and (live_from or force_live):
+        typer.echo(
+            "Error: --allow-default-fallback does not combine with --live-from or "
+            "--force-live, which run a step that misses the recording live.",
+            err=True,
+        )
+        raise typer.Exit(1)
     anyio.run(
         _run_async,
         workflow_path,
@@ -70,4 +93,6 @@ def replay(
         not allow_default_fallback,  # mock_strict
         False,  # record_tools
         tools,
+        live_from,
+        force_live,
     )

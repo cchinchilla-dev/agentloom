@@ -235,6 +235,13 @@ class MockProvider(BaseProvider):
                 raise ValueError(f"Recording {self.responses_file} is not valid JSON: {e}") from e
             self._responses = validate_recording_schema(raw, str(self.responses_file))
 
+    def recorded_turns(self, step_id: str) -> int:
+        """How many turns the recording holds for ``step_id``: one per call of a tool loop."""
+        entry = self._responses.get(step_id)
+        if isinstance(entry, list):
+            return len(entry)
+        return 1 if isinstance(entry, dict) else 0
+
     def _lookup(
         self,
         step_id: str | None,
