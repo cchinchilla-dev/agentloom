@@ -55,6 +55,17 @@ def replay(
     force_live: list[str] = typer.Option(
         [], "--force-live", help="Run this step live even when the recording matches it."
     ),
+    record: Path | None = typer.Option(
+        None,
+        "--record",
+        help=(
+            "With --live-from or --force-live, record this run to a new file: the replayed "
+            "calls as the recording has them, the live ones as `run --record` captures them."
+        ),
+    ),
+    record_tools: bool = typer.Option(
+        False, "--record-tools", help="With --record, also record tool results."
+    ),
 ) -> None:
     """Replay a workflow using previously recorded LLM responses (no API calls).
 
@@ -67,7 +78,8 @@ def replay(
 
     ``--live-from`` and ``--force-live`` cut the replay (#165): those steps run
     live, and so does any other step from its first call that misses the
-    recording. Every call is listed with where it came from.
+    recording. Every call is listed with where it came from. ``--record`` saves
+    that run as a new recording (#178); the source recording is never written.
     """
     if allow_default_fallback and (live_from or force_live):
         typer.echo(
@@ -75,6 +87,9 @@ def replay(
             "--force-live, which run a step that misses the recording live.",
             err=True,
         )
+        raise typer.Exit(1)
+    if problem := _record_problem(recording, record, record_tools, live_from, force_live):
+        typer.echo(f"Error: {problem}", err=True)
         raise typer.Exit(1)
     anyio.run(
         _run_async,
@@ -89,10 +104,29 @@ def replay(
         False,  # checkpoint
         ".agentloom/checkpoints",
         recording,  # mock_responses
-        None,  # record
+        record,
         not allow_default_fallback,  # mock_strict
-        False,  # record_tools
+        record_tools,
         tools,
         live_from,
         force_live,
     )
+
+
+def _record_problem(
+    recording: Path,
+    record: Path | None,
+    record_tools: bool,
+    live_from: str | None,
+    force_live: list[str],
+) -> str | None:
+    """Why ``--record`` / ``--record-tools`` cannot apply to this replay, if they cannot."""
+    if record_tools and record is None:
+        return "--record-tools needs --record."
+    if record is None:
+        return None
+    if not (live_from or force_live):
+        return "--record needs --live-from or --force-live: a replay without a cut calls nothing."
+    if record.exists() and record.samefile(recording):  # a link to it included
+        return "--record must name another file: the source recording is never written."
+    return None

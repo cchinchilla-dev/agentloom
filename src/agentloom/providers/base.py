@@ -103,6 +103,7 @@ class StreamResponse:
         self.tool_calls: list[ToolCall] = []
         # Set by the adapter once the response headers arrive.
         self.meta: ResponseMeta | None = None
+        self.raw_response: dict[str, Any] = {}
         self._chunks: list[str] = []
         self._accumulated_bytes: int = 0
         self._iterator: AsyncIterator[str] | None = None
@@ -169,6 +170,7 @@ class StreamResponse:
             reasoning_content=self.reasoning_content,
             tool_calls=list(self.tool_calls),
             meta=self.meta,
+            raw_response=self.raw_response,
         )
 
 
@@ -237,6 +239,7 @@ class BaseProvider(ABC):
         sr.reasoning_content = response.reasoning_content
         sr.tool_calls = list(response.tool_calls)
         sr.meta = response.meta
+        sr.raw_response = response.raw_response
 
         async def _single_chunk() -> AsyncIterator[str]:
             yield response.content

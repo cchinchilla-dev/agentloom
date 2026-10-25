@@ -218,23 +218,26 @@ class RecordingProvider(BaseProvider):
         latency_ms = (time.perf_counter() - start) * 1000.0
 
         key = self._key(step_id, messages, model, temperature, max_tokens, extra_kwargs)
-        entry = {
-            "content": response.content,
-            "model": response.model,
-            "provider": response.provider,
-            "usage": response.usage.model_dump(),
-            "cost_usd": response.cost_usd,
-            "latency_ms": latency_ms,
-            "finish_reason": response.finish_reason,
-            # The full request hash rides on every entry — even when the
-            # entry is keyed by ``step_id`` — so a strict-mode replay can
-            # detect a prompt that drifted from its recording (F28).
-            "request_hash": prompt_hash(messages, model, temperature, max_tokens, extra_kwargs),
-        }
-        if response.tool_calls:
-            entry["tool_calls"] = _tool_calls(response.tool_calls)
-        if meta := _meta(response.meta):
-            entry["meta"] = meta
+        request_hash = prompt_hash(messages, model, temperature, max_tokens, extra_kwargs)
+        entry = _replayed(response.raw_response, request_hash)
+        if entry is None:
+            entry = {
+                "content": response.content,
+                "model": response.model,
+                "provider": response.provider,
+                "usage": response.usage.model_dump(),
+                "cost_usd": response.cost_usd,
+                "latency_ms": latency_ms,
+                "finish_reason": response.finish_reason,
+                # The full request hash rides on every entry — even when the
+                # entry is keyed by ``step_id`` — so a strict-mode replay can
+                # detect a prompt that drifted from its recording (F28).
+                "request_hash": request_hash,
+            }
+            if response.tool_calls:
+                entry["tool_calls"] = _tool_calls(response.tool_calls)
+            if meta := _meta(response.meta):
+                entry["meta"] = meta
         async with self._write_lock:
             self._store(key, entry, by_step_id=bool(step_id))
         await self._flush()
@@ -290,20 +293,23 @@ class RecordingProvider(BaseProvider):
 
             latency_ms = (time.perf_counter() - start) * 1000.0
             key = recorder._key(step_id, messages, model, temperature, max_tokens, extra_kwargs)
-            entry = {
-                "content": "".join(buffer),
-                "model": inner_sr.model,
-                "provider": inner_sr.provider,
-                "usage": inner_sr.usage.model_dump(),
-                "cost_usd": inner_sr.cost_usd,
-                "latency_ms": latency_ms,
-                "finish_reason": inner_sr.finish_reason,
-                "request_hash": prompt_hash(messages, model, temperature, max_tokens, extra_kwargs),
-            }
-            if inner_sr.tool_calls:
-                entry["tool_calls"] = _tool_calls(inner_sr.tool_calls)
-            if meta := _meta(inner_sr.meta):
-                entry["meta"] = meta
+            request_hash = prompt_hash(messages, model, temperature, max_tokens, extra_kwargs)
+            entry = _replayed(inner_sr.raw_response, request_hash)
+            if entry is None:
+                entry = {
+                    "content": "".join(buffer),
+                    "model": inner_sr.model,
+                    "provider": inner_sr.provider,
+                    "usage": inner_sr.usage.model_dump(),
+                    "cost_usd": inner_sr.cost_usd,
+                    "latency_ms": latency_ms,
+                    "finish_reason": inner_sr.finish_reason,
+                    "request_hash": request_hash,
+                }
+                if inner_sr.tool_calls:
+                    entry["tool_calls"] = _tool_calls(inner_sr.tool_calls)
+                if meta := _meta(inner_sr.meta):
+                    entry["meta"] = meta
             async with recorder._write_lock:
                 recorder._store(key, entry, by_step_id=bool(step_id))
             await recorder._flush()
@@ -374,6 +380,15 @@ class RecordingProvider(BaseProvider):
     async def close(self) -> None:
         await self._flush()
         await self._wrapped.close()
+
+
+def _replayed(raw: dict[str, Any], request_hash: str) -> dict[str, Any] | None:
+    """The recorded turn a replay served for this exact request, to copy as it was (#178).
+
+    A cut replay re-records the calls it serves from its source recording;
+    rebuilt from the response, they would carry this run's latency instead.
+    """
+    return raw if raw.get("request_hash") == request_hash else None
 
 
 def _tool_calls(calls: list[ToolCall]) -> list[dict[str, Any]]:
