@@ -298,8 +298,13 @@ class MockProvider(BaseProvider):
         last turn. A turn without a ``request_hash`` never matches here:
         only lists with no hashes at all keep the cursor.
         """
-        # A fault fails the request instead of answering it, so it fires at the cursor (#123).
-        if idx < len(turns) and "fault" in turns[idx]:
+        # A fault fails the request instead of answering it, so it fires at the cursor (#123),
+        # unless it sits on a turn recorded for another request.
+        if (
+            idx < len(turns)
+            and "fault" in turns[idx]
+            and turns[idx].get("request_hash", request_hash) == request_hash
+        ):
             self._turn_cursor[step_id] = idx + 1
             return turns[idx]  # type: ignore[no-any-return]
         for i in [*range(idx, len(turns)), *range(min(idx, len(turns)))]:
@@ -388,12 +393,12 @@ class MockProvider(BaseProvider):
                 "matched_by": matched_by,
             }
         )
-        if entry is not None and "fault" in entry:
-            await self._fail(step_id, entry)
         if self._observer is not None:
             # observer must never break replay
             with contextlib.suppress(Exception):  # pragma: no cover
                 self._observer.on_mock_replay(self._workflow_name, step_id or "", matched_by)
+        if entry is not None and "fault" in entry:
+            await self._fail(step_id, entry)
         recorded_latency = entry.get("latency_ms") if entry else None
         await self._sleep(recorded_latency if isinstance(recorded_latency, int | float) else None)
 

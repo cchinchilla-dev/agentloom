@@ -18,7 +18,7 @@ from agentloom.core.models import (
     WorkflowDefinition,
 )
 from agentloom.core.results import WorkflowStatus
-from agentloom.exceptions import ProviderError, RateLimitError
+from agentloom.exceptions import ProviderError, RateLimitError, RecordingMismatchError
 from agentloom.providers.gateway import ProviderGateway
 from agentloom.providers.mock import MockProvider, prompt_hash
 from agentloom.resilience.circuit_breaker import CircuitState
@@ -154,6 +154,18 @@ async def test_a_fault_inside_a_loop_fires_on_every_attempt(tmp_path: Path) -> N
             await mock.complete(follow, "m", step_id="s")
 
 
+async def test_a_fault_on_a_recorded_turn_needs_its_request(tmp_path: Path) -> None:
+    other = [{"role": "user", "content": "changed"}]
+    turn = {"content": "ok", "request_hash": prompt_hash(HI, "m", None, None, None)}
+    faulted = {**turn, **_fault(type="connection_reset")}
+    mock = _mock(tmp_path, {"s": [faulted]}, strict=True)
+
+    with pytest.raises(RecordingMismatchError):  # a changed request is a stale recording
+        await mock.complete(other, "m", step_id="s")
+    with pytest.raises(ProviderError, match="ConnectError"):
+        await mock.complete(HI, "m", step_id="s")
+
+
 async def test_a_fault_is_reported_to_the_observer(tmp_path: Path) -> None:
     observer = MagicMock()
     mock = _mock(tmp_path, {"s": _fault(type="connection_reset")}, observer=observer)
@@ -163,7 +175,7 @@ async def test_a_fault_is_reported_to_the_observer(tmp_path: Path) -> None:
         await mock.complete(HI, "m", step_id="s")
 
     observer.on_mock_fault.assert_called_once_with("wf", "s", "connection_reset")
-    observer.on_mock_replay.assert_not_called()
+    observer.on_mock_replay.assert_called_once_with("wf", "s", "step_id")  # still a lookup
 
 
 def _engine(mock: MockProvider, step: StepDefinition) -> tuple[WorkflowEngine, ProviderGateway]:
