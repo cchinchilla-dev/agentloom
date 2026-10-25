@@ -170,6 +170,7 @@ class StreamResponse:
             reasoning_content=self.reasoning_content,
             tool_calls=list(self.tool_calls),
             meta=self.meta,
+            raw_response=self.raw_response,
         )
 
 

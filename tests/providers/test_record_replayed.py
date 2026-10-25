@@ -63,6 +63,13 @@ async def test_a_replayed_stream_is_copied_as_recorded(tmp_path: Path) -> None:
     assert json.loads(out.read_text())["s"] == _turn("one", "r1")
 
 
+async def test_a_replayed_stream_keeps_its_turn_when_converted(tmp_path: Path) -> None:
+    sr = await _source(tmp_path, [_turn("one", "r1")]).stream(_ask("one"), "m", step_id="s")
+    assert [chunk async for chunk in sr] == ["r1"]
+
+    assert sr.to_provider_response().raw_response == _turn("one", "r1")
+
+
 async def test_a_step_that_misses_midway_records_both_turns_in_order(tmp_path: Path) -> None:
     cut = ReplayCut(_source(tmp_path, [_turn("one", "r1"), _turn("two", "r2")]))
     out = tmp_path / "out.json"
