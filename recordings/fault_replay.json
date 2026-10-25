@@ -1,0 +1,21 @@
+{
+  "_version": 2,
+  "draft": [
+    {"fault": {"type": "http_error", "status_code": 429, "retry_after_s": 0.1}},
+    {"fault": {"type": "http_error", "status_code": 503, "body": "upstream overloaded"}},
+    {
+      "content": "Release 1.4 is in final testing and ships Thursday.",
+      "model": "mock-model",
+      "usage": {"prompt_tokens": 14, "completion_tokens": 11, "total_tokens": 25},
+      "cost_usd": 0.0,
+      "finish_reason": "stop"
+    }
+  ],
+  "review": {
+    "content": "Release 1.4 ships Thursday after final testing.",
+    "model": "mock-model",
+    "usage": {"prompt_tokens": 22, "completion_tokens": 9, "total_tokens": 31},
+    "cost_usd": 0.0,
+    "finish_reason": "stop"
+  }
+}

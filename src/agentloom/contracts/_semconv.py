@@ -134,6 +134,7 @@ class SpanAttr:
     WEBHOOK_LATENCY_S = "agentloom.webhook.latency_s"
     MOCK_MATCHED_BY = "agentloom.mock.matched_by"
     MOCK_STEP_ID = "agentloom.mock.step_id"
+    MOCK_FAULT_TYPE = "agentloom.mock.fault_type"
     RECORDING_PROVIDER = "agentloom.recording.provider"
     RECORDING_MODEL = "agentloom.recording.model"
     RECORDING_LATENCY_S = "agentloom.recording.latency_s"
@@ -209,6 +210,7 @@ class MetricName:
     WEBHOOK_DELIVERIES_TOTAL = "agentloom_webhook_deliveries_total"
     WEBHOOK_LATENCY_SECONDS = "agentloom_webhook_latency_seconds"
     MOCK_REPLAYS_TOTAL = "agentloom_mock_replays_total"
+    MOCK_FAULTS_TOTAL = "agentloom_mock_faults_total"
     RECORDING_CAPTURES_TOTAL = "agentloom_recording_captures_total"
     RECORDING_LATENCY_SECONDS = "agentloom_recording_latency_seconds"
 

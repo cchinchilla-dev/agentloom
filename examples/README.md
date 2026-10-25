@@ -254,4 +254,9 @@ Native tool calling (35), structured output with a Pydantic schema (36), the
 multi-agent conversation (39). Each runs offline against a recording committed
 under `recordings/`; pass `--provider` and `--model` to call a live model.
 
+### 40 — Fault replay (0.5.0, unreleased)
+A recording that fails `draft` with a 429 and a 503 before it answers; the step's
+retry policy recovers on the third attempt, the same way on every run.
+Demonstrates: `fault` entries in a recording, deterministic failure replay.
+
 Full descriptions and commands: [docs/examples](https://cchinchilla-dev.github.io/agentloom/examples/).

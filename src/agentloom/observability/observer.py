@@ -533,6 +533,16 @@ class WorkflowObserver:
             span.set_attribute(SpanAttr.WEBHOOK_STATUS, status)
             span.set_attribute(SpanAttr.WEBHOOK_LATENCY_S, latency_s)
 
+    def on_mock_fault(
+        self, workflow_name: str, step_id: str, fault_type: str, **kwargs: Any
+    ) -> None:
+        """A fault declared in a mock recording failed a call (#123)."""
+        if self._metrics:
+            self._metrics.record_mock_fault(workflow_name, fault_type)
+        span = self._step_spans.get(step_id)
+        if span:
+            span.set_attribute(SpanAttr.MOCK_FAULT_TYPE, fault_type)
+
     def on_mock_replay(
         self, workflow_name: str, step_id: str, matched_by: str, **kwargs: Any
     ) -> None:

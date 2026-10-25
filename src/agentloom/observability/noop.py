@@ -186,6 +186,11 @@ class NoopObserver:
     ) -> None:
         pass
 
+    def on_mock_fault(
+        self, workflow_name: str, step_id: str, fault_type: str, **kwargs: Any
+    ) -> None:
+        pass
+
     def on_recording_capture(
         self,
         step_id: str,

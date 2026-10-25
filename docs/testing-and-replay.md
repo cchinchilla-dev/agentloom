@@ -161,6 +161,31 @@ agentloom replay workflow.yaml --recording recordings/run1.json --live-from summ
 
 `run2.json` holds every call of that run, in order within each step: a call served from `run1.json` is copied as recorded there (its latency and usage included), and a live call is captured as `agentloom run --record` captures it, so a step that left the recording midway keeps its replayed turns and its live ones. With `--record-tools`, the tool results go under `_tools` too, the replayed ones as served and the live ones as they ran. `run2.json` replays strictly on its own, and `run1.json` is never written: `--record` refuses the source file, a link to it included. `--record` needs `--live-from` or `--force-live`, since a replay without a cut calls nothing.
 
+## Injecting faults
+
+A recording can fail a call on purpose, the same way on every run. Any entry, or any turn of a step's list, takes a `fault` instead of an answer:
+
+```json
+{
+  "draft": [
+    {"fault": {"type": "http_error", "status_code": 429, "retry_after_s": 1}},
+    {"fault": {"type": "timeout", "after_ms": 500}},
+    {"content": "Release 1.4 ships Thursday."}
+  ]
+}
+```
+
+| `type` | Parameters | Raises |
+|---|---|---|
+| `http_error` | `status_code` (400–599), `retry_after_s`, `body` | `RateLimitError` for 429, with `retry_after_s`; `ProviderError` with the status otherwise |
+| `timeout` | `after_ms` (default 0) | `ProviderError` (`ReadTimeout`) after waiting `after_ms` |
+| `connection_reset` | — | `ProviderError` (`ConnectError`) |
+| `stream_truncate` | `after_chunks` | a stream yields the entry's first `after_chunks` words of `content`, then `ProviderError` (`ReadError`); a plain call fails at once |
+
+Each fault raises what the provider adapters raise for that failure, so the gateway's circuit breaker and fallback and the step's `retry` policy take the path a real failure takes: the example above fails twice and the third attempt answers when the step allows two retries (`examples/40_fault_replay.yaml`). A malformed fault (unknown `type`, missing or extra field) is refused when the recording loads.
+
+A fault turn you add carries no `request_hash`: under strict replay, it fires when the cursor reaches it in a recorded list, so a recorded run can be made to fail at a chosen call without re-recording it. A retried step starts its loop again: a fault before a step's first turn fires once and the retry gets the answer, while a fault between two turns of a tool loop fires on every attempt. A fault in a step that a cut replays fires too. A fault added to a recorded turn keeps that turn's `request_hash`, so strict replay fires it only for the request it was recorded for and refuses any other. A faulted call is still a replay lookup in `agentloom_mock_replays_total`; each fault also counts in `agentloom_mock_faults_total{workflow, fault_type}` and marks the step span with `agentloom.mock.fault_type`. A response with `finish_reason: "length"` and the usage you want needs no fault: write it as an ordinary entry.
+
 ## Latency models
 
 `MockProvider` supports three modes:
