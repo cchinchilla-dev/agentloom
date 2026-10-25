@@ -28,6 +28,8 @@ from agentloom.providers.mock import validate_recording_schema
 from agentloom.providers.recorder import merge_into_recording
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from agentloom.core.attempts import Attempt
     from agentloom.providers.base import ToolCall
 
@@ -122,12 +124,21 @@ class ToolReplayer:
     warning is logged and the live result is used.
     """
 
-    def __init__(self, path: str | Path, mode: ToolMode, *, strict: bool = True) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        mode: ToolMode,
+        *,
+        strict: bool = True,
+        live: Callable[[str], bool] | None = None,
+    ) -> None:
         text = Path(path).read_text(encoding="utf-8")
         recording = validate_recording_schema(json.loads(text), str(path))
         self._recorded: dict[str, list[dict[str, Any]]] = recording.get("_tools", {})
         self.mode = mode
         self.strict = strict
+        # A step that the cut of a replay runs live (#165) runs its tools live too.
+        self._live = live or (lambda _step_id: False)
         self._cursor: dict[str, int] = {}
         # Each step's cursor before an attempt first moved it: a retry goes back there.
         self._attempts = AttemptLog()
@@ -161,7 +172,7 @@ class ToolReplayer:
         logger.warning("%s; using the live result.", problem)
 
     def serve(self, step_id: str, calls: list[ToolCall]) -> list[tuple[str, bool] | None]:
-        if self.mode is not ToolMode.REPLAY:
+        if self.mode is not ToolMode.REPLAY or self._live(step_id):
             return [None] * len(calls)
         served: list[tuple[str, bool] | None] = []
         for call in calls:
@@ -174,7 +185,7 @@ class ToolReplayer:
         return served
 
     async def capture(self, step_id: str, results: list[tuple[ToolCall, str, bool]]) -> None:
-        if self.mode is not ToolMode.VERIFY:
+        if self.mode is not ToolMode.VERIFY or self._live(step_id):
             return
         for call, text, ok in results:
             where, entry = self._match(step_id, call)

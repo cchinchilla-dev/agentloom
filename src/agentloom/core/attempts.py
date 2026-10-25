@@ -17,6 +17,7 @@ Attempt = tuple[int, ...]
 
 _RUNNING: ContextVar[Attempt] = ContextVar("agentloom_attempt", default=())
 _NUMBER: ContextVar[int] = ContextVar("agentloom_attempt_number", default=1)
+_STEPS: ContextVar[tuple[str, ...]] = ContextVar("agentloom_steps", default=())
 _IDS = itertools.count(1)
 
 
@@ -28,6 +29,16 @@ def running_attempt() -> Attempt:
 def attempt_number() -> int:
     """Which attempt of its step the running one is, from 1; 1 outside any step (#166)."""
     return _NUMBER.get()
+
+
+def running_steps() -> tuple[str, ...]:
+    """The ids of the running step and of the steps enclosing it, outermost first (#165)."""
+    return _STEPS.get()
+
+
+def enter_step(step_id: str) -> None:
+    """Mark ``step_id`` as running inside the steps already running, for the rest of its task."""
+    _STEPS.set((*_STEPS.get(), step_id))
 
 
 def enter_attempt(outer: Attempt, number: int = 1) -> Attempt:

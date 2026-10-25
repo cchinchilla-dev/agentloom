@@ -11,6 +11,7 @@ AgentLoom ships two providers designed for **offline, deterministic** execution 
 | Capturing a real run to replay later | `RecordingProvider` wrapping the real provider |
 | Statistical eval over a fixed response set | `MockProvider` with `latency_model: replay` |
 | Debugging a production incident offline | Record in prod → replay locally |
+| Re-running only the tail of a recorded run | `agentloom replay --live-from <step>` |
 
 ## Recording a run
 
@@ -124,6 +125,32 @@ agentloom replay workflow.yaml --recording recordings/run1.json --tools replay
 | `verify` | run, and their result and `success` flag are compared | raises `RecordingMismatchError` with the call and the hashes of both results |
 
 A call matches the next recorded call of its step with the same tool name and arguments, so a tool called twice gets its two results in order. When the engine retries a step, the failed attempt leaves no trace, nor do the steps of a subworkflow that ran inside it: recording keeps the calls of the attempt that finished, and replay serves again the calls that the failed attempt took. With `--allow-default-fallback`, a missing call runs live and a different result logs a warning. Steps of `type: tool` always run live.
+
+## Replaying up to a cut point
+
+To run only the tail of a workflow after a fix, keep the recorded answers of the steps before it and run the rest live:
+
+```bash
+agentloom replay workflow.yaml --recording recordings/run1.json --live-from summarize
+agentloom replay workflow.yaml --recording recordings/run1.json --force-live classify --force-live route
+```
+
+- `--live-from <step>` runs that step and every step that depends on it live. A step that does not depend on it, a parallel branch included, is still served from the recording.
+- `--force-live <step>` (repeatable) runs a step live even when the recording matches it.
+- Any other step is served from the recording while its requests match. From its first call that misses (its prompt, model or tools changed, or it makes more calls than were recorded) it runs live, and its dependents, whose prompts change with it, follow on their own.
+
+Both flags name top-level steps; the steps of a subworkflow follow their parent. The live part uses the workflow's own providers, so their keys must be set. With `--tools replay`, a replayed step gets its recorded tool results and a live step runs its tools; with `--tools live`, a replayed step whose tools return something new misses its next turn and runs live from there. `--allow-default-fallback` does not combine with a cut.
+
+The run lists every call with where it came from and why, and reports a replayed step that left recorded turns unused:
+
+```text
+Calls (replay up to the cut, live after it):
+  classify #1: replay (hit)
+  summarize #1: live (forced)
+  report #1: live (miss)
+```
+
+With `--json`, the list is under `calls`, one `{step_id, call, source, reason}` per call. From Python, wrap each live provider with `gateway.wrap_providers(lambda p: ReplayOrLiveProvider(p, cut))`, where `cut = ReplayCut(MockProvider(responses_file=..., strict=True), forced)` (`agentloom.providers.replay_or_live`), and read `cut.calls` after the run.
 
 ## Latency models
 
