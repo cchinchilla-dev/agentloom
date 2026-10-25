@@ -71,17 +71,22 @@ class ToolRecorder:
     The first capture of a step in a run replaces what an earlier run left
     under it; the other steps survive, as with the LLM entries. A retry
     drops the calls of the attempt that failed, a subworkflow's included,
-    so the recording holds the calls of the attempt that finished.
+    so the recording holds the calls of the attempt that finished. With
+    ``serve_from``, a cut replay (#178) serves or checks the calls from its
+    source recording as that replayer says, and records them all.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, serve_from: ToolReplayer | None = None) -> None:
         self.path = Path(path)
+        self._source = serve_from
         self._steps: dict[str, list[dict[str, Any]]] = {}
         # Calls of each step before an attempt first recorded it: a retry goes back there.
         self._attempts = AttemptLog()
         self._lock = anyio.Lock()
 
     async def begin_attempt(self, step_id: str, failed: Attempt | None) -> None:
+        if self._source is not None:
+            await self._source.begin_attempt(step_id, failed)
         if failed is None:
             return
         async with self._lock:
@@ -92,9 +97,13 @@ class ToolRecorder:
                 await self._flush()
 
     def serve(self, step_id: str, calls: list[ToolCall]) -> list[tuple[str, bool] | None]:
+        if self._source is not None:
+            return self._source.serve(step_id, calls)
         return [None] * len(calls)
 
     async def capture(self, step_id: str, results: list[tuple[ToolCall, str, bool]]) -> None:
+        if self._source is not None:
+            await self._source.capture(step_id, results)
         async with self._lock:
             self._attempts.note(step_id, len(self._steps.get(step_id, [])))
             self._steps.setdefault(step_id, []).extend(

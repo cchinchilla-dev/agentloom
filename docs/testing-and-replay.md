@@ -152,6 +152,15 @@ Calls (replay up to the cut, live after it):
 
 With `--json`, the list is under `calls`, one `{step_id, call, source, reason}` per call. From Python, wrap each live provider with `gateway.wrap_providers(lambda p: ReplayOrLiveProvider(p, cut))`, where `cut = ReplayCut(MockProvider(responses_file=..., strict=True), forced)` (`agentloom.providers.replay_or_live`), and read `cut.calls` after the run.
 
+To keep replaying after the fix, record the cut run to a new file:
+
+```bash
+agentloom replay workflow.yaml --recording recordings/run1.json --live-from summarize \
+  --record recordings/run2.json --record-tools --tools replay
+```
+
+`run2.json` holds every call of that run, in order within each step: a call served from `run1.json` is copied as recorded there (its latency and usage included), and a live call is captured as `agentloom run --record` captures it, so a step that left the recording midway keeps its replayed turns and its live ones. With `--record-tools`, the tool results go under `_tools` too, the replayed ones as served and the live ones as they ran. `run2.json` replays strictly on its own, and `run1.json` is never written: `--record` refuses the source file, a link to it included. `--record` needs `--live-from` or `--force-live`, since a replay without a cut calls nothing.
+
 ## Latency models
 
 `MockProvider` supports three modes:

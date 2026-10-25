@@ -423,15 +423,13 @@ class MockProvider(BaseProvider):
             content=str(entry.get("content", "")),
             model=str(entry.get("model", model)),
             provider=str(entry.get("provider", self.name)),
-            usage=TokenUsage(
-                prompt_tokens=int(usage_data.get("prompt_tokens", 0)),
-                completion_tokens=int(usage_data.get("completion_tokens", 0)),
-                total_tokens=int(usage_data.get("total_tokens", 0)),
-            ),
+            usage=TokenUsage.model_validate(usage_data),  # reasoning tokens included
             cost_usd=float(entry.get("cost_usd", 0.0)),
             finish_reason=entry.get("finish_reason", "stop"),
             tool_calls=tool_calls,
             meta=ResponseMeta.model_validate(entry["meta"]) if "meta" in entry else None,
+            # The turn as recorded: re-recording a replayed call copies it (#178).
+            raw_response=entry,
         )
 
     async def embed(

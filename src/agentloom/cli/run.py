@@ -191,6 +191,11 @@ async def _run_async(
             raise typer.Exit(1) from e
         if live:
             cut = _setup_cut(gateway, workflow, mock, live_from, force_live or [])
+            if record is not None:
+                from agentloom.providers.recorder import RecordingProvider
+
+                # Outermost, so a step's replayed and live turns land in one list, in order (#178).
+                gateway.wrap_providers(lambda p: RecordingProvider(p, record, observer=observer))
         else:
             gateway.register(mock, priority=0)
     elif workflow.config.provider == "mock" and record is None:
@@ -229,19 +234,22 @@ async def _run_async(
     )
     tool_registry = ToolRegistry()
     register_builtins(tool_registry, sandbox=sandbox)
-    if record is not None and record_tools:
-        from agentloom.providers.tool_tape import ToolRecorder
-
-        tool_registry.tape = ToolRecorder(record)
-    elif mock_responses is not None and tool_mode != "live":
+    replayer = None
+    if mock_responses is not None and tool_mode != "live":
         from agentloom.providers.tool_tape import ToolMode, ToolReplayer
 
-        tool_registry.tape = ToolReplayer(
+        replayer = ToolReplayer(
             mock_responses,
             ToolMode(tool_mode),
             strict=mock_strict,
             live=cut.is_live if cut is not None else None,
         )
+    if record is not None and record_tools:
+        from agentloom.providers.tool_tape import ToolRecorder
+
+        tool_registry.tape = ToolRecorder(record, serve_from=replayer)
+    elif replayer is not None:
+        tool_registry.tape = replayer
 
     stream_callback = None
     if stream and not output_json:
