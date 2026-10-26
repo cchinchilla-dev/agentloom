@@ -184,6 +184,7 @@ def test_payload_hash_takes_any_value() -> None:
     reordered: dict[Any, Any] = {"p": Path("x"), "b": [2, (3, 4)], 1: "a"}
     assert payload_hash(mixed) == payload_hash(reordered)
     assert payload_hash({1: "a", "1": "b"}) != payload_hash({1: "b", "1": "a"})
+    assert payload_hash({Path("x"): 1, "x": 2}) == payload_hash({"x": 2, Path("x"): 1})
     loop: list[Any] = []
     loop.append(loop)
     again: list[Any] = []

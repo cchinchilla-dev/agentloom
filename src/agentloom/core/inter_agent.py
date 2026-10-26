@@ -75,7 +75,7 @@ def _default(value: Any) -> Any:
 
 
 def _canonical(value: Any, enclosing: frozenset[int]) -> Any:
-    """``value`` as plain JSON: a mapping as ``[key, value]`` pairs sorted by key, cycles marked."""
+    """``value`` as plain JSON: a mapping as sorted ``[key, value]`` pairs, cycles marked."""
     if not isinstance(value, dict | list | tuple | set | frozenset):
         return value if value is None or isinstance(value, str | int | float) else str(value)
     if id(value) in enclosing:
@@ -83,7 +83,7 @@ def _canonical(value: Any, enclosing: frozenset[int]) -> Any:
     enclosing = enclosing | {id(value)}
     if isinstance(value, dict):
         pairs = [[_canonical(k, enclosing), _canonical(v, enclosing)] for k, v in value.items()]
-        return sorted(pairs, key=lambda pair: _dumps(pair[0]))
+        return sorted(pairs, key=_dumps)  # the whole pair: keys can tie, as Path('x') and 'x' do
     items = [_canonical(item, enclosing) for item in value]
     return sorted(items, key=_dumps) if isinstance(value, set | frozenset) else items
 
