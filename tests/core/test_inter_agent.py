@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import random
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -173,6 +177,46 @@ def test_a_handover_carries_the_sender_output_and_state_writes() -> None:
     assert received.parent_event_ids == sorted(e.event_id for e in handed)
     assert received.payload_hash == payload_hash(sorted(e.payload_hash for e in handed))
     assert by_kind[("a", "task_received", "")].parent_event_ids == []
+
+
+def test_payload_hash_takes_any_value() -> None:
+    mixed: dict[Any, Any] = {1: "a", "b": [2, (3, 4)], "p": Path("x")}
+    reordered: dict[Any, Any] = {"p": Path("x"), "b": [2, (3, 4)], 1: "a"}
+    assert payload_hash(mixed) == payload_hash(reordered)
+    assert payload_hash({1: "a", "1": "b"}) != payload_hash({1: "b", "1": "a"})
+    loop: list[Any] = []
+    loop.append(loop)
+    again: list[Any] = []
+    again.append(again)
+    assert payload_hash(loop) == payload_hash(again) == payload_hash(["<cycle>"])
+    itself: dict[str, Any] = {}
+    itself["self"] = itself
+    assert payload_hash(itself) == payload_hash([["self", "<cycle>"]])
+    shared = [1]  # twice, side by side, is no cycle
+    assert payload_hash({1: shared, "x": shared}) == payload_hash({1: [1], "x": [1]})
+    assert payload_hash({"b", "a"}) == payload_hash(["a", "b"])
+    # Keys sort by their JSON: '"b"' before '1'
+    assert payload_hash({1: 2.5, "b": None}) == payload_hash([["b", None], [1, 2.5]])
+    assert payload_hash(Path("x")) == payload_hash("x")
+
+
+def test_payload_hash_of_a_set_is_the_same_in_every_process() -> None:
+    probe = (
+        "from agentloom.core.inter_agent import payload_hash\n"
+        "words = {'alpha', 'beta', 'gamma', 'delta', 'epsilon'}\n"
+        "print(payload_hash(words), payload_hash({1: words, 'k': 0}))"
+    )
+    hashes = {
+        subprocess.run(
+            [sys.executable, "-c", probe],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        for seed in ("1", "2", "3")
+    }
+    assert len(hashes) == 1
 
 
 def test_a_failed_or_skipped_dependency_hands_nothing_over() -> None:
@@ -346,6 +390,15 @@ async def test_a_retry_drops_what_the_failed_attempt_logged(nested: bool) -> Non
     assert answer.payload_hash == payload_hash({"result": "10:02", "success": True})
 
 
+class _Mixed(BaseTool):
+    """Answers a mapping that JSON cannot sort."""
+
+    name = "mixed"
+
+    async def execute(self, **kwargs: Any) -> Any:
+        return {1: "a", "b": 2}
+
+
 class _Broken(BaseTool):
     name = "broken"
 
@@ -358,8 +411,9 @@ class _Broken(BaseTool):
     [
         (MockTool(), {"result": "mock_result", "success": True}, StepStatus.SUCCESS),
         (_Broken(), {"result": "boom", "success": False}, StepStatus.FAILED),
+        (_Mixed(), {"result": {1: "a", "b": 2}, "success": True}, StepStatus.SUCCESS),
     ],
-    ids=["ok", "raises"],
+    ids=["ok", "raises", "mixed-keys"],
 )
 async def test_a_tool_step_logs_its_call(tool: BaseTool, answer: Any, status: StepStatus) -> None:
     registry = ToolRegistry()

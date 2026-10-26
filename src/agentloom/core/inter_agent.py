@@ -50,9 +50,42 @@ _ACTIVE: ContextVar[EventLog | None] = ContextVar("agentloom_inter_agent_log", d
 
 
 def payload_hash(value: Any) -> str:
-    """SHA-256 of ``value`` as canonical JSON, 16-char prefix."""
-    blob = json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
+    """SHA-256 of ``value`` as canonical JSON, 16-char prefix.
+
+    Any state value or tool result hashes, so logging never fails a step: a
+    mapping with keys of mixed types or a container that holds itself goes
+    through ``_canonical``.
+    """
+    try:
+        blob = _dumps(value)
+    except (TypeError, ValueError):  # keys that do not sort, a circular reference
+        blob = _dumps(_canonical(value, frozenset()))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _dumps(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=_default, separators=(",", ":"))
+
+
+def _default(value: Any) -> Any:
+    """A set as its sorted items, as its iteration order changes between processes; else ``str``."""
+    if isinstance(value, set | frozenset):
+        return sorted(value, key=_dumps)
+    return str(value)
+
+
+def _canonical(value: Any, enclosing: frozenset[int]) -> Any:
+    """``value`` as plain JSON: a mapping as ``[key, value]`` pairs sorted by key, cycles marked."""
+    if not isinstance(value, dict | list | tuple | set | frozenset):
+        return value if value is None or isinstance(value, str | int | float) else str(value)
+    if id(value) in enclosing:
+        return "<cycle>"
+    enclosing = enclosing | {id(value)}
+    if isinstance(value, dict):
+        pairs = [[_canonical(k, enclosing), _canonical(v, enclosing)] for k, v in value.items()]
+        return sorted(pairs, key=lambda pair: _dumps(pair[0]))
+    items = [_canonical(item, enclosing) for item in value]
+    return sorted(items, key=_dumps) if isinstance(value, set | frozenset) else items
 
 
 def dump_events(events: Iterable[InterAgentEvent]) -> list[dict[str, Any]]:
