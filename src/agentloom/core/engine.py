@@ -19,8 +19,15 @@ from agentloom.checkpointing.base import (
     BaseCheckpointer,
     CheckpointData,
 )
-from agentloom.core.attempts import Attempt, enter_attempt, enter_step, running_attempt
+from agentloom.core.attempts import (
+    Attempt,
+    enter_attempt,
+    enter_step,
+    running_attempt,
+    running_steps,
+)
 from agentloom.core.dag import DAG
+from agentloom.core.inter_agent import active_log
 from agentloom.core.models import StepDefinition, StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.redact import RedactionPolicy, is_redacted, redact_state
@@ -866,6 +873,9 @@ class WorkflowEngine:
                 running = enter_attempt(outer, attempt + 1)
                 await self._begin_attempt(step_id, previous)
                 previous = running
+                if (log := active_log()) is not None:
+                    agent = step_def.speaker or step_id
+                    log.start_step(running_steps(), agent, step_def.depends_on)
                 if step_def.timeout:
                     with anyio.fail_after(step_def.timeout):
                         result = await executor.execute(context)
@@ -876,6 +886,8 @@ class WorkflowEngine:
 
                 if result.status == StepStatus.SUCCESS:
                     await self.state.set_step_result(step_id, result)
+                    if (log := active_log()) is not None:
+                        log.finish_step(running_steps(), result.output)
 
                     # ``BudgetEnforcer.charge`` is the single source of
                     # truth for spend — its ``anyio.Lock`` makes the

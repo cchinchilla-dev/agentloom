@@ -12,6 +12,7 @@ AgentLoom ships two providers designed for **offline, deterministic** execution 
 | Statistical eval over a fixed response set | `MockProvider` with `latency_model: replay` |
 | Debugging a production incident offline | Record in prod → replay locally |
 | Re-running only the tail of a recorded run | `agentloom replay --live-from <step>` |
+| Checking that a recording replays the same every time | `agentloom verify-determinism` |
 
 ## Recording a run
 
@@ -186,6 +187,44 @@ Each fault raises what the provider adapters raise for that failure, so the gate
 
 A fault turn you add carries no `request_hash`: under strict replay, it fires when the cursor reaches it in a recorded list, so a recorded run can be made to fail at a chosen call without re-recording it. A retried step starts its loop again: a fault before a step's first turn fires once and the retry gets the answer, while a fault between two turns of a tool loop fires on every attempt. A fault in a step that a cut replays fires too. A fault added to a recorded turn keeps that turn's `request_hash`, so strict replay fires it only for the request it was recorded for and refuses any other. A faulted call is still a replay lookup in `agentloom_mock_replays_total`; each fault also counts in `agentloom_mock_faults_total{workflow, fault_type}` and marks the step span with `agentloom.mock.fault_type`. A response with `finish_reason: "length"` and the usage you want needs no fault: write it as an ordinary entry.
 
+## Inter-agent events
+
+`agentloom run --record` also keeps the run's inter-agent event log, under `_inter_agent_events` in the recording, and so does `agentloom replay --record` for a cut replay. The log says which agent handed what to which, in causal order. An agent is a step's `speaker`, or the step itself when it has none. A message is a dependency edge: when a step starts, the log gets a `task_sent` from each step it depends on that finished, then the step's `task_received`; then its tool calls and returns (`tool_call`, `tool_return`), from a `tools:` loop or a step of `type: tool`; and, when the step succeeds, its `response_sent` and a `state_transition` for each state key it wrote.
+
+```json
+{
+  "type": "task_sent",
+  "event_id": "ee69945c-c818-5c09-af1a-a294fdac075d",
+  "agent_id": "researcher",
+  "step_id": "research",
+  "recipient_agent_id": "writer",
+  "parent_event_ids": ["2643aefc-2236-5582-92c4-8bf12d3b0c4f"],
+  "payload_hash": "b3efdde5240daba9",
+  "timestamp_ns": 14419290988958
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `event_id` | UUID v5 of the step's path, the event type and its position in the step, so two runs that do the same thing write the same ids |
+| `agent_id`, `step_id` | Who acted, and the step's path: a subworkflow's steps read `parent.child`. A `task_sent` carries the sending step |
+| `parent_event_ids` | The events this one causally follows, sorted; empty for a top-level step that got nothing from another step |
+| `payload_hash` | SHA-256 of canonical JSON, 16-char prefix: a tool call's arguments, a return's result and `success`, the step's output, the value written. A `task_sent` hashes the sender's output and state writes, a `task_received` what it received |
+| `timestamp_ns` | Monotonic, per process; informational, never compared |
+| `recipient_agent_id`, `tool_name`, `key` | On `task_sent`, on the tool events and on `state_transition` |
+
+The log is sorted by the dependency graph, not by time: by causal depth (one more than the deepest parent's), then step, event type and `event_id`, so the order in which parallel steps finish does not change it. When the engine retries a step, the events of the failed attempt are dropped, those of a subworkflow that ran inside it included, as the recorder drops its turns. A subworkflow's first steps follow the subworkflow step's `task_received`, and its `response_sent` follows theirs.
+
+The event models and the JSON Schema (draft 2020-12) of one event are in `agentloom.contracts.experimental`: `InterAgentEvent`, a union of the six models discriminated by `type`, `SCHEMA_PATH` and `SCHEMA_URI`. Recordings without `_inter_agent_events` load and replay unchanged.
+
+### Verifying a recording
+
+```bash
+agentloom verify-determinism workflow.yaml --recording recordings/run1.json --runs 3 --tools replay
+```
+
+`verify-determinism` replays the recording strictly `--runs` times (default 2), each with a fresh engine, and compares what each replay gave: the run's status, each step's status, output, error and error classification, the final state and the event log, leaving out run ids, durations and timestamps. It then compares the event log with the recorded one, when the recording has it. On any difference it exits with code 1 and prints a unified diff to stderr; otherwise it prints `Deterministic: …` and exits 0. `--tools` works as in `replay`: with `live`, the default, a tool whose answer changes shows up as a difference, and `--tools replay` serves the results recorded with `--record-tools`. `--events-out <file>` writes the log of the first replay as JSONL, one event per line, and `--state key=value` sets state as in `run`.
+
 ## Latency models
 
 `MockProvider` supports three modes:
@@ -285,6 +324,7 @@ Within one process, every writer of the file (each `RecordingProvider` and the t
 
 - **A run is the recorder's lifetime.** Reusing one gateway for several `engine.run()` calls appends every run's calls to the same list of turns. If the gateway falls back to another provider in the middle of a loop, each provider's recorder keeps only its own turns and the last one to flush wins: re-record without the fallback.
 - **Tools run for real on replay** unless they were recorded with `--record-tools` and replayed with `--tools replay`. Strict replay compares each turn's request, which includes the earlier tool results, so a live tool whose output changes (network, clock, files) fails strict replay from that turn on. Steps of `type: tool` always run live.
+- **The event log covers one process.** A run paused at an approval gate keeps the log of the part before the pause; `agentloom resume` records nothing, so the resumed part has no log.
 - **Prompt hashes are sensitive to message formatting.** A trailing space or reordered tool-result block changes the hash. If replay misses, inspect `provider.calls` to see what was tried.
 - **Recordings are not encrypted.** Treat them as you would any captured LLM output — scrub PII before committing.
 - **No built-in TTL.** Recordings live on disk until deleted. For hot-path caching across distributed workers, a pluggable store backend is on the roadmap.

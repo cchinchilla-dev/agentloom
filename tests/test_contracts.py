@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import subprocess
 import sys
+import warnings
 from typing import Any
 
 import pytest
@@ -44,7 +45,8 @@ def test_contracts_import_does_not_load_runtime() -> None:
 
 def test_contracts_import_does_not_warn() -> None:
     probe = _python(
-        "import agentloom.contracts, agentloom.contracts.stable, agentloom.observability.observer",
+        "import agentloom.contracts, agentloom.contracts.stable, agentloom.observability.observer,"
+        " agentloom.cli.main",
         "-W",
         "error::FutureWarning",
     )
@@ -83,6 +85,18 @@ def test_semconv_reexports_are_identical() -> None:
 
     for name in ("SpanName", "SpanAttr", "MetricName", "GenAIOperationName", "GenAIProviderName"):
         assert getattr(schema, name) is getattr(_semconv, name)
+
+
+def test_inter_agent_reexports_are_identical() -> None:
+    from agentloom.contracts import _inter_agent
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        experimental = importlib.import_module("agentloom.contracts.experimental")
+    names = [n for n in experimental.__all__ if hasattr(_inter_agent, n)]
+    assert len(names) == 9
+    for name in names:
+        assert getattr(experimental, name) is getattr(_inter_agent, name)
 
 
 def test_message_tool_calls_json_roundtrip() -> None:

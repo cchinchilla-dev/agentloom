@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
 import typer
 
+from agentloom.core.inter_agent import EVENTS_KEY, EventLog, dump_events, recording_events
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.results import WorkflowStatus
 from agentloom.core.state import StateManager
@@ -21,6 +23,7 @@ if TYPE_CHECKING:
     from agentloom.providers.gateway import ProviderGateway
     from agentloom.providers.mock import MockProvider
     from agentloom.providers.replay_or_live import ReplayCut
+    from agentloom.tools.registry import ToolRegistry
 
 
 def _parse_state_value(raw: str) -> Any:
@@ -131,9 +134,6 @@ async def _run_async(
 
     from agentloom.core.engine import WorkflowEngine
     from agentloom.providers.gateway import ProviderGateway
-    from agentloom.tools.builtins import register_builtins
-    from agentloom.tools.registry import ToolRegistry
-    from agentloom.tools.sandbox import ToolSandbox
 
     # Prepend CWD so dotted imports from workflow YAML resolve.
     cwd = str(Path.cwd())
@@ -155,15 +155,7 @@ async def _run_async(
     if stream:
         workflow.config.stream = True
 
-    initial_state = dict(workflow.state)
-    for item in state_args:
-        if "=" not in item:
-            typer.echo(f"Invalid state format '{item}'. Use key=value.", err=True)
-            raise typer.Exit(1)
-        key, _, raw = item.partition("=")
-        initial_state[key] = _parse_state_value(raw)
-
-    state_manager = StateManager(initial_state=initial_state)
+    state_manager = StateManager(initial_state=_initial_state(workflow, state_args))
 
     gateway = ProviderGateway()
     # Setup observability (unless --lite) — done early so providers can hook into it
@@ -218,22 +210,7 @@ async def _run_async(
 
             gateway.wrap_providers(lambda p: RecordingProvider(p, record, observer=observer))
 
-    sandbox_cfg = workflow.config.sandbox
-    sandbox = ToolSandbox(
-        enabled=sandbox_cfg.enabled,
-        allowed_commands=sandbox_cfg.allowed_commands,
-        allowed_paths=sandbox_cfg.allowed_paths,
-        allow_network=sandbox_cfg.allow_network,
-        readable_paths=sandbox_cfg.readable_paths,
-        writable_paths=sandbox_cfg.writable_paths,
-        allowed_domains=sandbox_cfg.allowed_domains,
-        allowed_schemes=sandbox_cfg.allowed_schemes,
-        max_write_bytes=sandbox_cfg.max_write_bytes,
-        danger_opt_in=sandbox_cfg.danger_opt_in,
-        allow_internal_webhook_targets=sandbox_cfg.allow_internal_webhook_targets,
-    )
-    tool_registry = ToolRegistry()
-    register_builtins(tool_registry, sandbox=sandbox)
+    tool_registry = _tool_registry(workflow)
     replayer = None
     if mock_responses is not None and tool_mode != "live":
         from agentloom.providers.tool_tape import ToolMode, ToolReplayer
@@ -282,7 +259,11 @@ async def _run_async(
     # checkpoint).
     if checkpointer is not None:
         typer.echo(f"Run ID: {engine.run_id}")
-    result = await engine.run()
+    events = EventLog() if record is not None else None  # #135
+    with recording_events(events) if events is not None else nullcontext():
+        result = await engine.run()
+    if record is not None and events is not None:
+        await anyio.to_thread.run_sync(_record_events, record, events)
 
     if stream and not output_json:
         typer.echo()  # Newline after streamed output
@@ -384,6 +365,51 @@ def _setup_generic_openai(gateway: ProviderGateway, config: WorkflowConfig) -> N
             "generic_openai", f"environment variable {config.api_key_env!r} is not set"
         )
     gateway.register(GenericOpenAIProvider(base_url=config.base_url, api_key=api_key), priority=0)
+
+
+def _initial_state(workflow: WorkflowDefinition, state_args: list[str]) -> dict[str, Any]:
+    """The workflow's state with the ``--state key=value`` pairs applied."""
+    initial_state = dict(workflow.state)
+    for item in state_args:
+        if "=" not in item:
+            typer.echo(f"Invalid state format '{item}'. Use key=value.", err=True)
+            raise typer.Exit(1)
+        key, _, raw = item.partition("=")
+        initial_state[key] = _parse_state_value(raw)
+    return initial_state
+
+
+def _tool_registry(workflow: WorkflowDefinition) -> ToolRegistry:
+    """The built-in tools behind the workflow's sandbox."""
+    from agentloom.tools.builtins import register_builtins
+    from agentloom.tools.registry import ToolRegistry
+    from agentloom.tools.sandbox import ToolSandbox
+
+    sandbox_cfg = workflow.config.sandbox
+    sandbox = ToolSandbox(
+        enabled=sandbox_cfg.enabled,
+        allowed_commands=sandbox_cfg.allowed_commands,
+        allowed_paths=sandbox_cfg.allowed_paths,
+        allow_network=sandbox_cfg.allow_network,
+        readable_paths=sandbox_cfg.readable_paths,
+        writable_paths=sandbox_cfg.writable_paths,
+        allowed_domains=sandbox_cfg.allowed_domains,
+        allowed_schemes=sandbox_cfg.allowed_schemes,
+        max_write_bytes=sandbox_cfg.max_write_bytes,
+        danger_opt_in=sandbox_cfg.danger_opt_in,
+        allow_internal_webhook_targets=sandbox_cfg.allow_internal_webhook_targets,
+    )
+    tool_registry = ToolRegistry()
+    register_builtins(tool_registry, sandbox=sandbox)
+    return tool_registry
+
+
+def _record_events(path: Path, events: EventLog) -> None:
+    """Keep the run's inter-agent events in its recording (#135)."""
+    from agentloom.providers.recorder import merge_into_recording
+
+    logged = dump_events(events.events())
+    merge_into_recording(path, lambda recording: recording.__setitem__(EVENTS_KEY, logged))
 
 
 def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
