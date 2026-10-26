@@ -111,6 +111,16 @@ def is_retryable_exception(exc: BaseException, codes: list[int]) -> bool:
     return code in codes
 
 
+def classify_failure(exc: BaseException, codes: list[int]) -> str:
+    """``"transient"`` or ``"permanent"``: the ``error_classification`` of a
+    step that failed with *exc*, by the rule of :func:`is_retryable_exception`.
+
+    Steps that return a failed result instead of raising set it, so the
+    engine retries them under the same rule as an exception (#182).
+    """
+    return "transient" if is_retryable_exception(exc, codes) else "permanent"
+
+
 class RetryPolicy(BaseModel):
     """Configuration for retry behavior."""
 

@@ -167,7 +167,7 @@ The resilience layer short-circuits the retry loop when an exception carries `is
 | `BudgetExceededError` | Spend doesn't decrease between attempts. |
 | Pydantic `ValidationError` | Provider-side schema rejection. Special-cased because it's outside the AgentLoom hierarchy. |
 
-Every failed `StepResult` carries an `error_classification` field — `"permanent"` for the errors above and `"transient"` for failures that exhausted the retry budget. It is part of the result model (visible in `agentloom run --json` and on `result.step_results`), so callers and post-run analysis can distinguish "we wasted 30 s retrying nothing" from "we actually retried a transient one".
+Every failed `StepResult` carries an `error_classification` field — `"permanent"` for the errors above and for a provider status outside the step's `retry.retryable_status_codes`, `"transient"` for failures that exhausted the retry budget. When every provider of a model fails, the step sees the status they all failed with; when the statuses differ, or a provider was skipped (open circuit, no embeddings), the failure has no status and the step retries. It is part of the result model (visible in `agentloom run --json` and on `result.step_results`), so callers and post-run analysis can distinguish "we wasted 30 s retrying nothing" from "we actually retried a transient one".
 
 ## Fallback chain
 
