@@ -1,0 +1,406 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentloom:inter-agent-event:1",
+  "title": "AgentLoom inter-agent event",
+  "$defs": {
+    "ResponseSentEvent": {
+      "additionalProperties": false,
+      "description": "A step finishes with its output.",
+      "properties": {
+        "event_id": {
+          "description": "Derived from the step path, the type and the position.",
+          "format": "uuid5",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "agent_id": {
+          "description": "The step's speaker, or the step itself when it has none.",
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "The step's path; a subworkflow's steps read parent.child.",
+          "title": "Step Id",
+          "type": "string"
+        },
+        "parent_event_ids": {
+          "description": "The events this one causally follows, sorted.",
+          "items": {
+            "format": "uuid5",
+            "type": "string"
+          },
+          "title": "Parent Event Ids",
+          "type": "array"
+        },
+        "payload_hash": {
+          "description": "SHA-256, 16-char prefix.",
+          "pattern": "^[0-9a-f]{16}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "timestamp_ns": {
+          "description": "Monotonic per process; never compared.",
+          "minimum": 0,
+          "title": "Timestamp Ns",
+          "type": "integer"
+        },
+        "type": {
+          "const": "response_sent",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "agent_id",
+        "step_id",
+        "payload_hash",
+        "timestamp_ns",
+        "type"
+      ],
+      "title": "ResponseSentEvent",
+      "type": "object"
+    },
+    "StateTransitionEvent": {
+      "additionalProperties": false,
+      "description": "A step's write to one state key.",
+      "properties": {
+        "event_id": {
+          "description": "Derived from the step path, the type and the position.",
+          "format": "uuid5",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "agent_id": {
+          "description": "The step's speaker, or the step itself when it has none.",
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "The step's path; a subworkflow's steps read parent.child.",
+          "title": "Step Id",
+          "type": "string"
+        },
+        "parent_event_ids": {
+          "description": "The events this one causally follows, sorted.",
+          "items": {
+            "format": "uuid5",
+            "type": "string"
+          },
+          "title": "Parent Event Ids",
+          "type": "array"
+        },
+        "payload_hash": {
+          "description": "SHA-256, 16-char prefix.",
+          "pattern": "^[0-9a-f]{16}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "timestamp_ns": {
+          "description": "Monotonic per process; never compared.",
+          "minimum": 0,
+          "title": "Timestamp Ns",
+          "type": "integer"
+        },
+        "type": {
+          "const": "state_transition",
+          "title": "Type",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "agent_id",
+        "step_id",
+        "payload_hash",
+        "timestamp_ns",
+        "type",
+        "key"
+      ],
+      "title": "StateTransitionEvent",
+      "type": "object"
+    },
+    "TaskReceivedEvent": {
+      "additionalProperties": false,
+      "description": "A step starts with what the steps it depends on handed it.",
+      "properties": {
+        "event_id": {
+          "description": "Derived from the step path, the type and the position.",
+          "format": "uuid5",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "agent_id": {
+          "description": "The step's speaker, or the step itself when it has none.",
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "The step's path; a subworkflow's steps read parent.child.",
+          "title": "Step Id",
+          "type": "string"
+        },
+        "parent_event_ids": {
+          "description": "The events this one causally follows, sorted.",
+          "items": {
+            "format": "uuid5",
+            "type": "string"
+          },
+          "title": "Parent Event Ids",
+          "type": "array"
+        },
+        "payload_hash": {
+          "description": "SHA-256, 16-char prefix.",
+          "pattern": "^[0-9a-f]{16}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "timestamp_ns": {
+          "description": "Monotonic per process; never compared.",
+          "minimum": 0,
+          "title": "Timestamp Ns",
+          "type": "integer"
+        },
+        "type": {
+          "const": "task_received",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "agent_id",
+        "step_id",
+        "payload_hash",
+        "timestamp_ns",
+        "type"
+      ],
+      "title": "TaskReceivedEvent",
+      "type": "object"
+    },
+    "TaskSentEvent": {
+      "additionalProperties": false,
+      "description": "A step's result handed to a step that depends on it.",
+      "properties": {
+        "event_id": {
+          "description": "Derived from the step path, the type and the position.",
+          "format": "uuid5",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "agent_id": {
+          "description": "The step's speaker, or the step itself when it has none.",
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "The step's path; a subworkflow's steps read parent.child.",
+          "title": "Step Id",
+          "type": "string"
+        },
+        "parent_event_ids": {
+          "description": "The events this one causally follows, sorted.",
+          "items": {
+            "format": "uuid5",
+            "type": "string"
+          },
+          "title": "Parent Event Ids",
+          "type": "array"
+        },
+        "payload_hash": {
+          "description": "SHA-256, 16-char prefix.",
+          "pattern": "^[0-9a-f]{16}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "timestamp_ns": {
+          "description": "Monotonic per process; never compared.",
+          "minimum": 0,
+          "title": "Timestamp Ns",
+          "type": "integer"
+        },
+        "type": {
+          "const": "task_sent",
+          "title": "Type",
+          "type": "string"
+        },
+        "recipient_agent_id": {
+          "title": "Recipient Agent Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "agent_id",
+        "step_id",
+        "payload_hash",
+        "timestamp_ns",
+        "type",
+        "recipient_agent_id"
+      ],
+      "title": "TaskSentEvent",
+      "type": "object"
+    },
+    "ToolCallEvent": {
+      "additionalProperties": false,
+      "description": "A step calls a tool.",
+      "properties": {
+        "event_id": {
+          "description": "Derived from the step path, the type and the position.",
+          "format": "uuid5",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "agent_id": {
+          "description": "The step's speaker, or the step itself when it has none.",
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "The step's path; a subworkflow's steps read parent.child.",
+          "title": "Step Id",
+          "type": "string"
+        },
+        "parent_event_ids": {
+          "description": "The events this one causally follows, sorted.",
+          "items": {
+            "format": "uuid5",
+            "type": "string"
+          },
+          "title": "Parent Event Ids",
+          "type": "array"
+        },
+        "payload_hash": {
+          "description": "SHA-256, 16-char prefix.",
+          "pattern": "^[0-9a-f]{16}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "timestamp_ns": {
+          "description": "Monotonic per process; never compared.",
+          "minimum": 0,
+          "title": "Timestamp Ns",
+          "type": "integer"
+        },
+        "type": {
+          "const": "tool_call",
+          "title": "Type",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "agent_id",
+        "step_id",
+        "payload_hash",
+        "timestamp_ns",
+        "type",
+        "tool_name"
+      ],
+      "title": "ToolCallEvent",
+      "type": "object"
+    },
+    "ToolReturnEvent": {
+      "additionalProperties": false,
+      "description": "A tool answers the call it follows.",
+      "properties": {
+        "event_id": {
+          "description": "Derived from the step path, the type and the position.",
+          "format": "uuid5",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "agent_id": {
+          "description": "The step's speaker, or the step itself when it has none.",
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "The step's path; a subworkflow's steps read parent.child.",
+          "title": "Step Id",
+          "type": "string"
+        },
+        "parent_event_ids": {
+          "description": "The events this one causally follows, sorted.",
+          "items": {
+            "format": "uuid5",
+            "type": "string"
+          },
+          "title": "Parent Event Ids",
+          "type": "array"
+        },
+        "payload_hash": {
+          "description": "SHA-256, 16-char prefix.",
+          "pattern": "^[0-9a-f]{16}$",
+          "title": "Payload Hash",
+          "type": "string"
+        },
+        "timestamp_ns": {
+          "description": "Monotonic per process; never compared.",
+          "minimum": 0,
+          "title": "Timestamp Ns",
+          "type": "integer"
+        },
+        "type": {
+          "const": "tool_return",
+          "title": "Type",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "agent_id",
+        "step_id",
+        "payload_hash",
+        "timestamp_ns",
+        "type",
+        "tool_name"
+      ],
+      "title": "ToolReturnEvent",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "response_sent": "#/$defs/ResponseSentEvent",
+      "state_transition": "#/$defs/StateTransitionEvent",
+      "task_received": "#/$defs/TaskReceivedEvent",
+      "task_sent": "#/$defs/TaskSentEvent",
+      "tool_call": "#/$defs/ToolCallEvent",
+      "tool_return": "#/$defs/ToolReturnEvent"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/TaskSentEvent"
+    },
+    {
+      "$ref": "#/$defs/TaskReceivedEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolCallEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolReturnEvent"
+    },
+    {
+      "$ref": "#/$defs/ResponseSentEvent"
+    },
+    {
+      "$ref": "#/$defs/StateTransitionEvent"
+    }
+  ]
+}

@@ -10,6 +10,7 @@ from typing import Any
 
 import anyio
 
+from agentloom.core.inter_agent import log_tools
 from agentloom.core.models import ToolDefinition
 from agentloom.providers.base import ToolCall
 
@@ -226,6 +227,7 @@ async def dispatch_tool_calls(
         for idx, call in enumerate(calls):
             tg.start_soon(_run, idx, call)
 
+    log_tools([(c.name, c.arguments) for c, _, _ in results], [(r, ok) for _, r, ok in results])
     if tape is not None:
         await tape.capture(step_id, results)
     return results

@@ -6,6 +6,7 @@ import re
 import time
 from typing import Any
 
+from agentloom.core.inter_agent import log_tools
 from agentloom.core.results import StepResult, StepStatus
 from agentloom.core.state import StateManager
 from agentloom.core.templates import SafeFormatDict, build_template_vars
@@ -65,6 +66,7 @@ class ToolStep(BaseStep):
         try:
             result = await tool.execute(**resolved_args)
         except Exception as e:
+            log_tools([(step.tool_name, resolved_args)], [(str(e), False)])
             duration = (time.monotonic() - start) * 1000
             return StepResult(
                 step_id=step.id,
@@ -73,6 +75,7 @@ class ToolStep(BaseStep):
                 duration_ms=duration,
             )
 
+        log_tools([(step.tool_name, resolved_args)], [(result, True)])
         duration = (time.monotonic() - start) * 1000
 
         if step.output:

@@ -13,6 +13,7 @@ from typing import Any
 import anyio
 from pydantic import BaseModel
 
+from agentloom.core.inter_agent import log_write
 from agentloom.core.results import StepResult, StepStatus
 from agentloom.exceptions import StateWriteError
 
@@ -91,6 +92,7 @@ class StateManager:
         """Set a value in the workflow state."""
         async with self._lock:
             self._set_nested(self._state, key, value)
+        log_write(key, value)
 
     async def update(self, key: str, fn: Callable[[Any], Any]) -> Any:
         """Atomic read-modify-write on a single state key.
@@ -121,7 +123,8 @@ class StateManager:
             current = self._resolve_key(self._state, key, None)
             new_value = fn(current)
             self._set_nested(self._state, key, new_value)
-            return new_value
+        log_write(key, new_value)
+        return new_value
 
     async def get_state_snapshot(self) -> dict[str, Any]:
         """Return a copy of the current state."""
