@@ -458,7 +458,13 @@ class StepDefinition(BaseModel):
             return self
         if self.agent is None:
             raise ValueError(f"Agent step {self.id!r} requires an 'agent'")
-        overridden = sorted(self.model_fields_set & _AGENT_SETTINGS)
+        # A dumped step (a checkpoint) lists every field: only a value other than the default counts
+        fields = type(self).model_fields
+        overridden = sorted(
+            name
+            for name in self.model_fields_set & _AGENT_SETTINGS
+            if getattr(self, name) != fields[name].get_default(call_default_factory=True)
+        )
         if overridden:
             raise ValueError(
                 f"Agent step {self.id!r}: {overridden} come from the agent's definition "

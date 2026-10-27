@@ -11,13 +11,16 @@ import pytest
 from pydantic import BaseModel
 
 from agentloom import Agent, AgentResult
+from agentloom.checkpointing.base import CheckpointData
+from agentloom.checkpointing.file import FileCheckpointer
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.inter_agent import EventLog, recording_events
 from agentloom.core.models import AgentDefinition, Conversation, Message, WorkflowDefinition
 from agentloom.core.results import StepStatus, WorkflowResult, WorkflowStatus
-from agentloom.exceptions import AgentError
+from agentloom.exceptions import AgentError, ProviderError, RecordingMismatchError
 from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse, ToolCall
 from agentloom.providers.gateway import ProviderGateway
+from agentloom.steps.agent import _OwnTape
 from agentloom.tools.base import BaseTool
 from agentloom.tools.registry import ToolRegistry
 
@@ -29,12 +32,12 @@ class Ticket(BaseModel):
 
 
 class _Scripted(BaseProvider):
-    """Answers each call with the next turn of a script and keeps what each call sent."""
+    """Answers each call with the next turn of a script, or raises it; keeps what each sent."""
 
     name = "scripted"
     accepts_step_id = True
 
-    def __init__(self, *turns: ProviderResponse, delay: float = 0.0) -> None:
+    def __init__(self, *turns: ProviderResponse | Exception, delay: float = 0.0) -> None:
         super().__init__()
         self._turns = list(turns)
         self._delay = delay
@@ -44,7 +47,10 @@ class _Scripted(BaseProvider):
         self.calls.append({**kw, "messages": [dict(m) for m in kw["messages"]]})
         if self._delay:
             await anyio.sleep(self._delay)
-        return self._turns.pop(0)
+        turn = self._turns.pop(0)
+        if isinstance(turn, Exception):
+            raise turn
+        return turn
 
     async def stream(self, **kw: Any) -> StreamResponse:
         raise AssertionError("an agent turn does not stream")
@@ -78,6 +84,26 @@ class _DeleteAccount(BaseTool):
     async def execute(self, **kwargs: Any) -> Any:
         self.ran = True
         return "deleted"
+
+
+class _Tape:
+    """A tool tape that serves the given results and notes what it is asked."""
+
+    def __init__(self, served: list[tuple[str, bool]] | None = None) -> None:
+        self._results = list(served or [])
+        self.served: list[tuple[str, list[str]]] = []
+        self.captured: list[tuple[str, list[str]]] = []
+        self.attempts: list[tuple[str, Any]] = []
+
+    async def begin_attempt(self, step_id: str, failed: Any) -> None:
+        self.attempts.append((step_id, failed))
+
+    def serve(self, step_id: str, calls: list[ToolCall]) -> list[tuple[str, bool] | None]:
+        self.served.append((step_id, [c.name for c in calls]))
+        return [self._results.pop(0) if self._results else None for _ in calls]
+
+    async def capture(self, step_id: str, results: list[tuple[ToolCall, str, bool]]) -> None:
+        self.captured.append((step_id, [c.name for c, _, _ in results]))
 
 
 def _turn(content: str = "", *calls: ToolCall, cost: float = 0.0) -> ProviderResponse:
@@ -221,7 +247,9 @@ class TestAgentStep:
         assert not delete.ran
         assert [t.name for t in provider.calls[0]["agentloom_tools"]] == ["add"]
         (sent,) = _tool_results(provider.calls[1])
-        assert "tool 'delete_account' not registered" in sent["content"]
+        assert sent["content"] == (
+            "tool 'delete_account' not registered: Tool 'delete_account' not found. Available: add"
+        )
 
     async def test_agent_max_iterations_enforced(self) -> None:
         agent = {**SUPPORT, "loop_policy": {"max_iterations": 2}}
@@ -420,6 +448,59 @@ class TestAgentStep:
 
         assert result.step_results["ask"].status == StepStatus.SUCCESS
 
+    async def test_a_checkpointed_agent_step_resumes(self, tmp_path: Path) -> None:
+        workflow = _workflow(
+            _agent_step({"name": "first"}, id="first", output="one"),
+            _agent_step({"name": "second"}, id="second", output="two", depends_on=["first"]),
+            state={"question": "q"},
+        )
+        checkpoint = CheckpointData(
+            workflow_name="agents",
+            run_id="r",
+            workflow_definition=workflow.model_dump(),
+            state={"question": "q", "one": "1"},
+            step_results={"first": {"step_id": "first", "status": "success", "output": "1"}},
+            completed_steps=["first"],
+            status="failed",
+            created_at="2026-10-27T10:00:00+00:00",
+            updated_at="2026-10-27T10:00:01+00:00",
+        )
+        provider = _Scripted(_turn("2"))
+        gateway = ProviderGateway()
+        gateway.register(provider)
+
+        engine = await WorkflowEngine.from_checkpoint(
+            checkpoint_data=checkpoint,
+            checkpointer=FileCheckpointer(checkpoint_dir=tmp_path),
+            provider_gateway=gateway,
+        )
+        result = await engine.run()
+
+        assert result.status == WorkflowStatus.SUCCESS
+        assert result.final_state["two"] == "2"
+        assert [call["step_id"] for call in provider.calls] == ["second"]
+
+    async def test_the_system_prompt_is_a_template(self) -> None:
+        escaped = {"name": "a", "system_prompt": 'Reply as {{"ok": true}} for {state.question}.'}
+        provider = _Scripted(_turn("done"))
+        await _run(_workflow(_agent_step(escaped), state={"question": "q"}), provider)
+        assert provider.calls[0]["messages"][0]["content"] == 'Reply as {"ok": true} for q.'
+
+    async def test_a_broken_template_fails_without_a_retry(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        broken = {"name": "a", "system_prompt": 'Reply as {"ok": true}.'}
+        provider = _Scripted()
+        step = _agent_step(broken, retry={"max_retries": 2, "backoff_base": 0})
+        with caplog.at_level(logging.WARNING):
+            result = await _run(_workflow(step, state={"question": "q"}), provider)
+
+        ask = result.step_results["ask"]
+        assert "Prompt template error" in (ask.error or "")
+        assert ask.error_classification == "permanent"
+        assert "failed after 1 attempt(s)" in caplog.text
+        assert provider.calls == []
+
     async def test_agent_events_carry_the_agent_name(self) -> None:
         agent = {
             "name": "support",
@@ -535,6 +616,83 @@ class TestNestedAgents:
         assert result.final_state["reply"] == "I could not find out."
         (sent,) = _tool_results(provider.calls[2])
         assert "forbidden pattern 'no idea'" in sent["content"]
+
+    async def test_a_transient_nested_failure_fails_the_calling_step(self) -> None:
+        provider = _Scripted(
+            _turn("", _call("escalate", message="?")),
+            ProviderError("openai", "unavailable", status_code=503),
+        )
+        result = await _run(
+            _workflow(_agent_step(self._support()), state={"question": "q"}), provider
+        )
+
+        ask = result.step_results["ask"]
+        assert ask.status == StepStatus.FAILED
+        assert "Agent tool 'escalate' failed: " in (ask.error or "")
+        assert ask.error_classification == "transient"
+        assert [call["step_id"] for call in provider.calls] == ["ask", "ask::escalate#1"]
+
+    async def test_the_steps_retry_runs_the_turn_again_with_the_same_keys(self) -> None:
+        provider = _Scripted(
+            _turn("", _call("escalate", message="?")),
+            ProviderError("openai", "unavailable", status_code=503),
+            _turn("", _call("escalate", message="?")),
+            _turn("Roaming."),
+            _turn("It is roaming."),
+        )
+        step = _agent_step(
+            self._support(), retry={"max_retries": 1, "backoff_base": 0, "jitter": False}
+        )
+        result = await _run(_workflow(step, state={"question": "q"}), provider)
+
+        assert result.final_state["reply"] == "It is roaming."
+        assert [call["step_id"] for call in provider.calls] == [
+            "ask",
+            "ask::escalate#1",
+            "ask",
+            "ask::escalate#1",
+            "ask",
+        ]
+
+    async def test_a_replay_mismatch_in_a_nested_turn_fails_at_once(self) -> None:
+        provider = _Scripted(
+            _turn("", _call("escalate", message="?")), RecordingMismatchError("no turn recorded")
+        )
+        step = _agent_step(self._support(), retry={"max_retries": 2, "backoff_base": 0})
+        result = await _run(_workflow(step, state={"question": "q"}), provider)
+
+        assert result.status == WorkflowStatus.FAILED
+        assert "no turn recorded" in (result.step_results["ask"].error or "")
+        assert len(provider.calls) == 2
+
+    async def test_an_agent_tool_is_off_the_tape_and_its_own_tools_are_on_it(self) -> None:
+        tape = _Tape(served=[("4", True)])
+        registry = _registry(_Add())
+        registry.tape = tape
+        support = {"name": "support", "tools": ["add", {"name": "escalate", "agent": SUPPORT}]}
+        provider = _Scripted(
+            _turn("", _call("add", a=2, b=2), _call("escalate", message="2+3?")),
+            _turn("", _call("add", 2, a=2, b=3)),
+            _turn("5"),
+            _turn("", _call("escalate", 2, message="again")),
+            _turn("6"),
+            _turn("done"),
+        )
+        result = await _run(
+            _workflow(_agent_step(support), state={"question": "q"}), provider, registry
+        )
+
+        assert result.final_state["reply"] == "done"
+        assert tape.served == [("ask", ["add"]), ("ask::escalate#1", ["add"])]
+        assert tape.captured == [("ask::escalate#1", ["add"]), ("ask", ["add"])]
+        sent_add, sent_escalate = _tool_results(provider.calls[3])
+        assert sent_add["content"] == "4"  # served from the tape
+        assert sent_escalate["content"] == "5"  # the nested turn ran
+
+    async def test_the_filtered_tape_passes_attempts_through(self) -> None:
+        tape = _Tape()
+        await _OwnTape(tape, {"escalate"}).begin_attempt("ask", (1,))
+        assert tape.attempts == [("ask", (1,))]
 
     async def test_nested_spend_counts_toward_the_callers_cap(self) -> None:
         support = {**self._support(), "constraints": {"max_cost_usd": 0.5}}

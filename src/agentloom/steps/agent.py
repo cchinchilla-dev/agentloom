@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 from pydantic import BaseModel
@@ -23,11 +23,15 @@ from agentloom.core.models import (
 from agentloom.core.results import StepResult, StepStatus
 from agentloom.core.state import StateManager
 from agentloom.exceptions import StepError, ToolNotFoundError
-from agentloom.providers.base import ProviderResponse
+from agentloom.providers.base import ProviderResponse, ToolCall
 from agentloom.steps.base import StepContext
 from agentloom.steps.llm_call import LLMCallStep
 from agentloom.tools.base import BaseTool
 from agentloom.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from agentloom.core.attempts import Attempt
+    from agentloom.providers.tool_tape import ToolTape
 
 logger = logging.getLogger("agentloom.steps")
 
@@ -196,7 +200,7 @@ class _MeteredGateway:
 def _scoped_registry(
     agent: AgentDefinition, context: StepContext, gateway: _MeteredGateway | None
 ) -> ToolRegistry:
-    """A registry with only the agent's tools, in its order, sharing the workflow's tape.
+    """A registry with only the agent's tools, in its order, on the workflow's tape.
 
     Raises:
         LookupError: A tool the workflow's registry lacks, or no registry for them.
@@ -206,7 +210,9 @@ def _scoped_registry(
     if names and base is None:
         raise LookupError(f"tools {names} need a tool registry")
     view = ToolRegistry()
-    view.tape = getattr(base, "tape", None)
+    tape = getattr(base, "tape", None)
+    agents = {entry.name for entry in agent.tools if not isinstance(entry, str)}
+    view.tape = _OwnTape(tape, agents) if tape is not None and agents else tape
     for entry in agent.tools:
         if isinstance(entry, str):
             assert base is not None
@@ -218,6 +224,31 @@ def _scoped_registry(
         else:
             view.register(_AgentAsTool(entry, context, gateway))
     return view
+
+
+class _OwnTape:
+    """The workflow's tape for the registry tools of a turn, without the turn's agent tools.
+
+    An agent called as a tool is neither served from the tape nor taped: its turn replays from
+    the recording in every tools mode, its model calls, cost and constraints included, and its
+    own tools are on the tape under its own key.
+    """
+
+    def __init__(self, tape: ToolTape, agents: set[str]) -> None:
+        self._tape = tape
+        self._agents = agents
+
+    async def begin_attempt(self, step_id: str, failed: Attempt | None) -> None:
+        await self._tape.begin_attempt(step_id, failed)
+
+    def serve(self, step_id: str, calls: list[ToolCall]) -> list[tuple[str, bool] | None]:
+        own = [call for call in calls if call.name not in self._agents]
+        served = iter(self._tape.serve(step_id, own) if own else [])
+        return [None if call.name in self._agents else next(served) for call in calls]
+
+    async def capture(self, step_id: str, results: list[tuple[ToolCall, str, bool]]) -> None:
+        if own := [result for result in results if result[0].name not in self._agents]:
+            await self._tape.capture(step_id, own)
 
 
 class _AgentAsTool(BaseTool):
@@ -253,6 +284,13 @@ class _AgentAsTool(BaseTool):
             model=self._context.workflow_model,
         )
         if result.status != StepStatus.SUCCESS:
+            if result.error_classification == "transient":
+                # It fails the calling step, whose retry repeats the turn: a recording keeps
+                # only the attempt that finished, so the run replays
+                raise StepError(
+                    self._context.step_definition.id,
+                    f"Agent tool {self.name!r} failed: {result.error}",
+                )
             raise RuntimeError(result.error)
         reply = await state.get("reply")
         return reply.model_dump(mode="json") if isinstance(reply, BaseModel) else reply

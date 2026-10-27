@@ -523,7 +523,8 @@ class LLMCallStep(BaseStep):
             if step.system_prompt:
                 rendered_system = step.system_prompt.format_map(SafeFormatDict(template_vars))
         except (KeyError, ValueError) as e:
-            raise StepError(step.id, f"Prompt template error: {e}") from e
+            # The same template fails the same way on every attempt
+            raise StepError(step.id, f"Prompt template error: {e}", is_retryable=False) from e
 
         # Opt-in full-prompt capture as a span event so trusted environments
         # can debug from Jaeger without re-running. Off by default — see

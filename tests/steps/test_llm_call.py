@@ -232,8 +232,9 @@ class TestLLMCallStep:
             ),
             gateway=gw,
         )
-        with pytest.raises(StepError, match="Prompt template error"):
+        with pytest.raises(StepError, match="Prompt template error") as raised:
             await step.execute(ctx)
+        assert raised.value.is_retryable is False
 
     async def test_capture_prompts_attaches_span_event(self, step: LLMCallStep) -> None:
         # When ``capture_prompts=True``, ``LLMCallStep`` calls

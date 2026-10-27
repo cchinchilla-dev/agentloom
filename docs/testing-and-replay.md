@@ -125,7 +125,7 @@ agentloom replay workflow.yaml --recording recordings/run1.json --tools replay
 | `replay` | do not run: the recorded result is served | a missing call raises `RecordingMismatchError` with the step, the call number and the tool |
 | `verify` | run, and their result and `success` flag are compared | raises `RecordingMismatchError` with the call and the hashes of both results |
 
-A call matches the next recorded call of its step with the same tool name and arguments, so a tool called twice gets its two results in order. When the engine retries a step, the failed attempt leaves no trace, nor do the steps of a subworkflow that ran inside it: recording keeps the calls of the attempt that finished, and replay serves again the calls that the failed attempt took. With `--allow-default-fallback`, a missing call runs live and a different result logs a warning. Steps of `type: tool` always run live.
+A call matches the next recorded call of its step with the same tool name and arguments, so a tool called twice gets its two results in order. When the engine retries a step, the failed attempt leaves no trace, nor do the steps of a subworkflow that ran inside it: recording keeps the calls of the attempt that finished, and replay serves again the calls that the failed attempt took. With `--allow-default-fallback`, a missing call runs live and a different result logs a warning. Steps of `type: tool` always run live. An [agent called as a tool](workflow-yaml.md#agent) is not on the tape: its turn replays from the recording in every mode, and the tape holds its own tools' calls under its key.
 
 ## Replaying up to a cut point
 

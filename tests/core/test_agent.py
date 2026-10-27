@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agentloom.core.agent import load_agent
-from agentloom.core.models import AgentDefinition, AgentTool, StepDefinition
+from agentloom.core.models import AgentDefinition, AgentTool, StepDefinition, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
 from agentloom.exceptions import ValidationError
 
@@ -200,7 +200,7 @@ class TestAgentStepFields:
             ("temperature", 0.0),
             ("max_tokens", 10),
             ("thinking", {"enabled": True}),
-            ("tools", []),
+            ("tools", [{"name": "add"}]),
             ("tool_choice", "required"),
             ("max_tool_iterations", 2),
             ("response_schema", {"type": "json_object"}),
@@ -212,6 +212,25 @@ class TestAgentStepFields:
             ValidationError, match=rf"\['{field}'\] come from the agent's definition"
         ):
             _parse(_step({"name": "a"}, **{field: value}))
+
+    def test_a_default_on_the_step_is_not_an_override(self) -> None:
+        (step,) = _parse(_step({"name": "a"}, model=None, tools=[], tool_choice="auto"))
+        assert step.agent is not None
+
+    def test_a_dumped_agent_step_loads_again(self) -> None:
+        """A checkpoint stores the workflow dumped, every field included (#120)."""
+        agent = {
+            "name": "boss",
+            "tools": ["add", {"name": "ask", "agent": {"name": "clerk", "tools": ["add"]}}],
+            "output_schema": {"type": "json_object"},
+        }
+        workflow = WorkflowDefinition.model_validate(
+            {"name": "w", "config": {"provider": "mock", "model": "m"}, "steps": [_step(agent)]}
+        )
+
+        again = WorkflowDefinition.model_validate(workflow.model_dump(mode="json"))
+
+        assert again.steps[0].agent == workflow.steps[0].agent
 
     def test_step_fields_of_its_own_are_accepted(self) -> None:
         (step,) = _parse(
