@@ -753,7 +753,10 @@ class TestSubworkflowFailedAttempt:
     ANSWER = {"content": "done"}
 
     @staticmethod
-    async def _run(recording: Any, isolated: bool, turns: list[dict[str, Any]]) -> Any:
+    async def _run(
+        recording: Any, isolated: bool, turns: list[dict[str, Any]], first: bool = False
+    ) -> Any:
+        """``first`` adds a child step before ``inner`` that answers, so the child leaves state."""
         import json
 
         from agentloom.core.engine import WorkflowEngine
@@ -764,10 +767,14 @@ class TestSubworkflowFailedAttempt:
         inner = {"id": "inner", "type": "llm_call", "prompt": "hi", "output": "answer"}
         inner["retry"] = {"max_retries": 0}
         child = {"name": "child", "config": config, "steps": [inner]}
+        if first:
+            inner["depends_on"] = ["first"]
+            first_step = {"id": "first", "type": "llm_call", "prompt": "one", "output": "first"}
+            child["steps"] = [first_step, inner]
         sub = {"id": "sub", "type": "subworkflow", "workflow_inline": child, "output": "sub"}
         sub.update(isolated_state=isolated, retry={"max_retries": 1, "backoff_max": 0})
         workflow = WorkflowParser.from_dict({"name": "parent", "config": config, "steps": [sub]})
-        recording.write_text(json.dumps({"inner": turns}))
+        recording.write_text(json.dumps({"inner": turns, "first": {"content": "kept"}}))
         gateway = ProviderGateway()
         gateway.register(RecordedMock(responses_file=recording), priority=0)
         return await WorkflowEngine(workflow=workflow, provider_gateway=gateway).run()
@@ -790,7 +797,10 @@ class TestSubworkflowFailedAttempt:
     ) -> None:
         from agentloom.core.results import WorkflowStatus
 
-        failed = await self._run(tmp_path / "failed.json", isolated, [self.FAULT, self.FAULT])
+        turns = [self.FAULT, self.FAULT]
+        failed = await self._run(tmp_path / "failed.json", isolated, turns, first=True)
         assert failed.status == WorkflowStatus.FAILED
         assert "sub" not in failed.final_state
-        assert failed.step_results["sub"].output == {}  # the child's final state, on the result
+        assert "sub" not in failed.final_state.get("steps", {})
+        # The child's final state, kept on the result only
+        assert failed.step_results["sub"].output["first"] == "kept"

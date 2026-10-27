@@ -481,7 +481,7 @@ Nests a workflow inside another. By default the child inherits parent state both
 | `isolated_state: true`, no `return_keys` | Child's own `state:` block + `input:` mapping | The entire child final state under the parent's `output:` key |
 | `isolated_state: true` + `return_keys: [a, b]` | Child's own `state:` block + `input:` mapping | Only `a` and `b` from the child final state |
 
-The parent's `output:` key is written only when the child workflow succeeds, as for any step: a failed child, or a failed attempt that the step's `retry` repeats, leaves it unset, and the child's final state stays on the step result's `output`.
+The parent's `output:` key is written only when the child workflow succeeds, as for any step: a failed child, or a failed attempt that the step's `retry` repeats, leaves it unset and adds nothing under `steps.<step_id>`, and the child's final state stays on the step result's `output`.
 
 #### Pause / resume through nested approval gates
 
