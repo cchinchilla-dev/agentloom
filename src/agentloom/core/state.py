@@ -136,8 +136,9 @@ class StateManager:
         async with self._lock:
             self._step_results[step_id] = result
             self._step_status[step_id] = result.status
-            # Store output in state under steps.<step_id>.output
-            if result.output is not None:
+            # Store output in state under steps.<step_id>.output; a failed step's stays off the
+            # state, as a failed subworkflow's child state would otherwise land there (#185)
+            if result.status == StepStatus.SUCCESS and result.output is not None:
                 self._state.setdefault("steps", {})[step_id] = {
                     "output": result.output,
                     "status": result.status.value,

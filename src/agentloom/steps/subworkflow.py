@@ -205,7 +205,8 @@ class SubworkflowStep(BaseStep):
         child_final = result.final_state
         if step.return_keys is not None:
             child_final = {k: child_final[k] for k in step.return_keys if k in child_final}
-        if step.output:
+        # Only on success, like any step: a retry would see a failed attempt's output (#185)
+        if step.output and result.status == WorkflowStatus.SUCCESS:
             await context.state_manager.set(step.output, child_final)
 
         status = (

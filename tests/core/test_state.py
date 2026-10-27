@@ -158,6 +158,15 @@ class TestStepResults:
         step_data = await sm.get("steps.s1.output")
         assert step_data == "the output"
 
+    async def test_failed_step_output_stays_off_the_state(self) -> None:
+        """#185: only a successful result is mirrored under ``steps.<id>``."""
+        sm = StateManager()
+        result = StepResult(step_id="sub", status=StepStatus.FAILED, output={"partial": 1})
+        await sm.set_step_result("sub", result)
+        assert "steps" not in await sm.get_state_snapshot()
+        stored = await sm.get_step_result("sub")
+        assert stored is not None and stored.output == {"partial": 1}
+
     async def test_all_step_results(self) -> None:
         sm = StateManager()
         r1 = StepResult(step_id="a", status=StepStatus.SUCCESS, output="out_a")

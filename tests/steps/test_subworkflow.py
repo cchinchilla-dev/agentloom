@@ -740,3 +740,67 @@ class TestSubworkflowDefensiveBranches:
         assert result.status == StepStatus.FAILED
         assert result.error is not None
         assert "inner" in result.error and "boom" in result.error
+
+
+class TestSubworkflowFailedAttempt:
+    """#185 — a failed attempt leaves no output for the retry to inherit.
+
+    The child's ``inner`` step is answered from a recording whose turns can
+    be faults (#123): a 503 fails the child, and the parent retries ``sub``.
+    """
+
+    FAULT = {"fault": {"type": "http_error", "status_code": 503}}
+    ANSWER = {"content": "done"}
+
+    @staticmethod
+    async def _run(
+        recording: Any, isolated: bool, turns: list[dict[str, Any]], first: bool = False
+    ) -> Any:
+        """``first`` adds a child step before ``inner`` that answers, so the child leaves state."""
+        import json
+
+        from agentloom.core.engine import WorkflowEngine
+        from agentloom.core.parser import WorkflowParser
+        from agentloom.providers.mock import MockProvider as RecordedMock
+
+        config = {"provider": "mock", "model": "m"}
+        inner = {"id": "inner", "type": "llm_call", "prompt": "hi", "output": "answer"}
+        inner["retry"] = {"max_retries": 0}
+        child = {"name": "child", "config": config, "steps": [inner]}
+        if first:
+            inner["depends_on"] = ["first"]
+            first_step = {"id": "first", "type": "llm_call", "prompt": "one", "output": "first"}
+            child["steps"] = [first_step, inner]
+        sub = {"id": "sub", "type": "subworkflow", "workflow_inline": child, "output": "sub"}
+        sub.update(isolated_state=isolated, retry={"max_retries": 1, "backoff_max": 0})
+        workflow = WorkflowParser.from_dict({"name": "parent", "config": config, "steps": [sub]})
+        recording.write_text(json.dumps({"inner": turns, "first": {"content": "kept"}}))
+        gateway = ProviderGateway()
+        gateway.register(RecordedMock(responses_file=recording), priority=0)
+        return await WorkflowEngine(workflow=workflow, provider_gateway=gateway).run()
+
+    @pytest.mark.parametrize("isolated", [False, True], ids=["shared", "isolated"])
+    async def test_a_retried_subworkflow_ends_as_if_it_had_not_failed(
+        self, tmp_path: Any, isolated: bool
+    ) -> None:
+        from agentloom.core.results import WorkflowStatus
+
+        clean = await self._run(tmp_path / "clean.json", isolated, [self.ANSWER])
+        retried = await self._run(tmp_path / "retried.json", isolated, [self.FAULT, self.ANSWER])
+        assert retried.status == WorkflowStatus.SUCCESS
+        assert retried.final_state["sub"]["answer"] == "done"
+        assert retried.final_state == clean.final_state
+
+    @pytest.mark.parametrize("isolated", [False, True], ids=["shared", "isolated"])
+    async def test_a_failed_subworkflow_writes_no_output(
+        self, tmp_path: Any, isolated: bool
+    ) -> None:
+        from agentloom.core.results import WorkflowStatus
+
+        turns = [self.FAULT, self.FAULT]
+        failed = await self._run(tmp_path / "failed.json", isolated, turns, first=True)
+        assert failed.status == WorkflowStatus.FAILED
+        assert "sub" not in failed.final_state
+        assert "sub" not in failed.final_state.get("steps", {})
+        # The child's final state, kept on the result only
+        assert failed.step_results["sub"].output["first"] == "kept"
