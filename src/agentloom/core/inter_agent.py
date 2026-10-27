@@ -5,7 +5,8 @@ the state manager write into it. For each step attempt: a ``task_sent`` from
 every step it depends on that finished, its ``task_received``, its tool calls
 and returns, and, when it succeeds, its ``response_sent`` and one
 ``state_transition`` per state key it wrote. An agent is the step's
-``speaker``, or the step itself. A retry forgets what the failed attempt
+``speaker``, the agent an ``agent`` step runs, or the step itself; an agent
+called as a tool logs nothing of its own. A retry forgets what the failed attempt
 logged, the steps of a subworkflow included, as the recorder forgets its turns.
 
 Event ids derive from the step path, the event type and the position, so two
@@ -113,6 +114,16 @@ def log_write(key: str, value: Any) -> None:
     """Log a state write of the running step, if a log is active."""
     if (log := _ACTIVE.get()) is not None:
         log.write(running_steps(), key, value)
+
+
+@contextmanager
+def paused_events() -> Iterator[None]:
+    """Log nothing inside the block: an agent called as a tool is one call of its caller (#120)."""
+    previous = _ACTIVE.set(None)
+    try:
+        yield
+    finally:
+        _ACTIVE.reset(previous)
 
 
 @contextmanager

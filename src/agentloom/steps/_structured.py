@@ -10,7 +10,12 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from agentloom.core.models import ResponseSchema, ResponseSchemaConfigError
+from agentloom.core.models import (
+    OUTPUT_TOOL,
+    ResponseSchema,
+    ResponseSchemaConfigError,
+    ToolDefinition,
+)
 
 _JSON_CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 
@@ -287,8 +292,8 @@ def validate_parsed(parsed: Any, response_schema: ResponseSchema, step_id: str) 
     return parsed
 
 
-def format_validation_feedback(error: Exception, step_id: str) -> str:
-    """Retry message after a validation failure. Capped at 800 chars."""
+def _render_validation_error(error: Exception) -> str:
+    """One line per Pydantic error, else the error's text. Capped at 800 chars."""
     rendered = str(error)
     if isinstance(error, ValidationError):
         rendered = "\n".join(
@@ -297,19 +302,62 @@ def format_validation_feedback(error: Exception, step_id: str) -> str:
         )
     if len(rendered) > 800:
         rendered = rendered[:800] + "… (truncated)"
+    return rendered
+
+
+def format_validation_feedback(error: Exception, step_id: str) -> str:
+    """Retry message after a validation failure. Capped at 800 chars."""
     return (
         f"Your previous response failed structured-output validation for step "
-        f"{step_id!r}. Errors:\n{rendered}\n\nRespond again with a single JSON "
-        f"object that conforms to the declared schema. No prose, no markdown "
-        f"fences — just the JSON."
+        f"{step_id!r}. Errors:\n{_render_validation_error(error)}\n\nRespond again "
+        f"with a single JSON object that conforms to the declared schema. No prose, "
+        f"no markdown fences — just the JSON."
+    )
+
+
+# Sent back when a model that must reply through the output tool answers in text instead.
+OUTPUT_TOOL_REMINDER = f"Reply by calling the {OUTPUT_TOOL} tool, with your reply as its arguments."
+
+
+def output_tool(response_schema: ResponseSchema, step_id: str) -> ToolDefinition:
+    """The tool a step with both ``tools`` and a schema delivers its reply through (#120).
+
+    Tool calling works on every provider, a schema enforced next to tools does not:
+    the reply comes as the arguments of this tool, validated as a structured reply.
+    """
+    parameters = schema_dict_for(response_schema, step_id) or {"type": "object"}
+    if parameters.get("type") != "object":
+        raise ResponseSchemaConfigError(
+            f"Step {step_id!r}: a schema delivered through the {OUTPUT_TOOL!r} tool "
+            f"must describe an object."
+        )
+    return ToolDefinition(
+        name=OUTPUT_TOOL,
+        description=(
+            "Deliver your final reply. Call it once, with the reply as its arguments, "
+            "when you need no other tool."
+        ),
+        parameters=parameters,
+    )
+
+
+def format_output_feedback(error: Exception) -> str:
+    """The result of an output-tool call whose arguments failed validation."""
+    return (
+        f"The arguments of {OUTPUT_TOOL} failed validation. Errors:\n"
+        f"{_render_validation_error(error)}\n\nCall {OUTPUT_TOOL} again with "
+        f"arguments that follow its schema."
     )
 
 
 __all__ = [
+    "OUTPUT_TOOL_REMINDER",
     "anthropic_system_prefix",
     "extract_parsed",
+    "format_output_feedback",
     "format_validation_feedback",
     "load_pydantic_model",
+    "output_tool",
     "schema_dict_for",
     "schema_name_for",
     "translate_for_google",

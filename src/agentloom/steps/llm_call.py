@@ -80,13 +80,28 @@ class LLMCallStep(BaseStep):
         messages: list[dict[str, Any]],
         model: str,
         provider_kwargs: dict[str, Any],
+        output_schema: ResponseSchema | None = None,
     ) -> ProviderResponse:
         """Iterate complete() → dispatch tools → re-prompt until done.
 
         Cost and tokens accumulate across iterations. ``max_tool_iterations``
         bounds the loop; collapses to a single call when ``tools`` is empty.
+        With an ``output_schema`` (an agent step's turn with tools, #120) the
+        loop ends when the model calls the output tool with valid arguments,
+        which become ``parsed``.
         """
+        import jsonschema  # type: ignore[import-untyped]
+        from pydantic import ValidationError as PydanticValidationError
+
+        from agentloom.core.models import OUTPUT_TOOL, ResponseSchemaConfigError
         from agentloom.core.results import TokenUsage
+        from agentloom.providers.base import ToolCall
+        from agentloom.steps._structured import (
+            OUTPUT_TOOL_REMINDER,
+            format_output_feedback,
+            output_tool,
+            validate_parsed,
+        )
         from agentloom.steps._tools import (
             build_assistant_message_with_tool_calls,
             build_tool_result_messages,
@@ -98,9 +113,29 @@ class LLMCallStep(BaseStep):
         accumulated_reasoning = 0
         accumulated_cost = 0.0
 
+        def _with_totals(response: ProviderResponse) -> ProviderResponse:
+            # Replace the response usage with the accumulated totals so
+            # the caller sees the full conversation cost.
+            response.usage = TokenUsage(
+                prompt_tokens=accumulated_prompt,
+                completion_tokens=accumulated_completion,
+                total_tokens=(accumulated_prompt + accumulated_completion + accumulated_reasoning),
+                reasoning_tokens=accumulated_reasoning,
+            )
+            response.cost_usd = accumulated_cost
+            return response
+
         gateway = context.provider_gateway
         if gateway is None:
             raise StepError(step.id, "No provider gateway configured")
+        if output_schema is not None:
+            try:
+                reply_tool = output_tool(output_schema, step.id)
+            except ResponseSchemaConfigError as exc:
+                raise StepError(step.id, str(exc), is_retryable=False) from exc
+            provider_kwargs = {**provider_kwargs, "agentloom_tools": [*step.tools, reply_tool]}
+            if provider_kwargs.get("agentloom_tool_choice") == "auto":
+                provider_kwargs["agentloom_tool_choice"] = "required"
         # ``max_tool_iterations`` is validated >= 1 on the model so the
         # loop runs at least once; ``response`` is therefore guaranteed
         # to be assigned when we exit.
@@ -119,32 +154,53 @@ class LLMCallStep(BaseStep):
             accumulated_reasoning += response.usage.reasoning_tokens
             accumulated_cost += response.cost_usd
 
-            if not response.tool_calls or not step.tools:
-                # Replace the response usage with the accumulated totals so
-                # the caller sees the full conversation cost.
-                response.usage = TokenUsage(
-                    prompt_tokens=accumulated_prompt,
-                    completion_tokens=accumulated_completion,
-                    total_tokens=(
-                        accumulated_prompt + accumulated_completion + accumulated_reasoning
-                    ),
-                    reasoning_tokens=accumulated_reasoning,
-                )
-                response.cost_usd = accumulated_cost
-                return response
+            feedback: str | None = None
+            if output_schema is not None:
+                final = next((c for c in response.tool_calls if c.name == OUTPUT_TOOL), None)
+                if final is None and not response.tool_calls:
+                    # A provider that ignores tool_choice (Ollama) may still answer in text.
+                    messages.append({"role": "assistant", "content": response.content or ""})
+                    messages.append({"role": "user", "content": OUTPUT_TOOL_REMINDER})
+                    continue
+                if final is not None:
+                    try:
+                        response.parsed = validate_parsed(final.arguments, output_schema, step.id)
+                    except ResponseSchemaConfigError as exc:
+                        raise StepError(step.id, str(exc), is_retryable=False) from exc
+                    except (
+                        PydanticValidationError,
+                        jsonschema.ValidationError,
+                        TypeError,
+                    ) as exc:
+                        feedback = format_output_feedback(exc)
+                    else:
+                        # The reply's text is its JSON, for the conversation and the result.
+                        response.content = json.dumps(final.arguments)
+                        return _with_totals(response)
+            elif not response.tool_calls or not step.tools:
+                return _with_totals(response)
 
-            if context.tool_registry is None:
-                raise StepError(
-                    step.id,
-                    "Tool registry required for tools= declaration but not configured.",
+            # Output-tool calls are not dispatched: invalid ones get the errors as their result.
+            pending = [c for c in response.tool_calls if c.name != OUTPUT_TOOL or feedback is None]
+            results: list[tuple[ToolCall, str, bool]] = []
+            if pending:
+                if context.tool_registry is None:
+                    raise StepError(
+                        step.id,
+                        "Tool registry required for tools= declaration but not configured.",
+                    )
+                results = await dispatch_tool_calls(
+                    pending,
+                    context.tool_registry,
+                    observer=context.observer,
+                    step_id=step.id,
                 )
-
-            results = await dispatch_tool_calls(
-                response.tool_calls,
-                context.tool_registry,
-                observer=context.observer,
-                step_id=step.id,
-            )
+            if feedback is not None:
+                done = iter(results)
+                results = [
+                    (c, feedback, False) if c.name == OUTPUT_TOOL else next(done)
+                    for c in response.tool_calls
+                ]
             messages.append(
                 build_assistant_message_with_tool_calls(
                     response.provider, response.content, response.tool_calls
@@ -156,13 +212,13 @@ class LLMCallStep(BaseStep):
         # finish_reason so callers can detect it. ``response`` is set
         # because ``max_tool_iterations`` is validated >= 1.
         assert response is not None
-        response.usage = TokenUsage(
-            prompt_tokens=accumulated_prompt,
-            completion_tokens=accumulated_completion,
-            total_tokens=(accumulated_prompt + accumulated_completion + accumulated_reasoning),
-            reasoning_tokens=accumulated_reasoning,
-        )
-        response.cost_usd = accumulated_cost
+        if output_schema is not None:
+            raise StepError(
+                step.id,
+                f"No valid {OUTPUT_TOOL!r} call within {step.max_tool_iterations} model calls",
+                is_retryable=False,
+            )
+        _with_totals(response)
         # ``tool_choice: required`` that hits the iteration cap with an
         # empty final message means the model never produced an answer —
         # it looped picking tools until the budget ran out. Pre-0.5.0
@@ -182,6 +238,19 @@ class LLMCallStep(BaseStep):
         else:
             response.finish_reason = "max_tool_iterations"
         return response
+
+    def _output_schema(self, step: StepDefinition) -> ResponseSchema | None:
+        """The schema of a reply that comes through the output tool; an agent step's (#120)."""
+        return None
+
+    def _apply_memory(self, conversation: Conversation) -> None:
+        """Set the budget and trim policy of this turn; an agent step applies its own (#120)."""
+
+    def _accept(self, step: StepDefinition, response: ProviderResponse) -> None:
+        """Raise ``StepError`` on a reply the step must not keep; nothing is written then.
+
+        Called on the turns that do not stream, which agent steps always take.
+        """
 
     @staticmethod
     def _resolve_path(state: dict[str, Any], path: str) -> Any:
@@ -358,7 +427,7 @@ class LLMCallStep(BaseStep):
         provider_kwargs: dict[str, Any],
     ) -> ProviderResponse:
         """Parse + validate; retry within ``step.retry.max_retries``."""
-        import jsonschema  # type: ignore[import-untyped]
+        import jsonschema
         from pydantic import ValidationError as PydanticValidationError
 
         from agentloom.core.models import ResponseSchemaConfigError
@@ -454,7 +523,8 @@ class LLMCallStep(BaseStep):
             if step.system_prompt:
                 rendered_system = step.system_prompt.format_map(SafeFormatDict(template_vars))
         except (KeyError, ValueError) as e:
-            raise StepError(step.id, f"Prompt template error: {e}") from e
+            # The same template fails the same way on every attempt
+            raise StepError(step.id, f"Prompt template error: {e}", is_retryable=False) from e
 
         # Opt-in full-prompt capture as a span event so trusted environments
         # can debug from Jaeger without re-running. Off by default — see
@@ -566,11 +636,15 @@ class LLMCallStep(BaseStep):
                         f"{last_answerable.role if last_answerable else 'none'}). "
                         "Set 'prompt' or ensure the conversation ends with a user turn.",
                     )
+            stored = (conversation.token_budget, conversation.trim_policy)
+            self._apply_memory(conversation)
             trim_result = await apply_trim_policy_async(
                 conversation,
                 model,
                 summarizer=self._make_summarizer(context, step, model),
             )
+            # A turn's own budget and policy are not stored with the conversation.
+            conversation.token_budget, conversation.trim_policy = stored
             messages = to_provider_messages(conversation)
             if transient_system is not None:
                 # Re-assert the speaker's instruction at the head so the
@@ -630,6 +704,9 @@ class LLMCallStep(BaseStep):
             provider_kwargs["agentloom_response_schema"] = step.response_schema
             provider_kwargs["agentloom_step_id"] = step.id
 
+        # A typed reply next to tools comes through the output tool: agent steps (#120).
+        output_schema = self._output_schema(step) if step.tools else None
+
         # Tool-call loop: re-prompt with tool results until the model
         # stops requesting tools or we exhaust ``max_tool_iterations``.
         # Costs and tokens accumulate across iterations; only the final
@@ -641,6 +718,7 @@ class LLMCallStep(BaseStep):
                 messages=messages,
                 model=model,
                 provider_kwargs=provider_kwargs,
+                output_schema=output_schema,
             )
             if step.response_schema is not None:
                 response = await self._validate_structured_output(
@@ -652,6 +730,7 @@ class LLMCallStep(BaseStep):
                     model=model,
                     provider_kwargs=provider_kwargs,
                 )
+            self._accept(step, response)
         except RecordingMismatchError:
             raise  # the engine fails a stale replay at once instead of retrying it
         except StepError as e:
@@ -683,7 +762,8 @@ class LLMCallStep(BaseStep):
 
         if step.output:
             # Structured steps store the parsed value; free-form ones the raw string.
-            value: Any = response.parsed if step.response_schema is not None else response.content
+            structured = step.response_schema is not None or output_schema is not None
+            value: Any = response.parsed if structured else response.content
             await context.state_manager.set(step.output, value)
 
         if conversation is not None:

@@ -259,4 +259,10 @@ A recording that fails `draft` with a 429 and a 503 before it answers; the step'
 retry policy recovers on the third attempt, the same way on every run.
 Demonstrates: `fault` entries in a recording, deterministic failure replay.
 
+### 41 — Agent (0.5.0, unreleased)
+A support desk defined once under `agents/` (system prompt, tools, a refunds agent
+called as a tool, memory, loop policy, typed reply, constraints) and run by two
+`agent` steps on one conversation, offline against `recordings/agent.json`.
+Demonstrates: the `agent` step type, an agent as a tool, typed replies with tools.
+
 Full descriptions and commands: [docs/examples](https://cchinchilla-dev.github.io/agentloom/examples/).

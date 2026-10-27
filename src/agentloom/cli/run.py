@@ -130,15 +130,10 @@ async def _run_async(
     force_live: list[str] | None = None,
 ) -> None:
     """Async implementation of the run command."""
-    import sys
-
     from agentloom.core.engine import WorkflowEngine
     from agentloom.providers.gateway import ProviderGateway
 
-    # Prepend CWD so dotted imports from workflow YAML resolve.
-    cwd = str(Path.cwd())
-    if cwd not in sys.path:
-        sys.path.insert(0, cwd)
+    _import_from_cwd()
 
     try:
         workflow = WorkflowParser.from_yaml(workflow_path)
@@ -377,6 +372,15 @@ def _initial_state(workflow: WorkflowDefinition, state_args: list[str]) -> dict[
         key, _, raw = item.partition("=")
         initial_state[key] = _parse_state_value(raw)
     return initial_state
+
+
+def _import_from_cwd() -> None:
+    """Prepend the working directory so dotted imports from workflow YAML resolve."""
+    import sys
+
+    cwd = str(Path.cwd())
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
 
 
 def _tool_registry(workflow: WorkflowDefinition) -> ToolRegistry:

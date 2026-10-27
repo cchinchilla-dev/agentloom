@@ -411,3 +411,18 @@ agentloom run examples/39_multi_agent_conversation.yaml --lite
 # Real calls (any provider that supports chat completions):
 agentloom run examples/39_multi_agent_conversation.yaml --provider openai --model gpt-4o-mini
 ```
+
+### 41 — Agent
+
+A support desk defined once in `examples/agents/support.yaml`: a system prompt, the `file_read` tool and a refunds agent offered as a tool (`examples/agents/refunds.yaml`), a memory budget, a loop policy, a typed `SupportReply` and constraints. Two `agent` steps run two turns of it on one conversation: the first reads the billing policy and asks the refunds agent in parallel, then replies through `final_result`; the second answers a follow-up from the same history.
+
+**Demonstrates:** the `agent` step type, tool scoping, an agent called as a tool, `output_schema` with tools, a shared conversation across turns.
+
+```bash
+# Mock-replay against the committed recording (no API calls)
+agentloom run examples/41_agent.yaml --lite
+agentloom verify-determinism examples/41_agent.yaml -r recordings/agent.json
+
+# Real calls:
+agentloom run examples/41_agent.yaml --provider anthropic --model claude-haiku-4-5
+```

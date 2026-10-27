@@ -111,12 +111,13 @@ class AnthropicProvider(BaseProvider):
         model still sees who spoke instead of losing the attribution.
         System-turn names are ignored — there is no ambiguity there.
         """
-        system_prompt: str | None = None
+        # Every system turn applies, in order: a speaker's prompt and a conversation summary both
+        systems: list[str] = []
         formatted: list[dict[str, Any]] = []
         for msg in messages:
             if msg["role"] == "system":
                 content = msg.get("content", "")
-                system_prompt = content if isinstance(content, str) else str(content)
+                systems.append(content if isinstance(content, str) else str(content))
                 continue
             name = msg.get("name")
             content = msg.get("content", "")
@@ -175,7 +176,7 @@ class AnthropicProvider(BaseProvider):
                 if name:
                     parts.insert(0, {"type": "text", "text": f"[{name}]"})
                 formatted.append({"role": msg["role"], "content": parts})
-        return system_prompt, formatted
+        return "\n\n".join(systems) or None, formatted
 
     async def complete(
         self,

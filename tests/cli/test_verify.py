@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import itertools
 import json
+import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 from agentloom.cli.main import app
@@ -15,6 +16,9 @@ from agentloom.tools.base import BaseTool
 from agentloom.tools.registry import ToolRegistry
 from tests.cli.test_replay import FETCH, TOOL_YAML, _tool_turn
 from tests.cli.test_replay_cut import _answers, _providers, _recorded, _replay, runner
+
+if TYPE_CHECKING:
+    import pytest
 
 WORKFLOW = """\
 name: verify-cli
@@ -245,3 +249,28 @@ def test_verify_cli_rejects_a_broken_recording(tmp_path: Path) -> None:
         result = _verify(workflow, recording, tool=itertools.repeat("recorded"))
         assert result.exit_code == 1, text
         assert message in result.output, result.output
+
+
+def test_verify_cli_imports_the_projects_schemas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As ``run``, a response_schema model from the working directory imports."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if p not in ("", str(tmp_path))])
+    (tmp_path / "verify_reply_schemas.py").write_text(
+        "from pydantic import BaseModel\n\n\nclass Reply(BaseModel):\n    x: int\n"
+    )
+    workflow = tmp_path / "wf.yaml"
+    workflow.write_text(
+        "name: typed\nsteps:\n  - id: a\n    type: llm_call\n    prompt: A\n"
+        "    response_schema: {type: pydantic, model: verify_reply_schemas.Reply}\n"
+        "    output: reply\n"
+    )
+    recording = tmp_path / "rec.json"
+    turn = {"content": '{"x": 1}', "model": "m", "cost_usd": 0.0, "finish_reason": "stop"}
+    recording.write_text(json.dumps({"_version": 2, "a": turn}))
+
+    result = runner.invoke(app, ["verify-determinism", str(workflow), "-r", str(recording)])
+
+    assert result.exit_code == 0, result.output
+    assert "status success" in result.output

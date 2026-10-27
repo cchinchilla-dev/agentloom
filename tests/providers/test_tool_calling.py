@@ -103,6 +103,31 @@ class TestToolTranslation:
         decls = out[0]["function_declarations"]
         assert {d["name"] for d in decls} == {"add", "lookup"}
 
+    def test_google_parameters_lose_the_keys_gemini_rejects(self) -> None:
+        """An agent's output tool carries ``additionalProperties``, which Gemini 400s on (#120)."""
+        parameters = {
+            "type": "object",
+            "title": "Reply",
+            "additionalProperties": False,
+            "properties": {"n": {"type": "integer", "title": "N", "default": 1}},
+            "required": ["n"],
+        }
+        tool = ToolDefinition(name="final_result", parameters=parameters)
+        (decl,) = translate_tools_for_google([tool])[0]["function_declarations"]
+
+        assert decl["parameters"] == {
+            "type": "object",
+            "properties": {"n": {"type": "integer"}},
+            "required": ["n"],
+        }
+        assert tool.parameters["additionalProperties"] is False
+
+    def test_google_parameters_default_to_an_empty_object(self) -> None:
+        (decl,) = translate_tools_for_google([ToolDefinition(name="noop")])[0][
+            "function_declarations"
+        ]
+        assert decl["parameters"] == {"type": "object", "properties": {}}
+
 
 class TestToolParsing:
     def test_openai_parses_tool_calls(self) -> None:

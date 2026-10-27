@@ -1,0 +1,45 @@
+name: support-agent
+version: "1.0"
+description: |
+  An agent defined once and run as a step (#120). ``examples/agents/support.yaml``
+  holds the support desk: its system prompt, its tools (``file_read`` and the
+  refunds agent, called as a tool), its memory, loop policy, typed reply and
+  constraints. Two ``agent`` steps run two turns of it on one conversation.
+
+  Runs offline against the committed recording (mock provider):
+
+    agentloom run examples/41_agent.yaml --lite
+
+  Producing a fresh recording:
+    agentloom run examples/41_agent.yaml --provider anthropic \\
+      --model claude-haiku-4-5 --record recordings/agent.json
+
+config:
+  provider: mock
+  model: claude-haiku-4-5
+  responses_file: recordings/agent.json
+  latency_model: constant
+  latency_ms: 0
+  sandbox:
+    enabled: true
+    readable_paths: [examples/data]
+    allow_network: false
+
+state:
+  question: "I was charged twice for my May invoice. Can I get one of the charges back?"
+
+steps:
+  - id: answer
+    type: agent
+    agent: examples/agents/support.yaml
+    prompt: "{state.question}"
+    conversation: state.chat
+    output: reply
+
+  - id: follow_up
+    type: agent
+    depends_on: [answer]
+    agent: examples/agents/support.yaml
+    prompt: "How long until the money is back on my card?"
+    conversation: state.chat
+    output: follow_up

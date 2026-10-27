@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -12,6 +13,7 @@ import anyio
 
 from agentloom.core.inter_agent import log_tools
 from agentloom.core.models import ToolDefinition
+from agentloom.exceptions import RecordingMismatchError, StepError
 from agentloom.providers.base import ToolCall
 
 
@@ -54,15 +56,20 @@ def translate_tools_for_google(tools: list[ToolDefinition]) -> list[dict[str, An
 
     Google groups all functions under one ``Tool`` object; we put them all
     in a single declaration list since AgentLoom doesn't yet expose tool
-    grouping (everything is a function).
+    grouping (everything is a function). Parameters lose the keys Gemini's
+    schema dialect rejects, as a ``responseSchema`` does: an agent's output
+    tool (#120) carries ``additionalProperties``.
     """
+    from agentloom.steps._structured import _strip_unsupported_google_keys
+
     return [
         {
             "function_declarations": [
                 {
                     "name": t.name,
                     "description": t.description,
-                    "parameters": t.parameters or {"type": "object", "properties": {}},
+                    "parameters": _strip_unsupported_google_keys(copy.deepcopy(t.parameters))
+                    or {"type": "object", "properties": {}},
                 }
                 for t in tools
             ]
@@ -223,9 +230,12 @@ async def dispatch_tool_calls(
                 except Exception:
                     logger.debug("on_tool_call hook failed", exc_info=True)
 
-    async with anyio.create_task_group() as tg:
-        for idx, call in enumerate(calls):
-            tg.start_soon(_run, idx, call)
+    try:
+        async with anyio.create_task_group() as tg:
+            for idx, call in enumerate(calls):
+                tg.start_soon(_run, idx, call)
+    except ExceptionGroup as group:
+        raise group.exceptions[0]  # the call that fails the step, not anyio's wrapper
 
     log_tools([(c.name, c.arguments) for c, _, _ in results], [(r, ok) for _, r, ok in results])
     if tape is not None:
@@ -238,9 +248,12 @@ async def _execute(call: ToolCall, tool_registry: Any) -> tuple[str, bool]:
     try:
         tool = tool_registry.get(call.name)
     except KeyError as e:
-        return f"tool '{call.name}' not registered: {e}", False
+        # Its message, without the quotes ``KeyError.__str__`` adds.
+        return f"tool '{call.name}' not registered: {e.args[0] if e.args else e}", False
     try:
         outcome = await tool.execute(**call.arguments)
+    except (StepError, RecordingMismatchError):
+        raise  # an agent called as a tool failed in a way that fails its caller's step (#120)
     except Exception as e:  # noqa: BLE001 — reported back to the model
         logger.warning("Tool '%s' failed: %s", call.name, e)
         return f"tool execution failed: {e}", False
