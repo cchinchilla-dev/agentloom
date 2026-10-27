@@ -181,6 +181,44 @@ def test_verify_cli_replays_recorded_tools(tmp_path: Path) -> None:
     fetch.assert_not_awaited()
 
 
+RETRIED_SUB = """\
+name: retried-sub
+config:
+  provider: openai
+  model: gpt-4o-mini
+steps:
+  - id: sub
+    type: subworkflow
+    output: sub
+    retry: {max_retries: 1, backoff_max: 0}
+    workflow_inline:
+      name: child
+      config: {provider: openai, model: gpt-4o-mini}
+      steps:
+        - id: inner
+          type: llm_call
+          prompt: hi
+          output: answer
+          retry: {max_retries: 0}
+"""
+
+
+def test_verify_cli_passes_on_a_retried_subworkflow(tmp_path: Path) -> None:
+    """#185: the recorded run retried ``sub`` after a 503; its replays do not, and still agree."""
+    workflow = tmp_path / "wf.yaml"
+    workflow.write_text(RETRIED_SUB)
+    answers = tmp_path / "answers.json"
+    fault = {"fault": {"type": "http_error", "status_code": 503}}
+    answers.write_text(json.dumps({"inner": [fault, {"content": "done"}]}))
+    recording = tmp_path / "rec.json"
+    with _providers(answers):
+        argv = ["run", str(workflow), "--record", str(recording), "--lite"]
+        assert runner.invoke(app, argv).exit_code == 0
+    result = runner.invoke(app, ["verify-determinism", str(workflow), "-r", str(recording)])
+    assert result.exit_code == 0, result.output
+    assert "and the recorded event log" in result.output
+
+
 def test_inter_agent_events_extend_recordings_without_breaking_v2_format(tmp_path: Path) -> None:
     workflow, recording = _record(tmp_path)
     with _tools(itertools.repeat("recorded")):
