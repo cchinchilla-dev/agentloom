@@ -555,6 +555,90 @@ The `MockProvider` serves embeddings from a recording keyed by `step_id` (with a
 
 `agentloom_embedding_calls_total{provider, model}` counter and `agentloom_embedding_dimensions{provider, model}` histogram land on the metrics surface whenever observability is enabled.
 
+### `agent`
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+
+Runs one turn of an agent: a system prompt, a set of tools, a memory policy, a bounded tool loop, a typed reply and constraints, defined once and reused across steps and workflows. The step compiles to an [`llm_call`](#llm_call) turn with the agent's settings.
+
+```yaml
+# examples/agents/support.yaml
+name: support_desk
+description: Answers billing questions for ACME customers.
+model: claude-haiku-4-5           # optional; the workflow's model otherwise
+system_prompt: |
+  You answer billing questions for ACME customers. ...
+tools:
+  - file_read                     # a tool of the workflow's registry
+  - name: ask_refunds             # another agent, offered as a tool
+    agent: examples/agents/refunds.yaml
+memory:
+  token_budget: 4000
+  trim_policy: drop_pairs
+loop_policy:
+  max_iterations: 6
+  on_max_iterations: error        # or warn_and_return
+output_schema:
+  type: pydantic
+  model: examples.structured_output_schemas.SupportReply
+constraints:
+  max_cost_usd: 0.05
+  max_latency_ms: 60000
+  forbidden_patterns: ["as an AI language model"]
+```
+
+```yaml
+- id: answer
+  type: agent
+  agent: examples/agents/support.yaml   # a path, or the definition inline
+  prompt: "{state.question}"             # the user turn
+  conversation: state.chat               # optional; created when the key is absent
+  output: reply                          # typed per output_schema; the text without one
+```
+
+**Definition fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | `string` | — | The agent's name: the `speaker` of its turns and its `agent_id` in the [event log](testing-and-replay.md). |
+| `description` | `string` | `""` | What the agent does; the tool description when another agent calls it. |
+| `model`, `system_prompt`, `temperature`, `max_tokens` | | inherited | As on `llm_call`. |
+| `tools` | `list` | `[]` | Names from the workflow's tool registry, and `{name, agent, description}` entries that offer another agent as a tool. |
+| `memory` | `object` | `null` | `token_budget` and `trim_policy` (`drop_oldest`, `drop_pairs`, `summarize_oldest`) applied to the conversation on each of the agent's turns. The conversation keeps its own settings. |
+| `loop_policy.max_iterations` | `int` | `5` | Model calls per turn. The loop ends when the agent replies without calling a tool. |
+| `loop_policy.on_max_iterations` | `string` | `error` | Reaching the cap fails the step (`error`) or returns the last reply with a warning (`warn_and_return`). |
+| `output_schema` | `object` | `null` | As `response_schema` on `llm_call` (`pydantic`, `json_schema`, `json_object`). |
+| `constraints.max_cost_usd` | `float` | `null` | Checked after each model call, the calls of agents used as tools and summaries included; the turn stops once it is exceeded. |
+| `constraints.max_latency_ms` | `int` | `null` | Bounds the turn as `timeout` does; the shorter of the two applies. |
+| `constraints.forbidden_patterns` | `list[str]` | `[]` | A reply that contains one (plain text, case-insensitive) fails the step. |
+
+**Behaviour:**
+
+- The definition is loaded and checked when the workflow is parsed: unknown keys, duplicate tool names and cycles between agent files are errors. A path is relative to the working directory, as a subworkflow's `workflow_path`. An agent step cannot set the fields its agent defines (`model`, `system_prompt`, `tools`, `response_schema`, `speaker`, ...).
+- The turn sees only the agent's tools: a call to any other tool, even one the workflow registers, comes back to the model as unregistered. A tool the registry lacks fails the step before the first model call.
+- `speaker` is the agent's name, so several agents can share a [conversation](#multi-agent-conversations): each one's system prompt applies to its own turns only.
+- `output_schema` without tools uses the provider's structured output, as `response_schema` does. With tools, the reply comes through a `final_result` tool whose arguments follow the schema: the loop ends when the agent calls it with valid arguments, invalid ones go back to the model as the tool's error, and a reply in plain text is sent back asking for the tool. Reaching `max_iterations` without a valid reply fails the step under either `on_max_iterations`. `final_result` is a reserved tool name in an agent with an `output_schema`; the conversation keeps the reply as JSON.
+- A broken constraint, `on_max_iterations: error` and a missing `final_result` fail the step without a retry. `max_latency_ms` fails it as a transient failure, which the step's `retry` repeats, as for a step `timeout`. The conversation and `output` are written only when the step succeeds.
+- An agent turn does not stream: with `stream: true`, its reply reaches the stream callback in one chunk once it has passed the checks.
+
+**Agents as tools.** A `{name, agent}` entry offers another agent as a tool with one `message` parameter. Each call runs a turn of that agent on a fresh conversation and returns its reply, as JSON when it has an `output_schema`; a turn that fails comes back to the caller as the tool's error. Its model calls are recorded under `<step_id>::<tool name>#<n>`, the n-th call of that tool in the turn, so they replay in order. Its cost adds to the calling step's, and the inter-agent event log shows it as one tool call of the caller.
+
+**From Python:**
+
+```python
+from agentloom import Agent
+
+agent = Agent.from_yaml("examples/agents/support.yaml", gateway=gateway, tool_registry=registry)
+result = await agent.invoke("My bill seems wrong", conversation=previous)  # conversation optional
+result.reply         # SupportReply, typed per output_schema; str without one
+result.conversation  # Conversation, with the new turns
+result.cost_usd      # float
+result.iterations    # model calls of the turn
+```
+
+`Agent` takes `model=` for a definition that names none, and `invoke` raises `AgentError` when the turn fails. Example [41](examples.md#41-agent) runs the support desk above offline.
+
 ---
 
 ## Conversation history

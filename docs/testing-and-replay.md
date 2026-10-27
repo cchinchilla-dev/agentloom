@@ -189,7 +189,7 @@ A fault turn you add carries no `request_hash`: under strict replay, it fires wh
 
 ## Inter-agent events
 
-`agentloom run --record` also keeps the run's inter-agent event log, under `_inter_agent_events` in the recording, and so does `agentloom replay --record` for a cut replay. The log says which agent handed what to which, in causal order. An agent is a step's `speaker`, or the step itself when it has none. A message is a dependency edge: when a step starts, the log gets a `task_sent` from each step it depends on that finished, then the step's `task_received`; then its tool calls and returns (`tool_call`, `tool_return`), from a `tools:` loop or a step of `type: tool`; and, when the step succeeds, its `response_sent` and a `state_transition` for each state key it wrote.
+`agentloom run --record` also keeps the run's inter-agent event log, under `_inter_agent_events` in the recording, and so does `agentloom replay --record` for a cut replay. The log says which agent handed what to which, in causal order. An agent is a step's `speaker`, the agent an `agent` step runs, or the step itself; an agent called as a tool is one tool call of its caller and logs nothing of its own. A message is a dependency edge: when a step starts, the log gets a `task_sent` from each step it depends on that finished, then the step's `task_received`; then its tool calls and returns (`tool_call`, `tool_return`), from a `tools:` loop or a step of `type: tool`; and, when the step succeeds, its `response_sent` and a `state_transition` for each state key it wrote.
 
 ```json
 {

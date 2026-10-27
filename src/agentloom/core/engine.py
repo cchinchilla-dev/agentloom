@@ -874,7 +874,9 @@ class WorkflowEngine:
                 await self._begin_attempt(step_id, previous)
                 previous = running
                 if (log := active_log()) is not None:
-                    agent = step_def.speaker or step_id
+                    agent = step_def.speaker or (
+                        step_def.agent.name if step_def.agent is not None else step_id
+                    )
                     log.start_step(running_steps(), agent, step_def.depends_on)
                 if step_def.timeout:
                     with anyio.fail_after(step_def.timeout):

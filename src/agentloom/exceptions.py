@@ -26,6 +26,10 @@ class WorkflowError(AgentLoomError):
     """Error during workflow execution."""
 
 
+class AgentError(AgentLoomError):
+    """An agent's turn failed when run from Python with ``Agent.invoke`` (#120)."""
+
+
 class StepError(AgentLoomError):
     """Error during step execution.
 

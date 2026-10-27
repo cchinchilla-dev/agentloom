@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -54,15 +55,20 @@ def translate_tools_for_google(tools: list[ToolDefinition]) -> list[dict[str, An
 
     Google groups all functions under one ``Tool`` object; we put them all
     in a single declaration list since AgentLoom doesn't yet expose tool
-    grouping (everything is a function).
+    grouping (everything is a function). Parameters lose the keys Gemini's
+    schema dialect rejects, as a ``responseSchema`` does: an agent's output
+    tool (#120) carries ``additionalProperties``.
     """
+    from agentloom.steps._structured import _strip_unsupported_google_keys
+
     return [
         {
             "function_declarations": [
                 {
                     "name": t.name,
                     "description": t.description,
-                    "parameters": t.parameters or {"type": "object", "properties": {}},
+                    "parameters": _strip_unsupported_google_keys(copy.deepcopy(t.parameters))
+                    or {"type": "object", "properties": {}},
                 }
                 for t in tools
             ]

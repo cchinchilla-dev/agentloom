@@ -89,7 +89,7 @@ async def _replay(
     workflow_path: Path, recording: Path, state_args: list[str], tools: ToolMode
 ) -> tuple[WorkflowResult, list[InterAgentEvent]]:
     """One strict replay of ``recording``, with a fresh engine, mock and tools."""
-    from agentloom.cli.run import _initial_state, _tool_registry
+    from agentloom.cli.run import _import_from_cwd, _initial_state, _tool_registry
     from agentloom.core.engine import WorkflowEngine
     from agentloom.core.parser import WorkflowParser
     from agentloom.core.state import StateManager
@@ -97,6 +97,7 @@ async def _replay(
     from agentloom.providers.mock import MockProvider
     from agentloom.providers.tool_tape import ToolReplayer
 
+    _import_from_cwd()  # as ``run``: a response_schema model of the project must import
     try:
         workflow = WorkflowParser.from_yaml(workflow_path)
         mock = MockProvider(responses_file=recording, workflow_name=workflow.name, strict=True)
