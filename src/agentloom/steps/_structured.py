@@ -204,12 +204,37 @@ _SCHEMA_NAME_MAPS = frozenset({"properties", "patternProperties"})
 
 _LOCAL_REF = re.compile(r"#/(\$defs|definitions)/([^/]+)")
 
+# Keywords that describe a schema without constraining it: the ones beside a ``$ref`` win.
+_ANNOTATIONS = frozenset({"description", "title", "default", "examples"})
+
+
+def _merge_beside_ref(target: dict[str, Any], siblings: dict[str, Any]) -> dict[str, Any] | None:
+    """A definition with the keywords beside its ``$ref``, which JSON Schema applies both.
+
+    ``required`` and ``properties`` add up; any other constraint on both sides must agree,
+    or ``None``: Gemini's dialect has no ``allOf`` to keep the two.
+    """
+    merged = dict(target)
+    for key, value in siblings.items():
+        if key == "required":
+            merged[key] = list(dict.fromkeys([*target.get(key, []), *value]))
+        elif key == "properties":
+            shared = target.get(key, {}).keys() & value.keys()
+            if any(target[key][name] != value[name] for name in shared):
+                return None
+            merged[key] = {**target.get(key, {}), **value}
+        elif key in target and target[key] != value and key not in _ANNOTATIONS:
+            return None
+        else:
+            merged[key] = value
+    return merged
+
 
 def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
     """Replace each local ``$ref`` by a copy of its definition: Gemini's dialect has neither.
 
-    The keys next to a ``$ref`` (a ``description``) apply on top. A recursive reference
-    cannot be inlined and stays, for Gemini to refuse.
+    The keywords beside a ``$ref`` apply with it (``_merge_beside_ref``). A reference that
+    cannot be inlined, recursive or contradicted by them, stays, for Gemini to refuse.
     """
     groups = {group: schema.get(group) or {} for group in ("$defs", "definitions")}
 
@@ -220,10 +245,13 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
             return node
         ref = node.get("$ref")
         match = _LOCAL_REF.fullmatch(ref) if isinstance(ref, str) else None
-        if match and ref not in seen and match.group(2) in groups[match.group(1)]:
-            target = groups[match.group(1)][match.group(2)]
+        # A JSON Pointer writes ``/`` and ``~`` in a name as ``~1`` and ``~0``
+        name = match.group(2).replace("~1", "/").replace("~0", "~") if match else None
+        if match and ref not in seen and name in groups[match.group(1)]:
             siblings = {k: v for k, v in node.items() if k != "$ref"}
-            return _resolve({**target, **siblings}, seen | {match.group(0)})
+            merged = _merge_beside_ref(groups[match.group(1)][name], siblings)
+            if merged is not None:
+                return _resolve(merged, seen | {match.group(0)})
         return {k: _resolve(v, seen) for k, v in node.items()}
 
     root = {k: v for k, v in schema.items() if k not in groups}

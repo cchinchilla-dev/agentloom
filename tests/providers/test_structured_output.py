@@ -902,6 +902,74 @@ class TestStructuredHelperEdgeCases:
             },
         }
 
+    def test_translate_for_google_decodes_escaped_names(self) -> None:
+        """A JSON Pointer writes ``/`` as ``~1`` and ``~`` as ``~0``, in that order (RFC 6901)."""
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {"a": {"$ref": "#/$defs/A~1B"}, "b": {"$ref": "#/$defs/x~01y"}},
+                "$defs": {"A/B": {"type": "string"}, "x~1y": {"type": "integer"}},
+            },
+        )
+        _, schema = translate_for_google(rs, "step")
+        assert schema == {
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
+        }
+
+    def test_translate_for_google_adds_the_constraints_beside_a_ref(self) -> None:
+        """JSON Schema applies the keywords beside a ``$ref`` with its definition, not instead."""
+        order = {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        }
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {
+                    "x": {
+                        "$ref": "#/$defs/Order",
+                        "type": "object",
+                        "properties": {"code": {"type": "string"}},
+                        "required": ["code", "id"],
+                    }
+                },
+                "$defs": {"Order": order},
+            },
+        )
+        _, schema = translate_for_google(rs, "step")
+        assert schema is not None
+        assert schema["properties"]["x"] == {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "code": {"type": "string"}},
+            "required": ["id", "code"],
+        }
+
+    @pytest.mark.parametrize(
+        "beside",
+        [{"properties": {"id": {"type": "integer"}}}, {"minProperties": 2}],
+        ids=["a property", "a keyword"],
+    )
+    def test_translate_for_google_leaves_a_ref_its_neighbours_contradict(
+        self, beside: dict[str, Any]
+    ) -> None:
+        """Both cannot hold in Gemini's dialect, which has no ``allOf``: it refuses the ``$ref``."""
+        order = {"type": "object", "properties": {"id": {"type": "string"}}, "minProperties": 1}
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {"x": {"$ref": "#/$defs/Order", **beside}},
+                "$defs": {"Order": order},
+            },
+        )
+        _, schema = translate_for_google(rs, "step")
+        assert schema is not None
+        assert schema["properties"]["x"] == {"$ref": "#/$defs/Order", **beside}
+
     def test_translate_for_google_leaves_a_recursive_ref(self) -> None:
         """A model that contains itself cannot be inlined: Gemini refuses it with a 400."""
         node = {"type": "object", "properties": {"child": {"$ref": "#/$defs/Node"}}}
