@@ -103,6 +103,7 @@ class LLMCallStep(BaseStep):
             validate_parsed,
         )
         from agentloom.steps._tools import (
+            INVALID_ARGUMENTS,
             build_assistant_message_with_tool_calls,
             build_tool_result_messages,
             dispatch_tool_calls,
@@ -162,7 +163,11 @@ class LLMCallStep(BaseStep):
                     messages.append({"role": "assistant", "content": response.content or ""})
                     messages.append({"role": "user", "content": OUTPUT_TOOL_REMINDER})
                     continue
-                if final is not None:
+                if final is not None and INVALID_ARGUMENTS in final.arguments:
+                    # Cut short at the token limit, or not an object: never an empty reply
+                    raw = final.arguments[INVALID_ARGUMENTS]
+                    feedback = format_output_feedback(ValueError(f"not valid JSON: {raw!r}"))
+                elif final is not None:
                     try:
                         response.parsed = validate_parsed(final.arguments, output_schema, step.id)
                     except ResponseSchemaConfigError as exc:
@@ -175,7 +180,7 @@ class LLMCallStep(BaseStep):
                         feedback = format_output_feedback(exc)
                     else:
                         # The reply's text is its JSON, for the conversation and the result.
-                        response.content = json.dumps(final.arguments)
+                        response.content = json.dumps(final.arguments, ensure_ascii=False)
                         return _with_totals(response)
             elif not response.tool_calls or not step.tools:
                 return _with_totals(response)
@@ -508,7 +513,7 @@ class LLMCallStep(BaseStep):
         # user turn already lives in the loaded messages. Free-form calls
         # still require it.
         if not step.prompt and not step.conversation:
-            raise StepError(step.id, "LLM call step requires a 'prompt' field")
+            raise StepError(step.id, "LLM call step requires a 'prompt' field", is_retryable=False)
 
         model = step.model or context.workflow_model
         state_snapshot = await context.state_manager.get_state_snapshot()

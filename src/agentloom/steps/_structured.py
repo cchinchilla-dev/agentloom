@@ -195,7 +195,22 @@ def translate_for_google(
 # Gemini's ``responseSchema`` parser 400s on these keys (Pydantic-emitted
 # noise plus ``additionalProperties``, which our strict normalizer adds for
 # OpenAI but Gemini's schema dialect doesn't understand).
-_GOOGLE_DROP_KEYS = frozenset({"title", "examples", "default", "additionalProperties"})
+_GOOGLE_DROP_KEYS = frozenset(
+    {
+        "title",
+        "examples",
+        "default",
+        "additionalProperties",
+        # Constraints Pydantic emits (``Literal``, ``gt=``, ``set``, ``tuple``) that Gemini 400s
+        # on: kept as close as its dialect allows (``_approximate_for_google``), and still
+        # enforced on the reply by local validation
+        "const",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "uniqueItems",
+        "prefixItems",
+    }
+)
 
 
 # Maps whose keys are names (a property called ``title``), not schema keywords.
@@ -203,6 +218,12 @@ _SCHEMA_NAME_MAPS = frozenset({"properties", "patternProperties"})
 
 
 _LOCAL_REF = re.compile(r"#/(\$defs|definitions)/([^/]+)")
+
+
+def _pointer_name(segment: str) -> str:
+    """A JSON Pointer segment as a name: ``~1`` is ``/`` and ``~0`` is ``~``, in that order."""
+    return segment.replace("~1", "/").replace("~0", "~")
+
 
 # Keywords that describe a schema without constraining it: the ones beside a ``$ref`` win.
 _ANNOTATIONS = frozenset({"description", "title", "default", "examples"})
@@ -245,8 +266,7 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
             return node
         ref = node.get("$ref")
         match = _LOCAL_REF.fullmatch(ref) if isinstance(ref, str) else None
-        # A JSON Pointer writes ``/`` and ``~`` in a name as ``~1`` and ``~0``
-        name = match.group(2).replace("~1", "/").replace("~0", "~") if match else None
+        name = _pointer_name(match.group(2)) if match else None
         if match and ref not in seen and name in groups[match.group(1)]:
             siblings = {k: v for k, v in node.items() if k != "$ref"}
             merged = _merge_beside_ref(groups[match.group(1)][name], siblings)
@@ -259,6 +279,18 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
     return inlined
 
 
+def _approximate_for_google(node: dict[str, Any]) -> None:
+    """In place: what Gemini's dialect can say of the constraints it lacks, before they go."""
+    if isinstance(node.get("const"), str) and "enum" not in node:
+        node["enum"] = [node["const"]]  # Gemini's enum takes strings only
+    for bound in ("minimum", "maximum"):
+        exclusive = node.get(f"exclusive{bound.title()}")
+        if isinstance(exclusive, int | float) and not isinstance(exclusive, bool):
+            node.setdefault(bound, exclusive)
+    if isinstance(node.get("prefixItems"), list) and "items" not in node:
+        node["items"] = {"anyOf": node["prefixItems"]}  # a tuple: any of its item schemas
+
+
 def _strip_unsupported_google_keys(schema: dict[str, Any]) -> dict[str, Any]:
     """Inline local references and remove the keys Gemini's schema dialect rejects."""
     schema = _inline_refs(schema)
@@ -266,6 +298,7 @@ def _strip_unsupported_google_keys(schema: dict[str, Any]) -> dict[str, Any]:
     def _walk(node: Any, names: bool = False) -> None:
         if isinstance(node, dict):
             if not names:
+                _approximate_for_google(node)
                 for k in list(node):
                     if k in _GOOGLE_DROP_KEYS:
                         node.pop(k)
@@ -388,11 +421,10 @@ def output_tool(response_schema: ResponseSchema, step_id: str) -> ToolDefinition
     Tool calling works on every provider, a schema enforced next to tools does not:
     the reply comes as the arguments of this tool, validated as a structured reply.
     """
-    parameters = schema_dict_for(response_schema, step_id) or {"type": "object"}
+    parameters = _resolve_root_ref(schema_dict_for(response_schema, step_id) or {"type": "object"})
     if parameters.get("type") != "object":
         raise ResponseSchemaConfigError(
-            f"Step {step_id!r}: a schema delivered through the {OUTPUT_TOOL!r} tool "
-            f"must describe an object."
+            f"a schema delivered through the {OUTPUT_TOOL!r} tool must describe an object."
         )
     return ToolDefinition(
         name=OUTPUT_TOOL,
@@ -402,6 +434,19 @@ def output_tool(response_schema: ResponseSchema, step_id: str) -> ToolDefinition
         ),
         parameters=parameters,
     )
+
+
+def _resolve_root_ref(schema: dict[str, Any]) -> dict[str, Any]:
+    """A schema whose root is a local ``$ref`` (Pydantic's, for a model that contains itself),
+    as its definition; ``$defs`` stay, for the references inside it."""
+    ref = schema.get("$ref")
+    match = _LOCAL_REF.fullmatch(ref) if isinstance(ref, str) else None
+    target = (
+        (schema.get(match.group(1)) or {}).get(_pointer_name(match.group(2))) if match else None
+    )
+    if not isinstance(target, dict):
+        return schema
+    return {**target, **{k: v for k, v in schema.items() if k != "$ref"}}
 
 
 def format_output_feedback(error: Exception) -> str:

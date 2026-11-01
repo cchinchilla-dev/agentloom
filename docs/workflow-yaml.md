@@ -314,7 +314,7 @@ The parsed value lands in `state[output]` directly — for `pydantic` mode it's 
 | Provider | Native API | Behavior |
 |----------|-----------|----------|
 | OpenAI | `response_format={"type": "json_schema", "json_schema": {...}}` (strict) or `{"type": "json_object"}` | Server-side schema enforcement; the model can't emit invalid JSON. Requires `gpt-4o-2024-08-06+` for strict mode. |
-| Google Gemini | `generationConfig.responseSchema` + `responseMimeType: "application/json"` | Server-side enforcement. The adapter strips Pydantic-emitted `title` / `examples` / `default` keys that Gemini's parser rejects, and inlines local `$ref`s, as Gemini has no `$defs`: a nested model works; a recursive one, or a `$ref` whose neighbouring keywords contradict its definition, does not. |
+| Google Gemini | `generationConfig.responseSchema` + `responseMimeType: "application/json"` | Server-side enforcement. The adapter strips Pydantic-emitted `title` / `examples` / `default` keys that Gemini's parser rejects, drops `additionalProperties`, keeps what its dialect can say of `const`, `exclusiveMinimum`, `exclusiveMaximum` and `prefixItems` (an `enum`, a `minimum`, a `maximum`, an `items`) and drops `uniqueItems`, the reply being validated against the full schema; and inlines local `$ref`s, as Gemini has no `$defs`: a nested model works; a recursive one, or a `$ref` whose neighbouring keywords contradict its definition, does not. A free-form object (a `json_object` reply, a `dict` field) comes back empty, as Gemini's dialect has no `additionalProperties`. |
 | Ollama | `format: "json"` (free-form) or `format: <schema>` (strict, Ollama 0.5+) | Model-side enforcement; quality varies by model. |
 | Anthropic | _No native API._ Prefill + system-prompt instructions + client-side validation. | Best-effort: the assistant turn is prefilled with `"{"` so the model continues from there. Validation failures trigger the same retry-with-feedback loop. |
 
@@ -568,7 +568,6 @@ Runs one turn of an agent: a system prompt, a set of tools, a memory policy, a b
 # examples/agents/support.yaml
 name: support_desk
 description: Answers billing questions for ACME customers.
-model: claude-haiku-4-5           # optional; the workflow's model otherwise
 system_prompt: |
   You answer billing questions for ACME customers. ...
 tools:
@@ -606,33 +605,39 @@ constraints:
 | `name` | `string` | — | The agent's name: the `speaker` of its turns and its `agent_id` in the [event log](testing-and-replay.md). |
 | `description` | `string` | `""` | What the agent does; the tool description when another agent calls it. |
 | `model`, `system_prompt`, `temperature`, `max_tokens` | | inherited | As on `llm_call`. |
-| `tools` | `list` | `[]` | Names from the workflow's tool registry, and `{name, agent, description}` entries that offer another agent as a tool. |
-| `memory` | `object` | `null` | `token_budget` and `trim_policy` (`drop_oldest`, `drop_pairs`, `summarize_oldest`) applied to the conversation on each of the agent's turns. The conversation keeps its own settings. |
-| `loop_policy.max_iterations` | `int` | `5` | Model calls per turn. The loop ends when the agent replies without calling a tool. |
-| `loop_policy.on_max_iterations` | `string` | `error` | Reaching the cap fails the step (`error`) or returns the last reply with a warning (`warn_and_return`). |
+| `tools` | `list` | `[]` | Names from the workflow's tool registry, and `{name, agent, description}` entries that offer another agent as a tool. Such a `name` is one every provider takes for a function: letters, digits, `_` and `-`, up to 64, not starting with a digit. |
+| `memory` | `object` | `null` | `token_budget` and `trim_policy` (`drop_oldest`, `drop_pairs`, `summarize_oldest`) applied to the conversation on each of the agent's turns. The conversation keeps its own settings; without a `token_budget`, its own applies. |
+| `loop_policy.max_iterations` | `int` | `5` | Model calls of the tool loop per turn. The loop ends when the agent replies without calling a tool. Without tools, a typed reply that fails validation is asked for again up to the step's `retry.max_retries` times. |
+| `loop_policy.on_max_iterations` | `string` | `error` | Reaching the cap fails the step (`error`) or returns the last reply with a warning (`warn_and_return`); a last reply with no text, only tool calls, fails the step under either. |
 | `output_schema` | `object` | `null` | As `response_schema` on `llm_call` (`pydantic`, `json_schema`, `json_object`). |
-| `constraints.max_cost_usd` | `float` | `null` | Checked after each model call, the calls of agents used as tools and summaries included; the turn stops once it is exceeded. |
+| `constraints.max_cost_usd` | `float` | `null` | Checked after each model call, the calls of agents used as tools and summaries included, and when the turn ends; the turn stops once it is exceeded. The step reports what its turn spent, failed or not. |
 | `constraints.max_latency_ms` | `int` | `null` | Bounds the turn as `timeout` does; the shorter of the two applies. |
-| `constraints.forbidden_patterns` | `list[str]` | `[]` | A reply that contains one (plain text, case-insensitive) fails the step. |
+| `constraints.forbidden_patterns` | `list[str]` | `[]` | A reply that contains one (plain text, case-insensitive) fails the step. A typed reply is read by its values, not its field names. |
 
 **Behaviour:**
 
 - The definition is loaded and checked when the workflow is parsed: unknown keys, duplicate tool names and cycles between agent files are errors. A path is relative to the working directory, as a subworkflow's `workflow_path`. An agent step cannot set the fields its agent defines (`model`, `system_prompt`, `tools`, `response_schema`, `speaker`, ...). The definition's `system_prompt` is a template, as on `llm_call`: a literal brace is written twice (`{{`, `}}`).
 - The turn sees only the agent's tools: a call to any other tool, even one the workflow registers, comes back to the model as unregistered. A tool the registry lacks fails the step before the first model call.
 - `speaker` is the agent's name, so several agents can share a [conversation](#multi-agent-conversations): each one's system prompt applies to its own turns only.
-- `output_schema` without tools uses the provider's structured output, as `response_schema` does. With tools, the reply comes through a `final_result` tool whose arguments follow the schema: the loop ends when the agent calls it with valid arguments, invalid ones go back to the model as the tool's error, and a reply in plain text is sent back asking for the tool. Reaching `max_iterations` without a valid reply fails the step under either `on_max_iterations`. `final_result` is a reserved tool name in an agent with an `output_schema`; the conversation keeps the reply as JSON.
-- A broken constraint, `on_max_iterations: error` and a missing `final_result` fail the step without a retry. `max_latency_ms` fails it as a transient failure, which the step's `retry` repeats, as for a step `timeout`. The conversation and `output` are written only when the step succeeds.
+- `output_schema` without tools uses the provider's structured output, as `response_schema` does. With tools, the reply comes through a `final_result` tool whose arguments follow the schema: the loop ends when the agent calls it with valid arguments, invalid ones, and arguments that are no JSON object (a reply cut short at its token limit), go back to the model as the tool's error, and a reply in plain text is sent back asking for the tool. Reaching `max_iterations` without a valid reply fails the step under either `on_max_iterations`. `final_result` is a reserved tool name in an agent with an `output_schema`; the conversation keeps the reply as JSON.
+- A broken constraint, the cap under `on_max_iterations: error` or with no reply to return, and a missing `final_result` fail the step without a retry. `max_latency_ms` fails it as a transient failure, which the step's `retry` repeats, as for a step `timeout`. The conversation and `output` are written only when the step succeeds.
 - An agent turn does not stream: with `stream: true`, its reply reaches the stream callback in one chunk once it has passed the checks.
 
-**Agents as tools.** A `{name, agent}` entry offers another agent as a tool with one `message` parameter. Each call runs a turn of that agent on a fresh conversation and returns its reply, as JSON when it has an `output_schema`. A turn that fails for good (a constraint, `on_max_iterations: error`, a missing tool) comes back to the caller as the tool's error; one that fails on a transient error (the provider's, or `max_latency_ms`) fails the calling step as transient, so the step's `retry` repeats the whole turn and a recording keeps only the attempt that finished. Its model calls are recorded under `<step_id>::<tool name>#<n>`, the n-th call of that tool in the turn, so they replay in order, in every `--tools` mode: the tool tape holds the calls of its own tools, under that key, not its reply. Its cost adds to the calling step's, and the inter-agent event log shows it as one tool call of the caller.
+**Agents as tools.** A `{name, agent}` entry offers another agent as a tool with one `message` parameter. Each call runs a turn of that agent on a fresh conversation, its prompts rendered against the calling workflow's state with the call's `message` on top, and returns its reply, as JSON when it has an `output_schema`. A turn that fails for good (a constraint, `on_max_iterations: error`, a missing tool) comes back to the caller as the tool's error; one that fails on a transient error (the provider's, under the calling step's `retryable_status_codes`, or `max_latency_ms`) fails the calling step as transient, so the step's `retry` repeats the whole turn and a recording keeps only the attempt that finished. Its model calls are recorded under `<step_id>::<tool name>#<n>`, the n-th call of that tool in the turn, so they replay in order, in every `--tools` mode: the tool tape holds the calls of its own tools, under that key, not its reply. Its cost and tokens add to the calling step's, so the metrics count them under that step's model, and the inter-agent event log shows it as one tool call of the caller.
 
 **From Python:**
 
 ```python
 from agentloom import Agent
 
-agent = Agent.from_yaml("examples/agents/support.yaml", gateway=gateway, tool_registry=registry)
+agent = Agent.from_yaml(
+    "examples/agents/support.yaml",
+    gateway=gateway,
+    tool_registry=registry,
+    model="claude-haiku-4-5",  # the file names no model
+)
 result = await agent.invoke("My bill seems wrong", conversation=previous)  # conversation optional
+# A turn that fails, or cannot start (a broken template, no prompt), raises AgentError
 result.reply         # SupportReply, typed per output_schema; str without one
 result.conversation  # Conversation, with the new turns
 result.cost_usd      # float

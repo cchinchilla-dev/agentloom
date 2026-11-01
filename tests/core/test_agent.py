@@ -158,6 +158,14 @@ class TestLoading:
         with pytest.raises(ValueError, match="cycle: agents/self.yaml -> agents/self.yaml"):
             load_agent("agents/self.yaml")
 
+    def test_a_cycle_through_an_inline_agent_is_a_cycle(self, agents: Path) -> None:
+        (agents / "loop.yaml").write_text(
+            "name: l\ntools:\n  - name: inner\n    agent:\n      name: i\n      tools:\n"
+            "        - {name: back, agent: agents/loop.yaml}\n"
+        )
+        with pytest.raises(ValueError, match="cycle: agents/loop.yaml -> agents/loop.yaml"):
+            load_agent("agents/loop.yaml")
+
     def test_the_same_agent_twice_is_not_a_cycle(self, agents: Path) -> None:
         (agents / "two.yaml").write_text(
             "name: two\ntools:\n"
@@ -185,6 +193,23 @@ class TestEncoding:
 
 
 class TestToolNames:
+    def test_an_agent_needs_a_name(self) -> None:
+        with pytest.raises(ValueError, match="at least 1 character"):
+            AgentDefinition(name="")
+
+    @pytest.mark.parametrize("name", ["ask refunds", "1st", "a" * 65, "ask.refunds"])
+    def test_an_agent_tool_is_named_as_every_provider_names_a_function(self, name: str) -> None:
+        with pytest.raises(ValueError, match="String should match pattern"):
+            AgentDefinition.model_validate(
+                {"name": "a", "tools": [{"name": name, "agent": {"name": "b"}}]}
+            )
+
+    def test_an_agent_tool_name_takes_underscores_dashes_and_digits(self) -> None:
+        tool = {"name": "_ask-refunds_2", "agent": {"name": "b"}}
+        assert AgentDefinition.model_validate({"name": "a", "tools": [tool]}).tool_names() == [
+            "_ask-refunds_2"
+        ]
+
     def test_duplicate_tool_names_rejected(self) -> None:
         with pytest.raises(ValueError, match=r"duplicate tool names \['ask'\]"):
             AgentDefinition(

@@ -60,6 +60,7 @@ async def _resume_async(
 ) -> None:
     from agentloom.checkpointing.file import FileCheckpointer
     from agentloom.cli.run import (
+        _import_from_cwd,
         _print_result,
         _setup_generic_openai,
         _setup_observer,
@@ -71,6 +72,7 @@ async def _resume_async(
     from agentloom.tools.registry import ToolRegistry
     from agentloom.tools.sandbox import ToolSandbox
 
+    _import_from_cwd()  # as ``run``: a response_schema model of the project must import
     checkpointer = FileCheckpointer(checkpoint_dir=checkpoint_dir)
     try:
         checkpoint_data = await checkpointer.load(run_id)

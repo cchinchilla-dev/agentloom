@@ -270,7 +270,8 @@ class AgentTool(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str
+    # A function name every provider accepts (OpenAI, Anthropic and Gemini's rules together).
+    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
     agent: AgentDefinition
     description: str | None = None
 
@@ -302,7 +303,7 @@ class AgentDefinition(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str
+    name: str = Field(min_length=1)
     description: str = ""
     model: str | None = None
     system_prompt: str | None = None

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from agentloom.core.models import AgentDefinition, Conversation
 from agentloom.core.results import StepStatus
-from agentloom.exceptions import AgentError
+from agentloom.exceptions import AgentError, StepError
 
 if TYPE_CHECKING:
     from agentloom.core.protocols import GatewayProtocol, ToolRegistryProtocol
@@ -71,15 +71,18 @@ class Agent:
         """
         from agentloom.steps.agent import run_turn
 
-        result, state, step = await run_turn(
-            self.definition,
-            prompt,
-            step_id=self.definition.name,
-            gateway=self._gateway,
-            tool_registry=self._tool_registry,
-            model=self._model,
-            conversation=conversation,
-        )
+        try:
+            result, state, step = await run_turn(
+                self.definition,
+                prompt,
+                step_id=self.definition.name,
+                gateway=self._gateway,
+                tool_registry=self._tool_registry,
+                model=self._model,
+                conversation=conversation,
+            )
+        except StepError as e:  # a turn that cannot start: a broken template, no prompt
+            raise AgentError(str(e)) from e
         if result.status != StepStatus.SUCCESS:
             raise AgentError(result.error or f"Agent {self.definition.name!r} failed")
         return AgentResult(
@@ -106,6 +109,17 @@ def resolve_agent(value: Any) -> Any:
     return load_agent(value) if isinstance(value, str | Path) else value
 
 
+def _load_nested(raw: dict[str, Any], chain: tuple[Path, ...]) -> None:
+    """Load the agent files *raw* uses as tools, inline agents' included, with the chain of
+    files that led to them, so a cycle stops."""
+    for tool in raw.get("tools") or []:
+        nested = tool.get("agent") if isinstance(tool, dict) else None
+        if isinstance(nested, str):
+            tool["agent"] = _load(Path(nested), chain)
+        elif isinstance(nested, dict):
+            _load_nested(nested, chain)
+
+
 def _load(path: Path, chain: tuple[Path, ...]) -> AgentDefinition:
     if not path.is_file():
         raise ValueError(f"agent file '{path}' not found")
@@ -119,10 +133,7 @@ def _load(path: Path, chain: tuple[Path, ...]) -> AgentDefinition:
         raise ValueError(f"agent file '{path}': invalid YAML: {e}") from e
     if not isinstance(raw, dict):
         raise ValueError(f"agent file '{path}' must hold a mapping")
-    # Nested agents load here, with the chain of files that led to them, so a cycle stops.
-    for tool in raw.get("tools") or []:
-        if isinstance(tool, dict) and isinstance(tool.get("agent"), str):
-            tool["agent"] = _load(Path(tool["agent"]), (*chain, key))
+    _load_nested(raw, (*chain, key))
     try:
         return AgentDefinition.model_validate(raw)
     except ValueError as e:

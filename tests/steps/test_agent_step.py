@@ -15,12 +15,20 @@ from agentloom.checkpointing.base import CheckpointData
 from agentloom.checkpointing.file import FileCheckpointer
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.inter_agent import EventLog, recording_events
-from agentloom.core.models import AgentDefinition, Conversation, Message, WorkflowDefinition
-from agentloom.core.results import StepStatus, WorkflowResult, WorkflowStatus
-from agentloom.exceptions import AgentError, ProviderError, RecordingMismatchError
+from agentloom.core.models import (
+    AgentDefinition,
+    Conversation,
+    Message,
+    StepDefinition,
+    WorkflowDefinition,
+)
+from agentloom.core.results import StepStatus, TokenUsage, WorkflowResult, WorkflowStatus
+from agentloom.core.state import StateManager
+from agentloom.exceptions import AgentError, ProviderError, RecordingMismatchError, StepError
 from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse, ToolCall
 from agentloom.providers.gateway import ProviderGateway
-from agentloom.steps.agent import _OwnTape
+from agentloom.steps.agent import AgentStep, _OwnTape
+from agentloom.steps.base import StepContext
 from agentloom.tools.base import BaseTool
 from agentloom.tools.registry import ToolRegistry
 
@@ -227,6 +235,12 @@ class TestAgentStep:
         assert ask.error_classification == "permanent"
         assert provider.calls == []
 
+    async def test_an_agent_step_needs_a_gateway(self) -> None:
+        step = StepDefinition.model_validate(_agent_step({"name": "a"}))
+        context = StepContext(step_definition=step, state_manager=StateManager())
+        with pytest.raises(StepError, match="No provider gateway configured"):
+            await AgentStep().execute(context)
+
     async def test_registry_tools_need_a_registry(self) -> None:
         result = await _run(_workflow(_agent_step(SUPPORT), state={"question": "q"}), _Scripted())
 
@@ -285,6 +299,28 @@ class TestAgentStep:
         assert (
             "Agent 'support' reached max_iterations (1); returning its last reply." in caplog.text
         )
+
+    async def test_warn_and_return_without_a_reply_fails(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A last call with only tool calls has no reply to return."""
+        policy = {"max_iterations": 1, "on_max_iterations": "warn_and_return"}
+        provider = _Scripted(_turn(" \n", _call("add", a=1, b=1)))
+        with caplog.at_level(logging.WARNING, logger="agentloom.steps"):
+            result = await _run(
+                _workflow(_agent_step({**SUPPORT, "loop_policy": policy}), state={"question": "q"}),
+                provider,
+                _registry(_Add()),
+            )
+
+        ask = result.step_results["ask"]
+        assert ask.status == StepStatus.FAILED
+        assert ask.error == (
+            "Step 'ask': Agent 'support' reached max_iterations (1) without a final reply"
+        )
+        assert ask.error_classification == "permanent"
+        assert "reply" not in result.final_state
+        assert "returning its last reply" not in caplog.text
 
     async def test_agent_output_schema_validates_reply(self) -> None:
         schema = {"type": "pydantic", "model": f"{__name__}.Ticket"}
@@ -361,6 +397,47 @@ class TestAgentStep:
         assert len(provider.calls) == 1
         assert "reply" not in result.final_state and "chat" not in result.final_state
 
+    @pytest.mark.parametrize(
+        ("pattern", "fails"), [("désolé", True), ('say "no"', True), ("ticket", False)]
+    )
+    async def test_a_typed_reply_is_checked_on_its_values(self, pattern: str, fails: bool) -> None:
+        """Not on its JSON, whose escapes hid non-ASCII text and quotes, nor its field names."""
+        agent = {
+            **SUPPORT,
+            "output_schema": {"type": "pydantic", "model": f"{__name__}.Ticket"},
+            "constraints": {"forbidden_patterns": [pattern]},
+        }
+        provider = _Scripted(_turn("", _call("final_result", ticket='Désolé, I say "no"')))
+        result = await _run(
+            _workflow(_agent_step(agent), state={"question": "q"}), provider, _registry(_Add())
+        )
+
+        assert (result.step_results["ask"].status == StepStatus.FAILED) is fails
+
+    async def test_a_typed_reply_is_checked_at_any_depth(self) -> None:
+        agent = {
+            **SUPPORT,
+            "output_schema": {"type": "json_object"},
+            "constraints": {"forbidden_patterns": ["désolé"]},
+        }
+        provider = _Scripted(_turn("", _call("final_result", notes=["fine", {"text": "Désolé"}])))
+        result = await _run(
+            _workflow(_agent_step(agent), state={"question": "q"}), provider, _registry(_Add())
+        )
+
+        assert result.step_results["ask"].status == StepStatus.FAILED
+
+    async def test_a_native_typed_reply_is_checked_on_its_values_too(self) -> None:
+        agent = {
+            "name": "plain",
+            "output_schema": {"type": "pydantic", "model": f"{__name__}.Ticket"},
+            "constraints": {"forbidden_patterns": ["ticket"]},
+        }
+        provider = _Scripted(_turn('{"ticket": "T-1"}'))
+        result = await _run(_workflow(_agent_step(agent), state={"question": "q"}), provider)
+
+        assert result.final_state["reply"] == Ticket(ticket="T-1")
+
     async def test_max_latency_fails_the_turn_like_a_timeout(self) -> None:
         agent = {"name": "slow", "constraints": {"max_latency_ms": 20}}
         provider = _Scripted(_turn("late"), _turn("late again"), delay=5)
@@ -394,6 +471,25 @@ class TestAgentStep:
         assert [m["content"] for m in provider.calls[0]["messages"]] == ["q"]
         stored = Conversation.model_validate(result.final_state["chat"])
         assert (stored.token_budget, stored.trim_policy) == (5000, "drop_oldest")
+
+    async def test_memory_without_a_budget_keeps_the_conversations(self) -> None:
+        chat = {
+            "messages": [
+                {"role": "user", "content": "old question " * 40},
+                {"role": "assistant", "content": "old answer " * 40},
+            ],
+            "token_budget": 20,
+        }
+        agent = {"name": "brief", "memory": {"trim_policy": "drop_pairs"}}
+        provider = _Scripted(_turn("ok"))
+        await _run(
+            _workflow(
+                _agent_step(agent, conversation="chat"), state={"question": "q", "chat": chat}
+            ),
+            provider,
+        )
+
+        assert [m["content"] for m in provider.calls[0]["messages"]] == ["q"]
 
     async def test_two_agents_share_a_conversation(self) -> None:
         alice = {"name": "alice", "system_prompt": "You are Alice."}
@@ -561,6 +657,21 @@ class TestNestedAgents:
         (sent,) = _tool_results(last)
         assert sent["content"] == "Roaming fees."
 
+    async def test_a_nested_agents_prompts_render_against_the_callers_state(self) -> None:
+        """As the caller's do, with the tool call's message over the workflow's own."""
+        nested = {"system_prompt": "You serve {state.customer}."}
+        provider = _Scripted(
+            _turn("", _call("escalate", message="Why?")), _turn("Roaming."), _turn("Done.")
+        )
+        state = {"question": "q", "customer": "ACME", "message": "the workflow's"}
+        result = await _run(_workflow(_agent_step(self._support(**nested)), state=state), provider)
+
+        assert provider.calls[1]["messages"] == [
+            {"role": "system", "content": "You serve ACME."},
+            {"role": "user", "content": "Why?", "name": "specialist"},
+        ]
+        assert result.final_state["message"] == "the workflow's"
+
     async def test_each_call_of_a_nested_agent_has_its_own_recording_key(self) -> None:
         provider = _Scripted(
             _turn("", _call("escalate", 1, message="one")),
@@ -710,6 +821,64 @@ class TestNestedAgents:
         )
         assert len(provider.calls) == 2
 
+    async def test_a_cap_a_nested_agent_broke_in_the_last_call_fails_the_turn(self) -> None:
+        """Under warn_and_return too: the nested turn's error went back to the model."""
+        support = {
+            **self._support(),
+            "loop_policy": {"max_iterations": 1, "on_max_iterations": "warn_and_return"},
+            "constraints": {"max_cost_usd": 0.5},
+        }
+        provider = _Scripted(
+            _turn("checking", _call("escalate", message="?"), cost=0.1),
+            _turn("pricey", cost=0.6),
+        )
+        result = await _run(_workflow(_agent_step(support), state={"question": "q"}), provider)
+
+        ask = result.step_results["ask"]
+        assert ask.status == StepStatus.FAILED
+        assert ask.error == (
+            "Step 'ask': Agent 'support' spent $0.7000, over its max_cost_usd of $0.5"
+        )
+        assert ask.cost_usd == pytest.approx(0.7)  # what the provider charged, failed or not
+        assert "reply" not in result.final_state
+
+    async def test_the_turn_reports_the_tokens_of_every_call(self) -> None:
+        def used(content: str, *calls: ToolCall, tokens: int) -> ProviderResponse:
+            turn = _turn(content, *calls)
+            turn.usage = TokenUsage(
+                prompt_tokens=tokens, completion_tokens=1, total_tokens=tokens + 1
+            )
+            return turn
+
+        provider = _Scripted(
+            used("", _call("escalate", message="?"), tokens=100),
+            used("Roaming.", tokens=1000),
+            used("done", tokens=200),
+        )
+        result = await _run(
+            _workflow(_agent_step(self._support()), state={"question": "q"}), provider
+        )
+
+        usage = result.step_results["ask"].token_usage
+        assert (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens) == (1300, 3, 1303)
+
+    async def test_a_nested_error_the_step_would_not_retry_goes_back_to_the_model(self) -> None:
+        retry = {"max_retries": 2, "backoff_base": 0, "retryable_status_codes": [429]}
+        provider = _Scripted(
+            _turn("", _call("escalate", message="?")),
+            ProviderError("openai", "unavailable", status_code=503),
+            _turn("The specialist is unavailable."),
+        )
+        result = await _run(
+            _workflow(_agent_step(self._support(), retry=retry), state={"question": "q"}),
+            provider,
+        )
+
+        assert result.final_state["reply"] == "The specialist is unavailable."
+        (sent,) = _tool_results(provider.calls[2])
+        assert "unavailable" in sent["content"]
+        assert len(provider.calls) == 3
+
     async def test_a_nested_agent_uses_the_workflow_registry_for_its_own_tools(self) -> None:
         support = self._support(tools=["add"])
         provider = _Scripted(
@@ -762,6 +931,24 @@ class TestAgentApi:
 
         with pytest.raises(AgentError, match="forbidden pattern 'language model'"):
             await Agent(definition, gateway=gateway).invoke("hi")
+
+    @pytest.mark.parametrize(
+        ("fields", "prompt", "message"),
+        [
+            ({"system_prompt": 'Reply {"ok": true}.'}, "hi", "Prompt template error"),
+            ({}, "", "has no 'prompt'"),
+        ],
+        ids=["a broken template", "no prompt"],
+    )
+    async def test_a_turn_that_cannot_start_raises_agent_error(
+        self, fields: dict[str, Any], prompt: str, message: str
+    ) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted())
+        definition = AgentDefinition.model_validate({"name": "a", "model": "m", **fields})
+
+        with pytest.raises(AgentError, match=message):
+            await Agent(definition, gateway=gateway).invoke(prompt)
 
     async def test_a_message_with_braces_reaches_the_model_as_written(self) -> None:
         provider = _Scripted(_turn("ok"))

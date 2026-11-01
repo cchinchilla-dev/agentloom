@@ -15,6 +15,9 @@ from agentloom.core.inter_agent import log_tools
 from agentloom.core.models import ToolDefinition
 from agentloom.providers.base import ToolCall
 
+# The key a call's arguments hold their raw text under when it is not a JSON object.
+INVALID_ARGUMENTS = "__agentloom_invalid_arguments__"
+
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
@@ -150,9 +153,12 @@ def parse_tool_calls_from_openai(message: dict[str, Any]) -> list[ToolCall]:
             args: dict[str, Any] = raw_args
         elif isinstance(raw_args, str):
             try:
-                args = json.loads(raw_args or "{}")
+                decoded = json.loads(raw_args or "{}")
             except json.JSONDecodeError:
-                args = {}
+                decoded = None
+            # Cut short (a reply at its token limit) or not an object: the call gets an error,
+            # not ``{}``; kept in the arguments, a recording replays it the same way
+            args = decoded if isinstance(decoded, dict) else {INVALID_ARGUMENTS: raw_args}
         else:
             args = {}
         calls.append(ToolCall(id=call_id, name=call_name, arguments=args))
@@ -263,6 +269,8 @@ async def _execute(call: ToolCall, tool_registry: Any) -> tuple[str, bool]:
     except KeyError as e:
         # Its message, without the quotes ``KeyError.__str__`` adds.
         return f"tool '{call.name}' not registered: {e.args[0] if e.args else e}", False
+    if INVALID_ARGUMENTS in call.arguments:
+        return f"tool arguments are not valid JSON: {call.arguments[INVALID_ARGUMENTS]!r}", False
     try:
         outcome = await tool.execute(**call.arguments)
     except FailsStep:

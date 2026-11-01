@@ -21,6 +21,7 @@ from agentloom.core.state import StateManager
 from agentloom.exceptions import StepError
 from agentloom.providers.base import ProviderResponse, ToolCall
 from agentloom.steps._structured import OUTPUT_TOOL_REMINDER
+from agentloom.steps._tools import INVALID_ARGUMENTS
 from agentloom.steps.base import StepContext
 from agentloom.steps.llm_call import LLMCallStep
 from agentloom.tools.base import BaseTool
@@ -251,6 +252,58 @@ class TestOutputTool:
         assert await state.get("reply") == {"anything": [1, 2]}
         assert gateway.calls[0]["agentloom_tools"][1].parameters == {"type": "object"}
 
+    async def test_arguments_that_are_no_json_go_back_instead_of_an_empty_reply(self) -> None:
+        """A reply cut short at the token limit is not ``{}``, which json_object takes (#120)."""
+        gateway = _Gateway(
+            _turn("", _final(1, **{INVALID_ARGUMENTS: '{"anything": [1,'})),
+            _turn("", _final(2, anything=[1, 2])),
+        )
+        result, state, _ = await _run(
+            _step(), gateway, executor=_Typed(ResponseSchema(type="json_object"))
+        )
+
+        assert await state.get("reply") == {"anything": [1, 2]}
+        (sent,) = _tool_results(gateway.calls[1])
+        assert sent["content"].startswith(
+            "The arguments of final_result failed validation. Errors:\n"
+            """not valid JSON: '{"anything": [1,'"""
+        )
+
+    @pytest.mark.parametrize(("name", "pointer"), [("Node", "Node"), ("A/B", "A~1B")])
+    async def test_a_schema_whose_root_is_a_ref_is_its_definition(
+        self, name: str, pointer: str
+    ) -> None:
+        """Pydantic's schema of a model that contains itself: its ``$defs`` stay (#120)."""
+        ref = f"#/$defs/{pointer}"
+        node = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "children": {"type": "array", "items": {"$ref": ref}},
+            },
+            "required": ["name", "children"],
+        }
+        schema = ResponseSchema(type="json_schema", schema={"$defs": {name: node}, "$ref": ref})
+        gateway = _Gateway(
+            _turn("", _final(1, name="root", children=[{"name": "leaf", "children": []}]))
+        )
+        result, state, _ = await _run(_step(), gateway, executor=_Typed(schema))
+
+        assert result.status == StepStatus.SUCCESS
+        assert (await state.get("reply"))["children"][0]["name"] == "leaf"
+        parameters = gateway.calls[0]["agentloom_tools"][1].parameters
+        assert parameters["type"] == "object" and "$ref" not in parameters
+        assert parameters["properties"]["children"]["items"] == {"$ref": ref}
+        assert name in parameters["$defs"]
+
+    async def test_a_schema_that_is_no_object_names_the_step_once(self) -> None:
+        schema = ResponseSchema(type="json_schema", schema={"type": "array"})
+        result, _, _ = await _run(_step(), _Gateway(), executor=_Typed(schema))
+
+        assert result.error == (
+            "Step 's': a schema delivered through the 'final_result' tool must describe an object."
+        )
+
     @pytest.mark.parametrize(
         "schema",
         [
@@ -297,6 +350,15 @@ class TestOutputTool:
         assert result.status == StepStatus.SUCCESS
         chat = Conversation.model_validate(await state.get("chat"))
         assert chat.messages[-1] == Message(role="assistant", content='{"total": 5}', name="calc")
+
+    async def test_the_reply_json_keeps_its_text_as_written(self) -> None:
+        gateway = _Gateway(_turn("", _final(1, answer='Désolé, "non"')))
+        _, state, _ = await _run(
+            _step(conversation="chat"), gateway, executor=_Typed(ResponseSchema(type="json_object"))
+        )
+
+        chat = Conversation.model_validate(await state.get("chat"))
+        assert chat.messages[-1].content == '{"answer": "Désolé, \\"non\\""}'
 
     async def test_a_registry_is_needed_only_for_calls_it_runs(self) -> None:
         gateway = _Gateway(_turn("", _final(1)), _turn("", _final(2, total=5)))

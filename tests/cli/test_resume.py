@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -16,6 +18,9 @@ from agentloom.core.models import (
     WorkflowConfig,
     WorkflowDefinition,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 runner = CliRunner()
 
@@ -66,6 +71,15 @@ def _write_checkpoint(
 
 
 class TestResumeCommand:
+    def test_resume_imports_the_projects_schemas(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """As ``run``: a response_schema model of the working directory imports (#120)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "path", [p for p in sys.path if p not in ("", str(Path.cwd()))])
+        runner.invoke(app, ["resume", "nonexistent", "--checkpoint-dir", str(tmp_path)])
+        assert sys.path[0] == str(Path.cwd())
+
     def test_missing_run_id(self, tmp_path: Path) -> None:
         result = runner.invoke(app, ["resume", "nonexistent", "--checkpoint-dir", str(tmp_path)])
         assert result.exit_code != 0

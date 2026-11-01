@@ -986,6 +986,40 @@ class TestStructuredHelperEdgeCases:
         assert schema["properties"]["root"]["properties"]["child"] == {"$ref": "#/$defs/Node"}
         assert "$defs" not in schema
 
+    def test_translate_for_google_approximates_the_constraints_gemini_lacks(self) -> None:
+        """Gemini 400s on these: what its dialect can say stays, local validation does the rest."""
+        pair = [{"type": "string"}, {"type": "integer"}]
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "const": "a"},
+                    "one": {"type": "integer", "const": 1},
+                    "n": {"type": "integer", "exclusiveMinimum": 0},
+                    "m": {"type": "number", "exclusiveMaximum": 5, "maximum": 4},
+                    "flag": {"type": "integer", "exclusiveMinimum": True},
+                    "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": True},
+                    "pair": {"type": "array", "prefixItems": pair, "minItems": 2, "maxItems": 2},
+                    "const": {"type": "string"},
+                },
+            },
+        )
+        _, schema = translate_for_google(rs, "step")
+        assert schema == {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["a"]},
+                "one": {"type": "integer"},
+                "n": {"type": "integer", "minimum": 0},
+                "m": {"type": "number", "maximum": 4},
+                "flag": {"type": "integer"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "pair": {"type": "array", "items": {"anyOf": pair}, "minItems": 2, "maxItems": 2},
+                "const": {"type": "string"},
+            },
+        }
+
     def test_translate_for_google_json_object_returns_no_schema(self) -> None:
         # ``json_object`` mode → just the mime type, no ``responseSchema``.
         rs = ResponseSchema(type="json_object")

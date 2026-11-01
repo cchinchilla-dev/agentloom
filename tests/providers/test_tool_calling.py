@@ -25,6 +25,7 @@ from agentloom.providers.base import ToolCall
 from agentloom.providers.gateway import ProviderGateway
 from agentloom.providers.openai import OpenAIProvider
 from agentloom.steps._tools import (
+    INVALID_ARGUMENTS,
     FailsStep,
     build_assistant_message_with_tool_calls,
     build_tool_result_messages,
@@ -289,6 +290,11 @@ class TestDispatchToolCalls:
         calls = [ToolCall(id="c1", name="strict", arguments={})]
         ((_, text, ok),) = await dispatch_tool_calls(calls, _registry_with(_Strict()))
         assert (text, ok) == ("tool execution failed: Step 'custom': bad input, try again", False)
+
+    async def test_a_call_whose_arguments_are_no_json_object_gets_an_error(self) -> None:
+        calls = [ToolCall(id="c1", name="add", arguments={INVALID_ARGUMENTS: '{"a": 2, "b'})]
+        ((_, text, ok),) = await dispatch_tool_calls(calls, _registry_with(_AddTool()))
+        assert (text, ok) == ("""tool arguments are not valid JSON: '{"a": 2, "b'""", False)
 
     async def test_a_stale_replay_wins_over_a_transient_failure_next_to_it(self) -> None:
         """Two agents as tools failing together: the step fails at once, not retried (#120)."""
@@ -1223,21 +1229,16 @@ class TestToolChoiceTranslators:
 
 
 class TestParseToolCallsEdgeCases:
-    def test_invalid_json_arguments_yield_empty_args(self) -> None:
-        # A model that emits malformed JSON for ``arguments`` must not
-        # crash the parser — fall back to ``{}`` and let dispatch
-        # surface the missing-arg error to the model on the next turn.
+    @pytest.mark.parametrize("raw", ['{"a": 2, "b', "[1, 2]"], ids=["cut short", "an array"])
+    def test_arguments_that_are_no_json_object_keep_their_text(self, raw: str) -> None:
+        """Not ``{}``, which a schema of defaults would take as a reply (#120)."""
         message = {
             "tool_calls": [
-                {
-                    "id": "c1",
-                    "type": "function",
-                    "function": {"name": "add", "arguments": "{not json"},
-                }
+                {"id": "c1", "type": "function", "function": {"name": "add", "arguments": raw}}
             ]
         }
         calls = parse_tool_calls_from_openai(message)
-        assert calls == [ToolCall(id="c1", name="add", arguments={})]
+        assert calls == [ToolCall(id="c1", name="add", arguments={INVALID_ARGUMENTS: raw})]
 
 
 class TestAssistantAndResultBuildersOllamaGoogle:

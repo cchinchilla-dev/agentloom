@@ -154,13 +154,16 @@ class TestLLMCallStep:
             await step.execute(ctx)
 
     async def test_no_prompt_raises(self, step: LLMCallStep) -> None:
+        from agentloom.exceptions import StepError
+
         gw = ProviderGateway()
         ctx = self._make_context(
             StepDefinition(id="s", type=StepType.LLM_CALL),
             gateway=gw,
         )
-        with pytest.raises(Exception, match="requires a 'prompt'"):
+        with pytest.raises(StepError, match="requires a 'prompt'") as raised:
             await step.execute(ctx)
+        assert raised.value.is_retryable is False  # the same step lacks it on every attempt
 
     async def test_template_rendering(self, step: LLMCallStep) -> None:
         vars_ = step._build_template_vars({"question": "What?"})

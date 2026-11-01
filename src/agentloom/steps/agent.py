@@ -20,7 +20,7 @@ from agentloom.core.models import (
     StepType,
     ToolDefinition,
 )
-from agentloom.core.results import StepResult, StepStatus
+from agentloom.core.results import StepResult, StepStatus, TokenUsage
 from agentloom.core.state import StateManager
 from agentloom.exceptions import RecordingMismatchError, StepError, ToolNotFoundError
 from agentloom.providers.base import ProviderResponse, ToolCall
@@ -32,6 +32,7 @@ from agentloom.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from agentloom.core.attempts import Attempt
+    from agentloom.core.protocols import GatewayProtocol, ToolRegistryProtocol
     from agentloom.providers.tool_tape import ToolTape
 
 logger = logging.getLogger("agentloom.steps")
@@ -50,7 +51,8 @@ class AgentStep(LLMCallStep):
     """
 
     def __init__(self) -> None:
-        self._agent = AgentDefinition(name="")
+        self._agent = AgentDefinition(name="agent")  # the step's, once it runs
+        self._gateway: _MeteredGateway | None = None
         # Model calls of the last turn, the agent's own (not those of agents it called).
         self.iterations = 0
 
@@ -62,9 +64,10 @@ class AgentStep(LLMCallStep):
         self.iterations = 0
         start = time.monotonic()
 
-        gateway = None
-        if context.provider_gateway is not None:
-            gateway = _MeteredGateway(context.provider_gateway, step.id, agent)
+        if context.provider_gateway is None:
+            raise StepError(step.id, "No provider gateway configured")
+        gateway = _MeteredGateway(context.provider_gateway, step.id, agent)
+        self._gateway = gateway
         try:
             registry = _scoped_registry(agent, context, gateway)
         except LookupError as e:
@@ -112,7 +115,7 @@ class AgentStep(LLMCallStep):
                 result = await super().execute(inner)
         except TimeoutError:
             # A failure the step's retry repeats, as a step timeout: a slow provider is transient.
-            return StepResult(
+            result = StepResult(
                 step_id=step.id,
                 status=StepStatus.FAILED,
                 error=f"Agent {agent.name!r} exceeded max_latency_ms ({latency})",
@@ -120,17 +123,18 @@ class AgentStep(LLMCallStep):
                 error_classification="transient",
             )
         finally:
-            self.iterations = gateway.calls if gateway is not None else 0
+            self.iterations = gateway.calls
 
-        if result.status == StepStatus.SUCCESS:
-            if gateway is not None:
-                # What the turn cost, the agents it called as tools and its summaries included.
-                result.cost_usd = gateway.spent
-            if context.stream and context.on_stream_chunk and result.output:
-                try:
-                    context.on_stream_chunk(step.id, result.output)
-                except Exception:
-                    logger.warning("Stream chunk callback failed")
+        # What the turn cost, failed or not: the agents it called as tools and its summaries
+        # included, as the provider charged them.
+        result.cost_usd = gateway.spent
+        result.token_usage = gateway.usage
+        succeeded = result.status == StepStatus.SUCCESS
+        if succeeded and context.stream and context.on_stream_chunk and result.output:
+            try:
+                context.on_stream_chunk(step.id, result.output)
+            except Exception:
+                logger.warning("Stream chunk callback failed")
         return result
 
     def _output_schema(self, step: StepDefinition) -> ResponseSchema | None:
@@ -138,14 +142,21 @@ class AgentStep(LLMCallStep):
 
     def _apply_memory(self, conversation: Conversation) -> None:
         if (memory := self._agent.memory) is not None:
-            conversation.token_budget = memory.token_budget
+            if memory.token_budget is not None:  # without one, the conversation's own applies
+                conversation.token_budget = memory.token_budget
             conversation.trim_policy = memory.trim_policy
 
     def _accept(self, step: StepDefinition, response: ProviderResponse) -> None:
         agent = self._agent
+        assert self._gateway is not None  # set by execute, which calls this
+        # An agent called as a tool in the last call may have broken the cap, its error going
+        # back to the model as the tool's
+        self._gateway.check_spend()
         if response.finish_reason in _CAP_REASONS:
             cap = agent.loop_policy.max_iterations
-            if agent.loop_policy.on_max_iterations == "error":
+            # A last call with only tool calls leaves no reply for warn_and_return to return
+            replied = bool((response.content or "").strip())
+            if agent.loop_policy.on_max_iterations == "error" or not replied:
                 raise StepError(
                     step.id,
                     f"Agent {agent.name!r} reached max_iterations ({cap}) without a final reply",
@@ -154,9 +165,11 @@ class AgentStep(LLMCallStep):
             logger.warning(
                 "Agent %r reached max_iterations (%d); returning its last reply.", agent.name, cap
             )
-        reply = (response.content or "").casefold()
+        # A typed reply is read by its values, not its field names nor its JSON escapes.
+        texts = _texts(response.parsed) if response.parsed is not None else [response.content]
+        replies = [(text or "").casefold() for text in texts]
         for pattern in agent.constraints.forbidden_patterns:
-            if pattern.casefold() in reply:
+            if any(pattern.casefold() in reply for reply in replies):
                 raise StepError(
                     step.id,
                     f"Agent {agent.name!r} replied with the forbidden pattern {pattern!r}",
@@ -164,11 +177,22 @@ class AgentStep(LLMCallStep):
                 )
 
 
+def _texts(value: Any) -> list[str | None]:
+    """The strings of a typed reply: its values, at any depth."""
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _texts(item)]
+    if isinstance(value, list):
+        return [text for item in value for text in _texts(item)]
+    return [value] if isinstance(value, str) else []
+
+
 class _MeteredGateway:
     """The gateway of an agent's turn: counts its model calls and enforces ``max_cost_usd``.
 
     The agents it calls as tools use it too, so what they spend counts toward the cap,
-    checked after each call and before the next one.
+    checked after each call and before the next one, and so do their tokens.
     """
 
     def __init__(self, inner: Any, step_id: str, agent: AgentDefinition) -> None:
@@ -176,18 +200,26 @@ class _MeteredGateway:
         self._step_id = step_id
         self._agent = agent
         self.spent = 0.0
+        self.usage = TokenUsage()
         self.calls = 0
 
     async def complete(self, **kwargs: Any) -> ProviderResponse:
-        self._check_spend()
+        self.check_spend()
         response: ProviderResponse = await self._inner.complete(**kwargs)
         self.spent += response.cost_usd
+        used = response.usage
+        self.usage = TokenUsage(
+            prompt_tokens=self.usage.prompt_tokens + used.prompt_tokens,
+            completion_tokens=self.usage.completion_tokens + used.completion_tokens,
+            total_tokens=self.usage.total_tokens + used.total_tokens,
+            reasoning_tokens=self.usage.reasoning_tokens + used.reasoning_tokens,
+        )
         if kwargs.get("step_id") == self._step_id:
             self.calls += 1
-        self._check_spend()
+        self.check_spend()
         return response
 
-    def _check_spend(self) -> None:
+    def check_spend(self) -> None:
         cap = self._agent.constraints.max_cost_usd
         if cap is not None and self.spent > cap:
             raise StepError(
@@ -199,7 +231,7 @@ class _MeteredGateway:
 
 
 def _scoped_registry(
-    agent: AgentDefinition, context: StepContext, gateway: _MeteredGateway | None
+    agent: AgentDefinition, context: StepContext, gateway: _MeteredGateway
 ) -> ToolRegistry:
     """A registry with only the agent's tools, in its order, on the workflow's tape.
 
@@ -284,6 +316,9 @@ class _AgentAsTool(BaseTool):
                 gateway=self._gateway,
                 tool_registry=self._context.tool_registry,
                 model=self._context.workflow_model,
+                state=await self._context.state_manager.get_state_snapshot(),
+                # A provider error the calling step would not retry is no transient failure
+                retryable_status_codes=self._context.step_definition.retry.retryable_status_codes,
             )
         except RecordingMismatchError as e:
             raise FailsStep(e) from e  # a stale replay fails at once, as anywhere else
@@ -307,19 +342,31 @@ async def run_turn(
     message: str,
     *,
     step_id: str,
-    gateway: Any,
-    tool_registry: Any = None,
+    gateway: GatewayProtocol,
+    tool_registry: ToolRegistryProtocol | None = None,
     model: str = "gpt-4o-mini",
     conversation: Conversation | None = None,
+    retryable_status_codes: list[int] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> tuple[StepResult, StateManager, AgentStep]:
     """Run a turn of *agent* on its own state: for ``Agent.invoke`` and agents as tools.
 
     The state holds the message, the conversation (``conversation``) and the reply
-    (``reply``); the turn logs no inter-agent events, as it is not a step of a workflow.
-    ``model`` applies when the agent names none.
+    (``reply``), over *state* when given (the calling workflow's, for an agent used as a
+    tool, so its prompts render as the caller's do); the turn logs no inter-agent events,
+    as it is not a step of a workflow. ``model`` applies when the agent names none;
+    ``retryable_status_codes`` classify a provider error of the turn as transient (the
+    defaults of a step otherwise).
     """
-    state = StateManager(
-        {"message": message, "conversation": (conversation or Conversation()).model_dump()}
+    retry = RetryConfig(max_retries=0)
+    if retryable_status_codes is not None:
+        retry = RetryConfig(max_retries=0, retryable_status_codes=retryable_status_codes)
+    turn_state = StateManager(
+        {
+            **(state or {}),
+            "message": message,
+            "conversation": (conversation or Conversation()).model_dump(),
+        }
     )
     step = StepDefinition(
         id=step_id,
@@ -329,11 +376,11 @@ async def run_turn(
         prompt="{state.message}",
         conversation="conversation",
         output="reply",
-        retry=RetryConfig(max_retries=0),
+        retry=retry,
     )
     context = StepContext(
         step_definition=step,
-        state_manager=state,
+        state_manager=turn_state,
         provider_gateway=gateway,
         tool_registry=tool_registry,
         workflow_model=model,
@@ -341,4 +388,4 @@ async def run_turn(
     executor = AgentStep()
     with paused_events():
         result = await executor.execute(context)
-    return result, state, executor
+    return result, turn_state, executor
