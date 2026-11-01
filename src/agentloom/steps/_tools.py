@@ -245,8 +245,10 @@ async def dispatch_tool_calls(
             for idx, call in enumerate(calls):
                 tg.start_soon(_run, idx, call)
     except ExceptionGroup as group:
-        # The call that fails the step, as it was raised, not anyio's wrapper
-        raise getattr(group.exceptions[0], "error", group.exceptions[0]) from None
+        # The call that fails the step, as it was raised, not anyio's wrapper; one a retry would
+        # not fix (a stale replay) first, or a transient failure next to it would retry the step
+        errors = [getattr(e, "error", e) for e in group.exceptions]
+        raise next((e for e in errors if not getattr(e, "is_retryable", True)), errors[0]) from None
 
     log_tools([(c.name, c.arguments) for c, _, _ in results], [(r, ok) for _, r, ok in results])
     if tape is not None:

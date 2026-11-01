@@ -869,6 +869,55 @@ class TestStructuredHelperEdgeCases:
         assert schema is not None
         assert schema["type"] == "object"
 
+    def test_translate_for_google_inlines_local_refs(self) -> None:
+        """Gemini's dialect has no ``$defs`` or ``$ref``: a nested model is inlined (#120)."""
+        item = {
+            "type": "object",
+            "description": "An item.",
+            "properties": {"tag": {"$ref": "#/definitions/Tag"}},
+        }
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {
+                    "items": {"type": "array", "items": {"$ref": "#/$defs/Item"}},
+                    "main": {"$ref": "#/$defs/Item", "description": "The first one."},
+                },
+                "$defs": {"Item": item},
+                "definitions": {"Tag": {"type": "string", "title": "Tag"}},
+            },
+        )
+        _, schema = translate_for_google(rs, "step")
+        inlined = {
+            "type": "object",
+            "description": "An item.",
+            "properties": {"tag": {"type": "string"}},
+        }
+        assert schema == {
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": inlined},
+                "main": {**inlined, "description": "The first one."},
+            },
+        }
+
+    def test_translate_for_google_leaves_a_recursive_ref(self) -> None:
+        """A model that contains itself cannot be inlined: Gemini refuses it with a 400."""
+        node = {"type": "object", "properties": {"child": {"$ref": "#/$defs/Node"}}}
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {"root": {"$ref": "#/$defs/Node"}},
+                "$defs": {"Node": node},
+            },
+        )
+        _, schema = translate_for_google(rs, "step")
+        assert schema is not None
+        assert schema["properties"]["root"]["properties"]["child"] == {"$ref": "#/$defs/Node"}
+        assert "$defs" not in schema
+
     def test_translate_for_google_json_object_returns_no_schema(self) -> None:
         # ``json_object`` mode → just the mime type, no ``responseSchema``.
         rs = ResponseSchema(type="json_object")

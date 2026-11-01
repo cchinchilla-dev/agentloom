@@ -199,11 +199,41 @@ _GOOGLE_DROP_KEYS = frozenset({"title", "examples", "default", "additionalProper
 
 
 # Maps whose keys are names (a property called ``title``), not schema keywords.
-_SCHEMA_NAME_MAPS = frozenset({"properties", "patternProperties", "$defs", "definitions"})
+_SCHEMA_NAME_MAPS = frozenset({"properties", "patternProperties"})
+
+
+_LOCAL_REF = re.compile(r"#/(\$defs|definitions)/([^/]+)")
+
+
+def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Replace each local ``$ref`` by a copy of its definition: Gemini's dialect has neither.
+
+    The keys next to a ``$ref`` (a ``description``) apply on top. A recursive reference
+    cannot be inlined and stays, for Gemini to refuse.
+    """
+    groups = {group: schema.get(group) or {} for group in ("$defs", "definitions")}
+
+    def _resolve(node: Any, seen: frozenset[str]) -> Any:
+        if isinstance(node, list):
+            return [_resolve(item, seen) for item in node]
+        if not isinstance(node, dict):
+            return node
+        ref = node.get("$ref")
+        match = _LOCAL_REF.fullmatch(ref) if isinstance(ref, str) else None
+        if match and ref not in seen and match.group(2) in groups[match.group(1)]:
+            target = groups[match.group(1)][match.group(2)]
+            siblings = {k: v for k, v in node.items() if k != "$ref"}
+            return _resolve({**target, **siblings}, seen | {match.group(0)})
+        return {k: _resolve(v, seen) for k, v in node.items()}
+
+    root = {k: v for k, v in schema.items() if k not in groups}
+    inlined: dict[str, Any] = _resolve(root, frozenset())
+    return inlined
 
 
 def _strip_unsupported_google_keys(schema: dict[str, Any]) -> dict[str, Any]:
-    """Recursively remove keys Gemini's ``responseSchema`` rejects."""
+    """Inline local references and remove the keys Gemini's schema dialect rejects."""
+    schema = _inline_refs(schema)
 
     def _walk(node: Any, names: bool = False) -> None:
         if isinstance(node, dict):

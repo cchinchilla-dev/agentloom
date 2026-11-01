@@ -314,7 +314,7 @@ The parsed value lands in `state[output]` directly — for `pydantic` mode it's 
 | Provider | Native API | Behavior |
 |----------|-----------|----------|
 | OpenAI | `response_format={"type": "json_schema", "json_schema": {...}}` (strict) or `{"type": "json_object"}` | Server-side schema enforcement; the model can't emit invalid JSON. Requires `gpt-4o-2024-08-06+` for strict mode. |
-| Google Gemini | `generationConfig.responseSchema` + `responseMimeType: "application/json"` | Server-side enforcement. The adapter strips Pydantic-emitted `title` / `examples` / `default` keys that Gemini's parser rejects. |
+| Google Gemini | `generationConfig.responseSchema` + `responseMimeType: "application/json"` | Server-side enforcement. The adapter strips Pydantic-emitted `title` / `examples` / `default` keys that Gemini's parser rejects, and inlines local `$ref`s, as Gemini has no `$defs`: a nested model works, a recursive one does not. |
 | Ollama | `format: "json"` (free-form) or `format: <schema>` (strict, Ollama 0.5+) | Model-side enforcement; quality varies by model. |
 | Anthropic | _No native API._ Prefill + system-prompt instructions + client-side validation. | Best-effort: the assistant turn is prefilled with `"{"` so the model continues from there. Validation failures trigger the same retry-with-feedback loop. |
 

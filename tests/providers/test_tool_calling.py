@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import anyio
 import httpx
 import pytest
 import respx
@@ -18,12 +19,13 @@ from agentloom.core.models import (
     WorkflowDefinition,
 )
 from agentloom.core.results import StepStatus, WorkflowStatus
-from agentloom.exceptions import StepError
+from agentloom.exceptions import RecordingMismatchError, StepError
 from agentloom.providers.anthropic import AnthropicProvider
 from agentloom.providers.base import ToolCall
 from agentloom.providers.gateway import ProviderGateway
 from agentloom.providers.openai import OpenAIProvider
 from agentloom.steps._tools import (
+    FailsStep,
     build_assistant_message_with_tool_calls,
     build_tool_result_messages,
     dispatch_tool_calls,
@@ -132,8 +134,9 @@ class TestToolTranslation:
                 "default": {"type": "boolean"},
                 "meta": {"type": "object", "properties": {"examples": {"type": "array"}}},
                 "properties": {"type": "string", "title": "P"},
+                "item": {"$ref": "#/$defs/Item"},
             },
-            "$defs": {"title": {"type": "string", "default": "x"}},
+            "$defs": {"Item": {"type": "object", "properties": {"title": {"type": "string"}}}},
             "required": ["title", "default"],
         }
         tool = ToolDefinition(name="post", parameters=parameters)
@@ -146,8 +149,8 @@ class TestToolTranslation:
                 "default": {"type": "boolean"},
                 "meta": {"type": "object", "properties": {"examples": {"type": "array"}}},
                 "properties": {"type": "string"},
+                "item": {"type": "object", "properties": {"title": {"type": "string"}}},
             },
-            "$defs": {"title": {"type": "string"}},
             "required": ["title", "default"],
         }
 
@@ -286,6 +289,32 @@ class TestDispatchToolCalls:
         calls = [ToolCall(id="c1", name="strict", arguments={})]
         ((_, text, ok),) = await dispatch_tool_calls(calls, _registry_with(_Strict()))
         assert (text, ok) == ("tool execution failed: Step 'custom': bad input, try again", False)
+
+    async def test_a_stale_replay_wins_over_a_transient_failure_next_to_it(self) -> None:
+        """Two agents as tools failing together: the step fails at once, not retried (#120)."""
+
+        class _Transient(BaseTool):
+            name = "transient"
+
+            async def execute(self, **kwargs: Any) -> Any:
+                await anyio.sleep(0)
+                raise FailsStep(StepError("s", "Agent tool 'transient' failed: 503"))
+
+        class _Stale(BaseTool):
+            name = "stale"
+
+            async def execute(self, **kwargs: Any) -> Any:
+                with anyio.CancelScope(shield=True):  # it fails too, after the other one
+                    await anyio.sleep(0)
+                    await anyio.sleep(0)
+                raise FailsStep(RecordingMismatchError("no recording for 's::stale#1'"))
+
+        calls = [
+            ToolCall(id="c1", name="transient", arguments={}),
+            ToolCall(id="c2", name="stale", arguments={}),
+        ]
+        with pytest.raises(RecordingMismatchError, match="stale#1"):
+            await dispatch_tool_calls(calls, _registry_with(_Transient(), _Stale()))
 
 
 class TestResultMessageBuilders:
