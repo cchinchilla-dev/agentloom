@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -86,6 +87,17 @@ class MockProvider(BaseProvider):
 
     def supports_model(self, model: str) -> bool:
         return True
+
+
+@pytest.fixture
+def latin1_locale(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``Path.read_text`` without an encoding decodes as a Latin-1 locale would."""
+    read_text = Path.read_text
+
+    def _read_text(self: Path, encoding: str | None = None, errors: str | None = None) -> str:
+        return read_text(self, encoding=encoding or "latin-1", errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", _read_text)
 
 
 @pytest.fixture

@@ -13,12 +13,22 @@ import anyio
 
 from agentloom.core.inter_agent import log_tools
 from agentloom.core.models import ToolDefinition
-from agentloom.exceptions import RecordingMismatchError, StepError
 from agentloom.providers.base import ToolCall
 
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+class FailsStep(Exception):  # noqa: N818 — it carries the failure, it is not one
+    """Raised by an agent called as a tool: ``error`` fails the calling step (#120).
+
+    Any other exception of a tool goes back to the model as the call's error.
+    """
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
 
 
 logger = logging.getLogger("agentloom.steps")
@@ -235,7 +245,8 @@ async def dispatch_tool_calls(
             for idx, call in enumerate(calls):
                 tg.start_soon(_run, idx, call)
     except ExceptionGroup as group:
-        raise group.exceptions[0]  # the call that fails the step, not anyio's wrapper
+        # The call that fails the step, as it was raised, not anyio's wrapper
+        raise getattr(group.exceptions[0], "error", group.exceptions[0]) from None
 
     log_tools([(c.name, c.arguments) for c, _, _ in results], [(r, ok) for _, r, ok in results])
     if tape is not None:
@@ -252,8 +263,8 @@ async def _execute(call: ToolCall, tool_registry: Any) -> tuple[str, bool]:
         return f"tool '{call.name}' not registered: {e.args[0] if e.args else e}", False
     try:
         outcome = await tool.execute(**call.arguments)
-    except (StepError, RecordingMismatchError):
-        raise  # an agent called as a tool failed in a way that fails its caller's step (#120)
+    except FailsStep:
+        raise
     except Exception as e:  # noqa: BLE001 — reported back to the model
         logger.warning("Tool '%s' failed: %s", call.name, e)
         return f"tool execution failed: {e}", False

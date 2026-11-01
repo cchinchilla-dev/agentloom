@@ -22,8 +22,9 @@ from agentloom.core.models import (
 )
 from agentloom.core.results import StepResult, StepStatus
 from agentloom.core.state import StateManager
-from agentloom.exceptions import StepError, ToolNotFoundError
+from agentloom.exceptions import RecordingMismatchError, StepError, ToolNotFoundError
 from agentloom.providers.base import ProviderResponse, ToolCall
+from agentloom.steps._tools import FailsStep
 from agentloom.steps.base import StepContext
 from agentloom.steps.llm_call import LLMCallStep
 from agentloom.tools.base import BaseTool
@@ -275,21 +276,26 @@ class _AgentAsTool(BaseTool):
         # One recording key per call, in the order the calls start, so parallel calls replay.
         self._calls += 1
         step_id = f"{self._context.step_definition.id}::{self.name}#{self._calls}"
-        result, state, _ = await run_turn(
-            self._agent,
-            message,
-            step_id=step_id,
-            gateway=self._gateway,
-            tool_registry=self._context.tool_registry,
-            model=self._context.workflow_model,
-        )
+        try:
+            result, state, _ = await run_turn(
+                self._agent,
+                message,
+                step_id=step_id,
+                gateway=self._gateway,
+                tool_registry=self._context.tool_registry,
+                model=self._context.workflow_model,
+            )
+        except RecordingMismatchError as e:
+            raise FailsStep(e) from e  # a stale replay fails at once, as anywhere else
         if result.status != StepStatus.SUCCESS:
             if result.error_classification == "transient":
                 # It fails the calling step, whose retry repeats the turn: a recording keeps
                 # only the attempt that finished, so the run replays
-                raise StepError(
-                    self._context.step_definition.id,
-                    f"Agent tool {self.name!r} failed: {result.error}",
+                raise FailsStep(
+                    StepError(
+                        self._context.step_definition.id,
+                        f"Agent tool {self.name!r} failed: {result.error}",
+                    )
                 )
             raise RuntimeError(result.error)
         reply = await state.get("reply")

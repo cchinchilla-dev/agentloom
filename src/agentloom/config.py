@@ -207,7 +207,7 @@ def load_config(
 
         import yaml
 
-        raw = yaml.safe_load(Path(config_path).read_text())
+        raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
         if raw:
             data = raw
 

@@ -198,16 +198,21 @@ def translate_for_google(
 _GOOGLE_DROP_KEYS = frozenset({"title", "examples", "default", "additionalProperties"})
 
 
+# Maps whose keys are names (a property called ``title``), not schema keywords.
+_SCHEMA_NAME_MAPS = frozenset({"properties", "patternProperties", "$defs", "definitions"})
+
+
 def _strip_unsupported_google_keys(schema: dict[str, Any]) -> dict[str, Any]:
     """Recursively remove keys Gemini's ``responseSchema`` rejects."""
 
-    def _walk(node: Any) -> None:
+    def _walk(node: Any, names: bool = False) -> None:
         if isinstance(node, dict):
-            for k in list(node):
-                if k in _GOOGLE_DROP_KEYS:
-                    node.pop(k)
-            for v in node.values():
-                _walk(v)
+            if not names:
+                for k in list(node):
+                    if k in _GOOGLE_DROP_KEYS:
+                        node.pop(k)
+            for k, v in node.items():
+                _walk(v, names=not names and k in _SCHEMA_NAME_MAPS)
         elif isinstance(node, list):
             for item in node:
                 _walk(item)

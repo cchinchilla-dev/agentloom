@@ -114,7 +114,7 @@ def _load(path: Path, chain: tuple[Path, ...]) -> AgentDefinition:
         cycle = " -> ".join(os.path.relpath(p) for p in (*chain[chain.index(key) :], key))
         raise ValueError(f"agent definitions form a cycle: {cycle}")
     try:
-        raw = yaml.safe_load(path.read_text())
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:
         raise ValueError(f"agent file '{path}': invalid YAML: {e}") from e
     if not isinstance(raw, dict):

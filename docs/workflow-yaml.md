@@ -330,6 +330,8 @@ The parsed value lands in `state[output]` directly — for `pydantic` mode it's 
 | `jitter` | `bool` | `true` | Apply ±25% jitter to each backoff so concurrent retries don't cluster |
 | `retryable_status_codes` | `list[int]` | `[429, 500, 502, 503, 504]` | Provider status codes that trigger a retry. Other 4xx (e.g. 400/401/403/404) bail out immediately so the retry budget isn't burned on permanent failures. Status-less exceptions (network errors, generic provider failures) are always treated as transient and retried. |
 
+A retry runs the step again from its start. A step with `tools`, or an `agent` step, calls its tools again, those that had already run in the failed attempt included: a tool with side effects (a write, a message, a payment) should be idempotent, or its step should set `max_retries: 0`.
+
 ### `router`
 
 Evaluates conditions against state and activates a target step. Steps not activated are skipped.

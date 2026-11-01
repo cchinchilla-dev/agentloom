@@ -167,6 +167,23 @@ class TestLoading:
         assert load_agent("agents/two.yaml").tool_names() == ["one", "other"]
 
 
+@pytest.mark.usefixtures("latin1_locale")
+class TestEncoding:
+    def test_an_agent_file_is_read_as_utf8_whatever_the_locale(self, tmp_path: Path) -> None:
+        path = tmp_path / "a.yaml"
+        path.write_text("name: a\nconstraints: {forbidden_patterns: [ñandú]}\n", encoding="utf-8")
+
+        assert load_agent(path).constraints.forbidden_patterns == ["ñandú"]
+
+    def test_a_workflow_file_is_read_as_utf8_whatever_the_locale(self, tmp_path: Path) -> None:
+        path = tmp_path / "w.yaml"
+        path.write_text(
+            "name: w\nsteps:\n  - {id: s, type: llm_call, prompt: '¿qué tal?'}\n", encoding="utf-8"
+        )
+
+        assert WorkflowParser.from_yaml(path).steps[0].prompt == "¿qué tal?"
+
+
 class TestToolNames:
     def test_duplicate_tool_names_rejected(self) -> None:
         with pytest.raises(ValueError, match=r"duplicate tool names \['ask'\]"):

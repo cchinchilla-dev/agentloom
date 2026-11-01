@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -120,6 +121,13 @@ env-model:
     def test_missing_file_raises(self) -> None:
         with pytest.raises(FileNotFoundError):
             load_pricing(custom_path="/nonexistent/pricing.yaml")
+
+    @pytest.mark.usefixtures("latin1_locale")
+    def test_a_pricing_file_is_read_as_utf8_whatever_the_locale(self, tmp_path: Path) -> None:
+        path = tmp_path / "pricing.yaml"
+        path.write_text("# precios — USD\nmodelo-ñ: {input: 1.0, output: 2.0}\n", encoding="utf-8")
+
+        assert load_pricing(custom_path=str(path))["modelo-ñ"].input_cost_per_1k == 1.0
 
 
 class TestPrefixMatchingPrefersLongest:

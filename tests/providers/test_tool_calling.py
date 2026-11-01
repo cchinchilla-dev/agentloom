@@ -18,6 +18,7 @@ from agentloom.core.models import (
     WorkflowDefinition,
 )
 from agentloom.core.results import StepStatus, WorkflowStatus
+from agentloom.exceptions import StepError
 from agentloom.providers.anthropic import AnthropicProvider
 from agentloom.providers.base import ToolCall
 from agentloom.providers.gateway import ProviderGateway
@@ -121,6 +122,34 @@ class TestToolTranslation:
             "required": ["n"],
         }
         assert tool.parameters["additionalProperties"] is False
+
+    def test_google_parameters_keep_properties_named_like_dropped_keys(self) -> None:
+        """A parameter called ``title`` is a name, not the schema keyword (#120)."""
+        parameters = {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "title": "Title"},
+                "default": {"type": "boolean"},
+                "meta": {"type": "object", "properties": {"examples": {"type": "array"}}},
+                "properties": {"type": "string", "title": "P"},
+            },
+            "$defs": {"title": {"type": "string", "default": "x"}},
+            "required": ["title", "default"],
+        }
+        tool = ToolDefinition(name="post", parameters=parameters)
+        (decl,) = translate_tools_for_google([tool])[0]["function_declarations"]
+
+        assert decl["parameters"] == {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "default": {"type": "boolean"},
+                "meta": {"type": "object", "properties": {"examples": {"type": "array"}}},
+                "properties": {"type": "string"},
+            },
+            "$defs": {"title": {"type": "string"}},
+            "required": ["title", "default"],
+        }
 
     def test_google_parameters_default_to_an_empty_object(self) -> None:
         (decl,) = translate_tools_for_google([ToolDefinition(name="noop")])[0][
@@ -244,6 +273,19 @@ class TestDispatchToolCalls:
         results = await dispatch_tool_calls(calls, registry)
         assert results[0][2] is False
         assert "kaboom" in results[0][1]
+
+    async def test_a_tools_own_step_error_goes_back_to_the_model(self) -> None:
+        """Only an agent called as a tool fails its caller's step (#120)."""
+
+        class _Strict(BaseTool):
+            name = "strict"
+
+            async def execute(self, **kwargs: Any) -> Any:
+                raise StepError("custom", "bad input, try again")
+
+        calls = [ToolCall(id="c1", name="strict", arguments={})]
+        ((_, text, ok),) = await dispatch_tool_calls(calls, _registry_with(_Strict()))
+        assert (text, ok) == ("tool execution failed: Step 'custom': bad input, try again", False)
 
 
 class TestResultMessageBuilders:

@@ -118,7 +118,7 @@ class FileCheckpointer(BaseCheckpointer):
 
     @staticmethod
     def _read(path: Path) -> str:
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
 
     def _glob(self) -> list[Path]:
         if not self._dir.exists():
