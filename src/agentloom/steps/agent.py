@@ -142,9 +142,11 @@ class AgentStep(LLMCallStep):
 
     def _apply_memory(self, conversation: Conversation) -> None:
         if (memory := self._agent.memory) is not None:
-            if memory.token_budget is not None:  # without one, the conversation's own applies
+            # A setting the agent leaves out keeps the conversation's own
+            if memory.token_budget is not None:
                 conversation.token_budget = memory.token_budget
-            conversation.trim_policy = memory.trim_policy
+            if memory.trim_policy is not None:
+                conversation.trim_policy = memory.trim_policy
 
     def _accept(self, step: StepDefinition, response: ProviderResponse) -> None:
         agent = self._agent

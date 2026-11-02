@@ -237,12 +237,15 @@ OUTPUT_TOOL = "final_result"
 
 
 class AgentMemory(BaseModel):
-    """The conversation budget and trim policy an agent applies on each of its turns."""
+    """The conversation budget and trim policy an agent applies on each of its turns.
+
+    Each one left out keeps the conversation's own.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     token_budget: int | None = Field(default=None, ge=1)
-    trim_policy: Literal["drop_oldest", "drop_pairs", "summarize_oldest"] = "drop_oldest"
+    trim_policy: Literal["drop_oldest", "drop_pairs", "summarize_oldest"] | None = None
 
 
 class LoopPolicy(BaseModel):

@@ -403,11 +403,11 @@ Responses are keyed by `step_id` or a SHA-256 hash of the messages. `MockProvide
 
 Most LLM frameworks focus on autonomous agents: self-directed reasoning, multi-agent delegation, unbounded tool loops. This works for demos and open-ended research, but breaks down in production where you need predictable costs, debuggable failures, and SLA compliance.
 
-AgentLoom is **not** an autonomous agent framework. There are no self-directed agents, no unbounded loops, no emergent behavior. It is a **deterministic workflow orchestrator** that uses LLMs as execution steps within a declared DAG.
+AgentLoom is **not** an autonomous agent framework. An agent runs as one step of the DAG, its turn bounded in model calls and cost: there are no unbounded loops and no emergent control flow. It is a **deterministic workflow orchestrator** that uses LLMs as execution steps within a declared DAG.
 
 The difference matters:
 
-- **You define the DAG, not the LLM.** Steps, dependencies, and routing logic are declared upfront in YAML. The model generates text within a step — it does not decide what runs next. Routers use explicit boolean conditions, not LLM judgement.
+- **You define the DAG, not the LLM.** Steps, dependencies, and routing logic are declared upfront in YAML. Within a step, the model writes text or picks the tools and agents it calls, up to the step's limits; it does not decide what runs next. Routers use explicit boolean conditions, not LLM judgement.
 - **Observability is not optional.** Every step emits OpenTelemetry traces and Prometheus metrics. You can see exactly what ran, how long it took, and how much it cost. Autonomous agents are notoriously hard to debug; a static DAG with full tracing is not.
 - **Cost is bounded.** Budget limits, circuit breakers, and rate limiters are first-class. A runaway autonomous agent can burn through an API budget in minutes. A workflow with `budget_usd: 0.50` cannot.
 - **Fallback is structural.** If OpenAI is down, the gateway falls back to Anthropic or Ollama automatically. This is a routing decision at the infrastructure level, not an agent "choosing" a provider.

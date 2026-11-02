@@ -414,7 +414,7 @@ agentloom run examples/39_multi_agent_conversation.yaml --provider openai --mode
 
 ### 41 — Agent
 
-A support desk defined once in `examples/agents/support.yaml`: a system prompt, the `file_read` tool and a refunds agent offered as a tool (`examples/agents/refunds.yaml`), a memory budget, a loop policy, a typed `SupportReply` and constraints. Two `agent` steps run two turns of it on one conversation: the first reads the billing policy and asks the refunds agent in parallel, then replies through `final_result`; the second answers a follow-up from the same history.
+A support desk defined once in `examples/agents/support.yaml`: a system prompt, the `file_read` tool and a refunds agent offered as a tool (`examples/agents/refunds.yaml`), a memory budget, a loop policy, a typed `SupportReply` and constraints. Two `agent` steps run two turns of it on one conversation: the first reads the billing policy and asks the refunds agent in parallel, then replies through `final_result`; the second answers a follow-up on the same conversation.
 
 **Demonstrates:** the `agent` step type, tool scoping, an agent called as a tool, `output_schema` with tools, a shared conversation across turns.
 

@@ -605,8 +605,8 @@ constraints:
 | `name` | `string` | — | The agent's name: the `speaker` of its turns and its `agent_id` in the [event log](testing-and-replay.md). |
 | `description` | `string` | `""` | What the agent does; the tool description when another agent calls it. |
 | `model`, `system_prompt`, `temperature`, `max_tokens` | | inherited | As on `llm_call`. |
-| `tools` | `list` | `[]` | Names from the workflow's tool registry, and `{name, agent, description}` entries that offer another agent as a tool. Such a `name` is one every provider takes for a function: letters, digits, `_` and `-`, up to 64, not starting with a digit. |
-| `memory` | `object` | `null` | `token_budget` and `trim_policy` (`drop_oldest`, `drop_pairs`, `summarize_oldest`) applied to the conversation on each of the agent's turns. The conversation keeps its own settings; without a `token_budget`, its own applies. |
+| `tools` | `list` | `[]` | Names from the workflow's tool registry, and `{name, agent, description}` entries that offer another agent as a tool. Such a `name` is one every provider takes for a function: letters, digits, `_` and `-`, up to 64, starting with a letter or `_`. |
+| `memory` | `object` | `null` | `token_budget` and `trim_policy` (`drop_oldest`, `drop_pairs`, `summarize_oldest`) applied to the conversation on each of the agent's turns, without changing the settings it stores; each one left out keeps the conversation's own. |
 | `loop_policy.max_iterations` | `int` | `5` | Model calls of the tool loop per turn. The loop ends when the agent replies without calling a tool. Without tools, a typed reply that fails validation is asked for again up to the step's `retry.max_retries` times. |
 | `loop_policy.on_max_iterations` | `string` | `error` | Reaching the cap fails the step (`error`) or returns the last reply with a warning (`warn_and_return`); a last reply with no text, only tool calls, fails the step under either. |
 | `output_schema` | `object` | `null` | As `response_schema` on `llm_call` (`pydantic`, `json_schema`, `json_object`). |
@@ -641,7 +641,7 @@ result = await agent.invoke("My bill seems wrong", conversation=previous)  # con
 result.reply         # SupportReply, typed per output_schema; str without one
 result.conversation  # Conversation, with the new turns
 result.cost_usd      # float
-result.iterations    # model calls of the turn
+result.iterations    # the agent's own model calls, not those of agents it calls
 ```
 
 `Agent` takes `model=` for a definition that names none, and `invoke` raises `AgentError` when the turn fails. Example [41](examples.md#41-agent) runs the support desk above offline.

@@ -491,6 +491,26 @@ class TestAgentStep:
 
         assert [m["content"] for m in provider.calls[0]["messages"]] == ["q"]
 
+    async def test_memory_without_a_trim_policy_keeps_the_conversations(self) -> None:
+        chat = {
+            "messages": [
+                {"role": "user", "content": "old question " * 40},
+                {"role": "assistant", "content": "ok"},
+            ],
+            "trim_policy": "drop_pairs",
+        }
+        agent = {"name": "brief", "memory": {"token_budget": 20}}
+        provider = _Scripted(_turn("ok"))
+        await _run(
+            _workflow(
+                _agent_step(agent, conversation="chat"), state={"question": "q", "chat": chat}
+            ),
+            provider,
+        )
+
+        # drop_oldest would keep the old answer without its question
+        assert [m["content"] for m in provider.calls[0]["messages"]] == ["q"]
+
     async def test_two_agents_share_a_conversation(self) -> None:
         alice = {"name": "alice", "system_prompt": "You are Alice."}
         bob = {"name": "bob", "system_prompt": "You are Bob."}
