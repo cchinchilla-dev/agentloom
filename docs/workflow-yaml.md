@@ -39,11 +39,11 @@ steps:                                      # at least one step required
 | `api_key_env` | `string` | `null` | Name of the environment variable holding the key for `provider: generic_openai`; without it, requests carry no `Authorization` header |
 | `max_retries` | `int` | `3` | Retry attempts on failure |
 | `budget_usd` | `float` | `null` | Maximum spend in USD |
-| `timeout` | `float` | `null` | Workflow timeout in seconds |
+| `timeout` | `float` | `null` | Workflow timeout in seconds. Past it the run ends `timeout`: the steps it cut short are marked `timeout`, the later ones do not run, and a checkpointed run resumes with the full timeout again |
 | `max_concurrent_steps` | `int` | `10` | Max parallel steps per layer. Bounded `1 ≤ N ≤ 1024` at parse time — values outside that range raise a Pydantic error instead of deadlocking the limiter or surfacing a cryptic `total_tokens must be >= 0`. |
 | `stream` | `bool` | `false` | Enable streaming by default |
 | `sandbox` | `object` | disabled | Security sandbox config |
-| `on_step_failure` | `string` | `skip_downstream` | Behaviour when a step (or router) ends in FAILED. `skip_downstream` (default) marks every transitive dependent as SKIPPED with an `error` field naming the closest failed ancestor; `continue` keeps the pre-0.5.0 best-effort behaviour where dependents still run against partial state. |
+| `on_step_failure` | `string` | `skip_downstream` | Behaviour when a step (or router) ends in FAILED or TIMEOUT. `skip_downstream` (default) marks every transitive dependent as SKIPPED with an `error` field naming the closest failed ancestor; `continue` keeps the pre-0.5.0 best-effort behaviour where dependents still run against partial state. |
 | `strict_outputs` | `bool` | `false` | Promote the parallel-output collision warning to a parse error. Two parallel-eligible steps writing the same `output:` key normally trigger a `UserWarning` listing both step ids; set `strict_outputs: true` to refuse the workflow at parse time. Sequential overwrite via `depends_on` is exempt — it's an intentional pattern. |
 | `responses_file` | `string` | `null` | Mock provider recording path (when `provider: mock`) |
 | `latency_model` | `string` | `constant` | Mock latency mode: `constant` / `normal` / `replay` |
@@ -182,7 +182,7 @@ Sends a prompt to an LLM and stores the response.
 | `conversation` | `string` | `null` | Dotted state path to a `Conversation` — enables multi-turn history + token-budget trimming (see [Conversation history](#conversation-history)) |
 | `speaker` | `string` | `null` | Multi-agent speaker name (only with `conversation`). Tags the turn with `Message.name` and re-asserts `system_prompt` per turn |
 | `output` | `string` | `null` | State key to store result |
-| `timeout` | `float` | `null` | Per-step timeout in seconds |
+| `timeout` | `float` | `null` | Per-step timeout in seconds, for each attempt. A step out of retries on it ends `timeout` and fails the workflow, as a failed step does |
 | `depends_on` | `list[string]` | `[]` | Step IDs that must complete first |
 
 **Thinking config:**

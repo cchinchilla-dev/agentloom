@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock
 
+import anyio
+import pytest
+
+from agentloom.checkpointing.file import FileCheckpointer
 from agentloom.core.engine import WorkflowEngine
-from agentloom.core.models import WorkflowDefinition
+from agentloom.core.models import (
+    RetryConfig,
+    StepDefinition,
+    StepType,
+    WorkflowConfig,
+    WorkflowDefinition,
+)
 from agentloom.core.results import StepResult, StepStatus, WorkflowStatus
 from agentloom.providers.gateway import ProviderGateway
 from tests.conftest import MockProvider
 
 if TYPE_CHECKING:
-    import pytest
+    from pathlib import Path
 
 
 class TestSimpleWorkflow:
@@ -767,6 +778,123 @@ class TestFailureCascade:
         assert result.step_results["join"].status == StepStatus.SKIPPED
 
 
+class _HangingProvider(MockProvider):
+    """Never answers a prompt that asks it to hang."""
+
+    async def complete(self, messages, model, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if messages[-1]["content"] == "hang":
+            await anyio.sleep_forever()
+        return await super().complete(messages, model, *args, **kwargs)
+
+
+class TestTimeouts:
+    """A step out of retries on its timeout fails the workflow; the workflow's own ``timeout``
+    ends the run."""
+
+    @staticmethod
+    def _engine(
+        steps: list[StepDefinition], checkpointer: FileCheckpointer | None = None, **config: Any
+    ) -> WorkflowEngine:
+        gateway = ProviderGateway()
+        gateway.register(_HangingProvider(), priority=0)
+        workflow = WorkflowDefinition(
+            name="timeouts",
+            config=WorkflowConfig(provider="mock", model="mock-model", **config),
+            steps=steps,
+        )
+        return WorkflowEngine(
+            workflow=workflow, provider_gateway=gateway, checkpointer=checkpointer
+        )
+
+    @staticmethod
+    def _step(step_id: str, prompt: str, **fields: Any) -> StepDefinition:
+        return StepDefinition(
+            id=step_id,
+            type=StepType.LLM_CALL,
+            prompt=prompt,
+            output=step_id,
+            retry=RetryConfig(max_retries=0),
+            **fields,
+        )
+
+    async def test_a_timed_out_step_fails_the_workflow(self) -> None:
+        result = await self._engine([self._step("draft", "hang", timeout=0.01)]).run()
+
+        assert result.status == WorkflowStatus.FAILED
+        assert result.error == "Step timed out after 0.01s"
+        assert result.step_results["draft"].status == StepStatus.TIMEOUT
+
+    async def test_a_timed_out_step_skips_its_dependents(self) -> None:
+        steps = [
+            self._step("draft", "hang", timeout=0.01),
+            self._step("send", "send", depends_on=["draft"]),
+        ]
+        result = await self._engine(steps).run()
+
+        assert result.step_results["send"].status == StepStatus.SKIPPED
+        assert result.step_results["send"].error == "skipped due to upstream failure: draft"
+        assert "send" not in result.final_state
+
+    async def test_continue_runs_the_dependents_of_a_timed_out_step(self) -> None:
+        steps = [
+            self._step("draft", "hang", timeout=0.01),
+            self._step("send", "send", depends_on=["draft"]),
+        ]
+        result = await self._engine(steps, on_step_failure="continue").run()
+
+        assert result.status == WorkflowStatus.FAILED
+        assert result.step_results["send"].status == StepStatus.SUCCESS
+
+    async def test_a_subworkflow_fails_when_its_child_times_out(self) -> None:
+        child = {
+            "name": "child",
+            "config": {"provider": "mock", "model": "mock-model"},
+            "steps": [
+                {
+                    "id": "draft",
+                    "type": "llm_call",
+                    "prompt": "hang",
+                    "timeout": 0.01,
+                    "retry": {"max_retries": 0},
+                }
+            ],
+        }
+        sub = StepDefinition(
+            id="sub",
+            type=StepType.SUBWORKFLOW,
+            workflow_inline=child,
+            retry=RetryConfig(max_retries=0),
+        )
+        result = await self._engine([sub]).run()
+
+        assert result.status == WorkflowStatus.FAILED
+        assert result.step_results["sub"].status == StepStatus.FAILED
+        assert result.step_results["sub"].error == "Step timed out after 0.01s"
+
+    async def test_the_workflow_timeout_ends_the_run(self, tmp_path: Path) -> None:
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+        steps = [
+            self._step("first", "first"),
+            self._step("draft", "hang", depends_on=["first"]),
+            self._step("send", "send", depends_on=["draft"]),
+        ]
+        engine = self._engine(steps, checkpointer, timeout=0.05)
+        engine.observer = MagicMock()
+        with anyio.fail_after(5):  # a deadline that never fires fails the test, not the suite
+            result = await engine.run()
+
+        assert result.status == WorkflowStatus.TIMEOUT
+        assert result.error == "Workflow timed out after 0.05s"
+        assert result.step_results["first"].status == StepStatus.SUCCESS
+        assert result.step_results["draft"].status == StepStatus.TIMEOUT
+        assert result.step_results["draft"].error == "Workflow timed out after 0.05s"
+        assert "send" not in result.step_results
+        assert result.total_cost_usd == pytest.approx(0.001)  # the step that finished
+        saved = await checkpointer.load(engine.run_id)
+        assert (saved.status, saved.completed_steps) == ("timeout", ["first"])
+        assert engine.observer.on_workflow_end.call_args.args[:2] == ("timeouts", "timeout")
+
+
 class TestBudgetPreDispatchGate:
     """Prior-exhausted budget must stop further step dispatch before the call."""
 
@@ -803,7 +931,6 @@ class TestBudgetPreDispatchGate:
         workflow budget. A model returning many thinking tokens should hit
         BUDGET_EXCEEDED on the first step even when prompt+completion
         tokens alone fit comfortably."""
-        from typing import Any
 
         from agentloom.core.models import (
             StepDefinition,

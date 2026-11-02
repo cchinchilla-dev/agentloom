@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import math
 import time
 import uuid
 from collections import deque
@@ -43,6 +44,7 @@ from agentloom.exceptions import (
     CheckpointSchemaError,
     PauseRequestedError,
     WorkflowError,
+    WorkflowTimeoutError,
 )
 from agentloom.resilience.budget import BudgetEnforcer
 from agentloom.resilience.retry import (
@@ -53,6 +55,9 @@ from agentloom.steps.base import BaseStep, StepContext
 from agentloom.steps.registry import StepRegistry, create_default_registry
 
 logger = logging.getLogger("agentloom.engine")
+
+# A step that ran out of time failed, as one that raised did
+_FAILED = (StepStatus.FAILED, StepStatus.TIMEOUT)
 
 
 def _extract_pause_error(exc: BaseException) -> PauseRequestedError | None:
@@ -416,6 +421,8 @@ class WorkflowEngine:
         """
         start = time.monotonic()
         workflow_name = self.workflow.name
+        timeout = self.workflow.config.timeout
+        deadline = math.inf if timeout is None else anyio.current_time() + timeout
 
         logger.info("Starting workflow: %s", workflow_name)
 
@@ -501,9 +508,19 @@ class WorkflowEngine:
                 max_concurrent = self.workflow.config.max_concurrent_steps
                 limiter = anyio.CapacityLimiter(max_concurrent)
 
-                async with anyio.create_task_group() as tg:
-                    for step_id in active_steps:
-                        tg.start_soon(self._execute_step_with_limit, step_id, limiter)
+                with anyio.CancelScope(deadline=deadline) as layer_scope:
+                    async with anyio.create_task_group() as tg:
+                        for step_id in active_steps:
+                            tg.start_soon(self._execute_step_with_limit, step_id, limiter)
+                if layer_scope.cancelled_caught:
+                    message = f"Workflow timed out after {timeout}s"
+                    for step_id in active_steps:  # the steps the deadline cut short
+                        if await self.state.get_step_result(step_id) is None:
+                            cut = StepResult(
+                                step_id=step_id, status=StepStatus.TIMEOUT, error=message
+                            )
+                            await self.state.set_step_result(step_id, cut)
+                    raise WorkflowTimeoutError(message)
 
                 # After the layer finishes, check whether any step paused.
                 # Pauses are NOT re-raised inside _execute_step so siblings
@@ -524,7 +541,7 @@ class WorkflowEngine:
                 if paused_step_id is not None:
                     raise PauseRequestedError(paused_step_id)
 
-                # Cascade-skip dependents of any step that ended FAILED in this
+                # Cascade-skip dependents of any step that ended FAILED or TIMEOUT in this
                 # layer. Applies uniformly to routers (AST error, no-match-no-
                 # default, evaluator exception) and regular steps that exhausted
                 # retries — both leave downstream branches unable to make
@@ -537,7 +554,7 @@ class WorkflowEngine:
                     failed_in_layer: set[str] = set()
                     for step_id in active_steps:
                         step_result = await self.state.get_step_result(step_id)
-                        if step_result and step_result.status == StepStatus.FAILED:
+                        if step_result and step_result.status in _FAILED:
                             failed_in_layer.add(step_id)
                     if failed_in_layer:
                         direct_children: set[str] = set()
@@ -608,7 +625,7 @@ class WorkflowEngine:
                 self._budget.spent,
             )
 
-            failed_steps = [r for r in step_results.values() if r.status == StepStatus.FAILED]
+            failed_steps = [r for r in step_results.values() if r.status in _FAILED]
             status = WorkflowStatus.FAILED if failed_steps else WorkflowStatus.SUCCESS
 
             result = WorkflowResult(
@@ -720,6 +737,29 @@ class WorkflowEngine:
                     total_duration_ms=duration,
                     total_cost_usd=self._budget.spent,
                     error=str(budget_err),
+                )
+                await self._finalize_result(result, workflow_name)
+                return result
+
+            if isinstance(e, WorkflowTimeoutError):
+                await self._save_checkpoint("timeout")
+                step_results = await self.state.all_step_results()
+                total_tokens = sum(r.token_usage.total_tokens for r in step_results.values())
+                total_cost = max(sum(r.cost_usd for r in step_results.values()), self._budget.spent)
+                if self.observer:
+                    self.observer.on_workflow_end(
+                        workflow_name, "timeout", duration, total_tokens, total_cost
+                    )
+                logger.error("Workflow '%s' timed out: %s", workflow_name, e)
+                result = WorkflowResult(
+                    workflow_name=workflow_name,
+                    status=WorkflowStatus.TIMEOUT,
+                    step_results=step_results,
+                    final_state=await self.state.get_state_snapshot(),
+                    total_duration_ms=duration,
+                    total_tokens=total_tokens,
+                    total_cost_usd=total_cost,
+                    error=str(e),
                 )
                 await self._finalize_result(result, workflow_name)
                 return result
