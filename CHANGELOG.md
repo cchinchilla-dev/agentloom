@@ -57,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Anthropic and Google adapters send every system turn of a request, in order, instead of the last one only (#120). A step with a `speaker` and a conversation summarized by `summarize_oldest` lost its own system prompt on those providers.
 - A prompt or system prompt that is not a valid template, and an `llm_call` with neither `prompt` nor `conversation`, fail their step without a retry (#120). Every retry failed the same way.
 - The error a model gets for a tool outside the step's registry no longer quotes the registry's message twice (#120).
+- `agentloom resume` runs a workflow that declares `provider: mock` against that mock. It registered only the providers that API keys in the environment discover, so the run called them or failed with `No provider registered` (#120).
+- `agentloom run --record` refuses a run whose provider is `mock` and points to `--provider`, instead of calling the providers that API keys in the environment discover or failing every attempt with `No provider registered` (#120).
 - Schemas sent to Gemini keep the properties named `title`, `default`, `examples` or `additionalProperties`: only the schema keywords of those names are dropped (#120). Such a property disappeared from a tool's parameters or a `responseSchema` while `required` still listed it.
 - Workflow, agent, config, pricing and checkpoint files are read as UTF-8 whatever the locale (#120). On a Latin-1 locale, every run failed loading the bundled price table, non-ASCII text in a prompt or a `forbidden_patterns` entry was misread, and a resumed run got its state back garbled.
 - `agentloom visualize` names `agent`, `embed` and `approval_gate` steps, which it showed as `?` (#120).

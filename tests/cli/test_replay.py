@@ -200,7 +200,7 @@ steps:
 TOOL_YAML = """\
 name: tool-replay
 config:
-  provider: mock
+  provider: openai
   model: mock-model
 steps:
   - id: ask

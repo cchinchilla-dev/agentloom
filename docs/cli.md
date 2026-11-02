@@ -36,7 +36,7 @@ agentloom run WORKFLOW.yaml [OPTIONS]
 | `--lite` | Disable observability |
 | `--json` | Print the result as JSON |
 
-`--record` and `--mock-responses` are mutually exclusive.
+`--record` and `--mock-responses` are mutually exclusive, and `--record` needs a live provider: on a workflow that declares `provider: mock`, pass `--provider`.
 
 ## `replay`
 
@@ -84,7 +84,7 @@ Replays the recording strictly several times and compares the results and the [i
 agentloom resume RUN_ID [OPTIONS]
 ```
 
-Continues a run from its last checkpoint. For a run paused at an [`approval_gate`](workflow-yaml.md#approval_gate), pass the decision:
+Continues a run from its last checkpoint, on the providers `run` would use: a workflow that declares `provider: mock` resumes against its mock. For a run paused at an [`approval_gate`](workflow-yaml.md#approval_gate), pass the decision:
 
 | Option | Description |
 |--------|-------------|

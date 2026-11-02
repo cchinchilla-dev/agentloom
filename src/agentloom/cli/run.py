@@ -149,6 +149,11 @@ async def _run_async(
         workflow.config.budget_usd = budget
     if stream:
         workflow.config.stream = True
+    if record is not None and mock_responses is None and workflow.config.provider == "mock":
+        typer.echo(
+            "Error: --record needs a live provider; pass --provider instead of mock.", err=True
+        )
+        raise typer.Exit(2)
 
     state_manager = StateManager(initial_state=_initial_state(workflow, state_args))
 
@@ -185,19 +190,8 @@ async def _run_async(
                 gateway.wrap_providers(lambda p: RecordingProvider(p, record, observer=observer))
         else:
             gateway.register(mock, priority=0)
-    elif workflow.config.provider == "mock" and record is None:
-        from agentloom.providers.mock import MockProvider
-
-        gateway.register(
-            MockProvider(
-                responses_file=workflow.config.responses_file,
-                latency_model=workflow.config.latency_model,
-                latency_ms=workflow.config.latency_ms,
-                observer=observer,
-                workflow_name=workflow.name,
-            ),
-            priority=0,
-        )
+    elif workflow.config.provider == "mock":
+        _setup_mock(gateway, workflow.config, observer, workflow.name)
     else:
         _setup_live(gateway, workflow.config)
         if record is not None:
@@ -314,6 +308,27 @@ def _setup_observer(lite: bool) -> WorkflowObserver | None:
         return WorkflowObserver(tracing=tracing, metrics=metrics)
 
     return None
+
+
+def _setup_mock(
+    gateway: ProviderGateway,
+    config: WorkflowConfig,
+    observer: WorkflowObserver | None,
+    workflow_name: str,
+) -> None:
+    """Register ``provider: mock`` from the workflow's own ``config:`` (#76)."""
+    from agentloom.providers.mock import MockProvider
+
+    gateway.register(
+        MockProvider(
+            responses_file=config.responses_file,
+            latency_model=config.latency_model,
+            latency_ms=config.latency_ms,
+            observer=observer,
+            workflow_name=workflow_name,
+        ),
+        priority=0,
+    )
 
 
 def _setup_live(gateway: ProviderGateway, config: WorkflowConfig) -> None:

@@ -6,7 +6,6 @@ import anyio
 import typer
 
 from agentloom.core.results import WorkflowStatus
-from agentloom.exceptions import ProviderError
 
 
 def resume(
@@ -62,9 +61,9 @@ async def _resume_async(
     from agentloom.cli.run import (
         _import_from_cwd,
         _print_result,
-        _setup_generic_openai,
+        _setup_live,
+        _setup_mock,
         _setup_observer,
-        _setup_providers,
     )
     from agentloom.core.engine import WorkflowEngine
     from agentloom.providers.gateway import ProviderGateway
@@ -114,13 +113,12 @@ async def _resume_async(
     if stream:
         engine.workflow.config.stream = True
 
+    observer = _setup_observer(lite)
     gateway = ProviderGateway()
-    try:
-        _setup_generic_openai(gateway, engine.workflow.config)
-    except ProviderError as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1) from e
-    _setup_providers(gateway, engine.workflow.config.provider)
+    if engine.workflow.config.provider == "mock":
+        _setup_mock(gateway, engine.workflow.config, observer, engine.workflow.name)
+    else:
+        _setup_live(gateway, engine.workflow.config)
     engine.provider_gateway = gateway
 
     sandbox_cfg = engine.workflow.config.sandbox
@@ -141,7 +139,6 @@ async def _resume_async(
     register_builtins(tool_registry, sandbox=sandbox)
     engine.tool_registry = tool_registry
 
-    observer = _setup_observer(lite)
     engine.observer = observer
     if observer and gateway:  # pragma: no cover — requires OTel extra
         set_obs = getattr(gateway, "set_observer", None)

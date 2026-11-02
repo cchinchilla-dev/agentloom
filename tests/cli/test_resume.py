@@ -25,10 +25,10 @@ if TYPE_CHECKING:
 runner = CliRunner()
 
 
-def _make_workflow() -> WorkflowDefinition:
+def _make_workflow(provider: str = "openai") -> WorkflowDefinition:
     return WorkflowDefinition(
         name="resume-test",
-        config=WorkflowConfig(provider="mock", model="mock-model"),
+        config=WorkflowConfig(provider=provider, model="mock-model"),
         state={"input": "hello"},
         steps=[
             StepDefinition(
@@ -203,7 +203,7 @@ class TestResumeCommand:
                         str(tmp_path),
                         "--lite",
                         "--provider",
-                        "mock",
+                        "anthropic",
                         "--model",
                         "mock-v2",
                     ],
@@ -244,6 +244,18 @@ class TestResumeCommand:
 
         assert result.exit_code != 0
 
+    def test_resume_runs_a_mock_workflow_offline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        _write_checkpoint(tmp_path, "run-mock", workflow=_make_workflow("mock"))
+        argv = ["resume", "run-mock", "--checkpoint-dir", str(tmp_path), "--lite", "--json"]
+        result = runner.invoke(app, argv)
+        assert result.exit_code == 0, result.output
+        parsed = json.loads(result.output[result.output.index("{") :])
+        assert parsed["final_state"]["result_a"] == "Mock response"
+
     def test_resume_generic_openai_without_base_url(self, tmp_path: Path) -> None:
         """``--provider generic_openai`` on a workflow without ``base_url`` fails cleanly (#48)."""
         _write_checkpoint(tmp_path, "run-generic", status="failed")
@@ -267,7 +279,7 @@ def _approval_workflow() -> WorkflowDefinition:
     """Workflow with an approval gate."""
     return WorkflowDefinition(
         name="approval-cli-test",
-        config=WorkflowConfig(provider="mock", model="mock-model"),
+        config=WorkflowConfig(provider="openai", model="mock-model"),
         state={"input": "hello"},
         steps=[
             StepDefinition(

@@ -32,6 +32,17 @@ def test_record_after_cut_copies_prefix_and_captures_tail(tmp_path: Path) -> Non
     assert recorded["b"]["request_hash"] == source["b"]["request_hash"]  # the same request, live
 
 
+def test_a_cut_records_a_workflow_that_declares_mock(tmp_path: Path) -> None:
+    workflow, recording = _recorded(tmp_path)
+    workflow.write_text(workflow.read_text().replace("provider: openai", "provider: mock"))
+    out = tmp_path / "out.json"
+
+    result = _replay(tmp_path, workflow, recording, "--live-from", "b", "--record", str(out))
+
+    assert result.exit_code == 0, result.output
+    assert _load(out)["b"]["content"] == "v2-b"
+
+
 def test_record_never_writes_the_source_recording(tmp_path: Path) -> None:
     workflow, recording = _recorded(tmp_path)
     before = recording.read_bytes()
