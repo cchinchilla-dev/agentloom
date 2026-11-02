@@ -1,6 +1,6 @@
 # Examples
 
-37 example workflows, numbered 01–39, covering basic patterns to production-grade pipelines. Most run with Ollama (free, local) or any cloud provider; the multi-modal ones need a provider that supports the attachment type, examples 35–39 run offline against recordings committed under `recordings/`, and 31–32 replay a recording you capture first.
+39 example workflows, numbered 01–41, covering basic patterns to production-grade pipelines. Most run with Ollama (free, local) or any cloud provider; the multi-modal ones need a provider that supports the attachment type, examples 35–41 run offline against recordings committed under `recordings/`, and 31–32 replay a recording you capture first.
 
 ```bash
 # Validate any example
@@ -323,6 +323,9 @@ agentloom run examples/32_yaml_mock.yaml --lite
 ```
 
 ### 40 — Fault replay
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
 
 A recording that fails `draft` with a 429 and then a 503 before it answers. Every run fails the same two calls the same way, and the step's retry policy recovers on the third attempt.
 

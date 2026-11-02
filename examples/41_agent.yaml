@@ -11,7 +11,7 @@ description: |
     agentloom run examples/41_agent.yaml --lite
 
   Producing a fresh recording:
-    agentloom run examples/41_agent.yaml --provider anthropic \\
+    agentloom run examples/41_agent.yaml --provider anthropic \
       --model claude-haiku-4-5 --record recordings/agent.json
 
 config:

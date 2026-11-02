@@ -9,7 +9,7 @@ description: |
   ``--provider ollama --model nomic-embed-text`` also work out of the box.
 
   Producing a fresh recording:
-    agentloom run examples/37_embeddings.yaml --provider openai \\
+    agentloom run examples/37_embeddings.yaml --provider openai \
       --model text-embedding-3-small --record recordings/embeddings.json
 
 config:

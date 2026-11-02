@@ -153,6 +153,7 @@ def parse_tool_calls_from_openai(message: dict[str, Any]) -> list[ToolCall]:
             args: dict[str, Any] = raw_args
         elif isinstance(raw_args, str):
             try:
+                # vLLM sends "" for a tool without parameters: a call without arguments
                 decoded = json.loads(raw_args or "{}")
             except json.JSONDecodeError:
                 decoded = None

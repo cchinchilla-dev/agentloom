@@ -10,8 +10,8 @@ description: |
 
   Runs offline against the committed recording. Fresh recording:
 
-    agentloom run examples/39_multi_agent_conversation.yaml \\
-      --provider openai --model gpt-4o-mini \\
+    agentloom run examples/39_multi_agent_conversation.yaml \
+      --provider openai --model gpt-4o-mini \
       --record recordings/multi_agent_conversation.json
 
 config:
