@@ -193,9 +193,10 @@ class TestEncoding:
 
 
 class TestToolNames:
-    def test_an_agent_needs_a_name(self) -> None:
-        with pytest.raises(ValueError, match="at least 1 character"):
-            AgentDefinition(name="")
+    @pytest.mark.parametrize("name", ["", "support desk", "1st", "a" * 65])
+    def test_an_agent_is_named_as_every_provider_names_a_function(self, name: str) -> None:
+        with pytest.raises(ValueError, match="String should match pattern"):
+            AgentDefinition(name=name)
 
     @pytest.mark.parametrize("name", ["ask refunds", "1st", "a" * 65, "ask.refunds"])
     def test_an_agent_tool_is_named_as_every_provider_names_a_function(self, name: str) -> None:

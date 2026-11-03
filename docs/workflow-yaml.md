@@ -39,7 +39,7 @@ steps:                                      # at least one step required
 | `api_key_env` | `string` | `null` | Name of the environment variable holding the key for `provider: generic_openai`; without it, requests carry no `Authorization` header |
 | `max_retries` | `int` | `3` | Retry attempts on failure |
 | `budget_usd` | `float` | `null` | Maximum spend in USD |
-| `timeout` | `float` | `null` | Workflow timeout in seconds. Past it the run ends `timeout`: the steps it cut short are marked `timeout`, the later ones do not run, and a checkpointed run resumes with the full timeout again |
+| `timeout` | `float` | `null` | Workflow timeout in seconds; `0` sets no limit. Past it the run ends `timeout`: the steps it cut short are marked `timeout`, the later ones do not run, and a checkpointed run resumes with the full timeout again |
 | `max_concurrent_steps` | `int` | `10` | Max parallel steps per layer. Bounded `1 ≤ N ≤ 1024` at parse time — values outside that range raise a Pydantic error instead of deadlocking the limiter or surfacing a cryptic `total_tokens must be >= 0`. |
 | `stream` | `bool` | `false` | Enable streaming by default |
 | `sandbox` | `object` | disabled | Security sandbox config |
@@ -182,7 +182,7 @@ Sends a prompt to an LLM and stores the response.
 | `conversation` | `string` | `null` | Dotted state path to a `Conversation` — enables multi-turn history + token-budget trimming (see [Conversation history](#conversation-history)) |
 | `speaker` | `string` | `null` | Multi-agent speaker name (only with `conversation`). Tags the turn with `Message.name` and re-asserts `system_prompt` per turn |
 | `output` | `string` | `null` | State key to store result |
-| `timeout` | `float` | `null` | Per-step timeout in seconds, for each attempt. A step out of retries on it ends `timeout` and fails the workflow, as a failed step does |
+| `timeout` | `float` | `null` | Per-step timeout in seconds, for each attempt; `0` sets no limit. A step out of retries on it ends `timeout` and fails the workflow, as a failed step does |
 | `depends_on` | `list[string]` | `[]` | Step IDs that must complete first |
 
 **Thinking config:**
@@ -602,7 +602,7 @@ constraints:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | `string` | — | The agent's name: the `speaker` of its turns and its `agent_id` in the [event log](testing-and-replay.md). |
+| `name` | `string` | — | The agent's name: the `speaker` of its turns and its `agent_id` in the [event log](testing-and-replay.md). Letters, digits, `_` and `-`, up to 64, starting with a letter or `_`, as a tool's `name`. |
 | `description` | `string` | `""` | What the agent does; the tool description when another agent calls it. |
 | `model`, `system_prompt`, `temperature`, `max_tokens` | | inherited | As on `llm_call`. |
 | `tools` | `list` | `[]` | Names from the workflow's tool registry, and `{name, agent, description}` entries that offer another agent as a tool. Such a `name` is one every provider takes for a function: letters, digits, `_` and `-`, up to 64, starting with a letter or `_`. |

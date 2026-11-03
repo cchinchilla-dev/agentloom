@@ -970,6 +970,13 @@ class TestAgentApi:
         with pytest.raises(AgentError, match=message):
             await Agent(definition, gateway=gateway).invoke(prompt)
 
+    async def test_a_replay_off_its_recording_raises_agent_error(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted(RecordingMismatchError("no turn recorded")))
+
+        with pytest.raises(AgentError, match="no turn recorded"):
+            await Agent(AgentDefinition(name="a", model="m"), gateway=gateway).invoke("hi")
+
     async def test_a_message_with_braces_reaches_the_model_as_written(self) -> None:
         provider = _Scripted(_turn("ok"))
         gateway = ProviderGateway()

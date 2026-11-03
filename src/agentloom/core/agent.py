@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from agentloom.core.models import AgentDefinition, Conversation
 from agentloom.core.results import StepStatus
-from agentloom.exceptions import AgentError, StepError
+from agentloom.exceptions import AgentError, RecordingMismatchError, StepError
 
 if TYPE_CHECKING:
     from agentloom.core.protocols import GatewayProtocol, ToolRegistryProtocol
@@ -81,7 +81,8 @@ class Agent:
                 model=self._model,
                 conversation=conversation,
             )
-        except StepError as e:  # a turn that cannot start: a broken template, no prompt
+        # A turn that cannot start (a broken template, no prompt), or a replay off its recording
+        except (StepError, RecordingMismatchError) as e:
             raise AgentError(str(e)) from e
         if result.status != StepStatus.SUCCESS:
             raise AgentError(result.error or f"Agent {self.definition.name!r} failed")
@@ -104,7 +105,7 @@ def load_agent(path: str | Path) -> AgentDefinition:
     return _load(Path(path), ())
 
 
-def resolve_agent(value: Any) -> Any:
+def resolve_agent(value: object) -> object:
     """Load *value* when it is a path; anything else is left to the model's validation."""
     return load_agent(value) if isinstance(value, str | Path) else value
 

@@ -268,13 +268,16 @@ class AgentConstraints(BaseModel):
     forbidden_patterns: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
 
 
+# A function name every provider accepts (OpenAI, Anthropic and Gemini's rules together).
+_FUNCTION_NAME = r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
+
+
 class AgentTool(BaseModel):
     """Another agent offered as a tool that takes a single ``message``."""
 
     model_config = ConfigDict(extra="forbid")
 
-    # A function name every provider accepts (OpenAI, Anthropic and Gemini's rules together).
-    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
+    name: str = Field(pattern=_FUNCTION_NAME)
     agent: AgentDefinition
     description: str | None = None
 
@@ -306,7 +309,8 @@ class AgentDefinition(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1)
+    # Also the message name of its turns, which OpenAI refuses outside these characters.
+    name: str = Field(pattern=_FUNCTION_NAME)
     description: str = ""
     model: str | None = None
     system_prompt: str | None = None
@@ -397,8 +401,8 @@ class StepDefinition(BaseModel):
     # Output mapping
     output: str | None = None
 
-    # Per-step config
-    timeout: float | None = None
+    # Per-step config; 0 means no limit
+    timeout: float | None = Field(default=None, ge=0)
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
     # Reasoning / extended thinking
@@ -552,7 +556,7 @@ class WorkflowConfig(BaseModel):
     api_key_env: str | None = None
     max_retries: int = 3
     budget_usd: float | None = None
-    timeout: float | None = None
+    timeout: float | None = Field(default=None, ge=0)  # 0 means no limit, as a step's
     # ``ge=1`` catches both ``0`` (which makes ``anyio.CapacityLimiter(0)``
     # block every ``start_soon`` and deadlocks the workflow with no timeout)
     # and negatives (which used to surface as a cryptic

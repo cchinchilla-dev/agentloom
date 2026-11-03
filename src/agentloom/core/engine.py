@@ -152,6 +152,7 @@ class WorkflowEngine:
         # enforcer is still created so call sites don't need ``if budget
         # is None`` branching.
         self._budget = budget_enforcer or BudgetEnforcer(workflow.config.budget_usd)
+        self._deadline = math.inf
 
         self._checkpointer = checkpointer
         # Always generate a run_id so ``workflow.run_id`` propagates through
@@ -422,7 +423,8 @@ class WorkflowEngine:
         start = time.monotonic()
         workflow_name = self.workflow.name
         timeout = self.workflow.config.timeout
-        deadline = math.inf if timeout is None else anyio.current_time() + timeout
+        deadline = anyio.current_time() + timeout if timeout else math.inf  # 0: no limit
+        self._deadline = deadline
 
         logger.info("Starting workflow: %s", workflow_name)
 
@@ -508,6 +510,8 @@ class WorkflowEngine:
                 max_concurrent = self.workflow.config.max_concurrent_steps
                 limiter = anyio.CapacityLimiter(max_concurrent)
 
+                # A resumed step keeps its previous run's result until it records a new one
+                previous = {sid: await self.state.get_step_result(sid) for sid in active_steps}
                 with anyio.CancelScope(deadline=deadline) as layer_scope:
                     async with anyio.create_task_group() as tg:
                         for step_id in active_steps:
@@ -515,7 +519,7 @@ class WorkflowEngine:
                 if layer_scope.cancelled_caught:
                     message = f"Workflow timed out after {timeout}s"
                     for step_id in active_steps:  # the steps the deadline cut short
-                        if await self.state.get_step_result(step_id) is None:
+                        if await self.state.get_step_result(step_id) is previous[step_id]:
                             cut = StepResult(
                                 step_id=step_id, status=StepStatus.TIMEOUT, error=message
                             )
@@ -851,6 +855,9 @@ class WorkflowEngine:
                 spent: dict[str, Any] = {}
                 if isinstance(exc, anyio.get_cancelled_exc_class()):
                     status, error = "cancelled", None
+                    if anyio.current_time() >= self._deadline:  # its result says timeout too
+                        timeout = self.workflow.config.timeout
+                        status, error = "timeout", f"Workflow timed out after {timeout}s"
                 elif isinstance(exc, BudgetExceededError):
                     status = "budget_exceeded"
                     # The breach is this step's own charge, made after its result was recorded.

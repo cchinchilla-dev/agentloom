@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import anyio
 import pytest
+from pydantic import ValidationError
 
 from agentloom.checkpointing.file import FileCheckpointer
 from agentloom.core.engine import WorkflowEngine
@@ -878,21 +879,45 @@ class TestTimeouts:
             self._step("draft", "hang", depends_on=["first"]),
             self._step("send", "send", depends_on=["draft"]),
         ]
-        engine = self._engine(steps, checkpointer, timeout=0.05)
+        engine = self._engine(steps, checkpointer, timeout=0.5)
         engine.observer = MagicMock()
         with anyio.fail_after(5):  # a deadline that never fires fails the test, not the suite
             result = await engine.run()
 
         assert result.status == WorkflowStatus.TIMEOUT
-        assert result.error == "Workflow timed out after 0.05s"
+        assert result.error == "Workflow timed out after 0.5s"
         assert result.step_results["first"].status == StepStatus.SUCCESS
         assert result.step_results["draft"].status == StepStatus.TIMEOUT
-        assert result.step_results["draft"].error == "Workflow timed out after 0.05s"
+        assert result.step_results["draft"].error == "Workflow timed out after 0.5s"
         assert "send" not in result.step_results
         assert result.total_cost_usd == pytest.approx(0.001)  # the step that finished
         saved = await checkpointer.load(engine.run_id)
         assert (saved.status, saved.completed_steps) == ("timeout", ["first"])
         assert engine.observer.on_workflow_end.call_args.args[:2] == ("timeouts", "timeout")
+        (cut,) = [c for c in engine.observer.on_step_end.call_args_list if c.args[0] == "draft"]
+        assert cut.args[2] == "timeout"
+        assert cut.kwargs["error"] == "Workflow timed out after 0.5s"
+
+    @pytest.mark.parametrize("previous", [StepStatus.FAILED, StepStatus.PAUSED])
+    async def test_the_workflow_timeout_cuts_a_resumed_step(self, previous: StepStatus) -> None:
+        engine = self._engine([self._step("draft", "hang")], timeout=0.05)
+        await engine.state.set_step_result("draft", StepResult(step_id="draft", status=previous))
+        with anyio.fail_after(5):
+            result = await engine.run()
+
+        assert result.status == WorkflowStatus.TIMEOUT
+        assert result.step_results["draft"].status == StepStatus.TIMEOUT
+
+    async def test_a_zero_workflow_timeout_sets_no_limit(self) -> None:
+        result = await self._engine([self._step("draft", "draft")], timeout=0).run()
+
+        assert result.status == WorkflowStatus.SUCCESS
+
+    def test_a_negative_timeout_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="greater than or equal to 0"):
+            WorkflowConfig(timeout=-1)
+        with pytest.raises(ValidationError, match="greater than or equal to 0"):
+            self._step("draft", "draft", timeout=-1)
 
 
 class TestBudgetPreDispatchGate:

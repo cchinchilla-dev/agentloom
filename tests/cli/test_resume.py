@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import yaml
 from typer.testing import CliRunner
 
 from agentloom.checkpointing.base import CheckpointData
@@ -430,3 +431,28 @@ class TestResumeApproval:
 
         assert result.exit_code != 0
         assert "not paused at an approval gate" in (result.output + (result.stderr or ""))
+
+    def test_resume_replays_the_recording_of_a_mock_responses_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        workflow = tmp_path / "wf.yaml"
+        workflow.write_text(yaml.safe_dump(_approval_workflow().model_dump(mode="json")))
+        recording = tmp_path / "rec.json"
+        recording.write_text(
+            json.dumps({step: {"content": f"recorded {step}"} for step in ("draft", "send")})
+        )
+        checkpoints = tmp_path / "checkpoints"
+        run = runner.invoke(
+            app,
+            ["run", str(workflow), "--mock-responses", str(recording), "--lite"]
+            + ["--checkpoint", "--checkpoint-dir", str(checkpoints)],
+        )
+        assert run.exit_code == 0, run.output
+        (saved,) = checkpoints.glob("*.json")
+        argv = ["resume", saved.stem, "--checkpoint-dir", str(checkpoints), "--approve"]
+        result = runner.invoke(app, [*argv, "--lite", "--json"])
+        assert result.exit_code == 0, result.output
+        parsed = json.loads(result.output[result.output.index("{") :])
+        assert parsed["final_state"]["result"] == "recorded send"
