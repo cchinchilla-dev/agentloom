@@ -289,14 +289,18 @@ class _OwnTape:
             await self._tape.capture(step_id, own)
 
 
+AGENT_TOOL_PARAMETERS: dict[str, Any] = {
+    "type": "object",
+    "properties": {"message": {"type": "string", "description": "What to ask the agent."}},
+    "required": ["message"],
+}
+"""The parameters of an agent offered as a tool."""
+
+
 class _AgentAsTool(BaseTool):
     """Another agent offered as a tool: each call runs a turn of it on a fresh conversation."""
 
-    parameters_schema = {
-        "type": "object",
-        "properties": {"message": {"type": "string", "description": "What to ask the agent."}},
-        "required": ["message"],
-    }
+    parameters_schema = AGENT_TOOL_PARAMETERS
 
     def __init__(self, entry: AgentTool, context: StepContext, gateway: Any) -> None:
         self.name = entry.name
