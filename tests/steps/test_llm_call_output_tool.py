@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agentloom.core.models import (
     Conversation,
@@ -50,6 +51,14 @@ class Total(BaseModel):
     """The reply of the pydantic-mode tests, loaded by dotted path."""
 
     total: int
+
+
+class Invoice(BaseModel):
+    """A reply with an alias, defaults and a date, loaded by dotted path."""
+
+    amount: int = Field(alias="total")
+    currency: str = "EUR"
+    issued: date = date(2026, 1, 1)
 
 
 class _Add(BaseTool):
@@ -198,13 +207,56 @@ class TestOutputTool:
         assert "'total' is a required property" in sent[0]["content"]
         assert sent[1]["content"] == "2"
 
-    async def test_a_valid_reply_ends_the_turn_without_running_other_calls(self) -> None:
+    async def test_other_calls_run_next_to_a_valid_reply(self) -> None:
         gateway = _Gateway(_turn("", _add(1, 2, 3), _final(1, total=5)))
-        result, _, tool = await _run(_step(), gateway)
+        result, state, tool = await _run(_step(), gateway)
 
         assert result.status == StepStatus.SUCCESS
-        assert tool.calls == []
+        assert tool.calls == [{"a": 2, "b": 3}]
+        assert await state.get("reply") == {"total": 5}
         assert len(gateway.calls) == 1
+
+    async def test_the_first_valid_reply_is_kept(self) -> None:
+        gateway = _Gateway(
+            _turn("", _final(1, total="five"), _final(2, total=5), _final(3, total=7))
+        )
+        result, state, _ = await _run(_step(), gateway)
+
+        assert result.status == StepStatus.SUCCESS
+        assert await state.get("reply") == {"total": 5}
+        assert len(gateway.calls) == 1
+
+    async def test_a_reply_next_to_a_failed_call_is_sent_back(self) -> None:
+        lookup = ToolCall(id="u1", name="lookup", arguments={})
+        gateway = _Gateway(
+            _turn("", _final(1, total="five"), _final(2, total=5), lookup, cost=0.1),
+            _turn("", _final(3, total=6), cost=0.2),
+        )
+        result, state, _ = await _run(_step(), gateway)
+
+        assert result.status == StepStatus.SUCCESS
+        assert await state.get("reply") == {"total": 6}
+        assert result.cost_usd == pytest.approx(0.3)
+        invalid, unused, failed = _tool_results(gateway.calls[1])
+        assert invalid["tool_call_id"] == "f1"
+        assert "'five' is not of type 'integer'" in invalid["content"]
+        assert unused == {
+            "role": "tool",
+            "tool_call_id": "f2",
+            "content": "Not used: another call of this response failed. "
+            "Call final_result again once you have read its result.",
+        }
+        assert failed["tool_call_id"] == "u1"
+        assert failed["content"].startswith("tool 'lookup' not registered")
+
+    async def test_a_reply_next_to_a_failed_call_at_the_cap_fails_for_good(self) -> None:
+        lookup = ToolCall(id="u1", name="lookup", arguments={})
+        gateway = _Gateway(_turn("", lookup, _final(1, total=5)))
+        result, state, _ = await _run(_step(iterations=1), gateway)
+
+        assert result.status == StepStatus.FAILED
+        assert result.error == "Step 's': No valid 'final_result' call within 1 model calls"
+        assert await state.get("reply") is None
 
     def test_the_reminder_names_the_tool(self) -> None:
         assert OUTPUT_TOOL_REMINDER == (
@@ -350,6 +402,19 @@ class TestOutputTool:
         assert result.status == StepStatus.SUCCESS
         chat = Conversation.model_validate(await state.get("chat"))
         assert chat.messages[-1] == Message(role="assistant", content='{"total": 5}', name="calc")
+
+    async def test_conversation_keeps_the_validated_reply(self) -> None:
+        """Its defaults included, under the field names its schema gave the model."""
+        schema = ResponseSchema(type="pydantic", model=f"{__name__}.Invoice")
+        gateway = _Gateway(_turn("", _final(1, total=5)))
+        result, state, _ = await _run(_step(conversation="chat"), gateway, executor=_Typed(schema))
+
+        assert await state.get("reply") == Invoice(total=5)
+        assert result.output == '{"total": 5, "currency": "EUR", "issued": "2026-01-01"}'
+        chat = Conversation.model_validate(await state.get("chat"))
+        assert (
+            chat.messages[-1].content == '{"total": 5, "currency": "EUR", "issued": "2026-01-01"}'
+        )
 
     async def test_the_reply_json_keeps_its_text_as_written(self) -> None:
         gateway = _Gateway(_turn("", _final(1, answer='Désolé, "non"')))

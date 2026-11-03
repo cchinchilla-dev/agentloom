@@ -87,10 +87,12 @@ class LLMCallStep(BaseStep):
         Cost and tokens accumulate across iterations. ``max_tool_iterations``
         bounds the loop; collapses to a single call when ``tools`` is empty.
         With an ``output_schema`` (an agent step's turn with tools, #120) the
-        loop ends when the model calls the output tool with valid arguments,
-        which become ``parsed``.
+        loop ends on the first output-tool call with valid arguments, which
+        become ``parsed``, once the other calls of its response have run; if
+        one of them failed, the model is asked again.
         """
         import jsonschema  # type: ignore[import-untyped]
+        from pydantic import BaseModel
         from pydantic import ValidationError as PydanticValidationError
 
         from agentloom.core.models import OUTPUT_TOOL, ResponseSchemaConfigError
@@ -98,6 +100,7 @@ class LLMCallStep(BaseStep):
         from agentloom.providers.base import ToolCall
         from agentloom.steps._structured import (
             OUTPUT_TOOL_REMINDER,
+            OUTPUT_TOOL_UNUSED,
             format_output_feedback,
             output_tool,
             validate_parsed,
@@ -155,21 +158,26 @@ class LLMCallStep(BaseStep):
             accumulated_reasoning += response.usage.reasoning_tokens
             accumulated_cost += response.cost_usd
 
-            feedback: str | None = None
+            # The errors of each invalid output-tool call, by its position in the response
+            feedback: dict[int, str] = {}
+            reply: Any = None
+            replied = False
             if output_schema is not None:
-                final = next((c for c in response.tool_calls if c.name == OUTPUT_TOOL), None)
-                if final is None and not response.tool_calls:
+                if not response.tool_calls:
                     # A provider that ignores tool_choice (Ollama) may still answer in text.
                     messages.append({"role": "assistant", "content": response.content or ""})
                     messages.append({"role": "user", "content": OUTPUT_TOOL_REMINDER})
                     continue
-                if final is not None and INVALID_ARGUMENTS in final.arguments:
-                    # Cut short at the token limit, or not an object: never an empty reply
-                    raw = final.arguments[INVALID_ARGUMENTS]
-                    feedback = format_output_feedback(ValueError(f"not valid JSON: {raw!r}"))
-                elif final is not None:
+                for i, call in enumerate(response.tool_calls):
+                    if call.name != OUTPUT_TOOL or replied:
+                        continue
+                    if INVALID_ARGUMENTS in call.arguments:
+                        # Cut short at the token limit, or not an object: never an empty reply
+                        raw = call.arguments[INVALID_ARGUMENTS]
+                        feedback[i] = format_output_feedback(ValueError(f"not valid JSON: {raw!r}"))
+                        continue
                     try:
-                        response.parsed = validate_parsed(final.arguments, output_schema, step.id)
+                        reply = validate_parsed(call.arguments, output_schema, step.id)
                     except ResponseSchemaConfigError as exc:
                         raise StepError(step.id, str(exc), is_retryable=False) from exc
                     except (
@@ -177,16 +185,16 @@ class LLMCallStep(BaseStep):
                         jsonschema.ValidationError,
                         TypeError,
                     ) as exc:
-                        feedback = format_output_feedback(exc)
+                        feedback[i] = format_output_feedback(exc)
                     else:
-                        # The reply's text is its JSON, for the conversation and the result.
-                        response.content = json.dumps(final.arguments, ensure_ascii=False)
-                        return _with_totals(response)
+                        replied = True
             elif not response.tool_calls or not step.tools:
                 return _with_totals(response)
 
-            # Output-tool calls are not dispatched: invalid ones get the errors as their result.
-            pending = [c for c in response.tool_calls if c.name != OUTPUT_TOOL or feedback is None]
+            # Output-tool calls are not dispatched; the others run, next to a reply too.
+            pending = [
+                c for c in response.tool_calls if output_schema is None or c.name != OUTPUT_TOOL
+            ]
             results: list[tuple[ToolCall, str, bool]] = []
             if pending:
                 if context.tool_registry is None:
@@ -200,11 +208,24 @@ class LLMCallStep(BaseStep):
                     observer=context.observer,
                     step_id=step.id,
                 )
-            if feedback is not None:
+            if output_schema is not None:
+                if replied and all(ok for _, _, ok in results):
+                    response.parsed = reply
+                    value = (
+                        reply.model_dump(mode="json", by_alias=True)
+                        if isinstance(reply, BaseModel)
+                        else reply
+                    )
+                    # The reply's text is its validated JSON, for the conversation and the result.
+                    response.content = json.dumps(value, ensure_ascii=False)
+                    return _with_totals(response)
+                # A call that failed sends the reply back, which did not see its result.
                 done = iter(results)
                 results = [
-                    (c, feedback, False) if c.name == OUTPUT_TOOL else next(done)
-                    for c in response.tool_calls
+                    (c, feedback.get(i, OUTPUT_TOOL_UNUSED), False)
+                    if c.name == OUTPUT_TOOL
+                    else next(done)
+                    for i, c in enumerate(response.tool_calls)
                 ]
             messages.append(
                 build_assistant_message_with_tool_calls(

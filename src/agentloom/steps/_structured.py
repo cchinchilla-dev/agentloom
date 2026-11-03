@@ -414,6 +414,12 @@ def format_validation_feedback(error: Exception, step_id: str) -> str:
 # Sent back when a model that must reply through the output tool answers in text instead.
 OUTPUT_TOOL_REMINDER = f"Reply by calling the {OUTPUT_TOOL} tool, with your reply as its arguments."
 
+# The result of a valid output-tool call next to a call that failed, so the model replies again.
+OUTPUT_TOOL_UNUSED = (
+    f"Not used: another call of this response failed. Call {OUTPUT_TOOL} again "
+    "once you have read its result."
+)
+
 
 def output_tool(response_schema: ResponseSchema, step_id: str) -> ToolDefinition:
     """The tool a step with both ``tools`` and a schema delivers its reply through (#120).
@@ -460,6 +466,7 @@ def format_output_feedback(error: Exception) -> str:
 
 __all__ = [
     "OUTPUT_TOOL_REMINDER",
+    "OUTPUT_TOOL_UNUSED",
     "anthropic_system_prefix",
     "extract_parsed",
     "format_output_feedback",

@@ -722,6 +722,20 @@ class TestNestedAgents:
         (sent,) = _tool_results(provider.calls[2])
         assert sent["content"] == '{"ticket": "T-9"}'
 
+    async def test_an_agent_tool_next_to_a_reply_runs(self) -> None:
+        schema = {"type": "pydantic", "model": f"{__name__}.Ticket"}
+        typed = {**self._support(), "output_schema": schema}
+        provider = _Scripted(
+            _turn("", _call("escalate", message="open one"), _call("final_result", ticket="T-1")),
+            _turn("Opened.", cost=0.05),
+        )
+        result = await _run(_workflow(_agent_step(typed), state={"question": "q"}), provider)
+
+        assert result.final_state["reply"] == Ticket(ticket="T-1")
+        assert len(provider.calls) == 2
+        assert provider.calls[1]["messages"][-1]["content"] == "open one"
+        assert result.step_results["ask"].cost_usd == pytest.approx(0.05)
+
     @pytest.mark.parametrize("arguments", [{}, {"message": ""}, {"message": 3}])
     async def test_a_call_without_a_message_is_an_error_for_the_model(
         self, arguments: dict[str, Any]
@@ -860,6 +874,27 @@ class TestNestedAgents:
             "Step 'ask': Agent 'support' spent $0.7000, over its max_cost_usd of $0.5"
         )
         assert ask.cost_usd == pytest.approx(0.7)  # what the provider charged, failed or not
+        assert "reply" not in result.final_state
+
+    async def test_a_reply_next_to_a_nested_agent_over_the_cap_fails_the_turn(self) -> None:
+        support = {
+            **self._support(),
+            "output_schema": {"type": "pydantic", "model": f"{__name__}.Ticket"},
+            "constraints": {"max_cost_usd": 0.5},
+        }
+        provider = _Scripted(
+            _turn(
+                "", _call("escalate", message="?"), _call("final_result", ticket="T-1"), cost=0.1
+            ),
+            _turn("pricey", cost=0.6),
+        )
+        result = await _run(_workflow(_agent_step(support), state={"question": "q"}), provider)
+
+        ask = result.step_results["ask"]
+        assert ask.status == StepStatus.FAILED
+        assert ask.error == (
+            "Step 'ask': Agent 'support' spent $0.7000, over its max_cost_usd of $0.5"
+        )
         assert "reply" not in result.final_state
 
     async def test_the_turn_reports_the_tokens_of_every_call(self) -> None:
