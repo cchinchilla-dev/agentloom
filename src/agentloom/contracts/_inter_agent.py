@@ -26,8 +26,14 @@ class _Event(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     event_id: UUID5 = Field(description="Derived from the step path, the type and the position.")
-    agent_id: str = Field(description="The step's speaker, or the step itself when it has none.")
-    step_id: str = Field(description="The step's path; a subworkflow's steps read parent.child.")
+    agent_id: str = Field(
+        description="The step's speaker, or the step itself when it has none; "
+        "an agent called as a tool, by its name."
+    )
+    step_id: str = Field(
+        description="The step's path; a subworkflow's steps read parent.child, "
+        "an agent called as a tool step::tool#n."
+    )
     parent_event_ids: list[UUID5] = Field(
         default_factory=list, description="The events this one causally follows, sorted."
     )
@@ -36,14 +42,14 @@ class _Event(BaseModel):
 
 
 class TaskSentEvent(_Event):
-    """A step's result handed to a step that depends on it."""
+    """A step's result handed to a step that depends on it, or a message to an agent it calls."""
 
     type: Literal["task_sent"]
     recipient_agent_id: str
 
 
 class TaskReceivedEvent(_Event):
-    """A step starts with what the steps it depends on handed it."""
+    """A step, or an agent called as a tool, starts with what it was handed."""
 
     type: Literal["task_received"]
 

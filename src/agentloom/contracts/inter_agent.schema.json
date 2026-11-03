@@ -14,12 +14,12 @@
           "type": "string"
         },
         "agent_id": {
-          "description": "The step's speaker, or the step itself when it has none.",
+          "description": "The step's speaker, or the step itself when it has none; an agent called as a tool, by its name.",
           "title": "Agent Id",
           "type": "string"
         },
         "step_id": {
-          "description": "The step's path; a subworkflow's steps read parent.child.",
+          "description": "The step's path; a subworkflow's steps read parent.child, an agent called as a tool step::tool#n.",
           "title": "Step Id",
           "type": "string"
         },
@@ -72,12 +72,12 @@
           "type": "string"
         },
         "agent_id": {
-          "description": "The step's speaker, or the step itself when it has none.",
+          "description": "The step's speaker, or the step itself when it has none; an agent called as a tool, by its name.",
           "title": "Agent Id",
           "type": "string"
         },
         "step_id": {
-          "description": "The step's path; a subworkflow's steps read parent.child.",
+          "description": "The step's path; a subworkflow's steps read parent.child, an agent called as a tool step::tool#n.",
           "title": "Step Id",
           "type": "string"
         },
@@ -126,7 +126,7 @@
     },
     "TaskReceivedEvent": {
       "additionalProperties": false,
-      "description": "A step starts with what the steps it depends on handed it.",
+      "description": "A step, or an agent called as a tool, starts with what it was handed.",
       "properties": {
         "event_id": {
           "description": "Derived from the step path, the type and the position.",
@@ -135,12 +135,12 @@
           "type": "string"
         },
         "agent_id": {
-          "description": "The step's speaker, or the step itself when it has none.",
+          "description": "The step's speaker, or the step itself when it has none; an agent called as a tool, by its name.",
           "title": "Agent Id",
           "type": "string"
         },
         "step_id": {
-          "description": "The step's path; a subworkflow's steps read parent.child.",
+          "description": "The step's path; a subworkflow's steps read parent.child, an agent called as a tool step::tool#n.",
           "title": "Step Id",
           "type": "string"
         },
@@ -184,7 +184,7 @@
     },
     "TaskSentEvent": {
       "additionalProperties": false,
-      "description": "A step's result handed to a step that depends on it.",
+      "description": "A step's result handed to a step that depends on it, or a message to an agent it calls.",
       "properties": {
         "event_id": {
           "description": "Derived from the step path, the type and the position.",
@@ -193,12 +193,12 @@
           "type": "string"
         },
         "agent_id": {
-          "description": "The step's speaker, or the step itself when it has none.",
+          "description": "The step's speaker, or the step itself when it has none; an agent called as a tool, by its name.",
           "title": "Agent Id",
           "type": "string"
         },
         "step_id": {
-          "description": "The step's path; a subworkflow's steps read parent.child.",
+          "description": "The step's path; a subworkflow's steps read parent.child, an agent called as a tool step::tool#n.",
           "title": "Step Id",
           "type": "string"
         },
@@ -256,12 +256,12 @@
           "type": "string"
         },
         "agent_id": {
-          "description": "The step's speaker, or the step itself when it has none.",
+          "description": "The step's speaker, or the step itself when it has none; an agent called as a tool, by its name.",
           "title": "Agent Id",
           "type": "string"
         },
         "step_id": {
-          "description": "The step's path; a subworkflow's steps read parent.child.",
+          "description": "The step's path; a subworkflow's steps read parent.child, an agent called as a tool step::tool#n.",
           "title": "Step Id",
           "type": "string"
         },
@@ -319,12 +319,12 @@
           "type": "string"
         },
         "agent_id": {
-          "description": "The step's speaker, or the step itself when it has none.",
+          "description": "The step's speaker, or the step itself when it has none; an agent called as a tool, by its name.",
           "title": "Agent Id",
           "type": "string"
         },
         "step_id": {
-          "description": "The step's path; a subworkflow's steps read parent.child.",
+          "description": "The step's path; a subworkflow's steps read parent.child, an agent called as a tool step::tool#n.",
           "title": "Step Id",
           "type": "string"
         },

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from pydantic import BaseModel
 
+from agentloom.core.inter_agent import paused_events
 from agentloom.core.models import AgentDefinition, Conversation
 from agentloom.core.results import StepStatus
 from agentloom.exceptions import AgentError, RecordingMismatchError, StepError
@@ -72,15 +73,17 @@ class Agent:
         from agentloom.steps.agent import run_turn
 
         try:
-            result, state, step = await run_turn(
-                self.definition,
-                prompt,
-                step_id=self.definition.name,
-                gateway=self._gateway,
-                tool_registry=self._tool_registry,
-                model=self._model,
-                conversation=conversation,
-            )
+            # No step of a run: what it does is not in the inter-agent event log
+            with paused_events():
+                result, state, step = await run_turn(
+                    self.definition,
+                    prompt,
+                    step_id=self.definition.name,
+                    gateway=self._gateway,
+                    tool_registry=self._tool_registry,
+                    model=self._model,
+                    conversation=conversation,
+                )
         # A turn that cannot start (a broken template, no prompt), or a replay off its recording
         except (StepError, RecordingMismatchError) as e:
             raise AgentError(str(e)) from e

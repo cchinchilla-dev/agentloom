@@ -34,7 +34,7 @@ def test_agent_replays_offline() -> None:
         ("user", None),
         ("assistant", "support_desk"),
     ] * 2
-    assert run["total_cost_usd"] == pytest.approx(0.006321)
+    assert run["total_cost_usd"] == pytest.approx(0.006462)
 
 
 def test_verify_determinism_passes_on_the_agent_example() -> None:
@@ -42,4 +42,4 @@ def test_verify_determinism_passes_on_the_agent_example() -> None:
     result = runner.invoke(app, argv)
 
     assert result.exit_code == 0, result.output
-    assert "status success, 15 events" in result.output
+    assert "status success, 18 events" in result.output

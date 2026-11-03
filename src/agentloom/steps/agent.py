@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import anyio
 from pydantic import BaseModel
 
-from agentloom.core.inter_agent import paused_events
+from agentloom.core.inter_agent import called_agent, log_reply
 from agentloom.core.models import (
     AgentDefinition,
     AgentTool,
@@ -312,7 +312,14 @@ class _AgentAsTool(BaseTool):
             raise ValueError("'message' must be a non-empty string")
         # One recording key per call, in the order the calls start, so parallel calls replay.
         self._calls += 1
-        step_id = f"{self._context.step_definition.id}::{self.name}#{self._calls}"
+        number = self._calls
+        step_id = f"{self._context.step_definition.id}::{self.name}#{number}"
+        with called_agent(self.name, number, self._agent.name, message):
+            reply = await self._turn(message, step_id)
+            log_reply(reply)
+        return reply
+
+    async def _turn(self, message: str, step_id: str) -> Any:
         try:
             result, state, _ = await run_turn(
                 self._agent,
@@ -358,8 +365,8 @@ async def run_turn(
 
     The state holds the message, the conversation (``conversation``) and the reply
     (``reply``), over *state* when given (the calling workflow's, for an agent used as a
-    tool, so its prompts render as the caller's do); the turn logs no inter-agent events,
-    as it is not a step of a workflow. ``model`` applies when the agent names none;
+    tool, so its prompts render as the caller's do); the caller decides what the turn logs in the
+    inter-agent event log. ``model`` applies when the agent names none;
     ``retryable_status_codes`` classify a provider error of the turn as transient (the
     defaults of a step otherwise).
     """
@@ -391,6 +398,5 @@ async def run_turn(
         workflow_model=model,
     )
     executor = AgentStep()
-    with paused_events():
-        result = await executor.execute(context)
+    result = await executor.execute(context)
     return result, turn_state, executor

@@ -11,7 +11,7 @@ from typing import Any
 
 import anyio
 
-from agentloom.core.inter_agent import log_tools
+from agentloom.core.inter_agent import calling, log_tools
 from agentloom.core.models import ToolDefinition
 from agentloom.providers.base import ToolCall
 
@@ -223,6 +223,7 @@ async def dispatch_tool_calls(
     served = tape.serve(step_id, calls) if tape is not None else [None] * len(calls)
 
     async def _run(idx: int, call: ToolCall) -> None:
+        calling(idx)  # an agent called as a tool links its events to this call
         start = time.monotonic()
         recorded = served[idx]
         text, success = recorded if recorded is not None else await _execute(call, tool_registry)

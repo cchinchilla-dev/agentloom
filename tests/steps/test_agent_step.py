@@ -682,10 +682,23 @@ class TestAgentStep:
             )
 
         events = log.events()
-        assert {e.agent_id for e in events} == {"support"}
-        assert [e.tool_name for e in events if e.type == "tool_call"] == ["escalate"]
-        written = [e.key for e in events if e.type == "state_transition"]
-        assert written == ["reply"]
+        assert [(e.type, e.agent_id, e.step_id) for e in events] == [
+            ("task_received", "support", "ask"),
+            ("tool_call", "support", "ask"),
+            ("task_sent", "support", "ask"),
+            ("task_received", "specialist", "ask::escalate#1"),
+            ("response_sent", "specialist", "ask::escalate#1"),
+            ("tool_return", "support", "ask"),
+            ("response_sent", "support", "ask"),
+            ("state_transition", "support", "ask"),
+        ]
+        call, sent, received, answered, returned = events[1:6]
+        assert sent.recipient_agent_id == "specialist"
+        assert sent.parent_event_ids == [call.event_id]
+        assert received.parent_event_ids == [sent.event_id]
+        assert returned.parent_event_ids == sorted([call.event_id, answered.event_id])
+        assert events[6].parent_event_ids == [returned.event_id]
+        assert events[-1].key == "reply"
 
 
 class TestNestedAgents:
@@ -859,6 +872,110 @@ class TestNestedAgents:
             "ask::escalate#1",
             "ask",
         ]
+
+    async def test_a_nested_agent_logs_its_own_tool_calls(self) -> None:
+        provider = _Scripted(
+            _turn("", _call("add", a=1, b=1), _call("escalate", message="2+3?")),
+            _turn("", _call("add", a=2, b=3)),
+            _turn("5"),
+            _turn("It is 5."),
+        )
+        support = {
+            "name": "support",
+            "tools": ["add", {"name": "escalate", "agent": {**self.SPECIALIST, "tools": ["add"]}}],
+        }
+        log = EventLog()
+        with recording_events(log):
+            await _run(
+                _workflow(_agent_step(support), state={"question": "q"}),
+                provider,
+                _registry(_Add()),
+            )
+
+        events = log.events()
+        (escalate,) = [e for e in events if e.type == "tool_call" and e.tool_name == "escalate"]
+        (sent,) = [e for e in events if e.type == "task_sent"]
+        assert sent.parent_event_ids == [escalate.event_id]
+        nested = [e for e in events if e.step_id == "ask::escalate#1"]
+        assert [(e.type, e.agent_id, getattr(e, "tool_name", None)) for e in nested] == [
+            ("task_received", "specialist", None),
+            ("tool_call", "specialist", "add"),
+            ("tool_return", "specialist", "add"),
+            ("response_sent", "specialist", None),
+        ]
+        assert nested[1].parent_event_ids == [nested[0].event_id]
+        assert nested[3].parent_event_ids == [nested[2].event_id]
+
+    async def test_a_nested_turn_that_fails_logs_no_reply(self) -> None:
+        provider = _Scripted(
+            _turn("", _call("escalate", message="?")),
+            _turn("Roaming fees."),
+            _turn("I could not find out."),
+        )
+        log = EventLog()
+        nested = self._support(constraints={"forbidden_patterns": ["roaming"]})
+        with recording_events(log):
+            await _run(_workflow(_agent_step(nested), state={"question": "q"}), provider)
+
+        events = log.events()
+        assert [e.type for e in events if e.agent_id == "specialist"] == ["task_received"]
+        (call,) = [e for e in events if e.type == "tool_call"]
+        (returned,) = [e for e in events if e.type == "tool_return"]
+        assert returned.parent_event_ids == [call.event_id]
+
+    async def test_a_retry_forgets_the_nested_turns_of_the_failed_attempt(self) -> None:
+        provider = _Scripted(
+            _turn("", _call("escalate", message="?")),
+            ProviderError("openai", "unavailable", status_code=503),
+            _turn("", _call("escalate", message="?")),
+            _turn("Roaming."),
+            _turn("It is roaming."),
+        )
+        step = _agent_step(
+            self._support(), retry={"max_retries": 1, "backoff_base": 0, "jitter": False}
+        )
+        log = EventLog()
+        with recording_events(log):
+            await _run(_workflow(step, state={"question": "q"}), provider)
+
+        nested = [e.type for e in log.events() if e.agent_id == "specialist"]
+        assert nested == ["task_received", "response_sent"]
+
+    async def test_a_turn_invoked_inside_a_step_logs_nothing(self) -> None:
+        provider = _Scripted(
+            _turn("", _call("delegate", x="?")),
+            _turn("", _call("add", a=1, b=1)),
+            _turn("2"),
+            _turn("done"),
+        )
+        gateway = ProviderGateway()
+        gateway.register(provider)
+        helper = Agent(
+            AgentDefinition(name="helper", tools=["add"]),
+            gateway=gateway,
+            tool_registry=_registry(_Add()),
+            model="m",
+        )
+
+        class _Delegate(BaseTool):
+            name = "delegate"
+            description = "Ask the helper."
+            parameters_schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+
+            async def execute(self, **kwargs: Any) -> Any:
+                return (await helper.invoke(str(kwargs["x"]))).reply
+
+        log = EventLog()
+        with recording_events(log):
+            await _run(
+                _workflow(
+                    _agent_step({"name": "support", "tools": ["delegate"]}), state={"question": "q"}
+                ),
+                provider,
+                _registry(_Delegate()),
+            )
+
+        assert [e.tool_name for e in log.events() if e.type == "tool_call"] == ["delegate"]
 
     async def test_a_replay_mismatch_in_a_nested_turn_fails_at_once(self) -> None:
         provider = _Scripted(
