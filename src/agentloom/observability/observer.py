@@ -444,6 +444,36 @@ class WorkflowObserver:
             if trimmed_count:
                 span.set_attribute(SpanAttr.CONVERSATION_TRIMMED_MESSAGES, trimmed_count)
 
+    def on_agent_turn(
+        self,
+        *,
+        step_id: str,
+        agent: str,
+        status: str,
+        iterations: int,
+        tool_calls: int,
+        cost_usd: float,
+        output_valid: bool | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Record the turn of an ``agent`` step (#120): attributes on its span, and the metrics.
+
+        ``output_valid`` is ``None`` for an agent without an ``output_schema``.
+        """
+        if self._metrics:
+            self._metrics.record_agent_turn(agent, status, iterations)
+        span = self._step_spans.get(step_id)
+        if span:
+            span.set_attribute(
+                SpanAttr.GEN_AI_OPERATION_NAME, GenAIOperationName.INVOKE_AGENT.value
+            )
+            span.set_attribute(SpanAttr.GEN_AI_AGENT_NAME, agent)
+            span.set_attribute(SpanAttr.AGENT_ITERATIONS, iterations)
+            span.set_attribute(SpanAttr.AGENT_TOOL_CALLS, tool_calls)
+            span.set_attribute(SpanAttr.AGENT_COST_USD, cost_usd)
+            if output_valid is not None:
+                span.set_attribute(SpanAttr.AGENT_OUTPUT_VALID, output_valid)
+
     def on_provider_error(
         self,
         provider: str,

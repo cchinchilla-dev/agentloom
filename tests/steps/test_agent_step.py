@@ -701,6 +701,123 @@ class TestAgentStep:
         assert events[-1].key == "reply"
 
 
+class _Watcher:
+    """Keeps what the engine and the agent step report to an observer."""
+
+    def __init__(self) -> None:
+        self.turns: list[dict[str, Any]] = []
+        self.tokens: list[tuple[str, str, int, int]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return lambda *args, **kwargs: None
+
+    def on_agent_turn(self, **kwargs: Any) -> None:
+        self.turns.append(kwargs)
+
+    def on_tokens(self, provider: str, model: str, prompt: int, completion: int, **_: Any) -> None:
+        self.tokens.append((provider, model, prompt, completion))
+
+
+def _used(
+    content: str = "", *calls: ToolCall, model: str = "m", tokens: int = 1
+) -> ProviderResponse:
+    return ProviderResponse(
+        content=content,
+        model=model,
+        provider="openai",
+        tool_calls=list(calls),
+        cost_usd=0.1,
+        usage=TokenUsage(prompt_tokens=tokens, completion_tokens=tokens, total_tokens=2 * tokens),
+    )
+
+
+class TestAgentObservability:
+    async def test_the_turn_is_reported_to_the_observer(self) -> None:
+        watcher = _Watcher()
+        provider = _Scripted(
+            _used("", _call("add", a=2, b=3)),
+            _used("", _call("final_result", ticket="T-5")),
+        )
+        agent = {**SUPPORT, "output_schema": {"type": "pydantic", "model": f"{__name__}.Ticket"}}
+        await _run(
+            _workflow(_agent_step(agent), state={"question": "q"}),
+            provider,
+            _registry(_Add()),
+            observer=watcher,
+        )
+
+        assert watcher.turns == [
+            {
+                "step_id": "ask",
+                "agent": "support",
+                "status": "success",
+                "iterations": 2,
+                "tool_calls": 1,
+                "cost_usd": pytest.approx(0.2),
+                "output_valid": True,
+            }
+        ]
+
+    async def test_a_turn_without_a_valid_reply_is_reported_invalid(self) -> None:
+        watcher = _Watcher()
+        provider = _Scripted(_used("", _call("final_result", ticket=5)))
+        agent = {
+            **SUPPORT,
+            "output_schema": {"type": "pydantic", "model": f"{__name__}.Ticket"},
+            "loop_policy": {"max_iterations": 1},
+        }
+        await _run(
+            _workflow(_agent_step(agent), state={"question": "q"}),
+            provider,
+            _registry(_Add()),
+            observer=watcher,
+        )
+
+        (turn,) = watcher.turns
+        assert (turn["status"], turn["output_valid"]) == ("failed", False)
+
+    async def test_an_agent_without_a_schema_reports_no_validity(self) -> None:
+        watcher = _Watcher()
+        await _run(
+            _workflow(_agent_step(SUPPORT), state={"question": "q"}),
+            _Scripted(_used("5")),
+            _registry(_Add()),
+            observer=watcher,
+        )
+
+        assert watcher.turns[0]["output_valid"] is None
+
+    async def test_tokens_count_under_each_model(self) -> None:
+        watcher = _Watcher()
+        provider = _Scripted(
+            _used("", _call("escalate", message="?"), model="big", tokens=10),
+            _used("Roaming.", model="small", tokens=3),
+            _used("It is roaming.", model="big", tokens=20),
+        )
+        agent = {
+            "name": "support",
+            "tools": [{"name": "escalate", "agent": {"name": "specialist"}}],
+        }
+        result = await _run(
+            _workflow(_agent_step(agent), state={"question": "q"}), provider, observer=watcher
+        )
+
+        assert sorted(watcher.tokens) == [("openai", "big", 30, 30), ("openai", "small", 3, 3)]
+        assert result.step_results["ask"].token_usage.total_tokens == 66
+
+    async def test_one_model_counts_under_the_step(self) -> None:
+        watcher = _Watcher()
+        result = await _run(
+            _workflow(_agent_step(SUPPORT), state={"question": "q"}),
+            _Scripted(_used("5", tokens=4)),
+            _registry(_Add()),
+            observer=watcher,
+        )
+
+        assert watcher.tokens == [("openai", "m", 4, 4)]
+        assert result.step_results["ask"].usage_by_model == []
+
+
 class TestNestedAgents:
     SPECIALIST = {
         "name": "specialist",

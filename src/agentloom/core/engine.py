@@ -33,6 +33,7 @@ from agentloom.core.models import StepDefinition, StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.redact import RedactionPolicy, is_redacted, redact_state
 from agentloom.core.results import (
+    ModelUsage,
     StepResult,
     StepStatus,
     WorkflowResult,
@@ -980,14 +981,22 @@ class WorkflowEngine:
                             prompt_template_vars=(",".join(pmeta.template_vars) if pmeta else None),
                         )
                         if result.provider and result.model:
-                            if result.token_usage.total_tokens > 0:
-                                self.observer.on_tokens(
-                                    result.provider,
-                                    result.model,
-                                    result.token_usage.prompt_tokens,
-                                    result.token_usage.completion_tokens,
-                                    reasoning_tokens=result.token_usage.reasoning_tokens,
+                            # Each model's tokens under it, those of agents called as tools too
+                            for used in result.usage_by_model or [
+                                ModelUsage(
+                                    provider=result.provider,
+                                    model=result.model,
+                                    token_usage=result.token_usage,
                                 )
+                            ]:
+                                if used.token_usage.total_tokens > 0:
+                                    self.observer.on_tokens(
+                                        used.provider,
+                                        used.model,
+                                        used.token_usage.prompt_tokens,
+                                        used.token_usage.completion_tokens,
+                                        reasoning_tokens=used.token_usage.reasoning_tokens,
+                                    )
                             if result.time_to_first_token_ms is not None:
                                 self.observer.on_stream_response(
                                     result.provider,

@@ -66,6 +66,8 @@ class MetricsManager:
         self._ttft_histogram: Any = None
         self._tool_call_counter: Any = None
         self._tool_call_histogram: Any = None
+        self._agent_counter: Any = None
+        self._agent_iterations_histogram: Any = None
         self._embedding_counter: Any = None
         self._embedding_dimensions_histogram: Any = None
         self._mock_replay_counter: Any = None
@@ -186,6 +188,14 @@ class MetricsManager:
         self._conversation_trims_counter = meter.create_counter(
             "agentloom_conversation_trims_total",
             description="Total conversation trim-policy invocations",
+        )
+        self._agent_counter = meter.create_counter(
+            "agentloom_agent_invocations_total",
+            description="Agent turns, by agent and status",
+        )
+        self._agent_iterations_histogram = meter.create_histogram(
+            "agentloom_agent_iterations",
+            description="Model calls per agent turn",
         )
         self._conversation_message_histogram = meter.create_histogram(
             "agentloom_conversation_message_count",
@@ -339,6 +349,17 @@ class MetricsManager:
             "agentloom_conversation_trims_total",
             "Total conversation trim-policy invocations",
             ["policy", "conversation_key"],
+        )
+        self._prom_counters["agent_invocations"] = prom.Counter(  # pragma: no cover
+            "agentloom_agent_invocations_total",
+            "Agent turns, by agent and status",
+            ["name", "status"],
+        )
+        self._prom_histograms["agent_iterations"] = prom.Histogram(  # pragma: no cover
+            "agentloom_agent_iterations",
+            "Model calls per agent turn",
+            ["name"],
+            buckets=[1, 2, 3, 5, 8, 13, 21],
         )
         self._prom_histograms["conversation_message_count"] = prom.Histogram(  # pragma: no cover
             "agentloom_conversation_message_count",
@@ -598,6 +619,17 @@ class MetricsManager:
                 self._prom_counters["conversation_trims"].labels(
                     policy=trim_policy, conversation_key=conversation_key
                 ).inc()
+
+    def record_agent_turn(self, name: str, status: str, iterations: int) -> None:
+        """Record an agent's turn (#120): its status, and how many model calls it made."""
+        if not self._enabled:
+            return
+        if self._backend == "otel":
+            self._agent_counter.add(1, {"name": name, "status": status})
+            self._agent_iterations_histogram.record(iterations, {"name": name})
+        else:  # pragma: no cover — prom fallback
+            self._prom_counters["agent_invocations"].labels(name=name, status=status).inc()
+            self._prom_histograms["agent_iterations"].labels(name=name).observe(iterations)
 
     def record_embedding_call(self, provider: str, model: str, dimensions: int) -> None:
         """Record an embedding call and the requested vector size."""

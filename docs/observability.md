@@ -169,6 +169,13 @@ All metrics are prefixed with `agentloom_`.
 | `step_executions_total` | counter | step_type, status, stream | Step execution count |
 | `step_duration_seconds` | histogram | step_type, stream | Per-step latency |
 
+### Agent metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `agentloom_agent_invocations_total` | counter | name, status | Turns of each agent, by the step's status (one per attempt) |
+| `agentloom_agent_iterations` | histogram | name | Model calls per turn of each agent |
+
 ### Provider metrics
 
 AgentLoom-specific counters live alongside the canonical OTel GenAI client histogram. The histogram replaces the previous `provider_latency_seconds` — distributions are required by the spec.
@@ -184,7 +191,7 @@ AgentLoom-specific counters live alongside the canonical OTel GenAI client histo
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `gen_ai.client.token.usage` | histogram (`{token}`) | gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model, gen_ai.token.type | OTel canonical per-call token observations. `gen_ai.token.type` is `input` / `output` / `reasoning` (reasoning is an AgentLoom extension to the spec's `input`/`output` enum) |
+| `gen_ai.client.token.usage` | histogram (`{token}`) | gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model, gen_ai.token.type | OTel canonical per-call token observations. `gen_ai.token.type` is `input` / `output` / `reasoning` (reasoning is an AgentLoom extension to the spec's `input`/`output` enum). An agent step's tokens count under each model its calls ran on, the agents it called as tools included |
 | `agentloom_attachments_total` | counter | step_type | Attachment count by step type |
 
 ### Streaming metrics
@@ -244,13 +251,17 @@ Inference spans follow the **canonical OTel GenAI registry** (May 2026 spec). Wo
 | `step.id`, `step.type`, `step.status` | Step identification; `step.status` is the step's result, or `cancelled` / `budget_exceeded` when its layer is cancelled or it breaches the budget |
 | `step.duration_ms`, `step.cost_usd` | Per-step latency / spend |
 | `step.stream`, `step.attachments` | Streaming flag, attachment count |
-| `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` | Operation type (`chat` for `llm_call`), provider (e.g. `openai`, `gcp.gemini`), model |
+| `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` | Operation type (`chat` for `llm_call`, `invoke_agent` for `agent`), provider (e.g. `openai`, `gcp.gemini`), model |
 | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | Visible token counts |
 | `gen_ai.usage.reasoning.output_tokens` | Chain-of-thought tokens (o-series, Gemini 2.5+ thinking) — emitted only when non-zero |
 | `gen_ai.response.finish_reasons` | Array of provider-supplied stop reasons (e.g. `["stop"]`) |
 | `gen_ai.response.time_to_first_chunk` | Streaming-only, in seconds |
 | `agentloom.prompt.hash`, `agentloom.prompt.length_chars` | Prompt fingerprint for correlating failures with the prompt that caused them |
 | `agentloom.prompt.template_id`, `agentloom.prompt.template_vars` | Template provenance |
+| `gen_ai.agent.name` | An `agent` step's agent; its `gen_ai.operation.name` is `invoke_agent` |
+| `agent.iterations`, `agent.tool_calls` | The turn's model calls, and the tool calls its model made (its reply through `final_result` aside) |
+| `agent.cost_usd` | What the turn spent, the agents it called as tools included |
+| `agent.output_valid` | With an `output_schema`: whether the turn ended on a reply the schema validates |
 
 ### Inference-level attributes (provider span)
 

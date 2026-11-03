@@ -148,6 +148,9 @@ class NoopObserver:
     def on_conversation_turn(self, **kwargs: Any) -> None:
         pass
 
+    def on_agent_turn(self, **kwargs: Any) -> None:
+        pass
+
     def on_stream_response(self, provider: str, model: str, ttft_s: float, **kwargs: Any) -> None:
         pass
 

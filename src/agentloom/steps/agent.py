@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from agentloom.core.inter_agent import called_agent, log_reply
 from agentloom.core.models import (
+    OUTPUT_TOOL,
     AgentDefinition,
     AgentTool,
     Conversation,
@@ -20,7 +21,7 @@ from agentloom.core.models import (
     StepType,
     ToolDefinition,
 )
-from agentloom.core.results import StepResult, StepStatus, TokenUsage
+from agentloom.core.results import ModelUsage, StepResult, StepStatus, TokenUsage
 from agentloom.core.state import StateManager
 from agentloom.exceptions import RecordingMismatchError, StepError, ToolNotFoundError
 from agentloom.providers.base import ProviderResponse, ToolCall
@@ -55,6 +56,8 @@ class AgentStep(LLMCallStep):
         self._gateway: _MeteredGateway | None = None
         # Model calls of the last turn, the agent's own (not those of agents it called).
         self.iterations = 0
+        # Whether the last turn ended on a reply its output_schema validates; None without one.
+        self.output_valid: bool | None = None
 
     async def execute(self, context: StepContext) -> StepResult:
         step = context.step_definition
@@ -62,6 +65,7 @@ class AgentStep(LLMCallStep):
         assert agent is not None  # an agent step without one fails validation
         self._agent = agent
         self.iterations = 0
+        self.output_valid = None if agent.output_schema is None else False
         start = time.monotonic()
 
         if context.provider_gateway is None:
@@ -132,6 +136,8 @@ class AgentStep(LLMCallStep):
         # included, as the provider charged them.
         result.cost_usd = gateway.spent
         result.token_usage = gateway.usage
+        result.usage_by_model = gateway.usage_by_model()
+        self._observe(context, result, gateway)
         succeeded = result.status == StepStatus.SUCCESS
         if succeeded and context.stream and context.on_stream_chunk and result.output:
             try:
@@ -139,6 +145,23 @@ class AgentStep(LLMCallStep):
             except Exception:
                 logger.warning("Stream chunk callback failed")
         return result
+
+    def _observe(self, context: StepContext, result: StepResult, gateway: _MeteredGateway) -> None:
+        hook = getattr(context.observer, "on_agent_turn", None)
+        if not callable(hook):
+            return
+        try:
+            hook(
+                step_id=result.step_id,
+                agent=self._agent.name,
+                status=result.status.value,
+                iterations=gateway.calls,
+                tool_calls=gateway.tool_calls,
+                cost_usd=gateway.spent,
+                output_valid=self.output_valid,
+            )
+        except Exception:  # observability is best-effort
+            logger.debug("on_agent_turn hook failed", exc_info=True)
 
     def _output_schema(self, step: StepDefinition) -> ResponseSchema | None:
         return self._agent.output_schema
@@ -153,6 +176,8 @@ class AgentStep(LLMCallStep):
 
     def _accept(self, step: StepDefinition, response: ProviderResponse) -> None:
         agent = self._agent
+        if agent.output_schema is not None:
+            self.output_valid = response.parsed is not None
         assert self._gateway is not None  # set by execute, which calls this
         # An agent called as a tool in the last call may have broken the cap, its error going
         # back to the model as the tool's
@@ -206,23 +231,31 @@ class _MeteredGateway:
         self._agent = agent
         self.spent = 0.0
         self.usage = TokenUsage()
+        self.by_model: dict[tuple[str, str], TokenUsage] = {}
         self.calls = 0
+        self.tool_calls = 0
 
     async def complete(self, **kwargs: Any) -> ProviderResponse:
         self.check_spend()
         response: ProviderResponse = await self._inner.complete(**kwargs)
         self.spent += response.cost_usd
-        used = response.usage
-        self.usage = TokenUsage(
-            prompt_tokens=self.usage.prompt_tokens + used.prompt_tokens,
-            completion_tokens=self.usage.completion_tokens + used.completion_tokens,
-            total_tokens=self.usage.total_tokens + used.total_tokens,
-            reasoning_tokens=self.usage.reasoning_tokens + used.reasoning_tokens,
-        )
+        self.usage = _add(self.usage, response.usage)
+        key = (response.provider, response.model)
+        self.by_model[key] = _add(self.by_model.get(key, TokenUsage()), response.usage)
         if kwargs.get("step_id") == self._step_id:
             self.calls += 1
+            self.tool_calls += sum(call.name != OUTPUT_TOOL for call in response.tool_calls)
         self.check_spend()
         return response
+
+    def usage_by_model(self) -> list[ModelUsage]:
+        """The tokens of the turn by model, once its calls ran on more than one."""
+        if len(self.by_model) < 2:
+            return []
+        return [
+            ModelUsage(provider=provider, model=model, token_usage=usage)
+            for (provider, model), usage in self.by_model.items()
+        ]
 
     def check_spend(self) -> None:
         cap = self._agent.constraints.max_cost_usd
@@ -233,6 +266,15 @@ class _MeteredGateway:
                 f"over its max_cost_usd of ${cap}",
                 is_retryable=False,
             )
+
+
+def _add(total: TokenUsage, used: TokenUsage) -> TokenUsage:
+    return TokenUsage(
+        prompt_tokens=total.prompt_tokens + used.prompt_tokens,
+        completion_tokens=total.completion_tokens + used.completion_tokens,
+        total_tokens=total.total_tokens + used.total_tokens,
+        reasoning_tokens=total.reasoning_tokens + used.reasoning_tokens,
+    )
 
 
 def _scoped_registry(
