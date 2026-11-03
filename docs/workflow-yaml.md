@@ -39,7 +39,7 @@ steps:                                      # at least one step required
 | `api_key_env` | `string` | `null` | Name of the environment variable holding the key for `provider: generic_openai`; without it, requests carry no `Authorization` header |
 | `max_retries` | `int` | `3` | Retry attempts on failure |
 | `budget_usd` | `float` | `null` | Maximum spend in USD |
-| `timeout` | `float` | `null` | Workflow timeout in seconds; `0` sets no limit. Past it the run ends `timeout`: the steps it cut short are marked `timeout`, the later ones do not run, and a checkpointed run resumes with the full timeout again |
+| `timeout` | `float` | `null` | Workflow timeout in seconds; `0` sets no limit. Past it the run ends `timeout`: the steps it cut short are marked `timeout`, the later ones do not run, and a checkpointed run resumes with the full timeout again. An approval gate that pauses in the layer it cuts wins: the run ends `paused`, and resuming it runs the cut steps again |
 | `max_concurrent_steps` | `int` | `10` | Max parallel steps per layer. Bounded `1 ≤ N ≤ 1024` at parse time — values outside that range raise a Pydantic error instead of deadlocking the limiter or surfacing a cryptic `total_tokens must be >= 0`. |
 | `stream` | `bool` | `false` | Enable streaming by default |
 | `sandbox` | `object` | disabled | Security sandbox config |

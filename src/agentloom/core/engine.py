@@ -425,6 +425,8 @@ class WorkflowEngine:
         timeout = self.workflow.config.timeout
         deadline = anyio.current_time() + timeout if timeout else math.inf  # 0: no limit
         self._deadline = deadline
+        # A resumed run's results from its checkpoint: a pause among them is no pause of this run
+        restored = await self.state.all_step_results()
 
         logger.info("Starting workflow: %s", workflow_name)
 
@@ -689,7 +691,7 @@ class WorkflowEngine:
             if pause_err is None:
                 step_results_for_pause = await self.state.all_step_results()
                 for sid, sresult in step_results_for_pause.items():
-                    if sresult.status == StepStatus.PAUSED:
+                    if sresult.status == StepStatus.PAUSED and sresult is not restored.get(sid):
                         pause_err = PauseRequestedError(sresult.error or sid)
                         break
             if pause_err is not None:

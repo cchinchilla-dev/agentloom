@@ -908,6 +908,55 @@ class TestTimeouts:
         assert result.status == WorkflowStatus.TIMEOUT
         assert result.step_results["draft"].status == StepStatus.TIMEOUT
 
+    async def test_a_pause_from_the_checkpoint_does_not_hide_the_timeout(self) -> None:
+        gate = StepDefinition(
+            id="gate", type=StepType.APPROVAL_GATE, prompt="ok?", depends_on=["draft"]
+        )
+        engine = self._engine(
+            [self._step("draft", "hang"), gate], timeout=0.05, on_step_failure="continue"
+        )
+        # What a checkpoint restores after the run paused at the gate, approved since
+        await engine.state.set_step_result(
+            "draft", StepResult(step_id="draft", status=StepStatus.FAILED)
+        )
+        await engine.state.set_step_result(
+            "gate", StepResult(step_id="gate", status=StepStatus.PAUSED)
+        )
+        await engine.state.set("_approval.gate", "approved")
+        with anyio.fail_after(5):
+            result = await engine.run()
+
+        assert result.status == WorkflowStatus.TIMEOUT
+        assert result.error == "Workflow timed out after 0.05s"
+
+    async def test_a_pause_beats_the_deadline_and_resume_runs_the_cut_step(
+        self, tmp_path: Path
+    ) -> None:
+        """As it beats a budget breach: the deadline restarts on resume."""
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+        gate = StepDefinition(id="gate", type=StepType.APPROVAL_GATE, prompt="ok?")
+        engine = self._engine([self._step("draft", "hang"), gate], checkpointer, timeout=0.05)
+        with anyio.fail_after(5):
+            result = await engine.run()
+
+        assert result.status == WorkflowStatus.PAUSED
+        assert result.step_results["draft"].status == StepStatus.TIMEOUT
+        saved = await checkpointer.load(engine.run_id)
+        assert (saved.status, saved.paused_step_id) == ("paused", "gate")
+
+        gateway = ProviderGateway()
+        gateway.register(MockProvider(), priority=0)
+        resumed = await WorkflowEngine.from_checkpoint(
+            saved,
+            checkpointer=checkpointer,
+            provider_gateway=gateway,
+            approval_decisions={"gate": "approved"},
+        )
+        result = await resumed.run()
+
+        assert result.status == WorkflowStatus.SUCCESS
+        assert result.final_state["draft"] == "Mock response"
+
     async def test_a_zero_workflow_timeout_sets_no_limit(self) -> None:
         result = await self._engine([self._step("draft", "draft")], timeout=0).run()
 

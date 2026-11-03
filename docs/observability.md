@@ -373,6 +373,8 @@ When a parent workflow launches a subworkflow step:
 
 When an `approval_gate` and a budget-blowing LLM step land in the same layer, **pause wins**. Pre-0.5.0 budget short-circuited the pause: the LLM step completed (spending the money), the pause was dropped, and the workflow ended `budget_exceeded` with no resumable checkpoint at the gate. The reversed precedence preserves both options — the human can `--approve` or `--reject`, and the workflow re-evaluates budget on resume. A workflow that resumes with budget already exhausted will then surface `BudgetExceededError` on the next dispatch (the user explicitly chose to look at the pause first).
 
+The workflow's `timeout` gives way to a pause the same way: the steps it cut short are marked `timeout` and run again on resume. Only a pause of the current run counts: a resumed run that breaks its budget or its timeout before it reaches the gate it had paused at ends `budget_exceeded` or `timeout`, not `paused` at that gate again.
+
 ---
 
 ## Troubleshooting
