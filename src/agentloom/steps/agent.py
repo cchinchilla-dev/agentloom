@@ -239,9 +239,9 @@ class _MeteredGateway:
         self.check_spend()
         response: ProviderResponse = await self._inner.complete(**kwargs)
         self.spent += response.cost_usd
-        self.usage = _add(self.usage, response.usage)
+        self.usage += response.usage
         key = (response.provider, response.model)
-        self.by_model[key] = _add(self.by_model.get(key, TokenUsage()), response.usage)
+        self.by_model[key] = self.by_model.get(key, TokenUsage()) + response.usage
         if kwargs.get("step_id") == self._step_id:
             self.calls += 1
             self.tool_calls += sum(call.name != OUTPUT_TOOL for call in response.tool_calls)
@@ -266,15 +266,6 @@ class _MeteredGateway:
                 f"over its max_cost_usd of ${cap}",
                 is_retryable=False,
             )
-
-
-def _add(total: TokenUsage, used: TokenUsage) -> TokenUsage:
-    return TokenUsage(
-        prompt_tokens=total.prompt_tokens + used.prompt_tokens,
-        completion_tokens=total.completion_tokens + used.completion_tokens,
-        total_tokens=total.total_tokens + used.total_tokens,
-        reasoning_tokens=total.reasoning_tokens + used.reasoning_tokens,
-    )
 
 
 def _scoped_registry(

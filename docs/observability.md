@@ -368,6 +368,7 @@ The engine routes all workflow spend through `BudgetEnforcer` (`agentloom.resili
 
 * **Pre-dispatch gate** (`estimate(0)`) — before launching any step, the engine reads `spent` under the lock and refuses to start if the budget is already exhausted. This bounds the worst-case overshoot to the in-flight set of a single layer rather than letting it compound across layers.
 * **Post-completion charge** (`charge(cost_usd)`) — when a step succeeds, the engine adds the actual cost inside the lock and raises `BudgetExceededError` if the post-charge total is over. The exception propagates through the task group to the engine's terminal classifier, which surfaces `WorkflowStatus.BUDGET_EXCEEDED`.
+* **Failed attempts** — an attempt that fails (a provider error after paid calls, its step `timeout`, a structured reply never valid, a broken agent constraint) is charged too, as soon as it fails, with what its calls that answered cost, the agents it called and its summaries included; a breach stops the step's retries. The step's `cost_usd` and `token_usage` add up all its attempts, and the token metrics count each attempt's tokens once, under their model.
 
 ### Cross-subworkflow accounting
 

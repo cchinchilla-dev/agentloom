@@ -787,6 +787,20 @@ class TestAgentObservability:
 
         assert watcher.turns[0]["output_valid"] is None
 
+    async def test_a_broken_observer_does_not_fail_the_turn(self) -> None:
+        class _Broken(_Watcher):
+            def on_agent_turn(self, **kwargs: Any) -> None:
+                raise RuntimeError("exporter down")
+
+        result = await _run(
+            _workflow(_agent_step(SUPPORT), state={"question": "q"}),
+            _Scripted(_used("5")),
+            _registry(_Add()),
+            observer=_Broken(),
+        )
+
+        assert result.final_state["reply"] == "5"
+
     async def test_tokens_count_under_each_model(self) -> None:
         watcher = _Watcher()
         provider = _Scripted(

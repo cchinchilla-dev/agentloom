@@ -22,6 +22,8 @@ from agentloom.checkpointing.base import (
 )
 from agentloom.core.attempts import (
     Attempt,
+    Spend,
+    attempt_spend,
     enter_attempt,
     enter_step,
     running_attempt,
@@ -888,6 +890,32 @@ class WorkflowEngine:
                 )
             raise
 
+    async def _charge_failure(self, step_id: str, result: StepResult, failed: Spend) -> None:
+        """Charge what a failed attempt spent and keep the failed attempts' total on ``result``.
+
+        Its calls were paid however it ended: a provider error after paid calls, its
+        timeout, a structured reply never valid (#120).
+        """
+        spend = attempt_spend()
+        failed.absorb(spend)
+        result.cost_usd, result.token_usage = failed.cost_usd, failed.usage
+        if self.observer:
+            for (provider, model), usage in spend.by_model.items():
+                if usage.total_tokens > 0:
+                    self.observer.on_tokens(
+                        provider,
+                        model,
+                        usage.prompt_tokens,
+                        usage.completion_tokens,
+                        reasoning_tokens=usage.reasoning_tokens,
+                    )
+        try:
+            await self._budget.charge(spend.cost_usd)
+        except BudgetExceededError:
+            # The breach reports what the step spent, from its result
+            await self.state.set_step_result(step_id, result)
+            raise
+
     async def _run_step(self, step_id: str, step_def: StepDefinition, should_stream: bool) -> None:
         """Run a started step through its attempts; ``_execute_step`` covers escaping errors."""
         executor_cls = self.step_registry.get(step_def.type)
@@ -914,6 +942,7 @@ class WorkflowEngine:
 
         max_retries = step_def.retry.max_retries
         last_result: StepResult | None = None
+        failed = Spend()  # what the attempts that failed spent: charged as they fail
         outer = running_attempt()  # a subworkflow's step runs inside its parent's attempt
         enter_step(step_id)
         previous: Attempt | None = None
@@ -937,6 +966,10 @@ class WorkflowEngine:
                 last_result = result
 
                 if result.status == StepStatus.SUCCESS:
+                    own, own_usage = result.cost_usd, result.token_usage
+                    # The step's result tells what it cost, the attempts that failed included
+                    result.cost_usd += failed.cost_usd
+                    result.token_usage += failed.usage
                     await self.state.set_step_result(step_id, result)
                     if (log := active_log()) is not None:
                         log.finish_step(running_steps(), result.output)
@@ -949,7 +982,7 @@ class WorkflowEngine:
                     # ``BudgetExceededError`` from inside the critical
                     # section so the engine's terminal classifier picks
                     # up the overrun on the way out.
-                    await self._budget.charge(result.cost_usd)
+                    await self._budget.charge(own)
                     if self.observer and self._budget.has_limit():
                         hook = getattr(self.observer, "on_budget_remaining", None)
                         if hook:
@@ -986,7 +1019,7 @@ class WorkflowEngine:
                                 ModelUsage(
                                     provider=result.provider,
                                     model=result.model,
-                                    token_usage=result.token_usage,
+                                    token_usage=own_usage,
                                 )
                             ]:
                                 if used.token_usage.total_tokens > 0:
@@ -1023,6 +1056,7 @@ class WorkflowEngine:
                 # to observability (the executor wouldn't have set it).
                 if result.error_classification is None:
                     result.error_classification = "transient"
+                await self._charge_failure(step_id, result, failed)
                 if result.error_classification == "permanent":
                     logger.warning(
                         "Step '%s' failed with non-retryable error; not retrying: %s",
@@ -1053,6 +1087,7 @@ class WorkflowEngine:
                     status=StepStatus.TIMEOUT,
                     error=f"Step timed out after {step_def.timeout}s",
                 )
+                await self._charge_failure(step_id, last_result, failed)
                 # Timeouts are transient by definition — always retry until
                 # the budget is exhausted, no status-code filter applies.
                 if attempt < max_retries:
@@ -1116,6 +1151,7 @@ class WorkflowEngine:
                     error=str(e),
                     error_classification=("transient" if retryable else "permanent"),
                 )
+                await self._charge_failure(step_id, last_result, failed)
                 if not retryable:
                     logger.warning(
                         "Step '%s' failed with non-retryable error; not retrying: %s",

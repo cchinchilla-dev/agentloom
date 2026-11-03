@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import anyio
 
+from agentloom.core.attempts import record_spend
 from agentloom.exceptions import (
     CircuitOpenError,
     ProviderError,
@@ -264,6 +265,9 @@ class ProviderGateway:
                             stream=False,
                         )
 
+                record_spend(
+                    response.cost_usd, entry.provider.name, response.model or model, response.usage
+                )
                 logger.debug(
                     "Provider '%s' responded for model '%s'",
                     entry.provider.name,
@@ -436,6 +440,12 @@ class ProviderGateway:
                             await _entry.rate_limiter.consume_response_tokens(
                                 _inner.usage.completion_tokens
                             )
+                        record_spend(
+                            _inner.cost_usd,
+                            _entry.provider.name,
+                            _inner.model or model,
+                            _inner.usage,
+                        )
                     finally:
                         _outer.usage = _inner.usage
                         _outer.cost_usd = _inner.cost_usd
@@ -641,6 +651,9 @@ class ProviderGateway:
                             finish_reason=None,
                             stream=False,
                         )
+                record_spend(
+                    response.cost_usd, entry.provider.name, response.model or model, response.usage
+                )
                 logger.debug(
                     "Provider '%s' returned embeddings for model '%s'", entry.provider.name, model
                 )
