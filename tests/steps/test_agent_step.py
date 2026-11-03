@@ -499,6 +499,26 @@ class TestAgentStep:
         stored = Conversation.model_validate(result.final_state["chat"])
         assert (stored.token_budget, stored.trim_policy) == (5000, "drop_oldest")
 
+    async def test_a_memory_that_cannot_hold_the_prompt_fails_the_step(self) -> None:
+        agent = {"name": "brief", "memory": {"token_budget": 20, "trim_policy": "drop_oldest"}}
+        provider = _Scripted(_turn("ok"))
+        result = await _run(
+            _workflow(
+                _agent_step(agent, conversation="chat", retry={"max_retries": 3}),
+                state={"question": "word " * 200, "chat": {"messages": []}},
+            ),
+            provider,
+        )
+
+        ask = result.step_results["ask"]
+        assert ask.status == StepStatus.FAILED
+        assert ask.error == (
+            "Step 'ask': token_budget (20) cannot hold the turn to answer: "
+            "raise it or shorten the prompt"
+        )
+        assert ask.error_classification == "permanent"
+        assert provider.calls == []
+
     async def test_memory_without_a_budget_keeps_the_conversations(self) -> None:
         chat = {
             "messages": [

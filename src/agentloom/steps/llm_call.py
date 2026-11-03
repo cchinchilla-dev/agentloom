@@ -639,9 +639,8 @@ class LLMCallStep(BaseStep):
                     conversation.messages.insert(0, Message(role="system", content=rendered_system))
             appended_user_turn = bool(rendered_prompt)
             if appended_user_turn:
-                conversation.messages.append(
-                    Message(role="user", content=rendered_prompt, name=step.speaker)
-                )
+                answered = Message(role="user", content=rendered_prompt, name=step.speaker)
+                conversation.messages.append(answered)
             else:
                 # No prompt this turn — the conversation must already end on
                 # a turn the provider can answer (a ``user`` message, or a
@@ -662,6 +661,7 @@ class LLMCallStep(BaseStep):
                         f"{last_answerable.role if last_answerable else 'none'}). "
                         "Set 'prompt' or ensure the conversation ends with a user turn.",
                     )
+                answered = last_answerable
             stored = (conversation.token_budget, conversation.trim_policy)
             self._apply_memory(conversation)
             trim_result = await apply_trim_policy_async(
@@ -669,8 +669,17 @@ class LLMCallStep(BaseStep):
                 model,
                 summarizer=self._make_summarizer(context, step, model),
             )
+            budget = conversation.token_budget
             # A turn's own budget and policy are not stored with the conversation.
             conversation.token_budget, conversation.trim_policy = stored
+            if all(m is not answered for m in conversation.messages):
+                # Trimmed away: the model would get no question and the step still succeed
+                raise StepError(
+                    step.id,
+                    f"token_budget ({budget}) cannot hold the turn to answer: "
+                    "raise it or shorten the prompt",
+                    is_retryable=False,
+                )
             messages = to_provider_messages(conversation)
             if transient_system is not None:
                 # Re-assert the speaker's instruction at the head so the

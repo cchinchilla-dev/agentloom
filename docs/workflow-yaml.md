@@ -606,9 +606,9 @@ constraints:
 | `description` | `string` | `""` | What the agent does; the tool description when another agent calls it. |
 | `model`, `system_prompt`, `temperature`, `max_tokens` | | inherited | As on `llm_call`. |
 | `tools` | `list` | `[]` | Names from the workflow's tool registry, and `{name, agent, description}` entries that offer another agent as a tool. Such a `name` is one every provider takes for a function: letters, digits, `_` and `-`, up to 64, starting with a letter or `_`. |
-| `memory` | `object` | `null` | `token_budget` and `trim_policy` (`drop_oldest`, `drop_pairs`, `summarize_oldest`) applied to the conversation on each of the agent's turns, without changing the settings it stores; each one left out keeps the conversation's own. |
+| `memory` | `object` | `null` | `token_budget` and `trim_policy` (`drop_oldest`, `drop_pairs`, `summarize_oldest`) applied to the conversation on each of the agent's turns, without changing the settings it stores; each one left out keeps the conversation's own. The conversation is stored as trimmed, so the agents that share it share the trim and the smallest `memory` wins; to give them one budget, set it on the conversation instead. |
 | `loop_policy.max_iterations` | `int` | `5` | Model calls of the tool loop per turn. The loop ends when the agent replies without calling a tool. Without tools, a typed reply that fails validation is asked for again within the same number of model calls, and the step fails if none validates, under either `on_max_iterations`; the step's `retry` does not bound these, it repeats the whole turn after a transient failure. |
-| `loop_policy.on_max_iterations` | `string` | `error` | Reaching the cap fails the step (`error`) or returns the last reply with a warning (`warn_and_return`); a last reply with no text, only tool calls, fails the step under either. |
+| `loop_policy.on_max_iterations` | `string` | `error` | Reaching the cap fails the step (`error`) or returns the last reply with a warning (`warn_and_return`); a last reply with no text, only tool calls, fails the step under either. With tools, that reply is the text that came with the calls left pending (such as "I'll check the policy"), returned and stored as it is. |
 | `output_schema` | `object` | `null` | As `response_schema` on `llm_call` (`pydantic`, `json_schema`, `json_object`). |
 | `constraints.max_cost_usd` | `float` | `null` | Checked after each model call, the calls of agents used as tools and summaries included, and when the turn ends; the turn stops once it is exceeded. The step reports what its turn spent, failed or not. |
 | `constraints.max_latency_ms` | `int` | `null` | Bounds the turn as `timeout` does; the shorter of the two applies. |
@@ -684,7 +684,7 @@ The `Conversation` envelope:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `messages` | `list[Message]` | `[]` | Ordered turn list. Each entry has `role` (`system` / `user` / `assistant` / `tool`), `content`, optional `name` (multi-agent), `tool_call_id`, `tool_calls`, `metadata`. |
-| `token_budget` | `int` | `null` | Soft cap on estimated tokens. Trimming runs before the call when exceeded. `null` = unbounded (checkpoint size is the effective cap). |
+| `token_budget` | `int` | `null` | Soft cap on estimated tokens. Trimming runs before the call when exceeded; a budget that cannot hold the turn to answer fails the step. `null` = unbounded (checkpoint size is the effective cap). |
 | `trim_policy` | `string` | `drop_oldest` | `drop_oldest` (remove from the head, pin system prefix), `drop_pairs` (remove oldest `user`+`assistant` pair together), `summarize_oldest` (fold oldest turns into `conversation.summary`). |
 | `summary` | `string` | `null` | Populated by `summarize_oldest`. Injected on the wire as a labelled `system` context block *after* the conversation's own system prefix (never ahead of it), so a summary can't override the real system prompt. |
 | `metadata` | `dict` | `{}` | Free-form annotations that ride along the checkpoint but never reach the provider. |
