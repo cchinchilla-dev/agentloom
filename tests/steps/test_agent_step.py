@@ -282,6 +282,33 @@ class TestAgentStep:
         assert ask.error_classification == "permanent"
         assert "reply" not in result.final_state
 
+    async def test_max_iterations_bounds_the_re_asks_of_a_typed_reply(self) -> None:
+        """Not the step's retry, which repeats the whole turn."""
+        schema = {"type": "pydantic", "model": f"{__name__}.Ticket"}
+        agent = {"name": "typed", "output_schema": schema, "loop_policy": {"max_iterations": 3}}
+        provider = _Scripted(_turn("no"), _turn("no"), _turn('{"ticket": "T-1"}'))
+        result = await _run(_workflow(_agent_step(agent), state={"question": "q"}), provider)
+
+        assert result.final_state["reply"] == Ticket(ticket="T-1")
+        assert len(provider.calls) == 3
+
+    async def test_the_re_asks_stop_at_max_iterations(self) -> None:
+        schema = {"type": "pydantic", "model": f"{__name__}.Ticket"}
+        agent = {"name": "typed", "output_schema": schema, "loop_policy": {"max_iterations": 1}}
+        provider = _Scripted(_turn("no"), _turn('{"ticket": "T-1"}'))
+        result = await _run(
+            _workflow(_agent_step(agent, retry={"max_retries": 3}), state={"question": "q"}),
+            provider,
+        )
+
+        ask = result.step_results["ask"]
+        assert ask.status == StepStatus.FAILED
+        assert ask.error.startswith(
+            "Step 'ask': Structured output failed validation after 1 attempts"
+        )
+        assert ask.error_classification == "permanent"
+        assert len(provider.calls) == 1
+
     async def test_warn_and_return_keeps_the_last_reply(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -736,6 +763,19 @@ class TestNestedAgents:
         assert provider.calls[1]["messages"][-1]["content"] == "open one"
         assert result.step_results["ask"].cost_usd == pytest.approx(0.05)
 
+    async def test_a_typed_nested_agent_is_asked_again(self) -> None:
+        typed = self._support(output_schema={"type": "pydantic", "model": f"{__name__}.Ticket"})
+        provider = _Scripted(
+            _turn("", _call("escalate", message="open one")),
+            _turn("Sure, T-9."),
+            _turn('{"ticket": "T-9"}'),
+            _turn("Opened T-9."),
+        )
+        await _run(_workflow(_agent_step(typed), state={"question": "q"}), provider)
+
+        (sent,) = _tool_results(provider.calls[3])
+        assert sent["content"] == '{"ticket": "T-9"}'
+
     @pytest.mark.parametrize("arguments", [{}, {"message": ""}, {"message": 3}])
     async def test_a_call_without_a_message_is_an_error_for_the_model(
         self, arguments: dict[str, Any]
@@ -966,6 +1006,19 @@ class TestAgentApi:
 
         assert result.iterations == 2
         assert result.cost_usd == pytest.approx(0.4)
+
+    async def test_invoke_asks_again_for_a_typed_reply(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted(_turn("Sure, T-1."), _turn('{"ticket": "T-1"}')))
+        schema = {"type": "pydantic", "model": f"{__name__}.Ticket"}
+        definition = AgentDefinition.model_validate(
+            {"name": "a", "model": "m", "output_schema": schema}
+        )
+
+        result = await Agent(definition, gateway=gateway).invoke("hi")
+
+        assert result.reply == Ticket(ticket="T-1")
+        assert result.iterations == 2
 
     def test_from_yaml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)

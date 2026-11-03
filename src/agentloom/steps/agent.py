@@ -99,7 +99,10 @@ class AgentStep(LLMCallStep):
             speaker=agent.name,
             output=step.output,
             attachments=step.attachments,
-            retry=step.retry,
+            # The step's retry repeats the turn; inside it, max_iterations bounds the re-asks too.
+            retry=step.retry.model_copy(
+                update={"max_retries": agent.loop_policy.max_iterations - 1}
+            ),
         )
         inner = context.model_copy(
             update={
