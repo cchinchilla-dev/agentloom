@@ -639,7 +639,8 @@ class LLMCallStep(BaseStep):
                     conversation.messages.insert(0, Message(role="system", content=rendered_system))
             appended_user_turn = bool(rendered_prompt)
             if appended_user_turn:
-                answered = Message(role="user", content=rendered_prompt, name=step.speaker)
+                # Untagged: the prompt is the caller's words, not the speaker's
+                answered = Message(role="user", content=rendered_prompt)
                 conversation.messages.append(answered)
             else:
                 # No prompt this turn — the conversation must already end on

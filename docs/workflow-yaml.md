@@ -180,7 +180,7 @@ Sends a prompt to an LLM and stores the response.
 | `attachments` | `list[Attachment]` | `[]` | Multi-modal inputs (see [Providers](providers.md#multi-modal-attachments)) |
 | `thinking` | `ThinkingConfig` | `null` | Extended-thinking / reasoning config (see [Reasoning models](providers.md#reasoning-models)) |
 | `conversation` | `string` | `null` | Dotted state path to a `Conversation` — enables multi-turn history + token-budget trimming (see [Conversation history](#conversation-history)) |
-| `speaker` | `string` | `null` | Multi-agent speaker name (only with `conversation`). Tags the turn with `Message.name` and re-asserts `system_prompt` per turn |
+| `speaker` | `string` | `null` | Multi-agent speaker name (only with `conversation`). Tags the assistant reply with `Message.name` and re-asserts `system_prompt` per turn |
 | `output` | `string` | `null` | State key to store result |
 | `timeout` | `float` | `null` | Per-step timeout in seconds, for each attempt; `0` sets no limit. A step out of retries on it ends `timeout` and fails the workflow, as a failed step does |
 | `depends_on` | `list[string]` | `[]` | Step IDs that must complete first |
@@ -693,7 +693,7 @@ The `Conversation` envelope:
 
 - `prompt` is optional when `conversation` is set — but then the conversation must already end on a `user` or `tool` turn the provider can answer. Ending on a `system` or `assistant` turn raises a `StepError` instead of shipping a request the model can't continue.
 - `system_prompt` is prepended once as a `system` message if none exists yet in the conversation. With a `speaker:` set (multi-agent), the system prompt is re-asserted as a transient per-turn message instead — never persisted — so each agent gets its own instruction without clobbering the shared history.
-- `speaker:` (optional) tags this step's user turn and assistant reply with `Message.name`, letting one conversation carry several distinct agents. See [multi-agent](#multi-agent-conversations) below.
+- `speaker:` (optional) tags this step's assistant reply with `Message.name` (the user turn holds the caller's words and stays untagged), letting one conversation carry several distinct agents. See [multi-agent](#multi-agent-conversations) below.
 - The step's `output` still stores the raw assistant text (structured-output mode stores the parsed value); the `Conversation` carries the semantic turn.
 - Tool loops (`tools:`) run mechanically inside the step; only the final assistant text answer lands in the conversation. The tool calls and their `tool_result` turns stay out — persisting a tool-call turn without its paired result would make the next request malformed (OpenAI requires each `tool_calls` message be followed by its `role="tool"` results), so keeping only the answer is both semantically clean and replay-safe.
 - Attachments (`attachments:`) still work with a conversation — the resolved image / PDF / audio blocks ride on the current turn's provider message but are **not** persisted into the conversation (base64 payloads would balloon the checkpoint).
@@ -733,7 +733,7 @@ steps:
     output: critique
 ```
 
-Each turn is tagged with its speaker's `Message.name`; OpenAI forwards it natively, the other providers prepend `"[alice] …"` inline. Because `speaker:` makes `system_prompt` a transient per-turn message, Bob never inherits Alice's instructions from the shared history.
+Each reply is tagged with its speaker's `Message.name`; OpenAI forwards it natively, the other providers prepend `"[alice] …"` inline. Because `speaker:` makes `system_prompt` a transient per-turn message, Bob never inherits Alice's instructions from the shared history.
 
 Observability wires a `on_conversation_turn` hook on the workflow observer that emits:
 

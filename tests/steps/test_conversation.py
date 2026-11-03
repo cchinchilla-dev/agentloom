@@ -1000,7 +1000,7 @@ class TestApplyTrimPolicyAsync:
 
 
 class TestSpeakerTagging:
-    async def test_speaker_tags_user_and_assistant_turns(self) -> None:
+    async def test_speaker_tags_the_reply_only(self) -> None:
         provider = MockProvider(responses={"go": "reply"})
         gw = ProviderGateway()
         gw.register(provider, models=["mock-model"])
@@ -1018,8 +1018,9 @@ class TestSpeakerTagging:
         )
         await LLMCallStep().execute(ctx)
         chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
-        assert chat.messages[0].name == "alice"  # user turn
+        assert chat.messages[0].name is None  # user turn: the caller's words
         assert chat.messages[1].name == "alice"  # assistant reply
+        assert provider.calls[0]["messages"] == [{"role": "user", "content": "go"}]
 
     async def test_speaker_system_prompt_not_persisted(self) -> None:
         # With a speaker, the system_prompt is a transient per-turn message,
@@ -1187,7 +1188,7 @@ class TestStreamingConversation:
         )
         await LLMCallStep().execute(ctx)
         chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
-        assert chat.messages[0].name == "bob"
+        assert chat.messages[0].name is None
         assert chat.messages[1].name == "bob"
 
 

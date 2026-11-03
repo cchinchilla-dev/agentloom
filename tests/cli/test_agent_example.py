@@ -31,10 +31,10 @@ def test_agent_replays_offline() -> None:
     assert run["final_state"]["follow_up"]["refund"] == "not_requested"
     chat = run["final_state"]["chat"]["messages"]
     assert [(m["role"], m["name"]) for m in chat] == [
-        ("user", "support_desk"),
+        ("user", None),
         ("assistant", "support_desk"),
     ] * 2
-    assert run["total_cost_usd"] == pytest.approx(0.006493)
+    assert run["total_cost_usd"] == pytest.approx(0.006321)
 
 
 def test_verify_determinism_passes_on_the_agent_example() -> None:

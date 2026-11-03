@@ -437,10 +437,11 @@ class StepDefinition(BaseModel):
     # itself carries the structured turn.
     conversation: str | None = None
     # Multi-agent speaker name. When set (only meaningful with
-    # ``conversation``), the appended user turn and the assistant reply
-    # are tagged with ``Message.name`` so a shared conversation can carry
-    # several distinct agents (OpenAI forwards ``name`` natively; the
-    # other adapters prepend ``"[<speaker>] …"`` inline). Also lets the
+    # ``conversation``), the assistant reply is tagged with
+    # ``Message.name`` (the user turn holds the caller's words and stays
+    # untagged) so a shared conversation can carry several distinct
+    # agents (OpenAI forwards ``name`` natively; the other adapters
+    # prepend ``"[<speaker>] …"`` inline). Also lets the
     # step's ``system_prompt`` re-assert each turn — without a speaker the
     # system turn is inserted once, but a multi-agent workflow needs each
     # agent's own instruction on its turn.

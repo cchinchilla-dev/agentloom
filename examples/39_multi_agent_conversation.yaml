@@ -3,7 +3,7 @@ version: "1.0"
 description: |
   Two agents (``alice`` the planner and ``bob`` the critic) exchange
   messages in a shared conversation. Each ``llm_call`` sets a distinct
-  ``system_prompt`` for its speaker and tags the appended turn with the
+  ``system_prompt`` for its speaker and tags the reply with the
   ``Message.name`` field so downstream providers preserve attribution
   (OpenAI natively; Anthropic / Gemini / Ollama prepend ``"[alice] …"``
   since their APIs lack a ``name`` slot).
@@ -34,7 +34,7 @@ steps:
   - id: alice_proposes
     type: llm_call
     conversation: state.chat
-    speaker: alice                  # tags the turn with Message.name
+    speaker: alice                  # tags the reply with Message.name
     system_prompt: "You are Alice, a pragmatic backend planner. Speak in bullets."
     prompt: "{state.plan_prompt}"
     output: plan

@@ -187,7 +187,7 @@ class TestAgentStep:
         assert result.final_state["reply"] == "5"
         chat = Conversation.model_validate(result.final_state["chat"])
         assert chat.messages == [
-            Message(role="user", content="2+3?", name="support"),
+            Message(role="user", content="2+3?"),
             Message(role="assistant", content="5", name="support"),
         ]
         first = provider.calls[0]
@@ -580,12 +580,13 @@ class TestAgentStep:
 
         chat = Conversation.model_validate(result.final_state["chat"])
         assert [(m.name, m.content) for m in chat.messages] == [
-            ("alice", "Plan."),
+            (None, "Plan."),
             ("alice", "plan"),
-            ("bob", "Critique."),
+            (None, "Critique."),
             ("bob", "critique"),
         ]
         assert provider.calls[1]["messages"][0] == {"role": "system", "content": "You are Bob."}
+        assert provider.calls[1]["messages"][-1] == {"role": "user", "content": "Critique."}
         assert not any(m["content"] == "You are Alice." for m in provider.calls[1]["messages"])
 
     async def test_the_reply_reaches_the_stream_callback_once_checked(self) -> None:
@@ -719,7 +720,7 @@ class TestNestedAgents:
         assert nested["step_id"] == "ask::escalate#1"
         assert nested["messages"] == [
             {"role": "system", "content": "You know billing."},
-            {"role": "user", "content": "Why is my bill high?", "name": "specialist"},
+            {"role": "user", "content": "Why is my bill high?"},
         ]
         (sent,) = _tool_results(last)
         assert sent["content"] == "Roaming fees."
@@ -735,7 +736,7 @@ class TestNestedAgents:
 
         assert provider.calls[1]["messages"] == [
             {"role": "system", "content": "You serve ACME."},
-            {"role": "user", "content": "Why?", "name": "specialist"},
+            {"role": "user", "content": "Why?"},
         ]
         assert result.final_state["message"] == "the workflow's"
 
