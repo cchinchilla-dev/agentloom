@@ -663,6 +663,104 @@ class TestGoogleAssistantMessagePreservesText:
         assert msg["parts"] == [{"functionCall": {"name": "lookup", "args": {}}}]
 
 
+class TestGeminiThoughtSignature:
+    """Gemini 3 refuses a tool loop's next request without each call's ``thoughtSignature``."""
+
+    def test_google_keeps_the_thought_signature_of_a_call(self) -> None:
+        parts = [
+            {"functionCall": {"name": "add", "args": {"a": 1}}, "thoughtSignature": "sig-1"},
+            {"functionCall": {"name": "add", "args": {"a": 2}}},
+        ]
+        calls = parse_tool_calls_from_google(parts)
+        assert [c.signature for c in calls] == ["sig-1", None]
+        assert "signature" not in calls[0].model_dump()
+
+    def test_google_sends_back_the_thought_signature_of_each_call(self) -> None:
+        calls = [
+            ToolCall(id="g0", name="add", arguments={"a": 1}, signature="sig-1"),
+            ToolCall(id="g1", name="add", arguments={"a": 2}),
+        ]
+        msg = build_assistant_message_with_tool_calls("google", "", calls)
+        assert msg["parts"] == [
+            {"functionCall": {"name": "add", "args": {"a": 1}}, "thoughtSignature": "sig-1"},
+            {"functionCall": {"name": "add", "args": {"a": 2}}},
+        ]
+
+    @pytest.mark.parametrize("provider", ["openai", "anthropic", "ollama"])
+    def test_tool_calls_with_a_signature_are_sent_as_before(self, provider: str) -> None:
+        signed = ToolCall(id="c1", name="add", arguments={"a": 1}, signature="sig-1")
+        unsigned = ToolCall(id="c1", name="add", arguments={"a": 1})
+        assert build_assistant_message_with_tool_calls(
+            provider, "", [signed]
+        ) == build_assistant_message_with_tool_calls(provider, "", [unsigned])
+
+    @respx.mock
+    async def test_a_recorded_signature_comes_back_on_replay(self, tmp_path: Any) -> None:
+        from agentloom.providers.google import GoogleProvider
+        from agentloom.providers.mock import MockProvider
+        from agentloom.providers.recorder import RecordingProvider
+
+        model = "gemini-3.1-flash-lite"
+        usage = {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+        call = {
+            "functionCall": {"name": "add", "args": {"a": 2, "b": 3}},
+            "thoughtSignature": "sig-1",
+        }
+        route = respx.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        ).mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={"candidates": [{"content": {"parts": [call]}}], "usageMetadata": usage},
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "candidates": [{"content": {"parts": [{"text": "5"}]}}],
+                        "usageMetadata": usage,
+                    },
+                ),
+            ]
+        )
+
+        def workflow(provider: str) -> WorkflowDefinition:
+            tool = ToolDefinition(
+                name="add", description="d", parameters=_AddTool.parameters_schema
+            )
+            step = StepDefinition(
+                id="ask", type=StepType.LLM_CALL, prompt="2+3?", tools=[tool], output="answer"
+            )
+            return WorkflowDefinition(
+                name="w", config=WorkflowConfig(provider=provider, model=model), steps=[step]
+            )
+
+        path = tmp_path / "rec.json"
+        recorded = ProviderGateway()
+        recorded.register(RecordingProvider(GoogleProvider(api_key="k"), path))
+        live = await WorkflowEngine(
+            workflow=workflow("google"),
+            provider_gateway=recorded,
+            tool_registry=_registry_with(_AddTool()),
+        ).run()
+        await recorded.close()
+
+        assert live.final_state["answer"] == "5"
+        sent = json.loads(route.calls[1].request.content)["contents"][1]["parts"]
+        assert sent == [call]
+        assert json.loads(path.read_text())["ask"][0]["tool_calls"][0]["signature"] == "sig-1"
+
+        replayed = ProviderGateway()
+        replayed.register(MockProvider(responses_file=path, strict=True))
+        result = await WorkflowEngine(
+            workflow=workflow("mock"),
+            provider_gateway=replayed,
+            tool_registry=_registry_with(_AddTool()),
+        ).run()
+        assert result.status == WorkflowStatus.SUCCESS
+        assert result.final_state["answer"] == "5"
+
+
 class TestStreamFallbackPropagatesToolFields:
     """``BaseProvider.stream()`` default fallback wraps ``complete()``;
     the rolled-up ``StreamResponse.to_provider_response()`` must include

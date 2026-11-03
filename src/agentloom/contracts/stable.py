@@ -45,6 +45,8 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    # Gemini 3's ``thoughtSignature``, required back on its part; an opaque blob, out of dumps
+    signature: str | None = Field(default=None, exclude=True)
 
 
 class Message(BaseModel):

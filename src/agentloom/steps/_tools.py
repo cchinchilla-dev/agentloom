@@ -196,6 +196,7 @@ def parse_tool_calls_from_google(content_parts: list[dict[str, Any]]) -> list[To
                 id=f"google-{idx}",
                 name=fc.get("name", ""),
                 arguments=fc.get("args", {}) or {},
+                signature=part.get("thoughtSignature"),
             )
         )
     return calls
@@ -299,7 +300,12 @@ def build_assistant_message_with_tool_calls(
         parts: list[dict[str, Any]] = []
         if content:
             parts.append({"text": content})
-        parts.extend({"functionCall": {"name": c.name, "args": c.arguments}} for c in calls)
+        for c in calls:
+            part: dict[str, Any] = {"functionCall": {"name": c.name, "args": c.arguments}}
+            if c.signature:
+                # Gemini 3 refuses the next request without it on the same part
+                part["thoughtSignature"] = c.signature
+            parts.append(part)
         return {"role": "model", "parts": parts}
     if provider == "ollama":
         # Ollama expects ``arguments`` as a dict (not a JSON-encoded string)
