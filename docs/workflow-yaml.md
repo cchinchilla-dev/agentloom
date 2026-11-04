@@ -314,7 +314,7 @@ The parsed value lands in `state[output]` directly — for `pydantic` mode it's 
 | Provider | Native API | Behavior |
 |----------|-----------|----------|
 | OpenAI | `response_format={"type": "json_schema", "json_schema": {...}}` (strict) or `{"type": "json_object"}` | Server-side schema enforcement; the model can't emit invalid JSON. Requires `gpt-4o-2024-08-06+` for strict mode. |
-| Google Gemini | `generationConfig.responseSchema` + `responseMimeType: "application/json"` | Server-side enforcement. The adapter strips Pydantic-emitted `title` / `examples` / `default` keys that Gemini's parser rejects, drops `additionalProperties`, keeps what its dialect can say of `const`, `exclusiveMinimum`, `exclusiveMaximum` and `prefixItems` (an `enum`, a `minimum`, a `maximum`, an `items`) and drops `uniqueItems`, the reply being validated against the full schema; and inlines local `$ref`s, as Gemini has no `$defs`: a nested model works; a recursive one, or a `$ref` whose neighbouring keywords contradict its definition, does not. A free-form object (a `json_object` reply, a `dict` field) comes back empty, as Gemini's dialect has no `additionalProperties`. |
+| Google Gemini | `generationConfig.responseSchema` + `responseMimeType: "application/json"` | Server-side enforcement. The adapter strips Pydantic-emitted `title` / `examples` / `default` keys that Gemini's parser rejects, drops `additionalProperties`, keeps what its dialect can say of `const`, `exclusiveMinimum`, `exclusiveMaximum` and `prefixItems` (an `enum`, a `minimum`, a `maximum`, an `items`) and drops `uniqueItems`, the reply being validated against the full schema; and inlines local `$ref`s, as Gemini has no `$defs`: a nested model works; a recursive one, or a `$ref` whose neighbouring keywords contradict its definition, does not. A `dict` field comes back empty, as Gemini's dialect has no `additionalProperties`; a `json_object` reply sends no schema, only `responseMimeType`, so any object comes back. |
 | Ollama | `format: "json"` (free-form) or `format: <schema>` (strict, Ollama 0.5+) | Model-side enforcement; quality varies by model. |
 | Anthropic | _No native API._ Prefill + system-prompt instructions + client-side validation. | Best-effort: the assistant turn is prefilled with `"{"` so the model continues from there. Validation failures trigger the same retry-with-feedback loop. |
 
@@ -630,6 +630,7 @@ constraints:
 
 ```python
 from agentloom import Agent
+from agentloom.exceptions import AgentError
 
 agent = Agent.from_yaml(
     "examples/agents/support.yaml",

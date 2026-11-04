@@ -43,6 +43,8 @@ class SpanAttr:
       "experimental / development" — names are not yet "stable" per
       OTel maturity tags but are widely adopted).
     * ``tool.*`` — Tool-call details surfaced by tool_step and agent loops.
+    * ``agent.*`` — An agent step's turn: its model calls, tool calls, cost and
+      whether its reply validated.
     * ``agentloom.*`` — AgentLoom-specific attributes that don't map onto
       an existing OTel namespace (prompt metadata, approval decisions,
       webhook status, record/replay origin, quality annotations).

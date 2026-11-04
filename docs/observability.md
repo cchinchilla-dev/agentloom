@@ -232,6 +232,7 @@ Inference spans follow the **canonical OTel GenAI registry** (May 2026 spec). Wo
 | `error.*` | OTel general semantic conventions | `error.type` (set on errored inference spans alongside `step.error`) |
 | `workflow.*` / `step.*` | AgentLoom orchestration metadata | `workflow.run_id`, `workflow.status`, `step.id`, `step.type`, `step.duration_ms`, `step.cost_usd` |
 | `tool.*` | Tool-call details | `tool.name`, `tool.args_hash`, `tool.success` |
+| `agent.*` | An agent step's turn, on its step span with `gen_ai.agent.name` | `agent.iterations`, `agent.tool_calls`, `agent.cost_usd`, `agent.output_valid` |
 | `agentloom.*` | AgentLoom-specific (no OTel equivalent) | `agentloom.prompt.hash`, `agentloom.approval_gate.decision`, `agentloom.webhook.status`, `agentloom.recording.provider` |
 
 ### Workflow-level attributes
