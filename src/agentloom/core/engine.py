@@ -336,6 +336,7 @@ class WorkflowEngine:
             completed_steps=completed_steps,
             status=status,
             paused_step_id=paused_step_id,
+            spent_usd=self._budget.spent,
             created_at=self._checkpoint_created_at,
             updated_at=datetime.now(UTC).isoformat(),
         )
@@ -404,6 +405,7 @@ class WorkflowEngine:
         # Restore state manager with completed step results via the public API
         # so internal state, snapshots, and locking remain consistent.
         state_manager = StateManager(initial_state=checkpoint_data.state)
+        restored_cost = 0.0
         for step_id, result_data in checkpoint_data.step_results.items():
             try:
                 result = StepResult.model_validate(result_data)
@@ -418,6 +420,7 @@ class WorkflowEngine:
                     f"enum value added in a newer AgentLoom. Upgrade to resume it."
                 ) from e
             await state_manager.set_step_result(step_id, result)
+            restored_cost += result.cost_usd
 
         # Inject approval decisions so gate steps find them on re-execution
         if approval_decisions:
@@ -434,6 +437,11 @@ class WorkflowEngine:
             on_stream_chunk=on_stream_chunk,
             checkpointer=checkpointer,
             run_id=checkpoint_data.run_id,
+            # The budget goes on from what the run had spent, not from zero
+            budget_enforcer=BudgetEnforcer(
+                workflow.config.budget_usd,
+                spent_usd=max(checkpoint_data.spent_usd, restored_cost),
+            ),
         )
         engine._completed_steps = set(checkpoint_data.completed_steps)
         engine._checkpoint_created_at = checkpoint_data.created_at

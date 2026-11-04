@@ -7,6 +7,7 @@ from typing import Any
 import anyio
 import pytest
 
+from agentloom.checkpointing.file import FileCheckpointer
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import WorkflowDefinition
 from agentloom.core.results import StepStatus, TokenUsage, WorkflowResult, WorkflowStatus
@@ -367,6 +368,54 @@ async def test_a_structured_reply_asked_again_reports_every_call() -> None:
     assert ask.cost_usd == pytest.approx(0.2)
     assert ask.token_usage.prompt_tokens == 20
     assert engine._budget.spent == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize(
+    ("shared", "older"),
+    [(False, False), (False, True), (True, False)],
+    ids=["its-checkpoint", "an-older-checkpoint", "a-subworkflow-sharing-the-budget"],
+)
+async def test_a_resumed_run_goes_on_from_what_it_had_spent(
+    tmp_path: Any, shared: bool, older: bool
+) -> None:
+    draft: dict[str, Any] = {"id": "draft", "type": "llm_call", "prompt": "draft"}
+    if shared:  # its step reports nothing: only the checkpoint knows what its child spent
+        child = {"name": "child", "config": {"provider": "paid", "model": "m"}, "steps": [_PAYS]}
+        draft = {"id": "draft", "type": "subworkflow", "workflow_inline": child}
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "paid",
+            "config": {"provider": "paid", "model": "m", "budget_usd": 0.15},
+            "steps": [
+                draft,
+                {"id": "gate", "type": "approval_gate", "prompt": "ok?", "depends_on": ["draft"]},
+                {"id": "send", "type": "llm_call", "prompt": "send", "depends_on": ["gate"]},
+            ],
+        }
+    )
+    checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("drafted")))
+    engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway, checkpointer=checkpointer)
+    assert (await engine.run()).status == WorkflowStatus.PAUSED
+    saved = await checkpointer.load(engine.run_id)
+    assert saved.spent_usd == pytest.approx(0.1)
+    if older:  # written before the checkpoint kept it: the step results' cost stands in
+        saved.spent_usd = 0.0
+
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("sent")))
+    resumed = await WorkflowEngine.from_checkpoint(
+        saved,
+        checkpointer=checkpointer,
+        provider_gateway=gateway,
+        approval_decisions={"gate": "approved"},
+    )
+    result = await resumed.run()
+
+    assert result.status == WorkflowStatus.BUDGET_EXCEEDED
+    assert result.total_cost_usd == pytest.approx(0.2)
+    assert resumed._budget.spent == pytest.approx(0.2)
 
 
 async def _run_subworkflow(
