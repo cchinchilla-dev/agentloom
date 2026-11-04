@@ -75,6 +75,7 @@ class AgentStep(LLMCallStep):
         try:
             registry = _scoped_registry(agent, context, gateway)
         except LookupError as e:
+            self._observe(context, StepStatus.FAILED, gateway)
             return StepResult(
                 step_id=step.id,
                 status=StepStatus.FAILED,
@@ -129,6 +130,10 @@ class AgentStep(LLMCallStep):
                 duration_ms=(time.monotonic() - start) * 1000,
                 error_classification="transient",
             )
+        except Exception:
+            # A turn that cannot run (a prompt that does not render, a stale replay) failed too
+            self._observe(context, StepStatus.FAILED, gateway)
+            raise
         finally:
             self.iterations = gateway.calls
 
@@ -137,7 +142,7 @@ class AgentStep(LLMCallStep):
         result.cost_usd = gateway.spent
         result.token_usage = gateway.usage
         result.usage_by_model = gateway.usage_by_model()
-        self._observe(context, result, gateway)
+        self._observe(context, result.status, gateway)
         succeeded = result.status == StepStatus.SUCCESS
         if succeeded and context.stream and context.on_stream_chunk and result.output:
             try:
@@ -146,15 +151,15 @@ class AgentStep(LLMCallStep):
                 logger.warning("Stream chunk callback failed")
         return result
 
-    def _observe(self, context: StepContext, result: StepResult, gateway: _MeteredGateway) -> None:
+    def _observe(self, context: StepContext, status: StepStatus, gateway: _MeteredGateway) -> None:
         hook = getattr(context.observer, "on_agent_turn", None)
         if not callable(hook):
             return
         try:
             hook(
-                step_id=result.step_id,
+                step_id=context.step_definition.id,
                 agent=self._agent.name,
-                status=result.status.value,
+                status=status.value,
                 iterations=gateway.calls,
                 tool_calls=gateway.tool_calls,
                 cost_usd=gateway.spent,

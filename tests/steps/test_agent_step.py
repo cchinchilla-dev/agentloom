@@ -787,6 +787,35 @@ class TestAgentObservability:
 
         assert watcher.turns[0]["output_valid"] is None
 
+    @pytest.mark.parametrize(
+        ("agent", "prompt"),
+        [({**SUPPORT, "tools": ["missing"]}, "q"), (SUPPORT, "{")],
+        ids=["a-tool-missing", "a-prompt-that-does-not-render"],
+    )
+    async def test_a_turn_that_cannot_run_is_reported_failed(
+        self, agent: dict[str, Any], prompt: str
+    ) -> None:
+        watcher = _Watcher()
+        result = await _run(
+            _workflow(_agent_step(agent, prompt=prompt)),
+            _Scripted(),
+            _registry(_Add()),
+            observer=watcher,
+        )
+
+        assert result.step_results["ask"].status == StepStatus.FAILED
+        assert watcher.turns == [
+            {
+                "step_id": "ask",
+                "agent": "support",
+                "status": "failed",
+                "iterations": 0,
+                "tool_calls": 0,
+                "cost_usd": 0.0,
+                "output_valid": None,
+            }
+        ]
+
     async def test_a_broken_observer_does_not_fail_the_turn(self) -> None:
         class _Broken(_Watcher):
             def on_agent_turn(self, **kwargs: Any) -> None:
