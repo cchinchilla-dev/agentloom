@@ -55,11 +55,12 @@ class _Add(BaseTool):
 
 
 class _Tokens:
-    """Keeps the token observations of a run."""
+    """Keeps the token observations of a run, and how its steps ended."""
 
     def __init__(self) -> None:
         self.seen: list[tuple[str, int]] = []
         self.providers: list[str] = []
+        self.ends: list[tuple[str, str, float]] = []
 
     def __getattr__(self, name: str) -> Any:
         return lambda *args, **kwargs: None
@@ -67,6 +68,17 @@ class _Tokens:
     def on_tokens(self, provider: str, model: str, prompt: int, completion: int, **_: Any) -> None:
         self.seen.append((model, prompt))
         self.providers.append(provider)
+
+    def on_step_end(
+        self,
+        step_id: str,
+        step_type: str,
+        status: str,
+        duration_ms: float,
+        cost_usd: float = 0.0,
+        **_: Any,
+    ) -> None:
+        self.ends.append((step_id, status, cost_usd))
 
 
 def _paid(content: str = "", *calls: ToolCall, model: str = "m") -> ProviderResponse:
@@ -91,6 +103,7 @@ async def _run(
     *,
     retries: int = 1,
     budget: float | None = None,
+    workflow_timeout: float | None = None,
     **step: Any,
 ) -> tuple[WorkflowResult, WorkflowEngine]:
     workflow = WorkflowDefinition.model_validate(
@@ -100,6 +113,7 @@ async def _run(
                 "provider": "paid",
                 "model": "m",
                 "budget_usd": budget,
+                "timeout": workflow_timeout,
             },
             "steps": [
                 {
@@ -329,12 +343,21 @@ async def test_a_failed_step_keeps_what_a_gateway_of_its_own_spent() -> None:
 
 
 async def _run_subworkflow(
-    provider: _Paid, child_budget: float | None, *child_steps: dict[str, Any]
+    provider: _Paid,
+    child_budget: float | None,
+    *child_steps: dict[str, Any],
+    workflow_timeout: float | None = None,
+    **sub: Any,
 ) -> tuple[WorkflowResult, WorkflowEngine]:
     workflow = WorkflowDefinition.model_validate(
         {
             "name": "parent",
-            "config": {"provider": "paid", "model": "m", "budget_usd": 1.0},
+            "config": {
+                "provider": "paid",
+                "model": "m",
+                "budget_usd": 1.0,
+                "timeout": workflow_timeout,
+            },
             "steps": [
                 {
                     "id": "sub",
@@ -345,6 +368,7 @@ async def _run_subworkflow(
                         "config": {"provider": "paid", "model": "m", "budget_usd": child_budget},
                         "steps": list(child_steps),
                     },
+                    **sub,
                 }
             ],
         }
@@ -382,3 +406,154 @@ async def test_a_subworkflow_over_its_own_budget_charges_the_parent_and_is_not_r
     assert sub.token_usage.prompt_tokens == 10
     assert engine._budget.spent == pytest.approx(0.1)
     assert len(provider._turns) == 1  # no second run of the child
+
+
+@pytest.mark.parametrize("budget", [None, 0.05], ids=["no-budget", "over-budget"])
+async def test_a_step_cut_by_the_workflow_timeout_keeps_what_it_spent(
+    budget: float | None,
+) -> None:
+    provider = _Paid(_paid("", ToolCall(id="c1", name="add", arguments={"a": 2, "b": 3})), None)
+    result, engine = await _run(provider, retries=0, budget=budget, workflow_timeout=0.2)
+
+    ask = result.step_results["ask"]
+    assert (result.status, ask.status) == (WorkflowStatus.TIMEOUT, StepStatus.TIMEOUT)
+    assert ask.error == "Workflow timed out after 0.2s"
+    assert ask.cost_usd == pytest.approx(0.1)
+    assert ask.token_usage.prompt_tokens == 10
+    assert result.total_cost_usd == pytest.approx(0.1)
+    assert engine._budget.spent == pytest.approx(0.1)
+    assert engine.observer.seen == [("m", 10)]
+    assert engine.observer.ends == [("ask", "timeout", pytest.approx(0.1))]
+
+
+async def test_a_step_cut_while_it_waits_to_retry_is_charged_once() -> None:
+    call = ToolCall(id="c1", name="add", arguments={"a": 2, "b": 3})
+    provider = _Paid(_paid("", call), _unavailable())
+    # The first backoff waits 1s, past the workflow's timeout
+    result, engine = await _run(
+        provider, workflow_timeout=0.2, retry={"max_retries": 1, "jitter": False}
+    )
+
+    ask = result.step_results["ask"]
+    assert ask.status == StepStatus.TIMEOUT
+    assert ask.cost_usd == pytest.approx(0.1)
+    assert engine._budget.spent == pytest.approx(0.1)
+    assert engine.observer.seen == [("m", 10)]
+
+
+async def test_a_step_cut_while_it_is_charged_is_charged_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "paid",
+            "config": {"provider": "paid", "model": "m", "timeout": 0.2},
+            "steps": [{"id": "ask", "type": "llm_call", "prompt": "2+3?"}],
+        }
+    )
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("5")))
+    engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway)
+    charge = engine._budget.charge
+
+    async def contended(cost_usd: float) -> None:
+        await anyio.sleep(0.3)  # the budget's lock is held past the workflow's deadline
+        await charge(cost_usd)
+
+    monkeypatch.setattr(engine._budget, "charge", contended)
+    result = await engine.run()
+
+    assert result.step_results["ask"].status == StepStatus.SUCCESS
+    assert engine._budget.spent == pytest.approx(0.1)
+
+
+class _Opens(BaseTool):
+    """Opens a gate once its step's first call is paid."""
+
+    name = "open"
+    description = "Open the gate."
+    parameters_schema = {"type": "object", "properties": {}}
+
+    def __init__(self) -> None:
+        self.gate = anyio.Event()
+
+    async def execute(self, **kwargs: Any) -> Any:
+        self.gate.set()
+        return "open"
+
+
+class _TwoSteps(BaseProvider):
+    """Step "slow" pays a call that runs the gate tool, then hangs; "fast" waits for the gate."""
+
+    name = "paid"
+
+    def __init__(self, gate: anyio.Event) -> None:
+        super().__init__()
+        self._gate = gate
+
+    async def complete(self, **kw: Any) -> ProviderResponse:
+        if kw["model"] == "slow":
+            if not self._gate.is_set():
+                return _paid("", ToolCall(id="c1", name="open", arguments={}), model="slow")
+            await anyio.sleep_forever()
+        await self._gate.wait()
+        return _paid("done", model="fast")
+
+    async def stream(self, **kw: Any) -> StreamResponse:
+        raise AssertionError("no step here streams")
+
+    def supports_model(self, _m: str) -> bool:
+        return True
+
+
+async def test_a_step_cut_by_a_siblings_budget_breach_is_charged() -> None:
+    tool = _Opens()
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "paid",
+            "config": {"provider": "paid", "model": "m", "budget_usd": 0.05},
+            "steps": [
+                {
+                    "id": "slow",
+                    "type": "llm_call",
+                    "model": "slow",
+                    "prompt": "open it",
+                    "tools": [{"name": "open", "parameters": tool.parameters_schema}],
+                },
+                {"id": "fast", "type": "llm_call", "model": "fast", "prompt": "hi"},
+            ],
+        }
+    )
+    gateway = ProviderGateway()
+    gateway.register(_TwoSteps(tool.gate))
+    registry = ToolRegistry()
+    registry.register(tool)
+    engine = WorkflowEngine(
+        workflow=workflow, provider_gateway=gateway, tool_registry=registry, observer=_Tokens()
+    )
+    result = await engine.run()
+
+    assert result.status == WorkflowStatus.BUDGET_EXCEEDED
+    assert result.total_cost_usd == pytest.approx(0.2)
+    assert engine._budget.spent == pytest.approx(0.2)
+    assert "slow" not in result.step_results  # no status says cancelled: its span does
+    assert ("slow", "cancelled", pytest.approx(0.1)) in engine.observer.ends
+
+
+_HANGS = {"id": "b", "type": "llm_call", "prompt": "hi", "depends_on": ["a"]}
+
+
+@pytest.mark.parametrize(
+    "cut",
+    [{"timeout": 0.2, "retry": {"max_retries": 0}}, {"workflow_timeout": 0.2}],
+    ids=["its-timeout", "the-workflows"],
+)
+async def test_a_subworkflow_with_a_budget_of_its_own_cut_short_is_charged_what_it_spent(
+    cut: dict[str, Any],
+) -> None:
+    result, engine = await _run_subworkflow(_Paid(_paid("ok"), None), 10.0, _PAYS, _HANGS, **cut)
+
+    sub = result.step_results["sub"]
+    assert sub.status == StepStatus.TIMEOUT
+    assert sub.cost_usd == pytest.approx(0.1)
+    assert engine._budget.spent == pytest.approx(0.1)

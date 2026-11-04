@@ -908,6 +908,16 @@ class TestTimeouts:
         assert result.status == WorkflowStatus.TIMEOUT
         assert result.step_results["draft"].status == StepStatus.TIMEOUT
 
+    async def test_the_workflow_timeout_cuts_a_step_waiting_for_its_turn(self) -> None:
+        steps = [self._step("draft", "hang"), self._step("redraft", "hang")]
+        engine = self._engine(steps, timeout=0.05, max_concurrent_steps=1)
+        with anyio.fail_after(5):
+            result = await engine.run()
+
+        # One hangs, the other never starts: both end timed out
+        assert {r.status for r in result.step_results.values()} == {StepStatus.TIMEOUT}
+        assert len(result.step_results) == 2
+
     async def test_a_pause_from_the_checkpoint_does_not_hide_the_timeout(self) -> None:
         gate = StepDefinition(
             id="gate", type=StepType.APPROVAL_GATE, prompt="ok?", depends_on=["draft"]

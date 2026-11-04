@@ -97,6 +97,12 @@ def attempt_spend() -> Spend:
     return _SPEND.get() or Spend()
 
 
+def restart_spend() -> None:
+    """Count the running attempt's calls from zero again, once what they spent is charged."""
+    if _SPEND.get() is not None:
+        _SPEND.set(Spend())
+
+
 class AttemptLog:
     """Where each key stood before an attempt first moved it, to take the attempt back."""
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from agentloom.core.attempts import record_spend
 from agentloom.core.results import (
     StepResult,
     StepStatus,
@@ -13,6 +14,7 @@ from agentloom.core.results import (
     WorkflowStatus,
 )
 from agentloom.exceptions import BudgetExceededError, PauseRequestedError, StepError
+from agentloom.resilience.budget import BudgetEnforcer
 from agentloom.steps.base import BaseStep, StepContext
 
 
@@ -123,7 +125,12 @@ class SubworkflowStep(BaseStep):
         # fresh one, so the default top-level execution path is
         # unchanged.
         parent_enforcer = getattr(context, "budget_enforcer", None)
-        child_enforcer = None if sub_workflow.config.budget_usd is not None else parent_enforcer
+        own_enforcer = (
+            BudgetEnforcer(sub_workflow.config.budget_usd)
+            if sub_workflow.config.budget_usd is not None
+            else None
+        )
+        child_enforcer = own_enforcer if own_enforcer is not None else parent_enforcer
 
         engine = WorkflowEngine(
             workflow=sub_workflow,
@@ -154,6 +161,12 @@ class SubworkflowStep(BaseStep):
                 error=f"Subworkflow failed: {e}",
                 duration_ms=duration,
             )
+        except BaseException:
+            # Cut short: its attempt still pays what the steps of a child with a budget of
+            # its own spent, which no result reports (#120)
+            if own_enforcer is not None:
+                record_spend(own_enforcer.spent, "", "", TokenUsage())
+            raise
 
         # Budget-exhausted child: re-running the subworkflow would only
         # repeat the same over-budget provider calls, so the step must

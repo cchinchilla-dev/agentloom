@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import logging
 import math
@@ -26,6 +27,7 @@ from agentloom.core.attempts import (
     attempt_spend,
     enter_attempt,
     enter_step,
+    restart_spend,
     running_attempt,
     running_steps,
 )
@@ -870,19 +872,29 @@ class WorkflowEngine:
         if self.observer:
             self.observer.on_step_start(step_id, step_def.type.value, stream=should_stream)
         started = time.monotonic()
+        failed = Spend()  # what the attempts that failed spent: charged as they fail
         try:
-            await self._run_step(step_id, step_def, should_stream)
+            await self._run_step(step_id, step_def, should_stream, failed)
         except BaseException as exc:
+            cancelled = isinstance(exc, anyio.get_cancelled_exc_class())
+            if cancelled:
+                with anyio.CancelScope(shield=True):
+                    cut = await self._charge_cut(step_id, failed)
             # A step cancelled with its layer (a failing sibling, a parent's timeout) or stopped
             # by a budget breach never reaches on_step_end: close its span here, in its own task.
             if self.observer:
                 error: str | None = str(exc)
                 spent: dict[str, Any] = {}
-                if isinstance(exc, anyio.get_cancelled_exc_class()):
+                if cancelled:
                     status, error = "cancelled", None
-                    if anyio.current_time() >= self._deadline:  # its result says timeout too
-                        timeout = self.workflow.config.timeout
-                        status, error = "timeout", f"Workflow timed out after {timeout}s"
+                    if cut.error is not None:  # its result says timeout too
+                        status, error = "timeout", cut.error
+                    spent = {
+                        "cost_usd": cut.cost_usd,
+                        "prompt_tokens": cut.token_usage.prompt_tokens,
+                        "completion_tokens": cut.token_usage.completion_tokens,
+                        "reasoning_tokens": cut.token_usage.reasoning_tokens,
+                    }
                 elif isinstance(exc, BudgetExceededError):
                     status = "budget_exceeded"
                     # The breach is this step's own charge, made after its result was recorded.
@@ -910,6 +922,12 @@ class WorkflowEngine:
                 )
             raise
 
+    async def _charge(self, cost_usd: float) -> None:
+        """Charge what the running attempt spent, once, even when its step is being cut."""
+        with anyio.CancelScope(shield=True):
+            restart_spend()
+            await self._budget.charge(cost_usd)
+
     def _emit_tokens(self, spend: Spend) -> None:
         """Each model's tokens under it; a subworkflow's steps emit their own."""
         if self.observer:
@@ -934,13 +952,37 @@ class WorkflowEngine:
         result.cost_usd, result.token_usage = failed.cost_usd, failed.usage
         self._emit_tokens(spend)
         try:
-            await self._budget.charge(spend.cost_usd)
+            await self._charge(spend.cost_usd)
         except BudgetExceededError:
             # The breach reports what the step spent, from its result
             await self.state.set_step_result(step_id, result)
             raise
 
-    async def _run_step(self, step_id: str, step_def: StepDefinition, should_stream: bool) -> None:
+    async def _charge_cut(self, step_id: str, failed: Spend) -> StepResult:
+        """Charge what a step cut short spent, its answered calls paid all the same (#120).
+
+        The budget of a step cut by a breach is broken already, so its charge raises
+        nothing. The workflow's timeout leaves its result: timed out, with what it spent.
+        """
+        spend = attempt_spend()
+        failed.absorb(spend)
+        self._emit_tokens(spend)
+        with contextlib.suppress(BudgetExceededError):
+            await self._charge(spend.cost_usd)
+        cut = StepResult(
+            step_id=step_id,
+            status=StepStatus.TIMEOUT,
+            cost_usd=failed.cost_usd,
+            token_usage=failed.usage,
+        )
+        if anyio.current_time() >= self._deadline:
+            cut.error = f"Workflow timed out after {self.workflow.config.timeout}s"
+            await self.state.set_step_result(step_id, cut)
+        return cut
+
+    async def _run_step(
+        self, step_id: str, step_def: StepDefinition, should_stream: bool, failed: Spend
+    ) -> None:
         """Run a started step through its attempts; ``_execute_step`` covers escaping errors."""
         executor_cls = self.step_registry.get(step_def.type)
         executor: BaseStep = executor_cls()
@@ -966,7 +1008,6 @@ class WorkflowEngine:
 
         max_retries = step_def.retry.max_retries
         last_result: StepResult | None = None
-        failed = Spend()  # what the attempts that failed spent: charged as they fail
         outer = running_attempt()  # a subworkflow's step runs inside its parent's attempt
         enter_step(step_id)
         previous: Attempt | None = None
@@ -1006,7 +1047,7 @@ class WorkflowEngine:
                     # ``BudgetExceededError`` from inside the critical
                     # section so the engine's terminal classifier picks
                     # up the overrun on the way out.
-                    await self._budget.charge(spend.cost_usd)
+                    await self._charge(spend.cost_usd)
                     if self.observer and self._budget.has_limit():
                         hook = getattr(self.observer, "on_budget_remaining", None)
                         if hook:
