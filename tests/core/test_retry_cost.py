@@ -8,7 +8,7 @@ import anyio
 import pytest
 
 from agentloom.checkpointing.file import FileCheckpointer
-from agentloom.core.engine import WorkflowEngine
+from agentloom.core.engine import _RUNS, WorkflowEngine
 from agentloom.core.models import WorkflowDefinition
 from agentloom.core.results import StepStatus, TokenUsage, WorkflowResult, WorkflowStatus
 from agentloom.exceptions import ProviderError
@@ -62,6 +62,7 @@ class _Tokens:
         self.seen: list[tuple[str, int]] = []
         self.providers: list[str] = []
         self.ends: list[tuple[str, str, float]] = []
+        self.runs: list[tuple[str, float]] = []
 
     def __getattr__(self, name: str) -> Any:
         return lambda *args, **kwargs: None
@@ -80,6 +81,11 @@ class _Tokens:
         **_: Any,
     ) -> None:
         self.ends.append((step_id, status, cost_usd))
+
+    def on_workflow_end(
+        self, name: str, status: str, duration_ms: float, tokens: int, cost_usd: float, **_: Any
+    ) -> None:
+        self.runs.append((name, cost_usd))
 
 
 def _paid(content: str = "", *calls: ToolCall, model: str = "m") -> ProviderResponse:
@@ -623,6 +629,36 @@ async def test_a_step_cut_by_a_siblings_budget_breach_is_charged() -> None:
     assert engine._budget.spent == pytest.approx(0.2)
     assert "slow" not in result.step_results  # no status says cancelled: its span does
     assert ("slow", "cancelled", pytest.approx(0.1)) in engine.observer.ends
+
+
+async def test_a_subworkflow_sharing_the_budget_reports_what_its_own_steps_spent() -> None:
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "parent",
+            "config": {"provider": "paid", "model": "m", "budget_usd": 1.0},
+            "steps": [
+                {"id": "first", "type": "llm_call", "prompt": "hi"},
+                {
+                    "id": "sub",
+                    "type": "subworkflow",
+                    "depends_on": ["first"],
+                    "workflow_inline": {
+                        "name": "child",
+                        "config": {"provider": "paid", "model": "m"},
+                        "steps": [_PAYS],
+                    },
+                },
+            ],
+        }
+    )
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("first"), _paid("child")))
+    engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway, observer=_Tokens())
+    result = await engine.run()
+
+    assert result.total_cost_usd == pytest.approx(0.2)
+    assert engine.observer.runs == [("child", pytest.approx(0.1)), ("parent", pytest.approx(0.2))]
+    assert _RUNS.get() == ()  # a task that runs workflows one after another holds none of them
 
 
 _HANGS = {"id": "b", "type": "llm_call", "prompt": "hi", "depends_on": ["a"]}

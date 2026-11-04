@@ -380,7 +380,7 @@ When a parent workflow launches a subworkflow step:
 
 | Parent budget | Child budget | Behaviour |
 |---------------|--------------|-----------|
-| Set (`$0.10`) | None | Child engine inherits the parent's enforcer. Child charges count against the parent's `_spent`, so the parent's gate trips at the right step. |
+| Set (`$0.10`) | None | Child engine inherits the parent's enforcer. Child charges count against the parent's `_spent`, so the parent's gate trips at the right step. The child's own `total_cost_usd` is what its steps charged, not the parent's total. |
 | Set (`$0.10`) | Set (`$0.05`) | Child uses a fresh enforcer scoped to its own limit. Pre-0.5.0 behaviour preserved. The parent's per-step accounting still adds the rolled-up subworkflow cost to the parent counter, whether the child succeeds, fails or breaks its own budget; a breach fails the step without a retry. |
 | None | Set (`$0.05`) | Child enforces its own budget; parent has no limit to enforce. |
 | None | None | No enforcement at either level. |

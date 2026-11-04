@@ -10,6 +10,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
@@ -59,6 +60,9 @@ from agentloom.steps.base import BaseStep, StepContext
 from agentloom.steps.registry import StepRegistry, create_default_registry
 
 logger = logging.getLogger("agentloom.engine")
+
+# The runs the running code belongs to, outermost first: a subworkflow's inside its parent's
+_RUNS: ContextVar[tuple[WorkflowEngine, ...]] = ContextVar("agentloom_runs", default=())
 
 # A step that ran out of time failed, as one that raised did
 _FAILED = (StepStatus.FAILED, StepStatus.TIMEOUT)
@@ -177,6 +181,10 @@ class WorkflowEngine:
         # enforcer is still created so call sites don't need ``if budget
         # is None`` branching.
         self._budget = budget_enforcer or BudgetEnforcer(workflow.config.budget_usd)
+        # What this run charged, its subworkflows that share its budget included, and
+        # what it had charged before a resume: a shared enforcer counts its parent's too
+        self._charged = 0.0
+        self._spent_before = 0.0
         self._deadline = math.inf
 
         self._checkpointer = checkpointer
@@ -336,7 +344,7 @@ class WorkflowEngine:
             completed_steps=completed_steps,
             status=status,
             paused_step_id=paused_step_id,
-            spent_usd=self._budget.spent,
+            spent_usd=self._spent,
             created_at=self._checkpoint_created_at,
             updated_at=datetime.now(UTC).isoformat(),
         )
@@ -427,6 +435,7 @@ class WorkflowEngine:
             for step_id, decision in approval_decisions.items():
                 await state_manager.set(f"_approval.{step_id}", decision)
 
+        spent = max(checkpoint_data.spent_usd, restored_cost)
         engine = cls(
             workflow=workflow,
             state_manager=state_manager,
@@ -438,14 +447,16 @@ class WorkflowEngine:
             checkpointer=checkpointer,
             run_id=checkpoint_data.run_id,
             # The budget goes on from what the run had spent, not from zero
-            budget_enforcer=BudgetEnforcer(
-                workflow.config.budget_usd,
-                spent_usd=max(checkpoint_data.spent_usd, restored_cost),
-            ),
+            budget_enforcer=BudgetEnforcer(workflow.config.budget_usd, spent_usd=spent),
         )
+        engine._spent_before = spent
         engine._completed_steps = set(checkpoint_data.completed_steps)
         engine._checkpoint_created_at = checkpoint_data.created_at
         return engine
+
+    @property
+    def _spent(self) -> float:
+        return self._spent_before + self._charged
 
     async def run(self) -> WorkflowResult:
         """Execute the workflow end-to-end.
@@ -453,6 +464,13 @@ class WorkflowEngine:
         Returns:
             WorkflowResult with all step results and final state.
         """
+        runs = _RUNS.set((*_RUNS.get(), self))
+        try:
+            return await self._run()
+        finally:
+            _RUNS.reset(runs)
+
+    async def _run(self) -> WorkflowResult:
         start = time.monotonic()
         workflow_name = self.workflow.name
         timeout = self.workflow.config.timeout
@@ -655,13 +673,11 @@ class WorkflowEngine:
             # ``cost_usd=0`` on its step result (its child steps already
             # charged the enforcer directly — re-counting it would
             # double-charge), so the per-step sum alone would under-
-            # report. ``self._budget.spent`` carries the child charges;
-            # on a resumed run the per-step sum carries pre-checkpoint
-            # cost the fresh enforcer does not — ``max`` keeps whichever
-            # is the fuller picture.
+            # report. ``self._spent`` carries the child charges, and only
+            # this run's: a shared enforcer counts its parent's too (#120).
             total_cost = max(
                 sum(r.cost_usd for r in step_results.values()),
-                self._budget.spent,
+                self._spent,
             )
 
             failed_steps = [r for r in step_results.values() if r.status in _FAILED]
@@ -766,7 +782,7 @@ class WorkflowEngine:
                         "budget_exceeded",
                         duration,
                         0,
-                        self._budget.spent,
+                        self._spent,
                     )
                 result = WorkflowResult(
                     workflow_name=workflow_name,
@@ -774,7 +790,7 @@ class WorkflowEngine:
                     step_results=await self.state.all_step_results(),
                     final_state=await self.state.get_state_snapshot(),
                     total_duration_ms=duration,
-                    total_cost_usd=self._budget.spent,
+                    total_cost_usd=self._spent,
                     error=str(budget_err),
                 )
                 await self._finalize_result(result, workflow_name)
@@ -784,7 +800,7 @@ class WorkflowEngine:
                 await self._save_checkpoint("timeout")
                 step_results = await self.state.all_step_results()
                 total_tokens = sum(r.token_usage.total_tokens for r in step_results.values())
-                total_cost = max(sum(r.cost_usd for r in step_results.values()), self._budget.spent)
+                total_cost = max(sum(r.cost_usd for r in step_results.values()), self._spent)
                 if self.observer:
                     self.observer.on_workflow_end(
                         workflow_name, "timeout", duration, total_tokens, total_cost
@@ -805,9 +821,7 @@ class WorkflowEngine:
 
             await self._save_checkpoint("failed")
             if self.observer:
-                self.observer.on_workflow_end(
-                    workflow_name, "failed", duration, 0, self._budget.spent
-                )
+                self.observer.on_workflow_end(workflow_name, "failed", duration, 0, self._spent)
             logger.error("Workflow '%s' failed: %s", workflow_name, e)
             result = WorkflowResult(
                 workflow_name=workflow_name,
@@ -829,7 +843,7 @@ class WorkflowEngine:
                     "cancelled",
                     (time.monotonic() - start) * 1000,
                     0,
-                    self._budget.spent,
+                    self._spent,
                 )
             raise
 
@@ -934,6 +948,9 @@ class WorkflowEngine:
         """Charge what the running attempt spent, once, even when its step is being cut."""
         with anyio.CancelScope(shield=True):
             restart_spend()
+            for run in _RUNS.get():
+                if run._budget is self._budget:  # this run, and the runs it shares its budget with
+                    run._charged += cost_usd
             await self._budget.charge(cost_usd)
 
     def _emit_tokens(self, spend: Spend) -> None:
