@@ -35,7 +35,6 @@ from agentloom.core.models import StepDefinition, StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.redact import RedactionPolicy, is_redacted, redact_state
 from agentloom.core.results import (
-    ModelUsage,
     StepResult,
     StepStatus,
     WorkflowResult,
@@ -118,6 +117,27 @@ def _extract_budget_error(exc: BaseException) -> BudgetExceededError | None:
             if found is not None:
                 return found
     return None
+
+
+def _spend_of(result: StepResult) -> Spend:
+    """What the running attempt spent: the calls the gateway saw, or ``result``'s when more.
+
+    A step can report calls the gateway never saw: those of a gateway of its own, or of
+    a subworkflow with a budget of its own. Cost and tokens are compared apart (#120).
+    """
+    seen = attempt_spend()
+    reported = result.token_usage.total_tokens
+    named = bool(result.provider and result.model)
+    by_model = seen.by_model
+    # On a tie the step's own names win: a replay answers as the provider it recorded
+    if reported > seen.usage.total_tokens or (named and reported == seen.usage.total_tokens):
+        if named:
+            by_model = {(u.provider, u.model): u.token_usage for u in result.usage_by_model} or {
+                (result.provider or "", result.model or ""): result.token_usage
+            }
+        else:
+            by_model = {("", ""): result.token_usage}  # emitted by the steps that made them
+    return Spend(max(seen.cost_usd, result.cost_usd), dict(by_model))
 
 
 class WorkflowEngine:
@@ -890,18 +910,11 @@ class WorkflowEngine:
                 )
             raise
 
-    async def _charge_failure(self, step_id: str, result: StepResult, failed: Spend) -> None:
-        """Charge what a failed attempt spent and keep the failed attempts' total on ``result``.
-
-        Its calls were paid however it ended: a provider error after paid calls, its
-        timeout, a structured reply never valid (#120).
-        """
-        spend = attempt_spend()
-        failed.absorb(spend)
-        result.cost_usd, result.token_usage = failed.cost_usd, failed.usage
+    def _emit_tokens(self, spend: Spend) -> None:
+        """Each model's tokens under it; a subworkflow's steps emit their own."""
         if self.observer:
             for (provider, model), usage in spend.by_model.items():
-                if usage.total_tokens > 0:
+                if provider and model and usage.total_tokens > 0:
                     self.observer.on_tokens(
                         provider,
                         model,
@@ -909,6 +922,17 @@ class WorkflowEngine:
                         usage.completion_tokens,
                         reasoning_tokens=usage.reasoning_tokens,
                     )
+
+    async def _charge_failure(self, step_id: str, result: StepResult, failed: Spend) -> None:
+        """Charge what a failed attempt spent and keep the failed attempts' total on ``result``.
+
+        Its calls were paid however it ended: a provider error after paid calls, its
+        timeout, a structured reply never valid (#120).
+        """
+        spend = _spend_of(result)
+        failed.absorb(spend)
+        result.cost_usd, result.token_usage = failed.cost_usd, failed.usage
+        self._emit_tokens(spend)
         try:
             await self._budget.charge(spend.cost_usd)
         except BudgetExceededError:
@@ -966,10 +990,10 @@ class WorkflowEngine:
                 last_result = result
 
                 if result.status == StepStatus.SUCCESS:
-                    own, own_usage = result.cost_usd, result.token_usage
+                    spend = _spend_of(result)
                     # The step's result tells what it cost, the attempts that failed included
-                    result.cost_usd += failed.cost_usd
-                    result.token_usage += failed.usage
+                    result.cost_usd = spend.cost_usd + failed.cost_usd
+                    result.token_usage = spend.usage + failed.usage
                     await self.state.set_step_result(step_id, result)
                     if (log := active_log()) is not None:
                         log.finish_step(running_steps(), result.output)
@@ -982,7 +1006,7 @@ class WorkflowEngine:
                     # ``BudgetExceededError`` from inside the critical
                     # section so the engine's terminal classifier picks
                     # up the overrun on the way out.
-                    await self._budget.charge(own)
+                    await self._budget.charge(spend.cost_usd)
                     if self.observer and self._budget.has_limit():
                         hook = getattr(self.observer, "on_budget_remaining", None)
                         if hook:
@@ -1013,23 +1037,8 @@ class WorkflowEngine:
                             prompt_template_id=(pmeta.template_id if pmeta else None),
                             prompt_template_vars=(",".join(pmeta.template_vars) if pmeta else None),
                         )
+                        self._emit_tokens(spend)
                         if result.provider and result.model:
-                            # Each model's tokens under it, those of agents called as tools too
-                            for used in result.usage_by_model or [
-                                ModelUsage(
-                                    provider=result.provider,
-                                    model=result.model,
-                                    token_usage=own_usage,
-                                )
-                            ]:
-                                if used.token_usage.total_tokens > 0:
-                                    self.observer.on_tokens(
-                                        used.provider,
-                                        used.model,
-                                        used.token_usage.prompt_tokens,
-                                        used.token_usage.completion_tokens,
-                                        reasoning_tokens=used.token_usage.reasoning_tokens,
-                                    )
                             if result.time_to_first_token_ms is not None:
                                 self.observer.on_stream_response(
                                     result.provider,

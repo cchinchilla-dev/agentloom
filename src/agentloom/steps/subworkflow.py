@@ -5,7 +5,13 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from agentloom.core.results import StepResult, StepStatus, WorkflowStatus
+from agentloom.core.results import (
+    StepResult,
+    StepStatus,
+    TokenUsage,
+    WorkflowResult,
+    WorkflowStatus,
+)
 from agentloom.exceptions import BudgetExceededError, PauseRequestedError, StepError
 from agentloom.steps.base import BaseStep, StepContext
 
@@ -161,20 +167,25 @@ class SubworkflowStep(BaseStep):
         #   use that rather than ``result.total_cost_usd``.
         # * Own enforcer (child declared its own ``budget_usd``): the
         #   breach is the child's, not the parent's — surface a
-        #   non-retryable ``StepError`` so the parent ends FAILED (not
+        #   permanent failure so the parent ends FAILED (not
         #   BUDGET_EXCEEDED) but still fails fast. Pre-0.5.0 this
         #   returned a plain FAILED result, which the engine's
         #   soft-failure path retried 4× — re-billing the child each
-        #   time.
+        #   time. It reports what the child spent, which the parent
+        #   charges (#120).
         if result.status == WorkflowStatus.BUDGET_EXCEEDED:
             if parent_enforcer is not None and parent_enforcer is child_enforcer:
                 budget = parent_enforcer.limit_usd or 0.0
                 spent = parent_enforcer.spent
                 raise BudgetExceededError(budget, spent)
-            raise StepError(
-                step.id,
-                f"Subworkflow exceeded its own budget: {result.error or 'budget exceeded'}",
-                is_retryable=False,
+            return StepResult(
+                step_id=step.id,
+                status=StepStatus.FAILED,
+                error=f"Subworkflow exceeded its own budget: {result.error or 'budget exceeded'}",
+                duration_ms=(time.monotonic() - start) * 1000,
+                cost_usd=result.total_cost_usd,
+                token_usage=_child_tokens(result),
+                error_classification="permanent",
             )
 
         # Child engines absorb their own ``PauseRequestedError`` and return
@@ -235,17 +246,7 @@ class SubworkflowStep(BaseStep):
             inner.error_classification == "permanent" for inner in result.step_results.values()
         )
 
-        from agentloom.core.results import TokenUsage
-
-        total_prompt = sum(r.token_usage.prompt_tokens for r in result.step_results.values())
-        total_completion = sum(
-            r.token_usage.completion_tokens for r in result.step_results.values()
-        )
-        token_usage = TokenUsage(
-            prompt_tokens=total_prompt,
-            completion_tokens=total_completion,
-            total_tokens=total_prompt + total_completion,
-        )
+        token_usage = _child_tokens(result)
 
         # Avoid double-charging the parent enforcer in the shared-budget
         # case. When the child ran against the parent's ``BudgetEnforcer``,
@@ -279,3 +280,14 @@ class SubworkflowStep(BaseStep):
             token_usage=token_usage,
             error_classification="permanent" if permanent else None,
         )
+
+
+def _child_tokens(result: WorkflowResult) -> TokenUsage:
+    """The prompt and completion tokens of a child workflow's steps."""
+    total_prompt = sum(r.token_usage.prompt_tokens for r in result.step_results.values())
+    total_completion = sum(r.token_usage.completion_tokens for r in result.step_results.values())
+    return TokenUsage(
+        prompt_tokens=total_prompt,
+        completion_tokens=total_completion,
+        total_tokens=total_prompt + total_completion,
+    )

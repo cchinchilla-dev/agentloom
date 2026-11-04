@@ -1,4 +1,4 @@
-"""What the attempts of a step that failed spent is charged and reported (#120)."""
+"""What every attempt of a step spent is charged and reported, however it ends (#120)."""
 
 from __future__ import annotations
 
@@ -59,12 +59,14 @@ class _Tokens:
 
     def __init__(self) -> None:
         self.seen: list[tuple[str, int]] = []
+        self.providers: list[str] = []
 
     def __getattr__(self, name: str) -> Any:
         return lambda *args, **kwargs: None
 
     def on_tokens(self, provider: str, model: str, prompt: int, completion: int, **_: Any) -> None:
         self.seen.append((model, prompt))
+        self.providers.append(provider)
 
 
 def _paid(content: str = "", *calls: ToolCall, model: str = "m") -> ProviderResponse:
@@ -85,12 +87,20 @@ def _unavailable() -> ProviderError:
 
 
 async def _run(
-    provider: _Paid, *, retries: int = 1, budget: float | None = None, **step: Any
+    provider: _Paid,
+    *,
+    retries: int = 1,
+    budget: float | None = None,
+    **step: Any,
 ) -> tuple[WorkflowResult, WorkflowEngine]:
     workflow = WorkflowDefinition.model_validate(
         {
             "name": "paid",
-            "config": {"provider": "paid", "model": "m", "budget_usd": budget},
+            "config": {
+                "provider": "paid",
+                "model": "m",
+                "budget_usd": budget,
+            },
             "steps": [
                 {
                     "id": "ask",
@@ -233,3 +243,142 @@ async def test_a_streamed_call_of_a_failed_attempt_is_charged(tmp_path: Any) -> 
     assert result.step_results["ask"].status == StepStatus.FAILED
     assert result.step_results["ask"].cost_usd == pytest.approx(0.1)
     assert engine._budget.spent == pytest.approx(0.1)
+
+
+async def test_a_call_counts_under_the_provider_that_answered_it() -> None:
+    # A replay answers as the provider it recorded, not as the mock that serves it
+    provider = _Paid(_paid("5").model_copy(update={"provider": "recorded"}))
+    _, engine = await _run(provider)
+
+    assert engine.observer.providers == ["recorded"]
+
+
+async def test_a_summary_counts_when_its_step_succeeds() -> None:
+    long = "x" * 400
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "paid",
+            "config": {"provider": "paid", "model": "m"},
+            "state": {
+                "chat": {
+                    "messages": [
+                        {"role": "user", "content": long},
+                        {"role": "assistant", "content": long},
+                    ],
+                    "token_budget": 60,
+                    "trim_policy": "summarize_oldest",
+                }
+            },
+            "steps": [
+                {
+                    "id": "ask",
+                    "type": "llm_call",
+                    "prompt": "hi",
+                    "conversation": "state.chat",
+                    "output": "answer",
+                }
+            ],
+        }
+    )
+    provider = _Paid(_paid("summary"), _paid("reply"))
+    gateway = ProviderGateway()
+    gateway.register(provider)
+    engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway, observer=_Tokens())
+    result = await engine.run()
+
+    ask = result.step_results["ask"]
+    assert ask.status == StepStatus.SUCCESS
+    assert not provider._turns  # the summary ran
+    assert ask.cost_usd == pytest.approx(0.2)
+    assert ask.token_usage.prompt_tokens == 20
+    assert engine._budget.spent == pytest.approx(0.2)
+    assert engine.observer.seen == [("m", 20)]
+
+
+class _OwnGateway:
+    """A gateway of its own: the engine never sees its calls."""
+
+    def __init__(self, *turns: ProviderResponse) -> None:
+        self._turns = list(turns)
+
+    async def complete(self, **kw: Any) -> ProviderResponse:
+        return self._turns.pop(0)
+
+
+async def test_a_failed_step_keeps_what_a_gateway_of_its_own_spent() -> None:
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "paid",
+            "config": {"provider": "paid", "model": "m"},
+            "steps": [
+                {
+                    "id": "ask",
+                    "type": "agent",
+                    "agent": {"name": "a", "constraints": {"forbidden_patterns": ["5"]}},
+                    "prompt": "2+3?",
+                }
+            ],
+        }
+    )
+    engine = WorkflowEngine(workflow=workflow, provider_gateway=_OwnGateway(_paid("5")))
+    result = await engine.run()
+
+    assert result.step_results["ask"].status == StepStatus.FAILED
+    assert result.step_results["ask"].cost_usd == pytest.approx(0.1)
+    assert engine._budget.spent == pytest.approx(0.1)
+
+
+async def _run_subworkflow(
+    provider: _Paid, child_budget: float | None, *child_steps: dict[str, Any]
+) -> tuple[WorkflowResult, WorkflowEngine]:
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "parent",
+            "config": {"provider": "paid", "model": "m", "budget_usd": 1.0},
+            "steps": [
+                {
+                    "id": "sub",
+                    "type": "subworkflow",
+                    "retry": {"max_retries": 1, "backoff_base": 0, "jitter": False},
+                    "workflow_inline": {
+                        "name": "child",
+                        "config": {"provider": "paid", "model": "m", "budget_usd": child_budget},
+                        "steps": list(child_steps),
+                    },
+                }
+            ],
+        }
+    )
+    gateway = ProviderGateway()
+    gateway.register(provider)
+    engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway, observer=_Tokens())
+    return await engine.run(), engine
+
+
+_PAYS = {"id": "a", "type": "llm_call", "prompt": "hi", "retry": {"max_retries": 0}}
+# A template that never renders: the child fails for good after "a" paid
+_BREAKS = {"id": "b", "type": "llm_call", "prompt": "{", "depends_on": ["a"]}
+
+
+@pytest.mark.parametrize("child_budget", [None, 10.0], ids=["shared", "own"])
+async def test_a_failed_subworkflow_is_charged_what_its_steps_spent_once(
+    child_budget: float | None,
+) -> None:
+    result, engine = await _run_subworkflow(_Paid(_paid("ok")), child_budget, _PAYS, _BREAKS)
+
+    assert result.step_results["sub"].status == StepStatus.FAILED
+    assert result.total_cost_usd == pytest.approx(0.1)
+    assert engine._budget.spent == pytest.approx(0.1)
+    assert engine.observer.seen == [("m", 10)]  # by the child's step, not again by the parent
+
+
+async def test_a_subworkflow_over_its_own_budget_charges_the_parent_and_is_not_retried() -> None:
+    provider = _Paid(_paid("ok"), _paid("again"))
+    result, engine = await _run_subworkflow(provider, 0.05, _PAYS)
+
+    sub = result.step_results["sub"]
+    assert (sub.status, sub.error_classification) == (StepStatus.FAILED, "permanent")
+    assert sub.cost_usd == pytest.approx(0.1)
+    assert sub.token_usage.prompt_tokens == 10
+    assert engine._budget.spent == pytest.approx(0.1)
+    assert len(provider._turns) == 1  # no second run of the child

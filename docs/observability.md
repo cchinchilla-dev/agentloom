@@ -369,6 +369,7 @@ The engine routes all workflow spend through `BudgetEnforcer` (`agentloom.resili
 * **Pre-dispatch gate** (`estimate(0)`) — before launching any step, the engine reads `spent` under the lock and refuses to start if the budget is already exhausted. This bounds the worst-case overshoot to the in-flight set of a single layer rather than letting it compound across layers.
 * **Post-completion charge** (`charge(cost_usd)`) — when a step succeeds, the engine adds the actual cost inside the lock and raises `BudgetExceededError` if the post-charge total is over. The exception propagates through the task group to the engine's terminal classifier, which surfaces `WorkflowStatus.BUDGET_EXCEEDED`.
 * **Failed attempts** — an attempt that fails (a provider error after paid calls, its step `timeout`, a structured reply never valid, a broken agent constraint) is charged too, as soon as it fails, with what its calls that answered cost, the agents it called and its summaries included; a breach stops the step's retries. The step's `cost_usd` and `token_usage` add up all its attempts, and the token metrics count each attempt's tokens once, under their model.
+* **What an attempt spent** — what its calls cost as the gateway counted them, or what its step reports when that is more: the calls of a gateway of its own (`GatewayProtocol`), or the rolled-up cost of a subworkflow with a budget of its own. Cost and tokens are compared apart.
 
 ### Cross-subworkflow accounting
 
@@ -377,7 +378,7 @@ When a parent workflow launches a subworkflow step:
 | Parent budget | Child budget | Behaviour |
 |---------------|--------------|-----------|
 | Set (`$0.10`) | None | Child engine inherits the parent's enforcer. Child charges count against the parent's `_spent`, so the parent's gate trips at the right step. |
-| Set (`$0.10`) | Set (`$0.05`) | Child uses a fresh enforcer scoped to its own limit. Pre-0.5.0 behaviour preserved. The parent's per-step accounting still adds the rolled-up subworkflow cost to the parent counter. |
+| Set (`$0.10`) | Set (`$0.05`) | Child uses a fresh enforcer scoped to its own limit. Pre-0.5.0 behaviour preserved. The parent's per-step accounting still adds the rolled-up subworkflow cost to the parent counter, whether the child succeeds, fails or breaks its own budget; a breach fails the step without a retry. |
 | None | Set (`$0.05`) | Child enforces its own budget; parent has no limit to enforce. |
 | None | None | No enforcement at either level. |
 
