@@ -169,7 +169,7 @@ async def _run_async(
         if not live:
             # In the checkpoint too, so `resume` replays the same recording
             workflow.config.provider = "mock"
-            workflow.config.responses_file = str(mock_responses)
+            workflow.config.responses_file = str(mock_responses.resolve())
         try:
             mock = MockProvider(
                 responses_file=mock_responses,

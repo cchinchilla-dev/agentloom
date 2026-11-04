@@ -439,18 +439,19 @@ class TestResumeApproval:
             monkeypatch.delenv(key, raising=False)
         workflow = tmp_path / "wf.yaml"
         workflow.write_text(yaml.safe_dump(_approval_workflow().model_dump(mode="json")))
-        recording = tmp_path / "rec.json"
-        recording.write_text(
+        (tmp_path / "rec.json").write_text(
             json.dumps({step: {"content": f"recorded {step}"} for step in ("draft", "send")})
         )
         checkpoints = tmp_path / "checkpoints"
+        monkeypatch.chdir(tmp_path)
         run = runner.invoke(
             app,
-            ["run", str(workflow), "--mock-responses", str(recording), "--lite"]
+            ["run", str(workflow), "--mock-responses", "rec.json", "--lite"]
             + ["--checkpoint", "--checkpoint-dir", str(checkpoints)],
         )
         assert run.exit_code == 0, run.output
         (saved,) = checkpoints.glob("*.json")
+        monkeypatch.chdir(checkpoints)  # a relative recording path would not resolve here
         argv = ["resume", saved.stem, "--checkpoint-dir", str(checkpoints), "--approve"]
         result = runner.invoke(app, [*argv, "--lite", "--json"])
         assert result.exit_code == 0, result.output
