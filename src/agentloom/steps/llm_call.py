@@ -511,6 +511,7 @@ class LLMCallStep(BaseStep):
                     attempts_remaining,
                     exc,
                 )
+                paid = current_response
                 current_response = await gateway.complete(
                     messages=messages,
                     model=model,
@@ -518,6 +519,13 @@ class LLMCallStep(BaseStep):
                     max_tokens=step.max_tokens,
                     step_id=step.id,
                     **provider_kwargs,
+                )
+                # The step reports every call it paid, the re-asks included
+                current_response = current_response.model_copy(
+                    update={
+                        "usage": paid.usage + current_response.usage,
+                        "cost_usd": paid.cost_usd + current_response.cost_usd,
+                    }
                 )
                 continue
             current_response.parsed = coerced

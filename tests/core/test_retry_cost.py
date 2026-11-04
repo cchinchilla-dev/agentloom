@@ -342,6 +342,33 @@ async def test_a_failed_step_keeps_what_a_gateway_of_its_own_spent() -> None:
     assert engine._budget.spent == pytest.approx(0.1)
 
 
+async def test_a_structured_reply_asked_again_reports_every_call() -> None:
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "paid",
+            "config": {"provider": "paid", "model": "m"},
+            "steps": [
+                {
+                    "id": "ask",
+                    "type": "llm_call",
+                    "prompt": "2+3?",
+                    "response_schema": {"type": "json_object"},
+                    "retry": {"max_retries": 1},
+                }
+            ],
+        }
+    )
+    gateway = _OwnGateway(_paid("not JSON"), _paid('{"sum": 5}'))
+    engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway)
+    result = await engine.run()
+
+    ask = result.step_results["ask"]
+    assert ask.status == StepStatus.SUCCESS
+    assert ask.cost_usd == pytest.approx(0.2)
+    assert ask.token_usage.prompt_tokens == 20
+    assert engine._budget.spent == pytest.approx(0.2)
+
+
 async def _run_subworkflow(
     provider: _Paid,
     child_budget: float | None,
