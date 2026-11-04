@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -58,7 +60,7 @@ def test_the_model_comes_with_its_prices(tmp_path: Path) -> None:
     agent = tmp_path / "priced.yaml"
     agent.write_text(
         "name: priced\n"
-        "model: claude-haiku-4-5\n"
+        "model: gpt-4o-mini-2024-07-18\n"  # a dated id: priced by its entry, as a run is
         "tools:\n"
         "  - lookup\n"
         "  - name: helper\n"
@@ -67,7 +69,7 @@ def test_the_model_comes_with_its_prices(tmp_path: Path) -> None:
     )
     shown = json.loads(_inspect(str(agent), "--json"))
 
-    price = load_pricing()["claude-haiku-4-5"]
+    price = load_pricing()["gpt-4o-mini"]
     assert shown["pricing"] == {
         "input_per_1k": price.input_cost_per_1k,
         "output_per_1k": price.output_cost_per_1k,
@@ -84,3 +86,26 @@ def test_a_broken_agent_fails(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "Error:" in result.output and "unknown" in result.output
+
+
+def test_an_agent_called_twice_prints_in_full_both_times(tmp_path: Path) -> None:
+    agent = tmp_path / "lead.yaml"
+    agent.write_text(
+        "name: lead\n"
+        "tools:\n"
+        "  - {name: first, agent: {name: first}}\n"
+        "  - {name: second, agent: {name: second}}\n",
+        encoding="utf-8",
+    )
+    shown = _inspect(str(agent))
+
+    assert "&id" not in shown and "*id" not in shown
+    first, second = yaml.safe_load(shown)["tools"]
+    assert first["parameters"] == second["parameters"] == AGENT_TOOL_PARAMETERS
+
+
+def test_the_cli_loads_the_agent_step_only_to_inspect_an_agent() -> None:
+    code = "import sys, agentloom.cli.main; print('agentloom.steps.agent' in sys.modules)"
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+
+    assert done.stdout.strip() == "False"

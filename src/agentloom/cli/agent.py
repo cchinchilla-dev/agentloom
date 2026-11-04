@@ -4,25 +4,24 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 import yaml
 
-from agentloom.cli.run import _import_from_cwd
-from agentloom.core.agent import load_agent
-from agentloom.core.models import AgentDefinition
-from agentloom.providers.pricing import ModelPricing, load_pricing
-from agentloom.steps._structured import schema_dict_for
-from agentloom.steps.agent import AGENT_TOOL_PARAMETERS
-from agentloom.tools.builtins import register_builtins
-from agentloom.tools.registry import ToolRegistry
+if TYPE_CHECKING:
+    from agentloom.core.models import AgentDefinition
+    from agentloom.providers.pricing import ModelPricing
+    from agentloom.tools.registry import ToolRegistry
 
 agent_app = typer.Typer(help="Inspect agent definitions.", no_args_is_help=True)
 
 
 class _Dumper(yaml.SafeDumper):
     """Writes a multi-line string as a literal block, as an agent file holds a system prompt."""
+
+    def ignore_aliases(self, data: Any) -> bool:
+        return True  # two agents calling one agent print it twice, not as ``&id001``
 
 
 def _text(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
@@ -41,6 +40,13 @@ def inspect(
 ) -> None:
     """Show an agent as it loads: its model and prices, its tools with their parameters
     (agents used as tools included), memory, loop policy, output schema and constraints."""
+    # Here, not at the top: every command of the CLI loads this module
+    from agentloom.cli.run import _import_from_cwd
+    from agentloom.core.agent import load_agent
+    from agentloom.providers.pricing import load_pricing
+    from agentloom.tools.builtins import register_builtins
+    from agentloom.tools.registry import ToolRegistry
+
     _import_from_cwd()  # a pydantic output_schema names a module of the project
     builtins = ToolRegistry()
     register_builtins(builtins)
@@ -61,7 +67,10 @@ def describe(
     agent: AgentDefinition, builtins: ToolRegistry, pricing: dict[str, ModelPricing]
 ) -> dict[str, Any]:
     """*agent* as plain data, the agents it uses as tools nested under their tool."""
-    price = pricing.get(agent.model) if agent.model else None
+    from agentloom.providers.pricing import price_of
+    from agentloom.steps._structured import schema_dict_for
+
+    price = price_of(agent.model, pricing) if agent.model else None
     schema = agent.output_schema
     return {
         "name": agent.name,
@@ -90,6 +99,8 @@ def describe(
 
 
 def _tool(entry: Any, builtins: ToolRegistry, pricing: dict[str, ModelPricing]) -> dict[str, Any]:
+    from agentloom.steps.agent import AGENT_TOOL_PARAMETERS
+
     if not isinstance(entry, str):
         return {
             "name": entry.name,

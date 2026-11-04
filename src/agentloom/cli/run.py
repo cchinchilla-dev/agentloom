@@ -11,13 +11,13 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import typer
 
-from agentloom.core.inter_agent import EVENTS_KEY, EventLog, dump_events, recording_events
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.results import WorkflowStatus
 from agentloom.core.state import StateManager
 from agentloom.exceptions import ProviderError
 
 if TYPE_CHECKING:
+    from agentloom.core.inter_agent import EventLog
     from agentloom.core.models import WorkflowConfig, WorkflowDefinition
     from agentloom.observability.observer import WorkflowObserver
     from agentloom.providers.gateway import ProviderGateway
@@ -250,6 +250,8 @@ async def _run_async(
     # checkpoint).
     if checkpointer is not None:
         typer.echo(f"Run ID: {engine.run_id}")
+    from agentloom.core.inter_agent import EventLog, recording_events
+
     events = EventLog() if record is not None else None  # #135
     with recording_events(events) if events is not None else nullcontext():
         result = await engine.run()
@@ -427,6 +429,7 @@ def _tool_registry(workflow: WorkflowDefinition) -> ToolRegistry:
 
 def _record_events(path: Path, events: EventLog) -> None:
     """Keep the run's inter-agent events in its recording (#135)."""
+    from agentloom.core.inter_agent import EVENTS_KEY, dump_events
     from agentloom.providers.recorder import merge_into_recording
 
     logged = dump_events(events.events())
