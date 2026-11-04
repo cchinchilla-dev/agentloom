@@ -396,6 +396,15 @@ async def test_a_failed_subworkflow_is_charged_what_its_steps_spent_once(
     assert engine.observer.seen == [("m", 10)]  # by the child's step, not again by the parent
 
 
+async def test_a_subworkflow_reports_its_steps_tokens_whole() -> None:
+    result, _ = await _run_subworkflow(_Paid(_paid("ok")), None, _PAYS)
+
+    assert result.step_results["sub"].token_usage == TokenUsage(
+        prompt_tokens=10, completion_tokens=1, total_tokens=13, reasoning_tokens=2
+    )
+    assert result.total_tokens == 13
+
+
 async def test_a_subworkflow_over_its_own_budget_charges_the_parent_and_is_not_retried() -> None:
     provider = _Paid(_paid("ok"), _paid("again"))
     result, engine = await _run_subworkflow(provider, 0.05, _PAYS)

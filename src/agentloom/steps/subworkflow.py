@@ -296,11 +296,5 @@ class SubworkflowStep(BaseStep):
 
 
 def _child_tokens(result: WorkflowResult) -> TokenUsage:
-    """The prompt and completion tokens of a child workflow's steps."""
-    total_prompt = sum(r.token_usage.prompt_tokens for r in result.step_results.values())
-    total_completion = sum(r.token_usage.completion_tokens for r in result.step_results.values())
-    return TokenUsage(
-        prompt_tokens=total_prompt,
-        completion_tokens=total_completion,
-        total_tokens=total_prompt + total_completion,
-    )
+    """The tokens of a child workflow's steps, their reasoning and totals as reported."""
+    return sum((r.token_usage for r in result.step_results.values()), TokenUsage())
