@@ -639,7 +639,7 @@ agent = Agent.from_yaml(
     model="claude-haiku-4-5",  # the file names no model
 )
 result = await agent.invoke("My bill seems wrong", conversation=previous)  # conversation optional
-# A turn that fails, or cannot start (a broken template, no prompt), raises AgentError
+# A turn that fails, or cannot start (a broken template, an empty prompt), raises AgentError
 result.reply         # SupportReply, typed per output_schema; str without one
 result.conversation  # Conversation, with the new turns
 result.cost_usd      # float

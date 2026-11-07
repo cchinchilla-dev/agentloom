@@ -1437,9 +1437,10 @@ class TestAgentApi:
         ("fields", "prompt", "message"),
         [
             ({"system_prompt": 'Reply {"ok": true}.'}, "hi", "Prompt template error"),
-            ({}, "", "has no 'prompt'"),
+            ({}, "", "prompt must be a non-empty string"),
+            ({}, "  \n", "prompt must be a non-empty string"),
         ],
-        ids=["a broken template", "no prompt"],
+        ids=["a broken template", "no prompt", "a blank prompt"],
     )
     async def test_a_turn_that_cannot_start_raises_agent_error(
         self, fields: dict[str, Any], prompt: str, message: str

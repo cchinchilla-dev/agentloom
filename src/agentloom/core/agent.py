@@ -72,6 +72,9 @@ class Agent:
         """
         from agentloom.steps.agent import run_turn
 
+        if not isinstance(prompt, str) or not prompt.strip():  # the providers refuse an empty turn
+            raise AgentError("prompt must be a non-empty string")
+
         try:
             # No step of a run: what it does is not in the inter-agent event log
             with paused_events():
