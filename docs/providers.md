@@ -231,7 +231,7 @@ usage.billable_completion_tokens  # completion + reasoning
 
 `calculate_cost()` charges `(prompt × input_rate) + ((completion + reasoning) × output_rate)` automatically, so workflow budgets and Prometheus cost metrics reflect the true spend.
 
-**OpenAI** — reasoning is implicit when an o-series model is selected. The adapter parses `completion_tokens_details.reasoning_tokens` from the response. The chain-of-thought trace is kept server-side and is never returned, so `ProviderResponse.reasoning_content` stays `None`.
+**OpenAI** — reasoning is implicit when an o-series model is selected. The adapter parses `completion_tokens_details.reasoning_tokens` from the response and takes them out of `completion_tokens`, which OpenAI reports with them, so they are billed once. The chain-of-thought trace is kept server-side and is never returned, so `ProviderResponse.reasoning_content` stays `None`.
 
 **Anthropic** — extended thinking is opt-in via the step-level `thinking` block (see [workflow YAML](workflow-yaml.md#llm_call)). `ThinkingConfig` translates to the `thinking: {type: "enabled", budget_tokens}` request payload, and `type="thinking"` content blocks are concatenated into `ProviderResponse.reasoning_content`. The Anthropic API does **not** surface a separate thinking-token count — extended-thinking volume is rolled into `usage.output_tokens` per the [Anthropic docs](https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking) — so `reasoning_tokens` stays `0` for this provider. Cost is automatically correct because the output rate is applied to `output_tokens` which already includes the thinking volume.
 

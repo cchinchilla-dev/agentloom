@@ -10,6 +10,7 @@ import respx
 
 from agentloom.exceptions import ProviderError
 from agentloom.providers.openai import OpenAIProvider
+from agentloom.providers.pricing import calculate_cost
 
 MOCK_RESPONSE = {
     "choices": [{"message": {"content": "Hello!"}, "finish_reason": "stop"}],
@@ -326,9 +327,10 @@ class TestReasoningTokens:
         response_body = {
             "choices": [{"message": {"content": "42"}, "finish_reason": "stop"}],
             "model": "o3-mini",
+            # As OpenAI reports it: completion_tokens counts the reasoning tokens too
             "usage": {
                 "prompt_tokens": 100,
-                "completion_tokens": 50,
+                "completion_tokens": 250,
                 "total_tokens": 350,
                 "completion_tokens_details": {"reasoning_tokens": 200},
             },
@@ -340,8 +342,35 @@ class TestReasoningTokens:
         r = await provider.complete(
             messages=[{"role": "user", "content": "think"}], model="o3-mini"
         )
-        assert r.usage.reasoning_tokens == 200
-        assert r.usage.billable_completion_tokens == 250
+        assert (r.usage.completion_tokens, r.usage.reasoning_tokens) == (50, 200)
+        assert r.usage.billable_completion_tokens == 250  # billed once, not 450
+        assert r.usage.total_tokens == 350
+        assert r.cost_usd == pytest.approx(calculate_cost("o3-mini", 100, 50, reasoning_tokens=200))
+        await provider.close()
+
+    @respx.mock
+    async def test_a_streamed_response_counts_its_reasoning_tokens_once(self) -> None:
+        usage = {
+            "prompt_tokens": 16,
+            "completion_tokens": 138,
+            "total_tokens": 154,
+            "completion_tokens_details": {"reasoning_tokens": 128},
+        }
+        lines = [
+            'data: {"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}\n\n',
+            f"data: {json.dumps({'choices': [], 'usage': usage})}\n\n",
+            "data: [DONE]\n\n",
+        ]
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, content="".join(lines).encode())
+        )
+        provider = OpenAIProvider(api_key="k")
+        sr = await provider.stream(messages=[{"role": "user", "content": "hi"}], model="o3-mini")
+        async for _ in sr:
+            pass
+
+        assert (sr.usage.completion_tokens, sr.usage.reasoning_tokens) == (10, 128)
+        assert (sr.usage.billable_completion_tokens, sr.usage.total_tokens) == (138, 154)
         await provider.close()
 
     @respx.mock
