@@ -678,3 +678,43 @@ async def test_a_subworkflow_with_a_budget_of_its_own_cut_short_is_charged_what_
     assert sub.status == StepStatus.TIMEOUT
     assert sub.cost_usd == pytest.approx(0.1)
     assert engine._budget.spent == pytest.approx(0.1)
+
+
+_GATE = {"id": "gate", "type": "approval_gate", "prompt": "ok?", "depends_on": ["a"]}
+
+
+@pytest.mark.parametrize("parent_budget", [1.0, 0.05], ids=["within-budget", "over-budget"])
+async def test_a_subworkflow_with_a_budget_of_its_own_that_pauses_is_charged(
+    tmp_path: Any, parent_budget: float
+) -> None:
+    child = {
+        "name": "child",
+        "config": {"provider": "paid", "model": "m", "budget_usd": 10.0},
+        "steps": [_PAYS, _GATE],
+    }
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "parent",
+            "config": {"provider": "paid", "model": "m", "budget_usd": parent_budget},
+            "steps": [
+                {"id": "sub", "type": "subworkflow", "workflow_inline": child},
+                {"id": "send", "type": "llm_call", "prompt": "send", "depends_on": ["sub"]},
+            ],
+        }
+    )
+    checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("drafted")))
+    engine = WorkflowEngine(
+        workflow=workflow, provider_gateway=gateway, checkpointer=checkpointer, observer=_Tokens()
+    )
+    result = await engine.run()
+
+    assert result.status == WorkflowStatus.PAUSED  # a breach gives way to the pause
+    assert result.step_results["sub"].cost_usd == pytest.approx(0.1)
+    assert result.total_cost_usd == pytest.approx(0.1)
+    assert result.total_tokens == 13
+    assert engine._budget.spent == pytest.approx(0.1)
+    assert (await checkpointer.load(engine.run_id)).spent_usd == pytest.approx(0.1)
+    assert engine.observer.seen == [("m", 10)]  # by the child's step, not again by the parent
+    assert engine.observer.runs == [("child", pytest.approx(0.1)), ("parent", pytest.approx(0.1))]

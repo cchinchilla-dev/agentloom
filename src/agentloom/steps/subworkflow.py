@@ -152,6 +152,8 @@ class SubworkflowStep(BaseStep):
             # engines or future refactors might propagate the exception —
             # treat it symmetrically with the result-based path below.
             qualified = f"{step.id}.{pause.step_id}" if pause.step_id else step.id
+            if own_enforcer is not None:  # what its steps spent before the gate, as below
+                record_spend(own_enforcer.spent, "", "", TokenUsage())
             raise PauseRequestedError(qualified, str(pause)) from pause
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
@@ -216,6 +218,10 @@ class SubworkflowStep(BaseStep):
                     inner_paused_id = inner_res.error or inner_id
                     break
             qualified = f"{step.id}.{inner_paused_id}" if inner_paused_id else step.id
+            # The parent's attempt pays what the steps of a child with a budget of its own
+            # spent before the gate: no result of its own reports it (#120)
+            if own_enforcer is not None:
+                record_spend(own_enforcer.spent, "", "", _child_tokens(result))
             raise PauseRequestedError(qualified, str(result.error or ""))
 
         duration = (time.monotonic() - start) * 1000

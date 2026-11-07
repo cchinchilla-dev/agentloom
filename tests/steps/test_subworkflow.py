@@ -672,11 +672,16 @@ class TestSubworkflowDefensiveBranches:
       land in the fallback — the test stubs that case directly.
     """
 
-    async def test_defensive_pause_reraise_propagates_qualified_id(self, monkeypatch: Any) -> None:
+    @pytest.mark.parametrize("budget", [None, 1.0], ids=["shared", "own"])
+    async def test_defensive_pause_reraise_propagates_qualified_id(
+        self, monkeypatch: Any, budget: float | None
+    ) -> None:
+        from agentloom.core.attempts import attempt_spend, enter_attempt
         from agentloom.core.engine import WorkflowEngine
         from agentloom.exceptions import PauseRequestedError
 
         async def fake_run(self: Any) -> Any:
+            await self._budget.charge(0.1)  # paid before its gate
             raise PauseRequestedError("inner-gate")
 
         monkeypatch.setattr(WorkflowEngine, "run", fake_run)
@@ -687,7 +692,7 @@ class TestSubworkflowDefensiveBranches:
                 type=StepType.SUBWORKFLOW,
                 workflow_inline={
                     "name": "child",
-                    "config": {"provider": "mock", "model": "x"},
+                    "config": {"provider": "mock", "model": "x", "budget_usd": budget},
                     "steps": [{"id": "noop", "type": "llm_call", "prompt": "hi"}],
                 },
             ),
@@ -695,9 +700,12 @@ class TestSubworkflowDefensiveBranches:
             workflow_config=WorkflowConfig(),
             workflow_model="mock-model",
         )
+        enter_attempt(())
         with pytest.raises(PauseRequestedError) as exc_info:
             await SubworkflowStep().execute(ctx)
         assert exc_info.value.step_id == "sub.inner-gate"
+        # A budget of its own: the calling attempt pays what the child spent before the gate
+        assert attempt_spend().cost_usd == pytest.approx(0.1 if budget else 0.0)
 
     async def test_falls_back_to_inner_step_error_when_workflow_error_is_empty(
         self, monkeypatch: Any

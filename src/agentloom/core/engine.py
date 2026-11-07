@@ -1195,10 +1195,18 @@ class WorkflowEngine:
                     if pause_err.step_id and pause_err.step_id != step_id
                     else None
                 )
+                # What the step spent before its gate is charged, a breach giving way to the pause
+                spend = attempt_spend()
+                failed.absorb(spend)
+                self._emit_tokens(spend)
+                with contextlib.suppress(BudgetExceededError):
+                    await self._charge(spend.cost_usd)
                 paused_result = StepResult(
                     step_id=step_id,
                     status=StepStatus.PAUSED,
                     error=qualified_path,
+                    cost_usd=failed.cost_usd,
+                    token_usage=failed.usage,
                 )
                 await self.state.set_step_result(step_id, paused_result)
                 if self.observer:
