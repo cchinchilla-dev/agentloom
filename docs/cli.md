@@ -145,7 +145,7 @@ Prints the DAG as an ASCII diagram (default) or as a Mermaid graph.
 agentloom agent inspect AGENT.yaml [--json]
 ```
 
-Loads an [agent definition](workflow-yaml.md#agent) and prints it as YAML, or as JSON with `--json`: its model and that model's prices from the pricing table, found as a run finds them (a dated id such as `gpt-4o-mini-2024-07-18` takes the entry it starts with; `null` when the definition names no model, or the table has no price for it), each tool with its parameters (a tool that is not built in is the workflow's to register, so only its name is known), each agent used as a tool with its own definition under it, memory, loop policy, the output schema with the JSON Schema it resolves to, and constraints. A `pydantic` output schema is imported from the working directory, as `run` does. A definition that does not load exits with status 1.
+Loads an [agent definition](workflow-yaml.md#agent) and prints it as YAML, or as JSON with `--json`: its model and that model's prices from the pricing table, found as a run finds them (a dated id such as `gpt-4o-mini-2024-07-18` takes the entry it starts with; `null` when the definition names no model, or the table has no price for it), each tool with its parameters (a tool that is not built in is the workflow's to register, so only its name is known), each agent used as a tool with its own definition under it, memory, loop policy, the output schema with the JSON Schema it resolves to, and constraints. A `pydantic` output schema is imported from the working directory, as `run` does. A definition that does not load exits with status 1, and a file that does not exist with status 2, as for every command that takes a file.
 
 ## `info`
 

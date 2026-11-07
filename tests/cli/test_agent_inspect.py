@@ -88,6 +88,13 @@ def test_a_broken_agent_fails(tmp_path: Path) -> None:
     assert "Error:" in result.output and "unknown" in result.output
 
 
+def test_a_missing_file_is_a_usage_error(tmp_path: Path) -> None:
+    """Status 2, as for every command that takes a file."""
+    result = runner.invoke(app, ["agent", "inspect", str(tmp_path / "nowhere.yaml")])
+
+    assert result.exit_code == 2
+
+
 def test_an_agent_called_twice_prints_in_full_both_times(tmp_path: Path) -> None:
     agent = tmp_path / "lead.yaml"
     agent.write_text(
