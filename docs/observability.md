@@ -56,7 +56,7 @@ Use the dropdown selectors at the top of the dashboard to filter:
 
 ### Row 1 — Overview
 
-Seven stat panels showing high-level aggregates:
+Eight panels showing high-level aggregates:
 
 | Panel | Type | What it shows |
 |-------|------|---------------|
@@ -64,6 +64,7 @@ Seven stat panels showing high-level aggregates:
 | **Success Rate** | gauge | Percentage of successful runs (green >= 95%, orange >= 80%, red < 80%) |
 | **Failed** | stat | Count of failed workflow runs |
 | **Total Tokens** | stat | Sum of all tokens consumed (input + output) |
+| **Reasoning Tokens** | stat | Reasoning tokens reported by the providers, billed at the output rate |
 | **Est. Cost** | stat | Estimated total cost in USD |
 | **Providers** | stat | Number of distinct providers that have handled requests |
 | **Step Types** | stat | Number of distinct step types executed |
@@ -86,7 +87,7 @@ Seven stat panels showing high-level aggregates:
 
 | Panel | Type | What it shows |
 |-------|------|---------------|
-| **Tokens** | timeseries | Cumulative input vs output token count per provider/model |
+| **Tokens (input · output · reasoning)** | timeseries | Cumulative token count per provider/model, by token type |
 | **Tokens by Provider** | bar gauge | Horizontal bars showing total tokens per provider/model |
 | **Token Split** | pie chart | Ratio of prompt tokens to completion tokens |
 
@@ -127,7 +128,7 @@ Seven stat panels showing high-level aggregates:
 | Panel | Type | What it shows |
 |-------|------|---------------|
 | **Cumulative Cost** | timeseries | Running total cost in USD |
-| **Token Cost** | timeseries | Estimated cost based on cumulative token volume per provider/model |
+| **Cost per workflow** | timeseries | Cumulative cost of each workflow |
 | **Budget Remaining** | timeseries | Remaining budget per workflow (green line) |
 | **Avg Cost/Run** | stat | Mean cost per workflow execution |
 | **Avg Tokens/Run** | stat | Mean token consumption per workflow execution |
@@ -138,14 +139,46 @@ Seven stat panels showing high-level aggregates:
 
 | Panel | Type | What it shows |
 |-------|------|---------------|
-| **Attachments** | timeseries | Attachment count by type (image, pdf, audio) |
+| **Attachments Processed** | timeseries | Attachments by step type over time |
+| **Total Attachments** | stat | All attachments sent to providers |
+| **Attachments by Step Type** | pie chart | Share of attachments per step type |
 
-### Row 10 — Streaming
+### Row 10 — Human-in-the-Loop (collapsed)
 
 | Panel | Type | What it shows |
 |-------|------|---------------|
-| **Stream Responses** | timeseries | Cumulative streaming response count |
-| **Time to First Token (p50/p95/p99)** | timeseries | TTFT latency percentiles |
+| **Approval Decisions** | timeseries | Approval gate decisions over time, by outcome |
+| **Total Gates** | stat | Approval gates decided |
+| **By Decision** | pie chart | Share of approved and rejected gates |
+| **Webhook Deliveries** | timeseries | Webhook delivery attempts by status |
+| **Webhook Success Rate** | gauge | Successful deliveries over all attempts |
+| **Webhook Latency p50 / p95** | timeseries | Webhook delivery latency percentiles |
+
+### Row 11 — Mock & Replay (collapsed)
+
+| Panel | Type | What it shows |
+|-------|------|---------------|
+| **Mock Replays** | stat | Mock provider lookups, by how the response was matched |
+| **Replay Hit Ratio** | stat | Share of lookups that found a recorded response |
+| **Recording Captures by Provider** | timeseries | Real provider responses captured by the recorder |
+| **Captured Real-Provider Latency (p50 / p95)** | timeseries | Latency of the captured calls — what a replay simulates |
+
+### Row 12 — Streaming (collapsed)
+
+| Panel | Type | What it shows |
+|-------|------|---------------|
+| **Streamed Responses** | stat | Streamed responses per provider |
+| **Time to First Token** | stat | Average time to first token per provider |
+| **Avg TTFT by Provider** | bar gauge | The same average, compared across providers |
+| **Total Streamed** | stat | All streamed responses |
+| **Streaming Ratio** | stat | Share of LLM calls that stream |
+| **Stream vs Batch Duration** | bar gauge | Average step duration, streamed against batch |
+
+### Row 13 — Traces
+
+| Panel | Type | What it shows |
+|-------|------|---------------|
+| **Recent Traces** | table | Latest workflow traces from Jaeger; a trace ID opens its span tree |
 
 ---
 
@@ -159,7 +192,7 @@ All metrics are prefixed with `agentloom_`.
 |--------|------|--------|-------------|
 | `workflow_runs_total` | counter | workflow, status | Workflow execution count |
 | `workflow_duration_seconds` | histogram | workflow | End-to-end workflow latency |
-| `cost_usd_total` | counter | — | Estimated USD cost |
+| `cost_usd_total` | counter | workflow, provider | Estimated USD cost (`provider` is `total`) |
 | `budget_remaining_usd` | gauge | workflow | Remaining budget per workflow |
 
 ### Step metrics

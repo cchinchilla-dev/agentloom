@@ -249,16 +249,6 @@ class TestAgentLoomVersionResolution:
         monkeypatch.setattr(writer_mod, "_pkg_version", _raise)
         assert writer_mod._agentloom_version() == "unknown"
 
-    def test_returns_unknown_when_importlib_metadata_unavailable(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Defensive against the documented ImportError fallback at the top
-        # of writer.py — exercised by setting ``_pkg_version`` to ``None``.
-        from agentloom.history import writer as writer_mod
-
-        monkeypatch.setattr(writer_mod, "_pkg_version", None)
-        assert writer_mod._agentloom_version() == "unknown"
-
 
 class TestPermissionErrorPath:
     async def test_record_returns_none_on_readonly_filesystem(

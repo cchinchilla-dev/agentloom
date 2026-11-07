@@ -89,8 +89,9 @@ async def main() -> None:
         assert r.status == WorkflowStatus.SUCCESS, f"record run failed: {r.status}"
         assert recording.exists(), "recording file not created"
         data = json.loads(recording.read_text())
-        assert len(data) == 2, f"expected 2 recorded entries, got {len(data)}: {list(data)}"
-        for key, entry in data.items():
+        entries = {k: v for k, v in data.items() if not k.startswith("_")}  # skip _version
+        assert len(entries) == 2, f"expected 2 recorded entries, got {len(entries)}: {list(entries)}"
+        for key, entry in entries.items():
             assert entry["content"].startswith("det::"), entry
             assert entry["usage"]["total_tokens"] == 12
             assert "latency_ms" in entry

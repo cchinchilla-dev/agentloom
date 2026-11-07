@@ -12,7 +12,6 @@ description: "What this workflow does"      # optional
 config:
   provider: openai                          # default provider
   model: gpt-4o-mini                        # default model
-  max_retries: 3                            # retry attempts per step
   budget_usd: 0.50                          # spending limit (null = unlimited)
   timeout: 300.0                            # workflow timeout in seconds (null = unlimited)
   max_concurrent_steps: 10                  # parallel step limit
@@ -37,7 +36,7 @@ steps:                                      # at least one step required
 | `model` | `string` | `gpt-4o-mini` | Default model for all LLM steps |
 | `base_url` | `string` | `null` | Endpoint of `provider: generic_openai` (required there, refused with any other provider). See [Providers](providers.md#generic-openai-compatible-endpoint) |
 | `api_key_env` | `string` | `null` | Name of the environment variable holding the key for `provider: generic_openai`; without it, requests carry no `Authorization` header |
-| `max_retries` | `int` | `3` | Retry attempts on failure |
+| `max_retries` | `int` | `3` | Accepted, not read yet: set retries per step with `retry.max_retries` |
 | `budget_usd` | `float` | `null` | Maximum spend in USD |
 | `timeout` | `float` | `null` | Workflow timeout in seconds; `0` sets no limit. Past it the run ends `timeout`: the steps it cut short are marked `timeout`, the later ones do not run, and a checkpointed run resumes with the full timeout again. An approval gate that pauses in the layer it cuts wins: the run ends `paused`, and resuming it runs the cut steps again |
 | `max_concurrent_steps` | `int` | `10` | Max parallel steps per layer. Bounded `1 ≤ N ≤ 1024` at parse time — values outside that range raise a Pydantic error instead of deadlocking the limiter or surfacing a cryptic `total_tokens must be >= 0`. |
@@ -502,8 +501,6 @@ Pauses the workflow until a human approves or rejects. The run is checkpointed a
   type: approval_gate
   depends_on: [draft]
   output: decision                 # "approved" | "rejected"
-  timeout_seconds: 3600            # optional, enforced by the callback server
-  on_timeout: reject               # optional: approve | reject
   notify:                          # optional webhook sent when the gate pauses
     url: "https://hooks.example.com/agentloom"
     headers: {X-Source: agentloom}  # optional, sent as-is
@@ -513,8 +510,8 @@ Pauses the workflow until a human approves or rejects. The run is checkpointed a
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `timeout_seconds` | `int` | `null` | Seconds before `on_timeout` applies. Enforced by `agentloom callback-server`, not by the engine |
-| `on_timeout` | `approve \| reject` | `null` | Automatic decision when the timeout expires |
+| `timeout_seconds` | `int` | `null` | Accepted, not enforced yet: a paused run waits for a decision |
+| `on_timeout` | `approve \| reject` | `null` | Accepted, not enforced yet |
 | `notify` | `WebhookConfig` | `null` | POST sent before pausing so Slack, CI, or a dashboard can act on the pending approval |
 
 `body_template` is rendered with the workflow state plus `run_id`, `step_id`, and `workflow_name`, after the workflow's redaction policy is applied; literal braces in a JSON body must be written as `{{` / `}}`. Without a template the webhook sends a default JSON payload.

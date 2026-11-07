@@ -13,13 +13,7 @@ The multi-stage Dockerfile produces a non-root, read-only-filesystem image. The 
 # Build the default image (production — observability included)
 docker build -t agentloom .
 
-# Run a workflow
-docker run --rm \
-  -e OPENAI_API_KEY=sk-... \
-  -v ./examples:/workflows:ro \
-  agentloom run /workflows/01_simple_qa.yaml
-
-# Override provider and model
+# Run a workflow (01_simple_qa.yaml targets Ollama; this runs it on OpenAI)
 docker run --rm \
   -e OPENAI_API_KEY=sk-... \
   -v ./examples:/workflows:ro \
@@ -62,11 +56,13 @@ docker compose down
 
 Plain YAML manifests organized with Kustomize overlays. Three environments provided:
 
-| Overlay | Image Tag | Memory (req/limit) | CPU Request | NetworkPolicy | Deadline |
-|---------|-----------|---------------------|-------------|---------------|----------|
-| **dev** | `latest` | 64Mi / 128Mi | 50m | Disabled | — |
-| **staging** | CI SHA | 128Mi / 256Mi | 100m | Enabled | — |
-| **production** | Pinned | 256Mi / 512Mi | 200m | Strict (no Ollama) | 600s |
+| Overlay | Image Tag | Memory (req/limit) | CPU Request | NetworkPolicy | backoffLimit |
+|---------|-----------|---------------------|-------------|---------------|--------------|
+| **dev** | `latest` | 64Mi / 128Mi | 50m | Disabled | 2 |
+| **staging** | CI SHA | 128Mi / 256Mi | 100m | Enabled | 2 |
+| **production** | Pinned | 256Mi / 512Mi | 200m | Strict (no Ollama) | 1 |
+
+Every overlay keeps the base's 600 s deadline (`activeDeadlineSeconds`).
 
 ```bash
 # Deploy dev overlay
@@ -191,7 +187,7 @@ The Application CRD configures:
 | `GOOGLE_API_KEY` | Google AI API key | — |
 | `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |
 | `AGENTLOOM_OLLAMA_FALLBACK` | Opt-in: register Ollama as a global fallback (`1` / `true` / `yes`) | unset |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel Collector gRPC endpoint | `http://localhost:4317` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel Collector gRPC endpoint | `http://otel-collector:4317` in the image, else `http://localhost:4317` |
 | `AGENTLOOM_RUNS_DIR` | Run-history output directory | `./agentloom_runs` |
 
 In Kubernetes, these are injected via `envFrom` referencing a Secret. Never bake API keys into images or commit them to source control.

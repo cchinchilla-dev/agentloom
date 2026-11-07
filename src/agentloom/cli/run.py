@@ -285,8 +285,6 @@ def _setup_observer(lite: bool) -> WorkflowObserver | None:
     if lite:
         return None
 
-    import os
-
     from agentloom.compat import is_available, try_import
     from agentloom.observability.observer import WorkflowObserver
 

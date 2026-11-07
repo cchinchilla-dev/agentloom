@@ -22,7 +22,6 @@ _ALLOWED_NODES = (
     ast.Constant,
     ast.Attribute,
     ast.Subscript,
-    ast.Index,
     ast.Slice,
     ast.And,
     ast.Or,

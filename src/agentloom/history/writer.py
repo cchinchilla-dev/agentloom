@@ -23,6 +23,8 @@ import os
 import platform
 import re
 from datetime import UTC, datetime
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
 
@@ -39,17 +41,6 @@ from agentloom.core.results import StepResult, StepStatus, WorkflowResult
 # ``RunHistoryWriter`` surface.
 _SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
 
-try:
-    from importlib.metadata import (
-        PackageNotFoundError,
-    )
-    from importlib.metadata import (
-        version as _pkg_version,
-    )
-except ImportError:  # pragma: no cover — stdlib on supported versions
-    _pkg_version = None  # type: ignore[assignment]
-    PackageNotFoundError = Exception  # type: ignore[assignment,misc]
-
 logger = logging.getLogger("agentloom.history")
 
 _RECORD_SCHEMA_VERSION = 1
@@ -61,8 +52,6 @@ def _agentloom_version() -> str:
     Works both for an installed distribution and for in-repo runs where
     the package metadata may not be available.
     """
-    if _pkg_version is None:
-        return "unknown"
     try:
         return _pkg_version("agentloom")
     except PackageNotFoundError:

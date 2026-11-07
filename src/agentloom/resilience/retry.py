@@ -30,7 +30,7 @@ def compute_backoff(base: float, attempt: int, maximum: float, jitter: bool) -> 
     """
     delay = min(base**attempt, maximum)
     if jitter:
-        delay *= 1.0 + random.uniform(-0.25, 0.25)  # noqa: S311 — non-crypto jitter
+        delay *= 1.0 + random.uniform(-0.25, 0.25)
     return max(0.0, delay)
 
 

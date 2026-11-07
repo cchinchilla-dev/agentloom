@@ -50,7 +50,6 @@ class CircuitBreaker:
 
         self._state = CircuitState.CLOSED
         self._failure_count = 0
-        self._success_count = 0
         self._last_failure_time: float = 0.0
         self._half_open_calls = 0
 
@@ -134,10 +133,7 @@ class CircuitBreaker:
         """Record a successful call."""
         if self._state == CircuitState.HALF_OPEN:
             self._set_state(CircuitState.CLOSED)
-            self._failure_count = 0
-            self._success_count = 0
         self._failure_count = 0
-        self._success_count += 1
 
     def _on_failure(self) -> None:
         """Record a failed call."""
@@ -181,5 +177,4 @@ class CircuitBreaker:
         """Manually reset the circuit breaker to closed state."""
         self._set_state(CircuitState.CLOSED)
         self._failure_count = 0
-        self._success_count = 0
         self._half_open_calls = 0

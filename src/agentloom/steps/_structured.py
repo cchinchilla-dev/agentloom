@@ -380,14 +380,8 @@ def validate_parsed(parsed: Any, response_schema: ResponseSchema, step_id: str) 
     schema = schema_dict_for(response_schema, step_id)
     if schema is None:
         return parsed
-    try:
-        import jsonschema  # type: ignore[import-untyped]
-    except ImportError:  # pragma: no cover — jsonschema is a hard dep
-        if not isinstance(parsed, dict):
-            raise TypeError(
-                f"response_schema.type='json_schema' expects an object; got {type(parsed).__name__}"
-            ) from None
-        return parsed
+    import jsonschema  # type: ignore[import-untyped]
+
     jsonschema.validate(parsed, schema)
     return parsed
 

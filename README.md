@@ -65,12 +65,12 @@ pip install agentloom
 # Install with all extras (OTel + Prometheus observability, graph export)
 pip install "agentloom[all]"
 
-# Run a workflow
+# Run a workflow on OpenAI
 export OPENAI_API_KEY=sk-...
-agentloom run examples/01_simple_qa.yaml
+agentloom run examples/01_simple_qa.yaml --provider openai --model gpt-4o-mini
 
-# Or with Ollama (free, local)
-agentloom run examples/01_simple_qa.yaml --provider ollama --model phi4
+# Or with Ollama (free, local), the example's own provider
+agentloom run examples/01_simple_qa.yaml
 
 # Validate a workflow
 agentloom validate examples/03_router_workflow.yaml
@@ -269,7 +269,7 @@ nx_graph = graph.to_networkx()  # networkx.DiGraph
 
 ## Observability
 
-Every workflow step emits OpenTelemetry traces and Prometheus metrics out of the box. No external SaaS required — the full stack runs alongside your workloads.
+With the `[observability]` extra, which the Docker image includes, every workflow step emits OpenTelemetry traces and Prometheus metrics. No external SaaS required — the full stack runs alongside your workloads.
 
 ```bash
 # Start Prometheus + Grafana + Jaeger
@@ -297,7 +297,7 @@ The fastest way to run a workflow. The multi-stage Dockerfile produces a minimal
 docker build -t agentloom .
 docker run --rm -e OPENAI_API_KEY=sk-... \
   -v ./examples:/workflows:ro \
-  agentloom run /workflows/01_simple_qa.yaml
+  agentloom run /workflows/01_simple_qa.yaml --provider openai --model gpt-4o-mini
 ```
 
 ### Kubernetes (Kustomize)
@@ -373,8 +373,6 @@ An `approval_gate` step pauses a checkpointed run until someone approves or reje
 - id: approve
   type: approval_gate
   depends_on: [draft]
-  timeout_seconds: 3600     # enforced by the callback server
-  on_timeout: reject
   output: decision          # "approved" | "rejected"
 ```
 
@@ -410,7 +408,7 @@ The difference matters:
 - **You define the DAG, not the LLM.** Steps, dependencies, and routing logic are declared upfront in YAML. Within a step, the model writes text or picks the tools and agents it calls, up to the step's limits; it does not decide what runs next. Routers use explicit boolean conditions, not LLM judgement.
 - **Observability is not optional.** Every step emits OpenTelemetry traces and Prometheus metrics. You can see exactly what ran, how long it took, and how much it cost. Autonomous agents are notoriously hard to debug; a static DAG with full tracing is not.
 - **Cost is bounded.** Budget limits, circuit breakers, and rate limiters are first-class. A runaway autonomous agent can burn through an API budget in minutes. A workflow with `budget_usd: 0.50` cannot.
-- **Fallback is structural.** If OpenAI is down, the gateway falls back to Anthropic or Ollama automatically. This is a routing decision at the infrastructure level, not an agent "choosing" a provider.
+- **Fallback is structural.** If OpenAI is down, the gateway falls back to the other providers it has keys for, and to Ollama when `AGENTLOOM_OLLAMA_FALLBACK` is set. This is a routing decision at the infrastructure level, not an agent "choosing" a provider.
 
 Autonomous agent frameworks solve a real problem — open-ended tasks where the execution path cannot be known in advance. But most LLM workloads in production are not open-ended. They are pipelines: classify, enrich, route, generate, validate. For those, you want predictability and control, not autonomy. That is what AgentLoom is for.
 

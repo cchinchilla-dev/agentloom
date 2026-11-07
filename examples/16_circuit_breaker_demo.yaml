@@ -8,7 +8,6 @@ description: >
 config:
   provider: ollama
   model: nonexistent-model-for-demo
-  max_retries: 3
 
 state:
   prompt_a: "What is 2+2?"

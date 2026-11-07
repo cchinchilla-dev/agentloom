@@ -59,13 +59,6 @@ def _three_step_workflow() -> WorkflowDefinition:
     )
 
 
-class PausingStep(BaseStep):
-    """Step executor that raises PauseRequestedError."""
-
-    async def execute(self, context: StepContext) -> StepResult:
-        raise PauseRequestedError(context.step_definition.id)
-
-
 class PausingOnSecondCallStep(BaseStep):
     """LLM-call step that pauses on a specific step_id.
 

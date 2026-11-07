@@ -23,14 +23,7 @@ def validate(
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
-    # Also validate the DAG
-    try:
-        dag = WorkflowParser.build_dag(workflow)
-    except ValidationError as e:
-        typer.echo(f"DAG validation FAILED:\n{e}", err=True)
-        raise typer.Exit(1)
-
-    layers = dag.execution_layers()
+    layers = WorkflowParser.build_dag(workflow).execution_layers()
 
     typer.echo(f"Workflow '{workflow.name}' is valid.")
     typer.echo(f"  Version:  {workflow.version}")

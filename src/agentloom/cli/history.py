@@ -107,7 +107,7 @@ def history(
     until: str | None = typer.Option(
         None,
         "--until",
-        help="Keep records with timestamp <= this date (YYYY-MM-DD or ISO 8601).",
+        help="Keep records with timestamp < this date (YYYY-MM-DD or ISO 8601).",
     ),
     min_cost: float | None = typer.Option(
         None, "--min-cost", help="Keep records with total_cost_usd >= this value."

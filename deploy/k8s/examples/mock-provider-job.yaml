@@ -63,7 +63,8 @@ data:
             await gw.close()
             assert r.status == WorkflowStatus.SUCCESS, r.status
             data = json.loads(recording.read_text())
-            assert len(data) == 2, data
+            entries = {k: v for k, v in data.items() if not k.startswith("_")}  # skip _version
+            assert len(entries) == 2, entries
             draft_out = r.final_state["draft_text"]
             polished_out = r.final_state["polished"]
             print(f"  OK: recorded 2 entries ({r.total_tokens} tokens)")

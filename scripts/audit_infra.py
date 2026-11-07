@@ -90,13 +90,6 @@ def _load_yaml(path: Path) -> dict | list | None:
         return yaml.safe_load(f)
 
 
-def _load_yaml_all(path: Path) -> list:
-    """Load a multi-document YAML file."""
-    if yaml is None:
-        return []
-    with open(path) as f:
-        return list(yaml.safe_load_all(f))
-
 
 def _file_exists(path: Path) -> bool:
     return path.is_file()
@@ -122,7 +115,7 @@ def audit_dockerfile() -> None:
     content = path.read_text()
 
     # Multi-stage
-    stages = re.findall(r"^FROM\s+.+\s+AS\s+(\w+)", content, re.MULTILINE)
+    stages = re.findall(r"^FROM\s+.+\s+AS\s+([\w-]+)", content, re.MULTILINE)
     if len(stages) >= 3:
         _pass(f"Multi-stage build: {len(stages)} stages ({', '.join(stages)})")
     else:
@@ -146,11 +139,11 @@ def audit_dockerfile() -> None:
     else:
         _fail("Production ENTRYPOINT should be agentloom CLI")
 
-    # BUILD_OBSERVABILITY build arg
-    if "BUILD_OBSERVABILITY" in content:
-        _pass("BUILD_OBSERVABILITY build arg present")
-    else:
-        _fail("Missing BUILD_OBSERVABILITY build arg")
+    for target in ("production", "production-lite"):
+        if target in stages:
+            _pass(f"Runtime target {target} present")
+        else:
+            _fail(f"Missing runtime target {target}")
 
     # No secrets baked in
     for pattern in ["API_KEY", "SECRET", "PASSWORD"]:

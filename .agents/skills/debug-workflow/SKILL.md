@@ -22,7 +22,7 @@ Read the YAML and trace execution mentally:
 - **Failure propagation**: `config.on_step_failure` defaults to `skip_downstream`, so a failed step or router skips every transitive dependent. Is that intended, or does a best-effort fan-out need `continue`?
 - **LLM tool calling**: every entry in `tools:` must resolve in the workflow's tool registry; `max_tool_iterations` (default 5) bounds the loop. Does `tool_choice` force a tool the prompt can't use?
 - **Structured output**: `response_schema` validation failures retry within `retry.max_retries`; is that budget enough for the schema's complexity?
-- **Approval gates**: the run needs `agentloom run --checkpoint`; `timeout_seconds` only applies under `agentloom callback-server`; `notify.url` must pass the sandbox.
+- **Approval gates**: the run needs `agentloom run --checkpoint`; `timeout_seconds` / `on_timeout` are not enforced yet; `notify.url` must pass the sandbox.
 - **Embed**: `inputs` must resolve to a `list[str]` (or `str`); Anthropic has no embeddings API, so the step needs another provider in the chain.
 - **Conversation**: `conversation:` must point to a state key holding `messages`; steps sharing it should be ordered by `depends_on` so turns land in sequence. Check `token_budget` / `trim_policy`.
 - **Subworkflow**: with `isolated_state: true`, only `input:` flows down and only `return_keys` come back.

@@ -55,11 +55,7 @@ class TestTracingManagerEnabled:
         tm = TracingManager(enabled=True)
         span = tm.start_span("test-span", attributes={"key": "value"})
         assert span is not None
-        # Clean up
-        if hasattr(tm, "end_span"):
-            tm.end_span(span)
-        elif hasattr(span, "end"):
-            span.end()
+        tm.end_span(span)
 
     def test_end_span_restores_context(self) -> None:
         tm = TracingManager(enabled=True)

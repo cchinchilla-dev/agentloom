@@ -16,8 +16,8 @@ repos:
         types_or: [python, pyi]
         files: ^(src|tests)/  # same paths CI checks
       - id: version-linearity
-        name: version linearity (pyproject.toml, CHANGELOG.md, __version__)
+        name: version linearity (pyproject.toml, CHANGELOG.md, __version__, Chart appVersion)
         entry: uv run python scripts/check_version_linearity.py
         language: system
-        files: ^(pyproject\.toml|CHANGELOG\.md|src/[^/]+/__init__\.py)$
+        files: ^(pyproject\.toml|CHANGELOG\.md|src/[^/]+/__init__\.py|deploy/helm/agentloom/Chart\.yaml)$
         pass_filenames: false

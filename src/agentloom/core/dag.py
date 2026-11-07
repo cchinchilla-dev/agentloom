@@ -92,11 +92,6 @@ class DAG:
             if color[node] == WHITE:
                 iterative_dfs(node)
 
-        for node, succs in self._edges.items():
-            for succ in succs:
-                if succ not in self._nodes:
-                    errors.append(f"Edge to non-existent node: {node} -> {succ}")
-
         return errors
 
     def transitive_successors(self, roots: set[str]) -> set[str]:

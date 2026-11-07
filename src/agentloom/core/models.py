@@ -387,7 +387,7 @@ class StepDefinition(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
     return_keys: list[str] | None = None
 
-    # Approval gate fields (timeout enforced by callback server — #42)
+    # Approval gate fields; nothing enforces timeout_seconds / on_timeout yet (#210).
     timeout_seconds: int | None = None
     on_timeout: Literal["approve", "reject"] | None = None
     notify: WebhookConfig | None = None

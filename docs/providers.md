@@ -46,25 +46,11 @@ agentloom run workflow.yaml --provider anthropic --model claude-sonnet-4-6
 !!! warning "Breaking change in 0.5.0 — Ollama is now opt-in"
     Pre-0.5.0 AgentLoom auto-registered Ollama as a catch-all fallback whenever no `providers:` block was explicitly configured. Every primary-provider failure — a 404 from a wrong model id, a transient 5xx — triggered a secondary call to `http://localhost:11434`, adding 250 ms – 1 s of latency per failure and a confusing error chain ("Provider 'anthropic' failed: 404 / Provider 'ollama' failed: model not found") for users who didn't run Ollama at all.
 
-    Starting in 0.5.0 you opt in via `AGENTLOOM_OLLAMA_FALLBACK=1`, or by listing `ollama` in the top-level `providers:` block of an `agentloom.yaml` config file. Workflows that set `provider: ollama` directly (no fallback) keep working unchanged — the opt-in only affects the *implicit fallback* path.
-
-### Opt-in via the config file
-
-The `providers:` block is a top-level key of the `agentloom.yaml` config file (the one passed to `load_config` / the CLI's `--config`), **not** a field of a workflow's `config:`. Declaring it disables auto-discovery, so list every provider you want — API keys are still read from the environment when omitted here:
-
-```yaml
-# agentloom.yaml
-providers:
-  - name: openai
-    models: ["gpt-4o-mini"]
-  - name: ollama
-    base_url: http://localhost:11434
-    is_fallback: true
-```
+    Starting in 0.5.0 you opt in via `AGENTLOOM_OLLAMA_FALLBACK=1`. Workflows that set `provider: ollama` directly (no fallback) keep working unchanged — the opt-in only affects the *implicit fallback* path.
 
 ### Recommended model IDs
 
-Pin to date-stamped IDs rather than tracking aliases. Date-pinned IDs reproduce the exact behaviour of the article validations; tracking aliases (`-latest`, `-flash-latest`) may stop accepting console keys without notice.
+Pin to date-stamped IDs rather than tracking aliases. Date-pinned IDs reproduce the exact behaviour you validated against; tracking aliases (`-latest`, `-flash-latest`) may stop accepting console keys without notice.
 
 | Provider | Recommended ID | Notes |
 |----------|----------------|-------|

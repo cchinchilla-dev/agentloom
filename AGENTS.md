@@ -4,7 +4,7 @@ Project rules for contributors and AI coding assistants. Any assistant that read
 
 ## Build & test
 - `uv sync --group dev` — install (add `--all-extras` for observability)
-- `make check` — every CI gate in one go, check-only (no auto-fix)
+- `make check` — lint, format, types, tests, version linearity and the workflow audit, check-only (no auto-fix); CI adds the docs and package builds, more platforms, the lowest dependencies and the K8s manifests
 - `uv run pytest` — tests (~5s)
 - `uv run ruff check src/ tests/` — lint
 - `uv run ruff format src/ tests/` — format

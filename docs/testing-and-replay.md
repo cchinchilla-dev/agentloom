@@ -333,4 +333,4 @@ Within one process, every writer of the file (each `RecordingProvider` and the t
 
 - [Providers](providers.md) — gateway, circuit breaker, fallback
 - [Observability](observability.md) — metrics, dashboards, OTel setup
-- [`scripts/validate_mock_provider.py`](https://github.com/cchinchilla-dev/agentloom) — end-to-end validation script
+- [`scripts/validate_mock_provider.py`](https://github.com/cchinchilla-dev/agentloom/blob/main/scripts/validate_mock_provider.py) — end-to-end validation script

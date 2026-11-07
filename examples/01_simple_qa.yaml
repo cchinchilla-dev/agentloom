@@ -5,7 +5,6 @@ description: Simple question-answer workflow. Sends a question to an LLM and ret
 config:
   provider: ollama
   model: phi4
-  max_retries: 2
 
 state:
   question: "What is Python in one sentence?"

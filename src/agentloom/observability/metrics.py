@@ -57,13 +57,10 @@ class MetricsManager:
         self._step_histogram: Any = None
         self._provider_counter: Any = None
         self._provider_error_counter: Any = None
-        self._provider_histogram: Any = None
-        self._token_counter: Any = None
         self._workflow_histogram: Any = None
         self._cost_counter: Any = None
         self._attachment_counter: Any = None
         self._stream_counter: Any = None
-        self._ttft_histogram: Any = None
         self._tool_call_counter: Any = None
         self._tool_call_histogram: Any = None
         self._agent_counter: Any = None

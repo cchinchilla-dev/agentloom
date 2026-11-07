@@ -268,7 +268,7 @@ agentloom resume <run_id> --lite
 
 ### 29 — Approval Gate
 
-Drafts an email, pauses at an `approval_gate` until a human decides, then finishes according to the decision. A timeout with `on_timeout: reject` lets the callback server close stale approvals.
+Drafts an email, pauses at an `approval_gate` until a human decides, then finishes according to the decision.
 
 **Demonstrates:** `approval_gate`, `agentloom runs`, `agentloom resume --approve` / `--reject`.
 

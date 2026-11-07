@@ -1063,8 +1063,6 @@ class TestConversationAttachments:
             b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00"
             b"\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
         )
-        import base64
-
         img = tmp_path / "pixel.png"
         img.write_bytes(png)
 
@@ -1097,7 +1095,6 @@ class TestConversationAttachments:
             state={"chat": {"messages": []}},
             gateway=gw,
         )
-        _ = base64  # keep import referenced for clarity
         result = await LLMCallStep().execute(ctx)
         assert result.status == StepStatus.SUCCESS
         # The provider's last message content must be a block list carrying
