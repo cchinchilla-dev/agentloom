@@ -881,3 +881,294 @@ async def test_an_llm_call_reports_what_a_gateway_of_its_own_spent(
     assert ask.cost_usd == pytest.approx(0.1 * paid)
     assert ask.token_usage.prompt_tokens == 10 * paid
     assert engine._budget.spent == pytest.approx(0.1 * paid)
+
+
+@pytest.mark.parametrize("child_budget", [None, 10.0], ids=["shared", "own"])
+async def test_a_subworkflow_resumed_at_its_gate_goes_on_from_its_checkpoint(
+    tmp_path: Any, child_budget: float | None
+) -> None:
+    child = {
+        "name": "child",
+        "config": {"provider": "paid", "model": "m", "budget_usd": child_budget},
+        "steps": [
+            {**_PAYS, "output": "draft"},
+            _GATE,
+            {"id": "c", "type": "llm_call", "prompt": "send {draft}", "depends_on": ["gate"]},
+        ],
+    }
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "parent",
+            "config": {"provider": "paid", "model": "m", "budget_usd": 1.0},
+            "steps": [
+                {"id": "sub", "type": "subworkflow", "workflow_inline": child},
+                {"id": "send", "type": "llm_call", "prompt": "send", "depends_on": ["sub"]},
+            ],
+        }
+    )
+    checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("drafted")))
+    engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway, checkpointer=checkpointer)
+    assert (await engine.run()).status == WorkflowStatus.PAUSED
+
+    second = _Paid(_paid("sent by the child"), _paid("sent"))  # nothing for "a" again
+    gateway = ProviderGateway()
+    gateway.register(second)
+    resumed = await WorkflowEngine.from_checkpoint(
+        await checkpointer.load(engine.run_id),
+        checkpointer=checkpointer,
+        provider_gateway=gateway,
+        observer=_Tokens(),
+        approval_decisions={"sub.gate": "approved"},
+    )
+    result = await resumed.run()
+
+    assert result.status == WorkflowStatus.SUCCESS
+    assert not second._turns
+    sub = result.step_results["sub"]
+    assert sub.cost_usd == pytest.approx(0.0 if child_budget is None else 0.2)
+    assert sub.token_usage.prompt_tokens == 20  # "a" before the pause, "c" after it
+    assert (result.total_cost_usd, result.total_tokens) == (pytest.approx(0.3), 39)
+    assert resumed._budget.spent == pytest.approx(0.3)
+    assert resumed.observer.seen == [("m", 10), ("m", 10)]
+
+
+async def test_a_subworkflow_resumed_at_its_gate_goes_on_from_its_own_budget(
+    tmp_path: Any,
+) -> None:
+    child = {
+        "name": "child",
+        "config": {"provider": "paid", "model": "m", "budget_usd": 0.15},
+        "steps": [
+            _PAYS,
+            _GATE,
+            {"id": "c", "type": "llm_call", "prompt": "c", "depends_on": ["gate"]},
+        ],
+    }
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "parent",
+            "config": {"provider": "paid", "model": "m"},
+            "steps": [{"id": "sub", "type": "subworkflow", "workflow_inline": child}],
+        }
+    )
+    checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("drafted")))
+    engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway, checkpointer=checkpointer)
+    assert (await engine.run()).status == WorkflowStatus.PAUSED
+
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("sent")))
+    resumed = await WorkflowEngine.from_checkpoint(
+        await checkpointer.load(engine.run_id),
+        checkpointer=checkpointer,
+        provider_gateway=gateway,
+        approval_decisions={"sub.gate": "approved"},
+    )
+    result = await resumed.run()
+
+    sub = result.step_results["sub"]  # its budget held what "a" had spent before the gate
+    assert (sub.status, sub.error_classification) == (StepStatus.FAILED, "permanent")
+    assert "exceeded its own budget" in (sub.error or "")
+    assert sub.cost_usd == pytest.approx(0.2)
+    assert result.total_cost_usd == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize(
+    ("first", "timeout", "decisions"),
+    [
+        (  # it failed next to the gate the run paused at
+            [_paid("", ToolCall(id="c1", name="add", arguments={"a": 2, "b": 3})), _bad_request()],
+            None,
+            {"gate": "approved"},
+        ),
+        (  # the workflow's timeout cut it
+            [_paid("", ToolCall(id="c1", name="add", arguments={"a": 2, "b": 3})), None],
+            0.2,
+            None,
+        ),
+    ],
+    ids=["failed", "timed-out"],
+)
+async def test_a_step_run_again_on_a_resume_keeps_what_it_spent_before(
+    tmp_path: Any,
+    first: list[ProviderResponse | Exception | None],
+    timeout: float | None,
+    decisions: dict[str, str] | None,
+) -> None:
+    steps: list[dict[str, Any]] = [
+        {
+            "id": "ask",
+            "type": "llm_call",
+            "prompt": "2+3?",
+            "retry": {"max_retries": 0},
+            "tools": [{"name": "add", "parameters": _Add.parameters_schema}],
+        }
+    ]
+    if decisions:
+        steps.append({"id": "gate", "type": "approval_gate", "prompt": "ok?"})
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "paid",
+            "config": {"provider": "paid", "model": "m", "timeout": timeout},
+            "steps": steps,
+        }
+    )
+    checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+    registry = ToolRegistry()
+    registry.register(_Add())
+    gateway = ProviderGateway()
+    gateway.register(_Paid(*first))
+    engine = WorkflowEngine(
+        workflow=workflow,
+        provider_gateway=gateway,
+        tool_registry=registry,
+        checkpointer=checkpointer,
+    )
+    assert (await engine.run()).step_results["ask"].cost_usd == pytest.approx(0.1)
+
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("5")))
+    resumed = await WorkflowEngine.from_checkpoint(
+        await checkpointer.load(engine.run_id),
+        checkpointer=checkpointer,
+        provider_gateway=gateway,
+        tool_registry=registry,
+        approval_decisions=decisions,
+    )
+    result = await resumed.run()
+
+    ask = result.step_results["ask"]
+    assert (result.status, ask.status) == (WorkflowStatus.SUCCESS, StepStatus.SUCCESS)
+    assert (ask.cost_usd, ask.token_usage.prompt_tokens) == (pytest.approx(0.2), 20)
+    assert (result.total_cost_usd, result.total_tokens) == (pytest.approx(0.2), 26)
+    assert resumed._budget.spent == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("child_budget", [None, 10.0], ids=["shared", "own"])
+async def test_a_resumed_subworkflow_counts_a_step_its_child_runs_again(
+    tmp_path: Any, child_budget: float | None
+) -> None:
+    call = ToolCall(id="c1", name="add", arguments={"a": 2, "b": 3})
+    flaky = {
+        "id": "flaky",
+        "type": "llm_call",
+        "prompt": "2+3?",
+        "depends_on": ["a"],
+        "retry": {"max_retries": 0},
+        "tools": [{"name": "add", "parameters": _Add.parameters_schema}],
+    }
+    child = {
+        "name": "child",
+        "config": {"provider": "paid", "model": "m", "budget_usd": child_budget},
+        "steps": [_PAYS, flaky, _GATE],
+    }
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "parent",
+            "config": {"provider": "paid", "model": "m"},
+            "steps": [{"id": "sub", "type": "subworkflow", "workflow_inline": child}],
+        }
+    )
+    checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+    registry = ToolRegistry()
+    registry.register(_Add())
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("a"), _paid("", call), _bad_request()))
+    engine = WorkflowEngine(
+        workflow=workflow,
+        provider_gateway=gateway,
+        tool_registry=registry,
+        checkpointer=checkpointer,
+    )
+    assert (await engine.run()).status == WorkflowStatus.PAUSED
+
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("", call), _paid("5")))  # "flaky" again
+    resumed = await WorkflowEngine.from_checkpoint(
+        await checkpointer.load(engine.run_id),
+        checkpointer=checkpointer,
+        provider_gateway=gateway,
+        tool_registry=registry,
+        approval_decisions={"sub.gate": "approved"},
+    )
+    result = await resumed.run()
+
+    sub = result.step_results["sub"]
+    assert (result.status, sub.status) == (WorkflowStatus.SUCCESS, StepStatus.SUCCESS)
+    assert sub.token_usage.prompt_tokens == 40  # four paid calls, two of them before the pause
+    assert (result.total_cost_usd, result.total_tokens) == (pytest.approx(0.4), 52)
+    assert resumed._budget.spent == pytest.approx(0.4)
+
+
+async def test_a_new_run_that_reuses_a_run_id_runs_its_child_afresh(tmp_path: Any) -> None:
+    child = {
+        "name": "child",
+        "config": {"provider": "paid", "model": "m"},
+        "steps": [{**_PAYS, "output": "draft"}, _GATE],
+    }
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "parent",
+            "config": {"provider": "paid", "model": "m"},
+            "steps": [{"id": "sub", "type": "subworkflow", "workflow_inline": child}],
+        }
+    )
+    checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+    for _ in range(2):  # the second run finds the checkpoint the first one's child left
+        provider = _Paid(_paid("draft"))
+        gateway = ProviderGateway()
+        gateway.register(provider)
+        engine = WorkflowEngine(
+            workflow=workflow, provider_gateway=gateway, checkpointer=checkpointer, run_id="nightly"
+        )
+        result = await engine.run()
+
+        assert result.status == WorkflowStatus.PAUSED
+        assert not provider._turns  # the child's first step ran, and was paid, again
+        assert engine._budget.spent == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize(
+    "checkpointed", [True, False], ids=["its-checkpoint-gone", "no-checkpointer"]
+)
+async def test_a_subworkflow_paused_with_no_checkpoint_of_its_child_runs_it_afresh(
+    tmp_path: Any, checkpointed: bool
+) -> None:
+    from agentloom.core.results import StepResult
+    from agentloom.core.state import StateManager
+
+    child = {"name": "child", "config": {"provider": "paid", "model": "m"}, "steps": [_PAYS, _GATE]}
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "parent",
+            "config": {"provider": "paid", "model": "m"},
+            "steps": [{"id": "sub", "type": "subworkflow", "workflow_inline": child}],
+        }
+    )
+    provider = _Paid(_paid("a"), _paid("a again")) if checkpointed else _Paid(_paid("a"))
+    gateway = ProviderGateway()
+    gateway.register(provider)
+    if checkpointed:
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+        first = WorkflowEngine(
+            workflow=workflow, provider_gateway=gateway, checkpointer=checkpointer
+        )
+        assert (await first.run()).status == WorkflowStatus.PAUSED
+        await checkpointer.delete(f"{first.run_id}.sub")
+        engine = await WorkflowEngine.from_checkpoint(
+            await checkpointer.load(first.run_id),
+            checkpointer=checkpointer,
+            provider_gateway=gateway,
+            approval_decisions={"sub.gate": "approved"},
+        )
+    else:  # a step paused in the state, and no checkpointer to resume its child from
+        state = StateManager(initial_state={"_approval": {"sub": {"gate": "approved"}}})
+        await state.set_step_result("sub", StepResult(step_id="sub", status=StepStatus.PAUSED))
+        engine = WorkflowEngine(workflow=workflow, state_manager=state, provider_gateway=gateway)
+    result = await engine.run()
+
+    assert result.status == WorkflowStatus.SUCCESS
+    assert not provider._turns  # the child ran from its first step

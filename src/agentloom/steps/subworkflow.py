@@ -8,6 +8,7 @@ from typing import Any
 
 import anyio
 
+from agentloom.checkpointing.base import CheckpointData
 from agentloom.core.attempts import record_spend
 from agentloom.core.results import (
     StepResult,
@@ -66,6 +67,7 @@ class SubworkflowStep(BaseStep):
             child_state = StateManager(initial_state=seed)
         else:
             child_state = StateManager(initial_state=parent_state)
+        decisions: dict[str, str] = {}
 
         # Resume hand-off: when the parent was paused inside this subworkflow
         # (e.g. ``sub.gate``), the CLI ``resume --approve`` stored the
@@ -92,8 +94,9 @@ class SubworkflowStep(BaseStep):
                     break
                 nested = nested.get(segment)
             if isinstance(nested, dict):
-                for child_step_id, decision in nested.items():
-                    await child_state.set(f"_approval.{child_step_id}", decision)
+                decisions = dict(nested)
+        for child_step_id, decision in decisions.items():
+            await child_state.set(f"_approval.{child_step_id}", decision)
 
         # Inherit the parent's security posture into the child workflow:
         # without this, a parent that redacts ``api_key`` writes the
@@ -126,25 +129,52 @@ class SubworkflowStep(BaseStep):
         # exactly this hand-off — when ``None`` the engine builds a
         # fresh one, so the default top-level execution path is
         # unchanged.
+        run_id = f"{context.run_id}.{step.id}" if context.run_id else step.id
+        # Only the step paused at its child's gate resumes the child: a new run that reuses
+        # the run_id starts it afresh, whatever checkpoint an earlier run left
+        before = await context.state_manager.get_step_result(step.id)
+        resumed = before is not None and before.status == StepStatus.PAUSED
+        paused = await _paused_child(context.checkpointer, run_id) if resumed else None
+        # What its pause charged already: the step reports what it spends from here
+        cost_before = paused.spent_usd if paused is not None else 0.0
         parent_enforcer = getattr(context, "budget_enforcer", None)
         own_enforcer = (
-            BudgetEnforcer(sub_workflow.config.budget_usd)
+            BudgetEnforcer(sub_workflow.config.budget_usd, spent_usd=cost_before)
             if sub_workflow.config.budget_usd is not None
             else None
         )
         child_enforcer = own_enforcer if own_enforcer is not None else parent_enforcer
 
-        engine = WorkflowEngine(
-            workflow=sub_workflow,
-            state_manager=child_state,
-            provider_gateway=context.provider_gateway,
-            tool_registry=context.tool_registry,
-            observer=context.observer,
-            on_stream_chunk=context.on_stream_chunk,
-            checkpointer=context.checkpointer,
-            run_id=f"{context.run_id}.{step.id}" if context.run_id else step.id,
-            budget_enforcer=child_enforcer,
-        )
+        if paused is None:
+            engine = WorkflowEngine(
+                workflow=sub_workflow,
+                state_manager=child_state,
+                provider_gateway=context.provider_gateway,
+                tool_registry=context.tool_registry,
+                observer=context.observer,
+                on_stream_chunk=context.on_stream_chunk,
+                checkpointer=context.checkpointer,
+                run_id=run_id,
+                budget_enforcer=child_enforcer,
+            )
+        else:
+            # Resumed at a gate of its child: the child goes on from its own checkpoint,
+            # its finished steps kept, instead of running them and paying them again (#120)
+            assert context.checkpointer is not None  # it holds the child's checkpoint
+            engine = await WorkflowEngine.from_checkpoint(
+                paused,
+                checkpointer=context.checkpointer,
+                provider_gateway=context.provider_gateway,
+                tool_registry=context.tool_registry,
+                observer=context.observer,
+                on_stream_chunk=context.on_stream_chunk,
+                approval_decisions=decisions,
+                budget_enforcer=child_enforcer,
+            )
+        tokens_before = _child_tokens(await engine.state.all_step_results())
+
+        def own_spend() -> float:
+            return own_enforcer.spent - cost_before if own_enforcer is not None else 0.0
 
         try:
             result = await engine.run()
@@ -154,8 +184,7 @@ class SubworkflowStep(BaseStep):
             # engines or future refactors might propagate the exception —
             # treat it symmetrically with the result-based path below.
             qualified = f"{step.id}.{pause.step_id}" if pause.step_id else step.id
-            if own_enforcer is not None:  # what its steps spent before the gate, as below
-                record_spend(own_enforcer.spent, "", "", TokenUsage())
+            record_spend(own_spend(), "", "", TokenUsage())  # as below, without results
             raise PauseRequestedError(qualified, str(pause)) from pause
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
@@ -171,8 +200,7 @@ class SubworkflowStep(BaseStep):
             # either (#120). A shared budget has their charges already.
             with anyio.CancelScope(shield=True):
                 ran = await engine.state.all_step_results()
-            spent = own_enforcer.spent if own_enforcer is not None else 0.0
-            record_spend(spent, "", "", _child_tokens(ran))
+            record_spend(own_spend(), "", "", _since(_child_tokens(ran), tokens_before))
             raise
 
         # Budget-exhausted child: re-running the subworkflow would only
@@ -203,8 +231,8 @@ class SubworkflowStep(BaseStep):
                 status=StepStatus.FAILED,
                 error=f"Subworkflow exceeded its own budget: {result.error or 'budget exceeded'}",
                 duration_ms=(time.monotonic() - start) * 1000,
-                cost_usd=result.total_cost_usd,
-                token_usage=_child_tokens(result.step_results),
+                cost_usd=result.total_cost_usd - cost_before,
+                token_usage=_since(_child_tokens(result.step_results), tokens_before),
                 error_classification="permanent",
             )
 
@@ -223,10 +251,11 @@ class SubworkflowStep(BaseStep):
                     inner_paused_id = inner_res.error or inner_id
                     break
             qualified = f"{step.id}.{inner_paused_id}" if inner_paused_id else step.id
-            # The parent's attempt pays what the steps of a child with a budget of its own
-            # spent before the gate: no result of its own reports it (#120)
-            if own_enforcer is not None:
-                record_spend(own_enforcer.spent, "", "", _child_tokens(result.step_results))
+            # The parent's attempt counts the tokens of its child's steps before the gate, and
+            # pays what they spent when the child has a budget of its own: no result of its
+            # own reports either (#120)
+            tokens = _since(_child_tokens(result.step_results), tokens_before)
+            record_spend(own_spend(), "", "", tokens)
             raise PauseRequestedError(qualified, str(result.error or ""))
 
         duration = (time.monotonic() - start) * 1000
@@ -270,7 +299,7 @@ class SubworkflowStep(BaseStep):
             inner.error_classification == "permanent" for inner in result.step_results.values()
         )
 
-        token_usage = _child_tokens(result.step_results)
+        token_usage = _since(_child_tokens(result.step_results), tokens_before)
 
         # Avoid double-charging the parent enforcer in the shared-budget
         # case. When the child ran against the parent's ``BudgetEnforcer``,
@@ -291,7 +320,7 @@ class SubworkflowStep(BaseStep):
         reported_cost = (
             0.0
             if parent_enforcer is not None and parent_enforcer is child_enforcer
-            else result.total_cost_usd
+            else result.total_cost_usd - cost_before
         )
 
         return StepResult(
@@ -304,6 +333,27 @@ class SubworkflowStep(BaseStep):
             token_usage=token_usage,
             error_classification="permanent" if permanent else None,
         )
+
+
+async def _paused_child(checkpointer: Any, run_id: str) -> CheckpointData | None:
+    """The checkpoint of a child that paused at one of its gates, when the step resumes it."""
+    if checkpointer is None:
+        return None
+    try:
+        saved: CheckpointData = await checkpointer.load(run_id)
+    except KeyError:
+        return None
+    return saved if saved.status == WorkflowStatus.PAUSED.value else None
+
+
+def _since(now: TokenUsage, before: TokenUsage) -> TokenUsage:
+    """The tokens a resumed child's steps used after its pause."""
+    return TokenUsage(
+        prompt_tokens=now.prompt_tokens - before.prompt_tokens,
+        completion_tokens=now.completion_tokens - before.completion_tokens,
+        total_tokens=now.total_tokens - before.total_tokens,
+        reasoning_tokens=now.reasoning_tokens - before.reasoning_tokens,
+    )
 
 
 def _child_tokens(step_results: Mapping[str, StepResult]) -> TokenUsage:

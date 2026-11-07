@@ -370,6 +370,7 @@ class WorkflowEngine:
         observer: Any | None = None,
         on_stream_chunk: Callable[[str, str], None] | None = None,
         approval_decisions: dict[str, str] | None = None,
+        budget_enforcer: BudgetEnforcer | None = None,
     ) -> WorkflowEngine:
         """Reconstruct an engine from a checkpoint, ready to resume.
 
@@ -380,6 +381,9 @@ class WorkflowEngine:
             approval_decisions: Optional map of ``step_id → "approved"|"rejected"``
                 injected into state so that paused approval gate steps can read
                 the human decision on re-execution.
+            budget_enforcer: The budget to charge, as a subworkflow sharing its
+                parent's passes it; by default, one that goes on from what the run
+                had spent.
         """
         # A checkpoint written by a newer AgentLoom can carry structures
         # this runtime does not understand. Refuse it up front with an
@@ -447,7 +451,8 @@ class WorkflowEngine:
             checkpointer=checkpointer,
             run_id=checkpoint_data.run_id,
             # The budget goes on from what the run had spent, not from zero
-            budget_enforcer=BudgetEnforcer(workflow.config.budget_usd, spent_usd=spent),
+            budget_enforcer=budget_enforcer
+            or BudgetEnforcer(workflow.config.budget_usd, spent_usd=spent),
         )
         engine._spent_before = spent
         engine._completed_steps = set(checkpoint_data.completed_steps)
@@ -897,6 +902,10 @@ class WorkflowEngine:
             self.observer.on_step_start(step_id, step_def.type.value, stream=should_stream)
         started = time.monotonic()
         failed = Spend()  # what the attempts that failed spent: charged as they fail
+        before = await self.state.get_step_result(step_id)
+        if before is not None and before.status != StepStatus.SUCCESS:
+            # Run again on a resume: its result goes on from what it spent before, charged then
+            failed.add(before.cost_usd, "", "", before.token_usage)
         try:
             await self._run_step(step_id, step_def, should_stream, failed)
         except BaseException as exc:

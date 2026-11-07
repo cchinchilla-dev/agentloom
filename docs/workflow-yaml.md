@@ -487,7 +487,7 @@ The parent's `output:` key is written only when the child workflow succeeds, as 
 
 #### Pause / resume through nested approval gates
 
-A `subworkflow` containing an `approval_gate` pauses the parent at a fully-qualified path like `sub.gate`. The parent workflow status becomes `paused` (not `failed`), the checkpoint records `paused_step_id: sub.gate`, and `agentloom resume <parent_run_id> --approve` continues through to the next layer after the gate clears — no separate child resume command needed.
+A `subworkflow` containing an `approval_gate` pauses the parent at a fully-qualified path like `sub.gate`. The parent workflow status becomes `paused` (not `failed`), the checkpoint records `paused_step_id: sub.gate`, and `agentloom resume <parent_run_id> --approve` continues through to the next layer after the gate clears — no separate child resume command needed. The child goes on from its own checkpoint (`<parent_run_id>.<step_id>`), as a resumed workflow does: the steps it finished before the gate keep their results and are not run, nor paid, again. The step's `cost_usd` and `token_usage` add up both halves.
 
 #### Step-id namespace across subworkflows
 
