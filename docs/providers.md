@@ -72,6 +72,12 @@ Pin to date-stamped IDs rather than tracking aliases. Date-pinned IDs reproduce 
 | Google | `gemini-2.5-flash` | Pre-0.5.0 docs referenced `gemini-2.0-flash`, which Google's API now returns as `404 NOT_FOUND` for new users. |
 | OpenAI | `gpt-4o-mini` / `gpt-4o` | No change. |
 
+## Pricing
+
+Costs come from the bundled `providers/pricing.yaml`, in USD per 1K tokens. A model is priced by its own entry or by the longest entry its name starts with, so a dated id takes its alias's price, and a model the table lacks costs 0. Reasoning tokens bill at the output rate, and a tiered price at its first tier: Gemini Pro's up to 200K tokens, Claude Haiku 5.5's up to 100K and OpenAI's short context. `AGENTLOOM_PRICING_FILE` points to a table of your own, of the same shape.
+
+The OpenAI, Anthropic and Gemini entries are refreshed weekly from LiteLLM's public price list by `scripts/update_pricing.py`, through a pull request reviewed before it merges; prices are never fetched at run time. The refresh changes prices and adds new text models but removes no entry, and an entry whose key line ends in `# pinned` keeps a price set by hand.
+
 ## Circuit breaker
 
 The gateway wraps each provider with a circuit breaker:
