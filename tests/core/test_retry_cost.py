@@ -63,6 +63,7 @@ class _Tokens:
         self.providers: list[str] = []
         self.ends: list[tuple[str, str, float]] = []
         self.runs: list[tuple[str, float]] = []
+        self.run_tokens: dict[str, int] = {}
 
     def __getattr__(self, name: str) -> Any:
         return lambda *args, **kwargs: None
@@ -86,6 +87,7 @@ class _Tokens:
         self, name: str, status: str, duration_ms: float, tokens: int, cost_usd: float, **_: Any
     ) -> None:
         self.runs.append((name, cost_usd))
+        self.run_tokens[name] = tokens
 
 
 def _paid(content: str = "", *calls: ToolCall, model: str = "m") -> ProviderResponse:
@@ -436,6 +438,8 @@ async def _run_subworkflow(
     child_budget: float | None,
     *child_steps: dict[str, Any],
     workflow_timeout: float | None = None,
+    budget: float = 1.0,
+    observer: _Tokens | None = None,
     **sub: Any,
 ) -> tuple[WorkflowResult, WorkflowEngine]:
     workflow = WorkflowDefinition.model_validate(
@@ -444,7 +448,7 @@ async def _run_subworkflow(
             "config": {
                 "provider": "paid",
                 "model": "m",
-                "budget_usd": 1.0,
+                "budget_usd": budget,
                 "timeout": workflow_timeout,
             },
             "steps": [
@@ -464,7 +468,14 @@ async def _run_subworkflow(
     )
     gateway = ProviderGateway()
     gateway.register(provider)
-    engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway, observer=_Tokens())
+    registry = ToolRegistry()
+    registry.register(_Add())
+    engine = WorkflowEngine(
+        workflow=workflow,
+        provider_gateway=gateway,
+        tool_registry=registry,
+        observer=observer or _Tokens(),
+    )
     return await engine.run(), engine
 
 
@@ -633,7 +644,7 @@ async def test_a_step_cut_by_a_siblings_budget_breach_is_charged() -> None:
     result = await engine.run()
 
     assert result.status == WorkflowStatus.BUDGET_EXCEEDED
-    assert result.total_cost_usd == pytest.approx(0.2)
+    assert (result.total_cost_usd, result.total_tokens) == (pytest.approx(0.2), 26)
     assert engine._budget.spent == pytest.approx(0.2)
     assert "slow" not in result.step_results  # no status says cancelled: its span does
     assert ("slow", "cancelled", pytest.approx(0.1)) in engine.observer.ends
@@ -802,16 +813,19 @@ async def test_a_step_that_breaks_the_budget_reaches_the_token_metrics() -> None
 async def test_a_subworkflow_cut_short_reports_its_steps_tokens(
     cut: dict[str, Any], child_budget: float | None
 ) -> None:
+    call = ToolCall(id="c1", name="add", arguments={"a": 2, "b": 3})
+    asks_then_hangs = {**_HANGS, "tools": [{"name": "add", "parameters": _Add.parameters_schema}]}
     result, engine = await _run_subworkflow(
-        _Paid(_paid("ok"), None), child_budget, _PAYS, _HANGS, **cut
+        _Paid(_paid("ok"), _paid("", call), None), child_budget, _PAYS, asks_then_hangs, **cut
     )
 
     sub = result.step_results["sub"]
     assert sub.status == StepStatus.TIMEOUT
-    assert sub.token_usage.prompt_tokens == 10
-    assert (result.total_tokens, result.total_cost_usd) == (13, pytest.approx(0.1))
-    assert engine._budget.spent == pytest.approx(0.1)
-    assert engine.observer.seen == [("m", 10)]  # by the child's step, not again by the parent
+    assert sub.token_usage.prompt_tokens == 20  # "b" was cut after one answered call
+    assert (result.total_tokens, result.total_cost_usd) == (26, pytest.approx(0.2))
+    assert engine._budget.spent == pytest.approx(0.2)
+    assert engine.observer.seen == [("m", 10), ("m", 10)]  # by the child's steps only
+    assert engine.observer.run_tokens == {"child": 26, "parent": 26}
 
 
 _LONG_CHAT = {
@@ -1173,3 +1187,22 @@ async def test_a_subworkflow_paused_with_no_checkpoint_of_its_child_runs_it_afre
 
     assert result.status == WorkflowStatus.SUCCESS
     assert not provider._turns  # the child ran from its first step
+
+
+async def test_a_subworkflow_sharing_the_budget_that_breaks_it_reports_its_tokens() -> None:
+    result, engine = await _run_subworkflow(
+        _Paid(_paid("a"), _paid("b")),
+        None,
+        _PAYS,
+        {**_PAYS, "id": "b", "depends_on": ["a"]},
+        budget=0.15,
+    )
+
+    assert result.status == WorkflowStatus.BUDGET_EXCEEDED
+    sub = result.step_results["sub"]
+    assert (sub.status, sub.cost_usd) == (StepStatus.FAILED, 0.0)  # its child charged it
+    assert sub.token_usage.prompt_tokens == 20
+    assert (result.total_cost_usd, result.total_tokens) == (pytest.approx(0.2), 26)
+    assert engine._budget.spent == pytest.approx(0.2)
+    assert engine.observer.seen == [("m", 10), ("m", 10)]  # by the child's steps only
+    assert ("sub", "budget_exceeded", 0.0) in engine.observer.ends

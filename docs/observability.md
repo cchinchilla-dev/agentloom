@@ -372,7 +372,7 @@ The engine routes all workflow spend through `BudgetEnforcer` (`agentloom.resili
 * **Failed attempts** — an attempt that fails (a provider error after paid calls, its step `timeout`, a structured reply never valid, a broken agent constraint) is charged too, as soon as it fails, with what its calls that answered cost, the agents it called and its summaries included; a breach stops the step's retries. The step's `cost_usd` and `token_usage` add up all its attempts, those before a resume included, and the token metrics count each attempt's tokens once, under their model.
 * **What an attempt spent** — what its calls cost as the gateway counted them, or what its step reports when that is more: the calls of a gateway of its own (`GatewayProtocol`), or the rolled-up cost of a subworkflow with a budget of its own. Cost and tokens are compared apart.
 * **Resume** — a checkpoint keeps what the run had charged (`spent_usd`), and a resumed run's budget goes on from it; a checkpoint written before it had that field goes on from its step results' cost.
-* **Cut steps** — a step cut short, by the workflow's `timeout` or when another step of its layer breaks the budget, is charged what its finished calls cost, without raising a second breach, and its span and token metrics carry it. One cut by the timeout keeps it on its `timeout` result; one cut by a breach gets no result, and the run's `total_cost_usd` counts it. A subworkflow cut by its step's `timeout` or the workflow's keeps its steps' tokens on its result, and, with a budget of its own, charges its parent what they spent.
+* **Cut steps** — a step cut short, by the workflow's `timeout` or when another step of its layer breaks the budget, is charged what its finished calls cost, without raising a second breach, and its span and token metrics carry it. One cut by the timeout keeps it on its `timeout` result; one cut by a breach gets no result, and the run's `total_cost_usd` and `total_tokens` count it. A subworkflow cut by its step's `timeout` or the workflow's keeps its steps' tokens on its result, and, with a budget of its own, charges its parent what they spent.
 
 ### Cross-subworkflow accounting
 
@@ -380,7 +380,7 @@ When a parent workflow launches a subworkflow step:
 
 | Parent budget | Child budget | Behaviour |
 |---------------|--------------|-----------|
-| Set (`$0.10`) | None | Child engine inherits the parent's enforcer. Child charges count against the parent's `_spent`, so the parent's gate trips at the right step. The child's own `total_cost_usd` is what its steps charged, not the parent's total. |
+| Set (`$0.10`) | None | Child engine inherits the parent's enforcer. Child charges count against the parent's `_spent`, so the parent's gate trips at the right step. The child's own `total_cost_usd` is what its steps charged, not the parent's total. A child that breaks the parent's budget gives its step a `failed` result with its steps' tokens and `cost_usd: 0`, as they charged it already. |
 | Set (`$0.10`) | Set (`$0.05`) | Child uses a fresh enforcer scoped to its own limit. Pre-0.5.0 behaviour preserved. The parent's per-step accounting still adds the rolled-up subworkflow cost to the parent counter, whether the child succeeds, fails, pauses at an approval gate or breaks its own budget; a breach fails the step without a retry, and a pause that breaks the parent's budget still pauses. |
 | None | Set (`$0.05`) | Child enforces its own budget; parent has no limit to enforce. |
 | None | None | No enforcement at either level. |

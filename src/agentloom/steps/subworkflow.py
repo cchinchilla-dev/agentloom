@@ -176,6 +176,10 @@ class SubworkflowStep(BaseStep):
         def own_spend() -> float:
             return own_enforcer.spent - cost_before if own_enforcer is not None else 0.0
 
+        def ran_tokens(results: Mapping[str, StepResult]) -> TokenUsage:
+            # This attempt's: its child's steps cut short with no result included
+            return _since(_child_tokens({**results, **engine._cut}), tokens_before)
+
         try:
             result = await engine.run()
         except PauseRequestedError as pause:
@@ -200,7 +204,7 @@ class SubworkflowStep(BaseStep):
             # either (#120). A shared budget has their charges already.
             with anyio.CancelScope(shield=True):
                 ran = await engine.state.all_step_results()
-            record_spend(own_spend(), "", "", _since(_child_tokens(ran), tokens_before))
+            record_spend(own_spend(), "", "", ran_tokens(ran))
             raise
 
         # Budget-exhausted child: re-running the subworkflow would only
@@ -225,6 +229,7 @@ class SubworkflowStep(BaseStep):
             if parent_enforcer is not None and parent_enforcer is child_enforcer:
                 budget = parent_enforcer.limit_usd or 0.0
                 spent = parent_enforcer.spent
+                record_spend(0.0, "", "", ran_tokens(result.step_results))  # charged already
                 raise BudgetExceededError(budget, spent)
             return StepResult(
                 step_id=step.id,
@@ -232,7 +237,7 @@ class SubworkflowStep(BaseStep):
                 error=f"Subworkflow exceeded its own budget: {result.error or 'budget exceeded'}",
                 duration_ms=(time.monotonic() - start) * 1000,
                 cost_usd=result.total_cost_usd - cost_before,
-                token_usage=_since(_child_tokens(result.step_results), tokens_before),
+                token_usage=ran_tokens(result.step_results),
                 error_classification="permanent",
             )
 
@@ -254,8 +259,7 @@ class SubworkflowStep(BaseStep):
             # The parent's attempt counts the tokens of its child's steps before the gate, and
             # pays what they spent when the child has a budget of its own: no result of its
             # own reports either (#120)
-            tokens = _since(_child_tokens(result.step_results), tokens_before)
-            record_spend(own_spend(), "", "", tokens)
+            record_spend(own_spend(), "", "", ran_tokens(result.step_results))
             raise PauseRequestedError(qualified, str(result.error or ""))
 
         duration = (time.monotonic() - start) * 1000
@@ -299,7 +303,7 @@ class SubworkflowStep(BaseStep):
             inner.error_classification == "permanent" for inner in result.step_results.values()
         )
 
-        token_usage = _since(_child_tokens(result.step_results), tokens_before)
+        token_usage = ran_tokens(result.step_results)
 
         # Avoid double-charging the parent enforcer in the shared-budget
         # case. When the child ran against the parent's ``BudgetEnforcer``,

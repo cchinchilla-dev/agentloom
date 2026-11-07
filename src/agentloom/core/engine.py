@@ -186,6 +186,8 @@ class WorkflowEngine:
         self._charged = 0.0
         self._spent_before = 0.0
         self._deadline = math.inf
+        # The steps cut short with no result: what they spent counts in the run's totals
+        self._cut: dict[str, StepResult] = {}
 
         self._checkpointer = checkpointer
         # Always generate a run_id so ``workflow.run_id`` propagates through
@@ -832,12 +834,14 @@ class WorkflowEngine:
             # Cancelled from outside (a parent step's timeout, a failing sibling): close this
             # run's workflow span and hand the observer back to the parent before re-raising.
             if self.observer:
+                with anyio.CancelScope(shield=True):
+                    total_tokens, total_cost = self._totals(await self.state.all_step_results())
                 self.observer.on_workflow_end(
                     workflow_name,
                     "cancelled",
                     (time.monotonic() - start) * 1000,
-                    0,
-                    self._spent,
+                    total_tokens,
+                    total_cost,
                 )
             raise
 
@@ -849,9 +853,10 @@ class WorkflowEngine:
         by a breach gets no result. A shared enforcer counts its parent's charges too,
         so ``self._spent`` is this run's only.
         """
+        ran = {**step_results, **self._cut}  # a step cut short spent with no result
         return (
-            sum(r.token_usage.total_tokens for r in step_results.values()),
-            max(sum(r.cost_usd for r in step_results.values()), self._spent),
+            sum(r.token_usage.total_tokens for r in ran.values()),
+            max(sum(r.cost_usd for r in ran.values()), self._spent),
         )
 
     async def _execute_step_with_limit(self, step_id: str, limiter: anyio.CapacityLimiter) -> None:
@@ -998,7 +1003,8 @@ class WorkflowEngine:
         """Charge what a step cut short spent, its answered calls paid all the same (#120).
 
         The budget of a step cut by a breach is broken already, so its charge raises
-        nothing. The workflow's timeout leaves its result: timed out, with what it spent.
+        nothing. The workflow's timeout leaves its result: timed out, with what it spent;
+        any other cut leaves none, and the run's totals count what it spent.
         """
         spend = attempt_spend()
         failed.absorb(spend)
@@ -1014,6 +1020,8 @@ class WorkflowEngine:
         if anyio.current_time() >= self._deadline:
             cut.error = f"Workflow timed out after {self.workflow.config.timeout}s"
             await self.state.set_step_result(step_id, cut)
+        else:
+            self._cut[step_id] = cut
         return cut
 
     async def _run_step(
@@ -1047,6 +1055,7 @@ class WorkflowEngine:
         outer = running_attempt()  # a subworkflow's step runs inside its parent's attempt
         enter_step(step_id)
         previous: Attempt | None = None
+        executing = False  # a breach while the step runs, not one its charge raised
 
         for attempt in range(max_retries + 1):
             try:
@@ -1058,11 +1067,13 @@ class WorkflowEngine:
                         step_def.agent.name if step_def.agent is not None else step_id
                     )
                     log.start_step(running_steps(), agent, step_def.depends_on)
+                executing = True
                 if step_def.timeout:
                     with anyio.fail_after(step_def.timeout):
                         result = await executor.execute(context)
                 else:
                     result = await executor.execute(context)
+                executing = False
 
                 last_result = result
 
@@ -1187,7 +1198,23 @@ class WorkflowEngine:
                     continue
                 break
 
-            except BudgetExceededError:
+            except BudgetExceededError as breach:
+                if executing:
+                    # Broken inside the step, by a subworkflow sharing the budget: its result
+                    # reports what the attempts spent, their tokens in the run's (#120)
+                    spend = attempt_spend()
+                    failed.absorb(spend)
+                    self._emit_tokens(spend)
+                    with contextlib.suppress(BudgetExceededError):
+                        await self._charge(spend.cost_usd)
+                    breached = StepResult(
+                        step_id=step_id,
+                        status=StepStatus.FAILED,
+                        error=str(breach),
+                        cost_usd=failed.cost_usd,
+                        token_usage=failed.usage,
+                    )
+                    await self.state.set_step_result(step_id, breached)
                 raise
 
             except PauseRequestedError as pause_err:
