@@ -38,9 +38,6 @@ def load_pricing(custom_path: str | None = None) -> dict[str, ModelPricing]:
       1. ``custom_path`` argument (explicit caller override)
       2. ``AGENTLOOM_PRICING_FILE`` env var
       3. Bundled ``pricing.yaml`` shipped with the package
-
-    Returns:
-        Mapping of model name to :class:`ModelPricing`.
     """
     path_str = custom_path or os.environ.get("AGENTLOOM_PRICING_FILE")
     if path_str:
@@ -52,7 +49,7 @@ DEFAULT_PRICING: dict[str, ModelPricing] = load_pricing()
 
 
 def price_of(model: str, table: dict[str, ModelPricing]) -> ModelPricing | None:
-    """The prices of *model*: its own entry, or the longest one it starts with (a dated id)."""
+    """The prices of *model*: its own entry, else the longest key it starts with, else None."""
     # Longer keys first, so ``gpt-4o-mini`` is never claimed by a plain ``gpt-4`` entry
     pricing = table.get(model)
     if pricing is None:
@@ -73,8 +70,6 @@ def calculate_cost(
     """Calculate the cost of an LLM call.
 
     Args:
-        model: Model name.
-        prompt_tokens: Number of input tokens.
         completion_tokens: Number of visible output tokens.
         pricing_table: Custom pricing table (defaults to DEFAULT_PRICING).
         reasoning_tokens: Separately reported provider-side reasoning
@@ -82,7 +77,7 @@ def calculate_cost(
             ``completion_tokens_details.reasoning_tokens``; Gemini 2.5+
             via ``thoughtsTokenCount``). Billed at the output rate.
             Anthropic and Ollama do not expose a split, so callers
-            should leave this at ``0`` for those providers — Anthropic
+            should leave this at ``0`` for those providers: Anthropic
             cost stays correct because thinking is already inside
             ``completion_tokens`` (= API ``output_tokens``).
 

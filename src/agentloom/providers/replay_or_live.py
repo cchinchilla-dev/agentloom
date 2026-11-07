@@ -1,4 +1,4 @@
-"""Replay a run up to a cut point and run the rest live (#165).
+"""Replay a run up to a cut point and run the rest live.
 
 ``ReplayCut`` decides, call by call, whether the recording or the live provider
 serves a step, and logs where each call came from. ``ReplayOrLiveProvider`` wraps

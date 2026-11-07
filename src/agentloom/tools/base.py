@@ -15,12 +15,5 @@ class BaseTool(ABC):
 
     @abstractmethod
     async def execute(self, **kwargs: Any) -> Any:
-        """Execute the tool with the given arguments.
-
-        Args:
-            **kwargs: Tool-specific arguments.
-
-        Returns:
-            Tool execution result.
-        """
+        """Execute the tool with the given arguments."""
         ...

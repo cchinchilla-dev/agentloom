@@ -20,7 +20,7 @@ _HAS_OTEL = is_available(otel_api) and is_available(otel_sdk_trace)
 
 
 class TracingManager:
-    """Manages OpenTelemetry tracing. Returns no-ops if OTel is not installed."""
+    """OpenTelemetry tracing manager; no-ops when OTel is not installed."""
 
     def __init__(
         self,

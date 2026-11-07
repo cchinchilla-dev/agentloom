@@ -23,9 +23,7 @@ if TYPE_CHECKING:
     from agentloom.core.results import QualityAnnotation, WorkflowResult
 
 
-# Types OTel accepts as span-attribute values without coercion. Anything
-# else (dicts, sets, datetime, custom objects) is JSON-serialized so the
-# attribute survives ``span.set_attribute`` instead of raising at runtime.
+# Span-attribute types OTel takes as-is; anything else is JSON-serialized.
 _OTEL_PRIMITIVE_TYPES = (str, bool, int, float)
 
 
@@ -40,11 +38,7 @@ def _coerce_attribute_value(value: Any) -> Any:
     """
     if isinstance(value, _OTEL_PRIMITIVE_TYPES):
         return value
-    # Per the OTel spec, attribute arrays must be HOMOGENEOUS — all
-    # elements share the same primitive type. Mixed-type lists like
-    # ``[1, "two"]`` would be rejected by the exporter, so we serialize
-    # them as JSON instead. Boolean is excluded from int-homogeneity (and
-    # vice versa) since ``isinstance(True, int)`` is ``True`` in Python.
+    # OTel arrays must be homogeneous; ``type(v) is`` keeps bools apart from ints.
     if isinstance(value, (list, tuple)) and value:
         first_type = type(value[0])
         if first_type in _OTEL_PRIMITIVE_TYPES and all(type(v) is first_type for v in value):
@@ -81,12 +75,7 @@ def emit_quality_annotation(
         SpanAttr.QUALITY_SOURCE: annotation.source,
         SpanAttr.QUALITY_TARGET: annotation.target,
     }
-    # Flatten metadata keys under the quality-metadata prefix so each key
-    # becomes a first-class span attribute (queryable in Jaeger without
-    # JSON parsing). Non-primitive values are JSON-serialized via
-    # ``_coerce_attribute_value`` so the export pipeline doesn't reject
-    # complex shapes — ``set_attribute`` only accepts primitives + lists
-    # of primitives per the OTel spec.
+    # One span attribute per metadata key, queryable without JSON parsing.
     for key, value in annotation.metadata.items():
         attrs[f"{SpanAttr.QUALITY_METADATA_PREFIX}{key}"] = _coerce_attribute_value(value)
 
@@ -105,7 +94,7 @@ def emit_quality_annotations(
     result: WorkflowResult,
     tracing: Any,
 ) -> None:
-    """Iterate and emit every annotation attached to *result*."""
+    """Emit every annotation attached to *result*."""
     for annotation in result.annotations:
         emit_quality_annotation(
             annotation,

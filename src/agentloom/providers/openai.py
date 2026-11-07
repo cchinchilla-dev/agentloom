@@ -36,14 +36,10 @@ logger = logging.getLogger("agentloom.providers.openai")
 def _normalize_base_url(raw: str) -> str:
     """Append ``/v1`` only when *raw* points at a bare host.
 
-    The pre-0.5.0 rule — "append ``/v1`` unless the URL ends in ``/v1``" —
-    silently mangled URLs like ``https://gw.example.com/v2`` (became
-    ``…/v2/v1``) and ``https://gw.example.com/api/v1/foo`` (became
-    ``…/foo/v1``). Custom enterprise gateways that expose an alternative
-    API version, or already include a versioned path deeper in the URL,
-    produced broken request URLs and a confusing ``404`` from the
-    gateway. Any non-root path is now preserved verbatim; only a bare
-    host (``https://x``, ``https://x/``) still gets the suffix.
+    Any non-root path is kept verbatim, so a gateway that serves another
+    API version (``https://gw.example.com/v2``) or nests the version deeper
+    (``https://gw.example.com/api/v1/foo``) keeps its URL; only a bare host
+    (``https://x``, ``https://x/``) gets the suffix.
     """
     if not raw:
         return raw
@@ -54,9 +50,7 @@ def _normalize_base_url(raw: str) -> str:
     return trimmed + "/v1"
 
 
-# Keys forwarded to the OpenAI HTTP payload in addition to model/messages/
-# temperature/max_tokens. Unknown kwargs raise TypeError so silent parameter
-# drops become loud failures.
+# Payload keys beyond model/messages/temperature/max_tokens; any other kwarg raises TypeError.
 _OPENAI_EXTRA_PAYLOAD_KEYS = frozenset(
     {
         "top_p",
@@ -71,9 +65,7 @@ _OPENAI_EXTRA_PAYLOAD_KEYS = frozenset(
         "tools",
         "tool_choice",
         "parallel_tool_calls",
-        # Accepted but ignored on the chat-completions endpoint — o-series
-        # reasoning is implicit in the model name. Allowing the kwarg keeps
-        # ``ThinkingConfig`` provider-uniform at the step layer.
+        # Accepted so ThinkingConfig stays provider-uniform; chat completions has no such field.
         "thinking_config",
     }
 )
@@ -84,7 +76,7 @@ def _usage(usage_data: dict[str, Any]) -> TokenUsage:
 
     o-series and gpt-5 models report their reasoning under
     ``completion_tokens_details``, and count it in ``completion_tokens`` too;
-    ``TokenUsage`` keeps the two apart, as cost adds them (#120). Ordinary
+    ``TokenUsage`` keeps the two apart, as cost adds them. Ordinary
     gpt-* responses omit the field, which resolves to 0.
     """
     details = usage_data.get("completion_tokens_details") or {}
@@ -126,16 +118,13 @@ class OpenAIProvider(BaseProvider):
         ``name`` on a message is forwarded verbatim — OpenAI's chat
         completions endpoint accepts ``name`` on any role for multi-agent
         threads and rejects only characters outside ``[A-Za-z0-9_-]``.
-        The conversation primitive is expected to have already normalized
-        speaker names; anything the model would reject surfaces as a
-        request-time 400 rather than being silently stripped here.
+        Agent names are validated against that set at parse time; any other
+        name the API rejects surfaces as a request-time 400 rather than
+        being silently stripped here.
         """
         formatted: list[dict[str, Any]] = []
         for msg in messages:
-            # Tool-loop messages (assistant with ``tool_calls``, role=``tool``
-            # with ``tool_call_id``) ship in OpenAI wire shape directly —
-            # pass them through verbatim so iteration 2+ sees the prior
-            # decision and result.
+            # Tool-loop messages already use the OpenAI wire shape: pass them through verbatim.
             if "tool_calls" in msg or msg.get("role") == "tool":
                 formatted.append(msg)
                 continue
@@ -188,17 +177,12 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
-        # Tool definitions arrive as ``ToolDefinition`` Pydantic instances —
-        # translate to OpenAI's wire format before forwarding so callers
-        # don't have to know provider-specific shapes.
+        # Provider-neutral agentloom_* kwargs: popped before validation, translated below.
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
         agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs(self.name, "complete", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
-        # ``thinking_config`` is accepted at the step layer for YAML
-        # uniformity but has no chat-completions equivalent — drop it
-        # before splatting extras into the request body.
         extras.pop("thinking_config", None)
         if agentloom_response_schema is not None:
             from agentloom.steps._structured import translate_for_openai
@@ -213,9 +197,7 @@ class OpenAIProvider(BaseProvider):
             )
 
             extras["tools"] = translate_tools_for_openai(agentloom_tools)
-            # ``"none"`` must be forwarded explicitly — when ``tools`` is set
-            # OpenAI defaults to ``tool_choice="auto"``, so silently dropping
-            # the field would disable the user's request to disable tools.
+            # Forward "none" explicitly: with ``tools`` set, OpenAI defaults to "auto".
             if agentloom_tool_choice is not None:
                 extras["tool_choice"] = (
                     "none"
@@ -279,10 +261,7 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
-        # Mirror ``complete``: pop the tool-loop kwargs before validation so
-        # ``--stream`` workflows with ``tools=`` set don't error out. Without
-        # this, ``validate_extra_kwargs`` rejects ``agentloom_tools`` /
-        # ``agentloom_tool_choice`` and the request never leaves the client.
+        # As in complete(): pop the agentloom_* kwargs, or validation rejects them.
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
@@ -367,9 +346,7 @@ class OpenAIProvider(BaseProvider):
         sr._set_iterator(_generate())
         return sr
 
-    # Prefixes this adapter is known to handle. Checked longest-first so a
-    # more specific prefix wins over a generic one — avoids the old ``o3``
-    # prefix also claiming ``o3-mini`` when both are registered upstream.
+    # Model-name prefixes this adapter serves; any match counts, so order does not matter.
     _SUPPORTED_PREFIXES: tuple[str, ...] = (
         "gpt-4o",
         "gpt-4.1",
@@ -384,8 +361,7 @@ class OpenAIProvider(BaseProvider):
         "o1",
     )
 
-    # OpenAI accepts up to 2048 inputs per call; we chunk conservatively so
-    # a single failure only re-runs a bounded slice.
+    # Inputs per request; OpenAI accepts up to 2048, so this stays well below the cap.
     _EMBED_BATCH_SIZE: int = 100
 
     async def embed(
@@ -416,8 +392,7 @@ class OpenAIProvider(BaseProvider):
                 raise ProviderError(self.name, format_http_error(e)) from e
             raise_for_status(self.name, response)
             data = response.json()
-            # Sort by ``index`` so parallel-shape guarantees hold even if
-            # the API reorders results across a very large batch.
+            # Sort by ``index`` so vectors stay aligned with inputs whatever order the API uses.
             for entry in sorted(data.get("data", []), key=lambda x: x.get("index", 0)):
                 all_vectors.append(entry["embedding"])
             usage_data = data.get("usage", {})
@@ -436,10 +411,7 @@ class OpenAIProvider(BaseProvider):
         )
 
     def supports_model(self, model: str) -> bool:
-        # Embeddings are namespaced under ``text-embedding-3-*`` /
-        # ``text-embedding-ada-*`` for OpenAI. Google's ``text-embedding-004``
-        # lives on Gemini, so keep the match narrow to avoid the gateway
-        # sending Google model strings to this adapter on fallback.
+        # Narrow match: Google's ``text-embedding-004`` must not route here.
         if model.startswith(("text-embedding-3-", "text-embedding-ada-")):
             return True
         return any(model.startswith(p) for p in self._SUPPORTED_PREFIXES)

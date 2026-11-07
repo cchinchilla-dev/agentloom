@@ -22,12 +22,11 @@ def tool(
     Both ``async def`` and plain ``def`` functions are accepted. A sync
     function is automatically off-loaded to a worker thread via
     ``anyio.to_thread.run_sync`` so a blocking tool body never stalls the
-    event loop — pre-0.5.0 a sync ``@tool`` raised ``TypeError: object
-    ... can't be used in 'await' expression`` the first time it ran.
+    event loop.
 
     Auto-generates a JSON Schema for parameters from type hints,
     including the generic shapes (``list[int]``, ``dict[str, V]``,
-    ``Optional[T]``) that used to degrade silently to ``"string"``.
+    ``Optional[T]``).
 
     Usage:
         @tool(name="fetch_url", description="Fetches content from a URL")
@@ -39,18 +38,13 @@ def tool(
         tool_name = name or func.__name__
         tool_desc = description or func.__doc__ or ""
 
-        # Generate the schema from the ORIGINAL function — the sync
-        # wrapper below carries ``**kwargs`` only, which would yield an
-        # empty schema.
+        # From the original function: the sync wrapper below takes only ``**kwargs``.
         schema = _generate_schema(func)
 
         if inspect.iscoroutinefunction(func):
             async_func = func
         else:
-            # Off-load the blocking call to a worker thread so the event
-            # loop keeps serving sibling steps. ``functools.partial``
-            # binds the kwargs because ``run_sync`` passes positional
-            # args only.
+            # ``partial`` binds the kwargs: ``run_sync`` passes positional args only.
             import functools
 
             sync_func = func
@@ -72,8 +66,7 @@ def tool(
     return decorator
 
 
-# Scalar Python types → JSON Schema type names. Container / generic
-# types are handled structurally by ``_python_to_json_schema``.
+# Scalars only: ``_python_to_json_schema`` handles containers and generics structurally.
 _SCALAR_TYPE_MAP: dict[type, str] = {
     str: "string",
     int: "integer",
@@ -87,9 +80,7 @@ def _python_to_json_schema(hint: Any) -> dict[str, Any]:
 
     Handles the generic shapes a tool author naturally writes —
     ``list[int]``, ``dict[str, V]``, ``Optional[T]`` / ``T | None``,
-    nested combinations — that pre-0.5.0 silently degraded to
-    ``{"type": "string"}``, leaving the model with a schema it could not
-    satisfy and a tool that crashed on the wrong-shaped argument.
+    nested combinations.
     """
     if hint is Any:
         # No constraint — an empty schema accepts any JSON value.
@@ -107,12 +98,7 @@ def _python_to_json_schema(hint: Any) -> dict[str, Any]:
         value = args[1] if len(args) == 2 else Any
         return {"type": "object", "additionalProperties": _python_to_json_schema(value)}
     if origin in (typing.Union, types.UnionType):
-        # ``Optional[T]`` / ``T | None`` → ``anyOf: [<T's schema>,
-        # {"type": "null"}]`` so the schema accepts an explicit null
-        # too (matching the Python signature, which allows it). The
-        # ``required`` list still conveys whether the parameter may be
-        # omitted entirely. A genuine multi-type union becomes
-        # ``anyOf`` over every accepted shape.
+        # ``Optional[T]`` also accepts null, as Python does; ``required`` says if it may be omitted.
         args = get_args(hint)
         non_none = [a for a in args if a is not type(None)]
         has_none = type(None) in args
@@ -129,14 +115,12 @@ def _python_to_json_schema(hint: Any) -> dict[str, Any]:
         json_type = _SCALAR_TYPE_MAP.get(hint)
         if json_type is not None:
             return {"type": json_type}
-        # Bare ``list`` / ``dict`` without parameters.
         if hint is list:
             return {"type": "array"}
         if hint is dict:
             return {"type": "object"}
 
-    # Unknown / unresolvable hint — fall back to string, the safest
-    # cross-provider default.
+    # Unknown or unresolvable hint: string is the safest cross-provider default.
     return {"type": "string"}
 
 

@@ -3,8 +3,8 @@
 Covered by semantic versioning: a breaking change here needs a major release.
 This module imports only pydantic, so consumers that parse AgentLoom traces,
 recordings or checkpoints, or wrap AgentLoom workflows, can depend on it
-without loading the runtime. The runtime modules that used to define these
-models (``core.models``, ``core.results``, ``providers.base``) re-export them.
+without loading the runtime. ``core.models``, ``core.results`` and
+``providers.base`` re-export them.
 """
 
 from __future__ import annotations
@@ -63,9 +63,8 @@ class Message(BaseModel):
       ``tool_call_id``.
 
     ``name`` is optional and identifies the speaker for multi-agent
-    threads (e.g. ``alice`` vs ``bob``). Providers that support ``name``
-    (OpenAI, some Anthropic tool-loop shapes) forward it; providers that
-    don't drop it silently with a debug log.
+    threads (e.g. ``alice`` vs ``bob``). OpenAI forwards it natively; the
+    other adapters prepend ``"[<name>] "`` to the turn's text.
 
     ``metadata`` carries free-form turn-level annotations (timestamp,
     agent_id, tool call index) that ride along the checkpoint but never
@@ -84,21 +83,19 @@ class Message(BaseModel):
     def token_count(self, model: str = "") -> int:
         """Rough token-count estimate for budget bookkeeping.
 
-        Not authoritative — the value is only ever used to decide whether
-        the conversation exceeds ``token_budget`` before a call, so a
-        conservative under-count is fine. The heuristic follows the same
-        1 token ≈ 4 characters approximation the OpenAI docs recommend
-        for English + light per-message overhead (role marker + name
-        marker) so single-word turns don't hash to 0 tokens. ``model`` is
-        accepted for forward compatibility with a tokenizer-backed
-        implementation but currently ignored.
+        Not authoritative — it decides whether the conversation exceeds
+        ``token_budget`` before a call, so a conservative under-count is
+        fine. The heuristic follows the same 1 token ≈ 4 characters
+        approximation the OpenAI docs recommend for English + light
+        per-message overhead (role marker + name marker) so single-word
+        turns don't hash to 0 tokens. ``model`` is ignored, reserved for a
+        tokenizer-backed implementation.
         """
         del model
         char_count = len(self.content)
         for call in self.tool_calls:
             char_count += len(call.name)
-            # Approximate JSON length of the tool arguments without paying
-            # the ``json.dumps`` cost on every trim check.
+            # Approximates the JSON length without a ``json.dumps`` on every trim check.
             for key, value in call.arguments.items():
                 char_count += len(str(key)) + len(str(value)) + 4
         overhead = 4  # role marker
@@ -129,10 +126,10 @@ class TokenUsage(BaseModel):
     separate reasoning / thinking token count — OpenAI o-series via
     ``completion_tokens_details.reasoning_tokens`` and Gemini 2.5+ via
     ``usageMetadata.thoughtsTokenCount``. Anthropic and Ollama do not
-    expose a separate count today (Anthropic rolls thinking into
+    expose a separate count (Anthropic rolls thinking into
     ``output_tokens``; Ollama emits a single ``eval_count``), so the
     field stays ``0`` for those providers — the chain-of-thought trace
-    is still surfaced via ``ProviderResponse.reasoning_content``. When
+    is surfaced via ``ProviderResponse.reasoning_content``. When
     populated, providers bill these tokens at the output rate, so
     cost calculation must include them.
     """
@@ -195,24 +192,13 @@ class ProviderResponse(BaseModel):
     cost_usd: float = 0.0
     raw_response: dict[str, Any] = Field(default_factory=dict)
     finish_reason: str | None = None
-    # Reasoning / chain-of-thought text. Populated when the provider
-    # exposes the trace and the caller did not opt out via
-    # ``ThinkingConfig.capture_reasoning``. OpenAI o-series keeps the
-    # trace server-side, so this stays ``None``; Anthropic concatenates
-    # ``type="thinking"`` blocks; Gemini surfaces ``thought=true`` parts;
-    # Ollama returns ``message.thinking`` (or strips inline
-    # ``<think>...</think>`` tags as a fallback).
+    # Chain-of-thought when exposed and ``capture_reasoning`` is on; ``None`` for OpenAI o-series.
     reasoning_content: str | None = None
-    # Empty when the model didn't pick a tool. When non-empty, ``content``
-    # may be empty — the LLM step dispatches each call and re-prompts.
+    # When non-empty, ``content`` may be empty: the LLM step dispatches each call and re-prompts.
     tool_calls: list[ToolCall] = Field(default_factory=list)
-    # Parsed structured output (dict or Pydantic instance). ``None`` for
-    # free-form steps. Populated by ``LLMCallStep``, not the adapters.
-    # Typed ``object | None`` — callers treat it as opaque; consumers
-    # that need a specific shape do their own ``isinstance`` narrowing.
+    # Dict or Pydantic instance set by ``LLMCallStep``, not adapters; ``None`` for free-form steps.
     parsed: object | None = None
-    # ``None`` when the adapter reports nothing (embeddings, the mock
-    # replaying an entry recorded without it).
+    # ``None`` when the adapter reports nothing (embeddings, a mock entry recorded without it).
     meta: ResponseMeta | None = None
 
 

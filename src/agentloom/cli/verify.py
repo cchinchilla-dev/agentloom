@@ -1,4 +1,4 @@
-"""``agentloom verify-determinism``: replay a recording several times and compare (#135)."""
+"""``agentloom verify-determinism``: replay a recording several times and compare."""
 
 from __future__ import annotations
 

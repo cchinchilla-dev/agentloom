@@ -14,11 +14,9 @@ from agentloom.history.writer import RunHistoryWriter, load_records
 def _parse_date(value: str | None) -> datetime | None:
     """Parse ``YYYY-MM-DD`` (or full ISO 8601) into a UTC ``datetime``.
 
-    Date-only inputs anchor at midnight UTC so ``--since 2026-05-02`` and
-    ``--until 2026-05-02`` form a closed-then-open day window when used
-    together, which is the expected operator semantics. Raises
-    ``typer.BadParameter`` so the CLI surfaces a clean usage error instead
-    of a traceback.
+    Date-only inputs anchor at midnight UTC, so ``--since X --until Y`` keeps
+    ``[X, Y)``: ``--until`` excludes its own day. Raises ``typer.BadParameter``
+    so the CLI surfaces a clean usage error instead of a traceback.
     """
     if value is None:
         return None
@@ -33,13 +31,7 @@ def _parse_date(value: str | None) -> datetime | None:
 
 
 def _record_timestamp(record: dict[str, Any]) -> datetime | None:
-    """Coerce the record's ``timestamp`` field to a UTC ``datetime``.
-
-    Returns ``None`` when the field is missing or unparseable so callers
-    can decide whether to filter the record out (date filters keep it
-    out — undateable records can't satisfy a date predicate) vs. keep it
-    (no filter applied → keep).
-    """
+    """Coerce the record's ``timestamp`` field to a UTC ``datetime``, or ``None``."""
     ts_raw = record.get("timestamp")
     if not isinstance(ts_raw, str):
         return None
@@ -47,10 +39,7 @@ def _record_timestamp(record: dict[str, Any]) -> datetime | None:
         ts = datetime.fromisoformat(ts_raw)
     except ValueError:
         return None
-    # Normalize to UTC: naive timestamps are treated as already-UTC
-    # (matches what ``RunHistoryWriter`` writes via ``datetime.now(UTC)``);
-    # tz-aware timestamps in any other zone are converted so ``--since`` /
-    # ``--until`` comparisons are unambiguous regardless of source.
+    # A naive timestamp counts as UTC, the zone ``RunHistoryWriter`` writes in.
     if ts.tzinfo is None:
         return ts.replace(tzinfo=UTC)
     return ts.astimezone(UTC)
@@ -76,10 +65,7 @@ def _matches(
             return False
         if since is not None and ts < since:
             return False
-        # Closed-open window — ``--until 2026-05-02`` excludes records on
-        # that day (anchored at 00:00 UTC). Matches ``git log --until``
-        # and ``find -newermt`` operator expectations and keeps
-        # ``--since X --until Y`` composable as a half-open range.
+        # Half-open: ``--until`` excludes its own day, so ``--since X --until Y`` compose.
         if until is not None and ts >= until:
             return False
     cost = float(record.get("total_cost_usd") or 0.0)

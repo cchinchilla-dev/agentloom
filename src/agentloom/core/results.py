@@ -49,14 +49,13 @@ class ModelUsage(BaseModel):
 class StepResult(BaseModel):
     """Result from executing a single step.
 
-    ``error_classification`` is set by the engine when a step ends
-    ``FAILED``: ``"permanent"`` for errors that carry ``is_retryable =
+    ``error_classification`` is set on a ``FAILED`` step, by its executor or
+    else the engine: ``"permanent"`` for errors that carry ``is_retryable =
     False`` (sandbox violation, tool-not-found, attachment resolution,
     template typo, schema validation) and ``"transient"`` for failures
-    that exhausted the retry budget. Observability dashboards use this
-    to distinguish "we wasted 30 s retrying a permanent error" from "we
-    actually retried a transient one". ``None`` on success / paused /
-    skipped — only meaningful for failures.
+    that exhausted the retry budget. Observability dashboards use it to
+    tell a permanent failure from a transient one that was retried.
+    ``None`` on success / paused / skipped — only meaningful for failures.
     """
 
     step_id: str
@@ -120,16 +119,7 @@ class WorkflowResult(BaseModel):
     run_id: str = ""
     annotations: list[QualityAnnotation] = Field(default_factory=list)
 
-    # Optional callable wired by the engine before the result is returned
-    # to the caller. Signature: ``Callable[[QualityAnnotation], None]``.
-    # ``PrivateAttr`` excludes it from serialization so ``model_dump()`` /
-    # JSON output stays a pure data snapshot, and the indirection keeps
-    # ``core/results.py`` free of any ``observability/`` import (per the
-    # ``AGENTS.md`` layering rule — "core code never imports from
-    # observability/ directly"). When set, ``annotate()`` invokes the
-    # emitter so the issue #59 contract — "metadata exported as OTel span
-    # attributes, visible in Jaeger" — holds without the caller threading
-    # any infrastructure through.
+    # Set by the engine; private, so dumps stay pure data and this module imports no observability
     _emit_quality: Any = PrivateAttr(default=None)
 
     def attach_quality_emitter(self, emitter: Any) -> None:

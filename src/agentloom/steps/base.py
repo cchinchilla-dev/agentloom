@@ -13,20 +13,14 @@ from agentloom.core.models import SandboxConfig, StepDefinition
 from agentloom.core.redact import RedactionPolicy
 from agentloom.core.results import StepResult
 
-# Protocols exported from core.protocols describe the contract each of
-# these collaborators satisfies. Field types stay permissive so tests can
-# pass in MagicMocks or minimal stand-ins without subclassing the full
-# implementations; static-analysis users should import the Protocols and
-# cast at the boundary.
-
 
 class StepContext(BaseModel):
     """Context passed to each step during execution.
 
-    Field shapes are documented informally; the formal contracts live in
-    ``agentloom.core.protocols`` (``StateManagerProtocol``,
-    ``GatewayProtocol``, ``ObserverProtocol``, ``ToolRegistryProtocol``,
-    ``CheckpointerProtocol``, ``StreamCallbackProtocol``).
+    Most collaborator fields are typed ``Any`` so tests can pass mocks or minimal stand-ins;
+    their contracts are the Protocols in ``agentloom.core.protocols``
+    (``StateManagerProtocol``, ``GatewayProtocol``, ``ObserverProtocol``,
+    ``ToolRegistryProtocol``, ``CheckpointerProtocol``, ``StreamCallbackProtocol``).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -47,17 +41,10 @@ class StepContext(BaseModel):
     observer: Any | None = None  # ObserverProtocol
     stream: bool = False
     on_stream_chunk: Callable[[str, str], None] | None = None
-    # Concrete (not ``Any``) because the eager ABC import is required for
-    # Pydantic v2 model-field resolution — ``TYPE_CHECKING``-only imports
-    # raised ``PydanticUserError: BaseCheckpointer is not fully defined``
-    # at startup (see #111). The rest of the collaborator types use
-    # ``Any`` + a comment naming the intended protocol.
+    # Imported at runtime, not under TYPE_CHECKING: Pydantic resolves this annotation.
     checkpointer: BaseCheckpointer | None = None
-    # Optional shared budget enforcer: present when a parent workflow
-    # launches a subworkflow and wants child charges to count against
-    # the parent counter. ``None`` for top-level steps, which build
-    # their own enforcer in ``WorkflowEngine.__init__``.
-    budget_enforcer: Any | None = None  # BudgetEnforcer; ``Any`` to avoid an import cycle
+    # The running engine's enforcer; a subworkflow without its own ``budget_usd`` shares it.
+    budget_enforcer: Any | None = None  # BudgetEnforcer
 
 
 class BaseStep(ABC):
@@ -65,12 +52,5 @@ class BaseStep(ABC):
 
     @abstractmethod
     async def execute(self, context: StepContext) -> StepResult:
-        """Execute this step and return its result.
-
-        Args:
-            context: The step execution context with state, providers, and tools.
-
-        Returns:
-            StepResult with status, output, and metadata.
-        """
+        """Execute this step and return its result."""
         ...

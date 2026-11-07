@@ -27,6 +27,8 @@ Project rules for contributors and AI coding assistants. Any assistant that read
 
 **Tests**: `respx` for HTTP mocking, `pytest-asyncio` auto mode. Mocks over real API calls.
 
+**Comments**: a comment states a non-obvious why (a constraint, a trap, an ordering, an external quirk) on one line, and never restates the code. No history: no versions (`pre-0.5.0`), no "previously" or "used to", no review or audit ids; git and `CHANGELOG.md` keep it, and the `no-history-comments` pre-commit hook rejects the unambiguous markers (`SKIP=no-history-comments git commit` bypasses it). `#NNN` only where the issue holds a decision the comment cannot carry. Docstrings open with a one-line summary, imperative or a noun phrase; `Args:` / `Returns:` only where they add to the signature.
+
 **Commits**: Conventional-Commits with scope (`feat(providers): …`, `fix(core): …`, `docs(core): …`). Imperative, lowercase after the colon, single-line subject. Types and scopes documented in `CONTRIBUTING.md`. The PR title becomes the squash-merge commit on `main`, so the same rule applies to PR titles. Release commits are the one exception: exactly `bump version to X.Y.Z`, with no type or scope, because `auto-tag.yml` only tags commits that start with that prefix. Squash merge only.
 
 **Versions**: when bumping the version, update `pyproject.toml`, `CHANGELOG.md`, `__version__` in `src/agentloom/__init__.py` and `appVersion` in `deploy/helm/agentloom/Chart.yaml` in the same commit. The `version-linearity` CI job fails when they disagree.

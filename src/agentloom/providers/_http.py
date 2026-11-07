@@ -14,8 +14,7 @@ from agentloom.exceptions import ProviderError, RateLimitError
 if TYPE_CHECKING:
     import httpx
 
-# Passed through by the engine/gateway for bookkeeping; the HTTP layer
-# should ignore rather than reject or forward these.
+# Bookkeeping kwargs a caller may pass to any adapter: ignored, neither rejected nor sent.
 _PASSTHROUGH_KWARGS = frozenset({"step_id"})
 
 
@@ -30,15 +29,17 @@ def format_http_error(exc: BaseException) -> str:
     msg = str(exc).strip()
     if not msg:
         rep = repr(exc)
-        # ``repr(ReadTimeout(''))`` = ``ReadTimeout('')`` — keep the class
-        # name so at least the failure mode is visible.
+        # A bare ``Cls()`` repr adds nothing to the class name, so use the name alone.
         msg = rep if rep and rep != type(exc).__name__ + "()" else type(exc).__name__
     return f"{type(exc).__name__}: {msg}"
 
 
 def parse_retry_after(value: str | None) -> float | None:
-    """Parse the ``Retry-After`` header as seconds. HTTP-date form is not
-    supported — upstream providers we talk to use integer seconds."""
+    """Parse the ``Retry-After`` header as seconds.
+
+    The HTTP-date form is not supported: the providers supported here send
+    integer seconds.
+    """
     if not value:
         return None
     try:
@@ -52,7 +53,7 @@ def raise_for_status(provider: str, response: httpx.Response) -> None:
 
     429 → ``RateLimitError`` so the gateway can back off the rate-limiter
     bucket without counting the call against the circuit breaker.
-    Other non-2xx → ``ProviderError``.
+    Any other status but 200 → ``ProviderError``.
     """
     if response.status_code == 429:
         raise RateLimitError(

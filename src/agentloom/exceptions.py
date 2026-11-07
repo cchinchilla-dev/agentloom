@@ -5,18 +5,15 @@ consults when deciding whether to consume the retry budget. Subclasses
 that represent a deterministic permanent failure (sandbox violation,
 attachment-not-found, tool-not-found, template typo, validation error)
 override the default to ``False`` so the retry loop bails out on the
-first attempt instead of wasting 10–127 s on backoff for a failure that
-never recovers.
+first attempt instead of spending backoff on a failure that never recovers.
 """
 
 
 class AgentLoomError(Exception):
     """Base exception for all AgentLoom errors.
 
-    Default ``is_retryable = True`` mirrors the historic "retry on
-    status-less exceptions" behaviour — a network error or generic
-    provider hiccup is presumed transient unless a subclass declares
-    otherwise.
+    Default ``is_retryable = True``: a network error or generic provider
+    hiccup is presumed transient unless a subclass declares otherwise.
     """
 
     is_retryable: bool = True
@@ -27,7 +24,7 @@ class WorkflowError(AgentLoomError):
 
 
 class AgentError(AgentLoomError):
-    """An agent's turn failed when run from Python with ``Agent.invoke`` (#120)."""
+    """An agent's turn failed when run from Python with ``Agent.invoke``."""
 
 
 class StepError(AgentLoomError):
@@ -82,11 +79,9 @@ class BudgetExceededError(AgentLoomError):
     """Workflow budget has been exceeded.
 
     Non-retryable: the spend doesn't decrease between attempts, so the
-    next call sees the same overrun. Pre-0.5.0 a budget breach inside a
-    subworkflow step would propagate as a generic step failure, get
-    retried 4×, and only then reach the parent's terminal classifier;
-    the marker stops the retry loop and lets the parent surface
-    ``BUDGET_EXCEEDED`` directly.
+    next call sees the same overrun. Inside a subworkflow step the marker
+    stops the retry loop and lets the parent surface ``BUDGET_EXCEEDED``
+    directly.
     """
 
     is_retryable = False
@@ -101,8 +96,7 @@ class SandboxViolationError(AgentLoomError):
     """Tool execution blocked by sandbox policy.
 
     Non-retryable: the policy is deterministic, so the next attempt will
-    refuse identically. Pre-0.5.0 the resilience layer burned the full
-    retry budget here, adding 10 s of backoff to every blocked tool call.
+    refuse identically.
     """
 
     is_retryable = False
@@ -137,34 +131,28 @@ class AttachmentResolutionError(AgentLoomError, ValueError):
 
     Raised when an LLM-call attachment cannot be resolved because of a
     shape/policy failure that never recovers: unsupported attachment
-    type, size limit exceeded, empty source, unsupported URL passthrough.
-    Inherits from ``ValueError`` so the pre-0.5.0 ``except ValueError``
-    call sites and ``pytest.raises(ValueError)`` assertions keep working;
-    the only behavioural change is the resilience layer now sees the
-    ``is_retryable = False`` marker and skips retries.
+    type, size limit exceeded, empty source, unsupported URL passthrough,
+    a missing local file or a directory. Inherits from ``ValueError`` so
+    ``except ValueError`` call sites and ``pytest.raises(ValueError)``
+    assertions catch it.
 
     Transient failures (network errors, connection timeouts, 5xx
-    responses) are intentionally NOT wrapped — those still surface as
-    raw ``httpx.HTTPError`` / ``httpx.NetworkError`` so the existing
-    status-code-driven retry rules continue to apply.
+    responses) are not wrapped: they surface as raw ``httpx.HTTPError`` /
+    ``httpx.NetworkError`` so the status-code retry rules apply.
     """
 
     is_retryable = False
 
     def __init__(self, source: str, message: str) -> None:
         self.source = source
-        # Skip ``AgentLoomError.__init__`` chaining — Python's MRO
-        # ensures ``ValueError.__init__`` runs via ``super().__init__``;
-        # we just need ``str(exc)`` to render the formatted message.
         super().__init__(f"Attachment '{source}': {message}")
 
 
 class ToolNotFoundError(AgentLoomError, KeyError):
     """Tool name was not registered in the workflow's tool registry.
 
-    Inherits from ``KeyError`` so the pre-0.5.0 ``except KeyError`` at
-    ``tool_step._resolve_args`` keeps catching it — the only thing that
-    changes is the resilience layer now skips retries.
+    Inherits from ``KeyError`` so the registry lookups guarded by
+    ``except KeyError`` (``ToolStep.execute``, ``_tools._execute``) catch it.
     """
 
     is_retryable = False
@@ -183,13 +171,10 @@ class ToolNotFoundError(AgentLoomError, KeyError):
 class RecordingMismatchError(AgentLoomError):
     """A replay request did not match the recorded response file.
 
-    Raised by ``MockProvider`` in strict mode (the default for
-    ``agentloom replay``) when a completion request cannot be matched
+    Raised by ``MockProvider`` and the tool tape in strict mode (the
+    default for ``agentloom replay``) when a request cannot be matched
     against the recording — either no entry exists for the step, or the
     recorded entry was captured for a different prompt / tools spec.
-    Pre-0.5.0 the mock provider silently fell through to its
-    ``default_response``, so a replay could pass green while answering a
-    prompt that no longer matched the recording.
 
     Non-retryable: a stale recording does not fix itself between
     attempts — re-record the fixture instead.
@@ -220,10 +205,7 @@ class StateWriteError(AgentLoomError):
     silently overwrite with a dict (``set("user.name", ...)`` when
     ``state.user`` is the string ``"alice"``), or a list parent traversed
     with a string segment (``set("users.name", ...)`` when ``state.users``
-    is a list — the caller meant ``users[0].name``). The pre-0.5.0
-    behaviour replaced the scalar with an empty dict and continued, or
-    leaked a generic ``TypeError`` for the list case; this error surfaces
-    both uniformly.
+    is a list — the caller meant ``users[0].name``).
     """
 
 

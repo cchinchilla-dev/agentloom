@@ -1,4 +1,4 @@
-"""CLI command: inspect an agent definition (#120)."""
+"""CLI command: inspect an agent definition."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ agent_app = typer.Typer(help="Inspect agent definitions.", no_args_is_help=True)
 
 
 class _Dumper(yaml.SafeDumper):
-    """Writes a multi-line string as a literal block, as an agent file holds a system prompt."""
+    """YAML dumper that writes multi-line strings as literal blocks, as agent files do."""
 
     def ignore_aliases(self, data: Any) -> bool:
         return True  # two agents calling one agent print it twice, not as ``&id001``

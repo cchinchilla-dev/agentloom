@@ -1,9 +1,9 @@
 """Retry with exponential backoff and jitter.
 
 The backoff and retryability primitives (`compute_backoff`,
-`is_retryable_exception`) are imported by ``core.engine._execute_step``
-so the engine and ``retry_with_policy`` share a single source of truth
-for retry semantics — no parallel implementations to drift apart.
+`is_retryable_exception`) are shared by the engine's step retry loop
+(``WorkflowEngine._run_step``) and ``retry_with_policy``: a single source
+of truth for retry semantics, no parallel implementations to drift apart.
 """
 
 from __future__ import annotations
@@ -23,11 +23,7 @@ DEFAULT_RETRYABLE_STATUS_CODES: list[int] = [429, 500, 502, 503, 504]
 
 
 def compute_backoff(base: float, attempt: int, maximum: float, jitter: bool) -> float:
-    """Exponential backoff capped at ``maximum`` with optional ±25% jitter.
-
-    Used by both ``retry_with_policy`` and ``WorkflowEngine._execute_step``
-    so step retries and gateway retries use the same waveform.
-    """
+    """Exponential backoff capped at ``maximum`` with optional ±25% jitter."""
     delay = min(base**attempt, maximum)
     if jitter:
         delay *= 1.0 + random.uniform(-0.25, 0.25)
@@ -59,8 +55,7 @@ def extract_status_code(exc: BaseException) -> int | None:
 
 
 def _has_permanent_marker(exc: BaseException) -> bool:
-    """Return True if *exc* (or anything in its cause chain) sets
-    ``is_retryable = False``.
+    """Return True if *exc* or anything in its cause chain sets ``is_retryable = False``.
 
     Walks ``__cause__`` and ``__context__`` so a non-retryable error
     wrapped by ``StepError`` (or any other classifier the engine adds for
@@ -78,9 +73,7 @@ def _has_permanent_marker(exc: BaseException) -> bool:
             return True
         if isinstance(cursor, PydanticValidationError):
             return True
-        # ``__cause__`` (explicit ``raise … from``) takes precedence over
-        # ``__context__`` (implicit chain during exception handling) so
-        # operator-marked causality wins when both are set.
+        # The explicit ``__cause__`` wins over the implicit ``__context__`` when both are set.
         cursor = cursor.__cause__ or cursor.__context__
     return False
 
@@ -94,9 +87,7 @@ def is_retryable_exception(exc: BaseException, codes: list[int]) -> bool:
        chain) carries ``is_retryable = False`` — ``SandboxViolationError``,
        ``AttachmentResolutionError``, ``ToolNotFoundError``,
        ``TemplateError``, ``ValidationError``, Pydantic's
-       ``ValidationError`` — bail out immediately. Pre-0.5.0 the
-       resilience layer burned the full retry budget on these and added
-       10–127 s of backoff to a workflow that was never going to succeed.
+       ``ValidationError`` — bail out immediately.
     2. **HTTP status code.** ``ProviderError``, ``RateLimitError``, and
        ``httpx.HTTPStatusError`` expose a status either directly or via
        ``exc.response.status_code``; the code must be in *codes*.
@@ -112,17 +103,18 @@ def is_retryable_exception(exc: BaseException, codes: list[int]) -> bool:
 
 
 def classify_failure(exc: BaseException, codes: list[int]) -> str:
-    """``"transient"`` or ``"permanent"``: the ``error_classification`` of a
-    step that failed with *exc*, by the rule of :func:`is_retryable_exception`.
+    """Return the ``error_classification`` of a step that failed with *exc*.
 
-    Steps that return a failed result instead of raising set it, so the
-    engine retries them under the same rule as an exception (#182).
+    ``"transient"`` or ``"permanent"``, by the rule of
+    :func:`is_retryable_exception`. Steps that return a failed result
+    instead of raising set it, so the engine retries them under the same
+    rule as an exception.
     """
     return "transient" if is_retryable_exception(exc, codes) else "permanent"
 
 
 class RetryPolicy(BaseModel):
-    """Configuration for retry behavior."""
+    """Configuration for retry behaviour."""
 
     max_retries: int = 3
     backoff_base: float = 2.0
@@ -138,17 +130,8 @@ async def retry_with_policy(
 ) -> T:
     """Execute an async callable with retry and exponential backoff.
 
-    Args:
-        coro_factory: Zero-argument callable returning a coroutine.
-        policy: Retry configuration.
-        operation_name: Name for logging.
-
-    Returns:
-        Result of the coroutine.
-
-    Raises:
-        The last exception if all retries are exhausted, or immediately
-        if the exception is not retryable under ``policy.retryable_status_codes``.
+    The last exception is re-raised once retries run out, or at once if it
+    is not retryable under ``policy.retryable_status_codes``.
     """
     last_exception: Exception | None = None
 

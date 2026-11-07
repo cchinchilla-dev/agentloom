@@ -18,10 +18,8 @@ from agentloom.exceptions import ProviderError
 class StreamEvent(BaseModel):
     """Base type for typed stream events surfaced via ``StreamResponse.events()``.
 
-    Backwards-compat: ``async for chunk in sr`` keeps yielding plain text
-    strings (the deltas only). Callers that need to react to tool-call
-    decisions mid-stream use ``async for evt in sr.events()`` and switch
-    on the concrete subclass.
+    ``async for chunk in sr`` yields the plain text deltas; ``async for evt in
+    sr.events()`` yields typed events instead, to switch on by subclass.
     """
 
 
@@ -73,7 +71,7 @@ class EmbeddingResponse(BaseModel):
 
 
 class StreamResponse:
-    """Accumulates streamed text chunks and final metadata from a provider.
+    """Streamed text chunks and final metadata of a provider response.
 
     Usage::
 
@@ -92,14 +90,9 @@ class StreamResponse:
         self.usage: TokenUsage = TokenUsage()
         self.cost_usd: float = 0.0
         self.finish_reason: str | None = None
-        # Populated by adapters that surface a chain-of-thought trace
-        # alongside the streamed answer (Gemini ``thought=true`` parts,
-        # Anthropic ``thinking`` deltas, Ollama ``message.thinking``).
+        # Chain-of-thought trace, from the streaming adapters that surface one (Gemini, Ollama).
         self.reasoning_content: str | None = None
-        # Tool calls accumulated by the adapter while streaming. Adapters
-        # that emit ``ToolCallDelta`` events through the typed event API
-        # also populate this list with the assembled calls so non-event
-        # consumers can read them after the stream is exhausted.
+        # Only the complete()-based fallback fills it: no adapter's own stream() parses tool calls.
         self.tool_calls: list[ToolCall] = []
         # Set by the adapter once the response headers arrive.
         self.meta: ResponseMeta | None = None
@@ -113,21 +106,20 @@ class StreamResponse:
         self._iterator = iterator
 
     def _set_event_iterator(self, iterator: AsyncIterator[StreamEvent]) -> None:
-        """Adapters that emit typed events register a separate iterator here.
+        """Register the iterator of an adapter that emits typed events.
 
-        When unset, ``events()`` synthesises ``TextDelta`` events from
+        When unset, ``events()`` synthesizes ``TextDelta`` events from
         the plain-string iterator plus a final ``StreamDone`` so callers
         always get a working typed surface.
         """
         self._event_iterator = iterator
 
     async def events(self) -> AsyncIterator[StreamEvent]:
-        """Iterate typed stream events (text + tool-call deltas + done).
+        """Iterate typed stream events.
 
-        Adapters that wired ``_set_event_iterator`` get full fidelity
-        (per-provider tool-call streaming). The default fallback wraps
-        the plain-string iterator: each chunk → ``TextDelta``, then a
-        single ``StreamDone`` once the underlying iterator is exhausted.
+        An iterator set with ``_set_event_iterator`` is used as is; no built-in
+        adapter sets one. Otherwise wrap the plain-string iterator: each chunk
+        → ``TextDelta``, then a single ``StreamDone`` once it is exhausted.
         """
         if self._event_iterator is not None:
             async for event in self._event_iterator:
@@ -179,11 +171,7 @@ class BaseProvider(ABC):
 
     name: str = "base"
 
-    # Whether ``complete`` / ``stream`` want the originating ``step_id``
-    # forwarded to them. The gateway pops ``step_id`` from kwargs before
-    # calling the provider (HTTP adapters would reject the unknown
-    # parameter), but the mock and recording providers key their
-    # response files by step id and need it back — they set this True.
+    # True makes the gateway forward ``step_id``: the mock and recording providers key by it.
     accepts_step_id: bool = False
 
     def __init__(self, api_key: str = "", base_url: str = "", **kwargs: Any) -> None:
@@ -199,17 +187,7 @@ class BaseProvider(ABC):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ProviderResponse:
-        """Send a completion request to the provider.
-
-        Args:
-            messages: List of message dicts with 'role' and 'content'.
-            model: Model identifier (e.g., 'gpt-4o-mini').
-            temperature: Sampling temperature.
-            max_tokens: Maximum tokens in response.
-
-        Returns:
-            Unified ProviderResponse.
-        """
+        """Send a completion request to the provider."""
         ...
 
     async def stream(
@@ -232,10 +210,7 @@ class BaseProvider(ABC):
         sr.usage = response.usage
         sr.cost_usd = response.cost_usd
         sr.finish_reason = response.finish_reason
-        # Propagate reasoning trace + tool calls so callers that read
-        # ``sr.to_provider_response()`` see the same fields they'd get
-        # from a non-streaming call. Without this, providers that rely on
-        # the fallback silently lose tool decisions when streamed.
+        # Copy every field, so a provider streamed through this fallback loses no tool call.
         sr.reasoning_content = response.reasoning_content
         sr.tool_calls = list(response.tool_calls)
         sr.meta = response.meta

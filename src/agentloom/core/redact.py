@@ -22,8 +22,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-# Pattern that matches the sentinel surface so consumers can detect a
-# redacted value without sniffing the raw string.
+# The sentinel's shape, so consumers detect a redacted value without sniffing strings
 _SENTINEL_PREFIX = "<REDACTED:sha256="
 _SENTINEL_RE = re.compile(r"^<REDACTED:sha256=[0-9a-f]{16}>$")
 
@@ -31,7 +30,7 @@ ENV_VAR = "AGENTLOOM_REDACT_STATE_KEYS"
 
 
 class RedactionPolicy:
-    """Decides whether a state key (or nested dotted path) is sensitive.
+    """Policy deciding whether a state key (or nested dotted path) is sensitive.
 
     Matching is glob-based — ``api_key``, ``*token*``, ``_*secret*`` —
     and applied to both the literal key and its dotted form so
@@ -39,10 +38,7 @@ class RedactionPolicy:
     """
 
     def __init__(self, patterns: list[str] | None = None) -> None:
-        # Empty pattern lists silently no-op, which means ``redact_state``
-        # is the identity when no policy is configured. Callers that want
-        # to opt in entirely build a ``RedactionPolicy`` with explicit
-        # patterns.
+        # No patterns: the policy is falsy and ``redact_state`` returns its input unchanged
         self._patterns = tuple(p for p in (patterns or []) if p)
 
     def __bool__(self) -> bool:
@@ -53,9 +49,7 @@ class RedactionPolicy:
         return self._patterns
 
     def matches(self, key: str) -> bool:
-        """Return ``True`` when *key* (or any of its dotted prefixes)
-        matches one of the configured glob patterns.
-        """
+        """Return ``True`` when *key* matches one of the configured glob patterns."""
         return any(fnmatch.fnmatchcase(key, pattern) for pattern in self._patterns)
 
     @classmethod
@@ -83,7 +77,7 @@ def _stable_sentinel(value: Any) -> str:
 
 
 def is_redacted(value: Any) -> bool:
-    """True when *value* is a redaction sentinel produced by this module."""
+    """Return whether *value* is a redaction sentinel produced by this module."""
     return isinstance(value, str) and bool(_SENTINEL_RE.match(value))
 
 
@@ -103,17 +97,15 @@ def redact_state(state: dict[str, Any], policy: RedactionPolicy) -> dict[str, An
     matching so a state dict deserialized from JSON with int keys does
     not crash ``fnmatch``.
 
-    A self-referential state dict no longer infinite-loops: ``_walk``
-    tracks visited container ids and substitutes a literal
-    ``"<cycle>"`` sentinel the second time around. The plaintext is
-    never recorded in any output, including the cycle marker.
+    A self-referential state dict does not loop forever: ``_walk`` tracks
+    visited container ids and substitutes a literal ``"<cycle>"`` sentinel
+    the second time around. No output records the plaintext, the cycle
+    marker included.
     """
     if not policy:
         return state
     walked = _walk(state, policy, prefix="", seen=set())
-    # ``_walk`` is typed ``Any`` because it recurses across heterogeneous
-    # container types; at the top level the input is a dict so the result
-    # is too.
+    # ``_walk`` returns ``Any``; a dict in gives a dict out
     assert isinstance(walked, dict)
     return walked
 
@@ -138,10 +130,7 @@ def _walk(
             key_str = k if isinstance(k, str) else str(k)
             path = f"{prefix}.{key_str}" if prefix else key_str
             if policy.matches(key_str) or policy.matches(path):
-                # Idempotency: if the value is already a sentinel from a
-                # previous redaction pass (e.g. resume-then-checkpoint),
-                # preserve it exactly. Hashing a sentinel string would
-                # produce a different hash each cycle and break diffing.
+                # Keep an existing sentinel: rehashing it would change it and break diffs
                 if is_redacted(v):
                     result[k] = v
                 elif isinstance(v, list):

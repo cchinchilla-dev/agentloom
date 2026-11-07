@@ -10,8 +10,7 @@ Default location is ``./agentloom_runs/``; callers can override via the
 
 The file format is ``v1`` — one pretty-printed JSON document per file,
 named ``<run_id>.json``. The per-file layout keeps atomic writes and
-direct inspection trivial; a future version can bundle into a single
-``runs.jsonl`` when volumes grow.
+direct inspection trivial.
 """
 
 from __future__ import annotations
@@ -33,12 +32,7 @@ import anyio
 from agentloom.core.models import WorkflowDefinition
 from agentloom.core.results import StepResult, StepStatus, WorkflowResult
 
-# Allow only safe characters in the file basename so a hostile or buggy
-# caller can't pass ``../etc/passwd`` or similar and write outside the
-# configured runs dir. Leading ``.`` is rejected so ``.``, ``..`` and
-# hidden-file forms can't slip through; the engine's auto-generated
-# UUID hex always passes. This guard exists for the public
-# ``RunHistoryWriter`` surface.
+# No separators and no leading dot, so a public-API caller cannot write outside the runs dir.
 _SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
 
 logger = logging.getLogger("agentloom.history")
@@ -47,11 +41,7 @@ _RECORD_SCHEMA_VERSION = 1
 
 
 def _agentloom_version() -> str:
-    """Best-effort package version resolution.
-
-    Works both for an installed distribution and for in-repo runs where
-    the package metadata may not be available.
-    """
+    """Best-effort package version: ``"unknown"`` where the package metadata is missing."""
     try:
         return _pkg_version("agentloom")
     except PackageNotFoundError:
@@ -102,13 +92,7 @@ def build_record(
         "providers_used": _providers_used(result.step_results),
         "total_cost_usd": result.total_cost_usd,
         "total_tokens": result.total_tokens,
-        # Count every step that the engine actually attempted (i.e.
-        # produced a result for), not only successes. ``"steps_executed"``
-        # here matches the issue #77 example field name and reflects total
-        # work done, including failures and pauses — useful for spotting
-        # workflows that consistently fail past a certain step count.
-        # Skipped steps (router branches not taken) are excluded so the
-        # number tracks runtime cost rather than DAG size.
+        # Failures and pauses count, skipped branches do not: runtime cost, not DAG size.
         "steps_executed": sum(
             1 for r in result.step_results.values() if r.status != StepStatus.SKIPPED
         ),
@@ -118,24 +102,19 @@ def build_record(
 
 
 class RunHistoryWriter:
-    """Writes one JSON record per workflow execution to ``runs_dir``.
+    """Writer of one JSON record per workflow execution, in ``runs_dir``.
 
     Missing run_id, empty workflow name, and similar edge cases are
-    accepted — the writer never raises to the caller; failures log a
-    warning so that a crashed history write cannot prevent a workflow
-    from returning its result.
+    accepted — the writer never raises to the caller; a failure is logged
+    so that a crashed history write cannot prevent a workflow from
+    returning its result.
     """
 
     ENV_VAR = "AGENTLOOM_RUNS_DIR"
     DEFAULT_DIR = "./agentloom_runs"
 
     def __init__(self, runs_dir: str | Path | None = None) -> None:
-        # ``_explicit`` records whether the operator deliberately chose
-        # this directory — via the ``runs_dir`` argument or the
-        # ``AGENTLOOM_RUNS_DIR`` env var. It gates the failure verbosity:
-        # an unwritable explicitly-chosen dir warns (they asked for it);
-        # an unwritable default dir stays silent (a read-only container
-        # with no runs mount is a normal, expected setup — F13).
+        # An explicit dir warns on write failure; the default stays quiet (read-only containers).
         self._explicit = runs_dir is not None or os.environ.get(self.ENV_VAR) is not None
         resolved = (
             runs_dir if runs_dir is not None else os.environ.get(self.ENV_VAR, self.DEFAULT_DIR)
@@ -143,13 +122,7 @@ class RunHistoryWriter:
         self.runs_dir = Path(resolved)
 
     def _path_for(self, run_id: str) -> Path:
-        # Fall back to a timestamp-based name when the engine ran without
-        # an explicit run_id, OR when the supplied id contains characters
-        # that would let it escape ``self.runs_dir`` (path separators,
-        # ``..``, NUL, etc). Engine-generated UUID hex always passes the
-        # safe-name regex; this guard exists because ``RunHistoryWriter``
-        # is part of the public API and a hostile / buggy caller could
-        # otherwise write outside the configured directory.
+        # A missing or unsafe id gets a timestamp name, so no caller can write outside runs_dir.
         if not run_id or not _SAFE_RUN_ID_RE.match(run_id):
             name = datetime.now(UTC).strftime("anon-%Y%m%dT%H%M%S%f")
         else:
@@ -168,12 +141,7 @@ class RunHistoryWriter:
         target = self._path_for(run_id)
 
         def _write() -> Path:
-            # Atomic write: serialize to a sibling tempfile, then rename
-            # over the target. ``os.replace`` is atomic on the same
-            # filesystem (POSIX + NTFS), so a crash mid-write leaves
-            # either the previous file or no file — never a half-written
-            # one. Important because ``load_records`` reads files
-            # opportunistically during ``agentloom history``.
+            # Atomic replace: ``agentloom history`` may read the dir while a run writes.
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp = target.with_suffix(f"{target.suffix}.tmp")
             tmp.write_text(json.dumps(record, indent=2, default=str))
@@ -183,17 +151,7 @@ class RunHistoryWriter:
         try:
             return await anyio.to_thread.run_sync(_write)
         except OSError as e:
-            # ``OSError`` covers every "directory not writable" shape:
-            # ``PermissionError``, a read-only filesystem (``EROFS``),
-            # ``FileNotFoundError`` for a missing mount point. Inside a
-            # read-only container with no ``agentloom_runs/`` mount this
-            # is the normal case — if the operator did not explicitly
-            # choose the directory, stay silent (debug only) so every
-            # workflow run does not print a warning (F13). When they DID
-            # choose it (``runs_dir`` argument or ``AGENTLOOM_RUNS_DIR``),
-            # keep the warning — they asked for that location, so tell
-            # them exactly what failed (errno + message) instead of a
-            # bare "Failed to write".
+            # Expected for the default dir in read-only containers (debug); an explicit dir warns.
             if self._explicit:
                 logger.warning(
                     "Failed to write run history record to %s (%s) — continuing",

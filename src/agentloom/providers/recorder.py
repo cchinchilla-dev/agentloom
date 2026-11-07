@@ -30,8 +30,7 @@ from agentloom.providers.mock import RECORDING_FORMAT_VERSION, UNHASHED_KWARGS, 
 if TYPE_CHECKING:
     from agentloom.core.attempts import Attempt
 
-# Every writer of a recording file in this process holds it: two read-merge-writes at once
-# would drop the key the other one just wrote.
+# Held by every writer in this process: two concurrent read-merge-writes drop each other's keys.
 _FILE_LOCK = threading.Lock()
 
 
@@ -65,11 +64,11 @@ class RecordingObserver(Protocol):
 
 
 class RecordingProvider(BaseProvider):
-    """Delegates to a wrapped provider and records each completion.
+    """Provider wrapper that records each call of the wrapped provider.
 
     Responses are keyed by ``step_id`` when present, otherwise by the SHA-256
-    hash of the serialized messages. The file is flushed on every call so a
-    crashed workflow still leaves a partial recording on disk.
+    hash of the whole request (:func:`prompt_hash`). The file is flushed on
+    every call so a crashed workflow still leaves a partial recording on disk.
 
     Each entry keeps the response's provider and ``tool_calls``. When one run records the
     same ``step_id`` more than once (the turns of a tool loop), the entry
@@ -78,9 +77,7 @@ class RecordingProvider(BaseProvider):
     an earlier run left under it, so runs never mix.
     """
 
-    # The recorder keys captures by step id — the gateway must forward
-    # it (the wrapped HTTP adapter never sees it; the recorder consumes
-    # it before delegating).
+    # Captures are keyed by step id, so the gateway must forward it.
     accepts_step_id = True
 
     def __init__(
@@ -94,22 +91,14 @@ class RecordingProvider(BaseProvider):
         self._wrapped = wrapped
         self.output_path = Path(output_path)
         self._observer = observer
+        # Only this recorder's captures: ``_flush_sync`` merges them over the file.
         self._recorded: dict[str, Any] = {}
-        # Captures per key in this run: the second capture of a step turns
-        # its entry into a list of turns.
+        # Captures per key in this run: a step's second capture turns its entry into a list.
         self._captures: dict[str, int] = {}
         # Captures of each step before an attempt first recorded it: a retry goes back there.
         self._attempts = AttemptLog()
-        # Serializes both mutations of ``_recorded`` and the flush-to-disk
-        # path so concurrent ``complete()`` calls from parallel DAG layers
-        # neither drop entries (read-modify-write race across threads) nor
-        # raise ``RuntimeError: dictionary changed size during iteration``.
+        # Guards ``_recorded`` and its flush: parallel calls would lose entries or resize mid-copy.
         self._write_lock = anyio.Lock()
-        # ``_recorded`` holds only this recorder's captures: ``_flush_sync``
-        # merges them over the file, so keys written by earlier runs or by
-        # other recorders on the same path survive, and a step recorded
-        # again replaces its old entry instead of being reverted by a
-        # recorder that loaded the file before it.
 
     def _key(
         self,
@@ -128,8 +117,7 @@ class RecordingProvider(BaseProvider):
         """Build the kwargs forwarded to the wrapped provider.
 
         ``step_id`` is added back only when the wrapped provider accepts
-        it (another mock / recorder) — an HTTP adapter rejects unknown
-        parameters, so it receives ``extra_kwargs`` unchanged.
+        it (another mock or recorder).
         """
         if step_id is not None and getattr(self._wrapped, "accepts_step_id", False):
             return {**extra_kwargs, "step_id": step_id}
@@ -159,7 +147,7 @@ class RecordingProvider(BaseProvider):
         and for the steps of a subworkflow run inside it. Without this they
         stay in the recording and strict replay serves them: their tool call
         ids differ from the retry's, so the next turn's request never
-        matches (#164).
+        matches.
         """
         if failed is None:
             return
@@ -184,9 +172,7 @@ class RecordingProvider(BaseProvider):
             await anyio.to_thread.run_sync(self._flush_sync, snapshot, drop)
 
     def _flush_sync(self, snapshot: dict[str, Any], drop: Collection[str] = ()) -> None:
-        # Merge with any existing on-disk content so concurrent recorders
-        # (e.g. wrapping multiple providers in a gateway) don't clobber
-        # each other on close(). ``drop`` holds keys this run recorded and then took back.
+        # ``drop`` holds keys this run recorded and then took back.
         def _update(merged: dict[str, Any]) -> None:
             for key in drop:
                 merged.pop(key, None)
@@ -205,9 +191,6 @@ class RecordingProvider(BaseProvider):
         step_id = kwargs.get("step_id")
         extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
         start = time.perf_counter()
-        # Forward ``step_id`` to the wrapped provider only when it
-        # consumes it (another mock / recorder). An HTTP adapter would
-        # reject the unknown parameter, so it gets ``extra_kwargs`` only.
         response = await self._wrapped.complete(
             messages=messages,
             model=model,
@@ -229,9 +212,7 @@ class RecordingProvider(BaseProvider):
                 "cost_usd": response.cost_usd,
                 "latency_ms": latency_ms,
                 "finish_reason": response.finish_reason,
-                # The full request hash rides on every entry — even when the
-                # entry is keyed by ``step_id`` — so a strict-mode replay can
-                # detect a prompt that drifted from its recording (F28).
+                # Step-id keyed entries carry it too, so strict replay detects a drifted prompt.
                 "request_hash": request_hash,
             }
             if response.tool_calls:
@@ -260,8 +241,6 @@ class RecordingProvider(BaseProvider):
         step_id = kwargs.get("step_id")
         extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
         start = time.perf_counter()
-        # Forward ``step_id`` only to a wrapped provider that consumes
-        # it — see ``complete`` above.
         inner_sr = await self._wrapped.stream(
             messages=messages,
             model=model,
@@ -343,8 +322,7 @@ class RecordingProvider(BaseProvider):
         )
         latency_ms = (time.perf_counter() - start) * 1000.0
 
-        # Key by step_id when present, else by the embed-request hash so
-        # two embed calls with the same inputs collide onto one entry.
+        # Without a step id, embed calls with the same inputs share one hash-keyed entry.
         key = (
             step_id
             if step_id
@@ -383,7 +361,7 @@ class RecordingProvider(BaseProvider):
 
 
 def _replayed(raw: dict[str, Any], request_hash: str) -> dict[str, Any] | None:
-    """The recorded turn a replay served for this exact request, to copy as it was (#178).
+    """The recorded turn a replay served for this exact request, to copy as it was.
 
     A cut replay re-records the calls it serves from its source recording;
     rebuilt from the response, they would carry this run's latency instead.

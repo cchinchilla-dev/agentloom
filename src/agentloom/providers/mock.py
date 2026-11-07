@@ -1,7 +1,7 @@
 """Mock provider — deterministic replay for tests and offline evaluation.
 
 Responses are loaded from a JSON file keyed by either ``step_id`` or the
-SHA-256 hash of the serialized messages. Latency is simulated via
+SHA-256 hash of the whole request (:func:`prompt_hash`). Latency is simulated via
 ``latency_model`` (``constant``, ``normal``, ``replay``).
 """
 
@@ -31,14 +31,10 @@ from agentloom.providers.mock_faults import StreamCutError, TimeoutFault, parse_
 
 logger = logging.getLogger("agentloom.providers.mock")
 
-# Recording-file format version this runtime reads/writes. v1 keyed
-# responses by ``step_id`` or a messages-only hash; v2 keys by the full
-# request hash and carries a ``request_hash`` on every entry so replay
-# can detect a prompt that drifted from its recording.
+# Recording-file format this runtime reads and writes; a lower ``_version`` is refused.
 RECORDING_FORMAT_VERSION = 2
 
-# Call identifiers that never reach the provider; the recorder and the mock
-# both leave them out of the request hash, so a recorded hash matches on replay.
+# Call identifiers, not request content: recorder and mock both leave them out of the hash.
 UNHASHED_KWARGS = ("step_id", "agentloom_step_id")
 
 
@@ -54,10 +50,9 @@ class MockObserver(Protocol):
 def _canonical_default(obj: Any) -> Any:
     """JSON ``default`` that handles Pydantic models stably across versions.
 
-    ``json.dumps(..., default=str)`` serialized Pydantic instances via ``repr``
-    which changes across minor versions and breaks recorded fixtures on upgrade.
-    Prefer ``model_dump()`` when available so the canonical payload depends on
-    the model's public field shape only.
+    ``str`` falls back to ``repr``, which changes across Pydantic minor versions
+    and would break recorded fixtures on upgrade; ``model_dump()`` makes the
+    canonical payload depend on the model's public field shape only.
     """
     if hasattr(obj, "model_dump"):
         return obj.model_dump()
@@ -75,8 +70,7 @@ def prompt_hash(
 
     The hash covers every field that can change the model's response:
     messages, model, temperature, max_tokens, and an optional ``extra`` bag
-    for forwarded kwargs (e.g. ``response_format``). Previous versions keyed
-    on messages only, which caused cross-model collisions.
+    for forwarded kwargs (e.g. ``response_format``).
     """
     payload = {
         "messages": messages,
@@ -100,11 +94,7 @@ def validate_recording_schema(raw: object, source: str) -> dict[str, Any]:
     A recording is a JSON object whose ``_``-prefixed keys are metadata
     (``_version``, and ``_tools`` for recorded tool results) and whose
     remaining keys map a request key to either a single response object or
-    a list of response objects (multi-turn tool loops). Pre-0.5.0
-    ``MockProvider`` only checked the top level was a dict, so a corrupt
-    file like ``{"not": "valid"}`` loaded silently and every lookup fell
-    through to ``default_response`` — a replay could pass green against
-    garbage.
+    a list of response objects (multi-turn tool loops).
 
     Raises:
         ValueError: On any structural deviation, with the offending key
@@ -144,7 +134,7 @@ _TOOL_CALL_FIELDS = {"name": str, "arguments": dict, "result": str, "success": b
 
 
 def _validate_tool_section(value: object, source: str) -> None:
-    """``_tools`` maps a step id to the tool calls it made, in order (#164)."""
+    """Check that ``_tools`` maps each step id to the tool calls it made, in order."""
     if not isinstance(value, dict):
         raise ValueError(
             f"Recording {source} _tools must map step ids to lists of tool calls, "
@@ -194,7 +184,7 @@ class MockProvider(BaseProvider):
         }
 
     ``<key>`` is either a step_id (if the caller passes ``step_id=`` through
-    kwargs) or the SHA-256 hash of the serialized messages.
+    kwargs) or the SHA-256 hash of the whole request (:func:`prompt_hash`).
     """
 
     name = "mock"
@@ -220,31 +210,19 @@ class MockProvider(BaseProvider):
         self.latency_model = latency_model
         self.latency_ms = float(latency_ms)
         self.default_response = default_response
-        # ``strict`` is the determinism gate. ``agentloom replay`` sets it
-        # so a request that misses the recording — or matches a step
-        # whose prompt drifted since capture — raises
-        # ``RecordingMismatchError`` instead of silently returning
-        # ``default_response``. ``agentloom run --provider mock`` keeps
-        # it off so ad-hoc mock runs stay frictionless (one-line warning
-        # on each miss).
+        # ``agentloom replay`` sets it: a miss or drift raises; ``run --provider mock`` only warns.
         self.strict = strict
         self._rng = random.Random(seed)
         self._observer = observer
         self._workflow_name = workflow_name
         self.calls: list[dict[str, Any]] = []
-        # Each value is either a single response dict OR a list of turns
-        # to play in order (for tool-calling loops where one step issues
-        # multiple complete() calls). The cursor below tracks which turn
-        # the next call should emit per step_id.
+        # Each value is a response or a list of turns (a tool loop); the cursor is per step id.
         self._responses: dict[str, Any] = {}
         self._turn_cursor: dict[str, int] = {}
         if self.responses_file and self.responses_file.exists():
             try:
                 raw = json.loads(self.responses_file.read_text(encoding="utf-8"))
             except json.JSONDecodeError as e:
-                # A malformed recording file is always an error — pre-0.5.0
-                # the JSON parse failure surfaced raw; now it carries the
-                # file path so the operator knows which fixture to fix.
                 raise ValueError(f"Recording {self.responses_file} is not valid JSON: {e}") from e
             self._responses = validate_recording_schema(raw, str(self.responses_file))
 
@@ -267,12 +245,7 @@ class MockProvider(BaseProvider):
         request_hash = prompt_hash(messages, model, temperature, max_tokens, extra)
         if step_id and step_id in self._responses:
             entry = self._responses[step_id]
-            # List form: one turn per call, in recorded order. Lenient
-            # replay walks a cursor and clamps at the last turn, so excess
-            # iterations replay the final response. Strict replay of a
-            # recorded loop (turns carry ``request_hash``) serves only a turn
-            # recorded for this exact request (see ``_strict_turn``);
-            # hand-written lists without hashes keep the cursor.
+            # One turn per call; past the last turn, lenient replay repeats it.
             if isinstance(entry, list):
                 if not entry:
                     return None
@@ -300,8 +273,7 @@ class MockProvider(BaseProvider):
         last turn. A turn without a ``request_hash`` never matches here:
         only lists with no hashes at all keep the cursor.
         """
-        # A fault fails the request instead of answering it, so it fires at the cursor (#123),
-        # unless it sits on a turn recorded for another request.
+        # A fault answers nothing, so it fires at the cursor unless recorded for another request.
         if (
             idx < len(turns)
             and "fault" in turns[idx]
@@ -325,13 +297,10 @@ class MockProvider(BaseProvider):
     def _check_drift(self, where: str, entry: dict[str, Any], request_hash: str) -> None:
         """Refuse, in strict mode, an entry captured against another request.
 
-        Drift check: an entry recorded under a step_id carries the
-        ``request_hash`` it was captured against. In strict (replay)
-        mode a mismatch means the workflow's prompt / system prompt
-        / model / tools spec changed since the recording — refuse
-        rather than answer with stale data (F28). Recordings made
-        before this field existed have no ``request_hash`` and are
-        matched by step_id alone, unchanged.
+        An entry recorded under a step_id carries the ``request_hash`` it
+        was captured against; a mismatch means the workflow's prompt, system
+        prompt, model or tools spec changed since the recording. An entry
+        without ``request_hash`` (a hand-written one) matches by step_id alone.
         """
         recorded_hash = entry.get("request_hash")
         if self.strict and isinstance(recorded_hash, str) and recorded_hash != request_hash:
@@ -363,16 +332,10 @@ class MockProvider(BaseProvider):
         **kwargs: Any,
     ) -> ProviderResponse:
         step_id = kwargs.get("step_id")
-        # Strip identifiers that aren't part of the request hash.
         extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
         has_response_schema = "agentloom_response_schema" in extra_kwargs
         entry = self._lookup(step_id, messages, model, temperature, max_tokens, extra_kwargs)
         if entry is None:
-            # Strict (replay) mode: a miss is a hard error. Pre-0.5.0 the
-            # mock fell through to ``default_response`` even under
-            # ``agentloom replay``, so a recording with no entry for a
-            # step replayed green with the literal "Mock response" text
-            # (F29 / F41).
             if self.strict:
                 raise RecordingMismatchError(
                     f"No recorded response for step {step_id!r} (model {model!r}). "
@@ -405,9 +368,7 @@ class MockProvider(BaseProvider):
         await self._sleep(recorded_latency if isinstance(recorded_latency, int | float) else None)
 
         if entry is None:
-            # Non-strict miss: keep the development-convenience fallback,
-            # but emit a one-line warning so a CI assertion passing on
-            # the literal placeholder text is at least visible in logs.
+            # Warn, so a CI check that passes on the placeholder text shows in the logs.
             logger.warning(
                 "MockProvider: no recorded response for step %r (model %r); "
                 "returning the placeholder default. Pass strict=True (the "
@@ -427,8 +388,7 @@ class MockProvider(BaseProvider):
             )
 
         usage_data = entry.get("usage", {}) or {}
-        # Hydrate ``tool_calls`` from the recording so replay drives the
-        # tool-iteration loop. Each turn carries its own ``tool_calls``.
+        # Recorded tool calls drive the tool loop on replay; each turn carries its own.
         tool_calls: list[Any] = []
         recorded_tool_calls = entry.get("tool_calls") or []
         if recorded_tool_calls:
@@ -453,14 +413,14 @@ class MockProvider(BaseProvider):
             finish_reason=entry.get("finish_reason", "stop"),
             tool_calls=tool_calls,
             meta=ResponseMeta.model_validate(entry["meta"]) if "meta" in entry else None,
-            # The turn as recorded: re-recording a replayed call copies it (#178).
+            # The turn as recorded: re-recording a replayed call copies it.
             raw_response=entry,
         )
 
     async def _fail(self, step_id: str | None, entry: dict[str, Any]) -> NoReturn:
-        """Fail this call as the entry's ``fault`` says (#123)."""
+        """Fail this call as the entry's ``fault`` says."""
         fault = parse_fault(entry["fault"], f"Step {step_id!r}")
-        # getattr: an observer written before this hook still replays
+        # getattr: an observer without ``on_mock_fault`` still replays
         report = getattr(self._observer, "on_mock_fault", None)
         if report is not None:
             # observer must never break replay
@@ -503,9 +463,9 @@ class MockProvider(BaseProvider):
         """Serve embeddings from a recording or synthesize deterministic vectors.
 
         Recording shape: an entry keyed by ``step_id`` (or the batch hash)
-        with an ``embeddings: list[list[float]]`` field. When missing and
-        not in strict mode, we synthesize hash-derived vectors so tests
-        stay reproducible without needing a fixture per prompt.
+        with an ``embeddings: list[list[float]]`` field. Without one, outside
+        strict mode, hash-derived vectors keep tests reproducible without a
+        fixture per prompt.
         """
         step_id = kwargs.get("step_id")
         extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
@@ -543,7 +503,6 @@ class MockProvider(BaseProvider):
                 cost_usd=float(entry.get("cost_usd", 0.0)),
                 raw_response=entry,
             )
-        # Deterministic fallback: hash-derived pseudo-vector per input.
         dim = dimensions or 8
         vectors = [_pseudo_vector(text, dim) for text in inputs]
         return EmbeddingResponse(
