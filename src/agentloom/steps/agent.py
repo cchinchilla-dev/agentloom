@@ -282,9 +282,7 @@ def _scoped_registry(
         LookupError: A tool the workflow's registry lacks, or no registry for them.
     """
     base = context.tool_registry
-    names = [t for t in agent.tools if isinstance(t, str)]
-    if names and base is None:
-        raise LookupError(f"tools {names} need a tool registry")
+    _check_tools(agent, base)
     view = ToolRegistry()
     tape = getattr(base, "tape", None)
     agents = {entry.name for entry in agent.tools if not isinstance(entry, str)}
@@ -292,14 +290,33 @@ def _scoped_registry(
     for entry in agent.tools:
         if isinstance(entry, str):
             assert base is not None
+            view.register(base.get(entry))
+        else:
+            view.register(_AgentAsTool(entry, context, gateway))
+    return view
+
+
+def _check_tools(agent: AgentDefinition, base: Any) -> None:
+    """Raise ``LookupError`` for a tool of *agent*, or of an agent it calls, the registry lacks.
+
+    The agents it calls are checked before its first model call too: one of them that cannot
+    run would only fail once the model calls it, every time it does (#120).
+    """
+    names = [t for t in agent.tools if isinstance(t, str)]
+    if names and base is None:
+        raise LookupError(f"tools {names} need a tool registry")
+    for entry in agent.tools:
+        if isinstance(entry, str):
             try:
-                view.register(base.get(entry))
+                base.get(entry)
             except ToolNotFoundError as e:
                 # Its message, without the quotes ``KeyError.__str__`` adds.
                 raise LookupError(e.args[0]) from e
         else:
-            view.register(_AgentAsTool(entry, context, gateway))
-    return view
+            try:
+                _check_tools(entry.agent, base)
+            except LookupError as e:
+                raise LookupError(f"agent tool {entry.name!r}: {e}") from e
 
 
 class _OwnTape:
@@ -374,8 +391,10 @@ class _AgentAsTool(BaseTool):
                 # A provider error the calling step would not retry is no transient failure
                 retryable_status_codes=self._context.step_definition.retry.retryable_status_codes,
             )
-        except RecordingMismatchError as e:
-            raise FailsStep(e) from e  # a stale replay fails at once, as anywhere else
+        except (RecordingMismatchError, StepError) as e:
+            # A stale replay fails at once, as anywhere else, and so does a turn that cannot
+            # run (a system prompt that is no template): every call of it would fail the same way
+            raise FailsStep(e) from e
         if result.status != StepStatus.SUCCESS:
             if result.error_classification == "transient":
                 # It fails the calling step, whose retry repeats the turn: a recording keeps

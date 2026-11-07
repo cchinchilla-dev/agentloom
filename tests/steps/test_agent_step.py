@@ -1288,6 +1288,44 @@ class TestNestedAgents:
         assert [t.name for t in provider.calls[0]["agentloom_tools"]] == ["escalate"]
         assert [t.name for t in provider.calls[1]["agentloom_tools"]] == ["add"]
 
+    @pytest.mark.parametrize("depth", [1, 2], ids=["its-agent", "an-agent-of-its-agent"])
+    async def test_a_nested_agent_without_its_tools_fails_the_step_before_any_call(
+        self, depth: int
+    ) -> None:
+        agent: dict[str, Any] = {**self.SPECIALIST, "tools": ["nope"]}
+        if depth == 2:
+            agent = {**self.SPECIALIST, "tools": [{"name": "ask_deeper", "agent": agent}]}
+        provider = _Scripted()
+        result = await _run(
+            _workflow(
+                _agent_step({"name": "support", "tools": [{"name": "escalate", "agent": agent}]})
+            ),
+            provider,
+            _registry(_Add()),
+        )
+
+        ask = result.step_results["ask"]
+        assert (ask.status, ask.error_classification) == (StepStatus.FAILED, "permanent")
+        deeper = "agent tool 'ask_deeper': " if depth == 2 else ""
+        assert ask.error == (
+            f"Agent 'support': agent tool 'escalate': {deeper}Tool 'nope' not found. Available: add"
+        )
+        assert provider.calls == []
+
+    async def test_a_nested_turn_that_cannot_run_fails_the_step_at_once(self) -> None:
+        provider = _Scripted(
+            _turn("", _call("escalate", message="?"), cost=0.1),
+            _turn("", _call("escalate", 2, message="?"), cost=0.1),
+        )
+        step = _agent_step(self._support(system_prompt="You know {"), retry={"max_retries": 2})
+        result = await _run(_workflow(step, state={"question": "q"}), provider)
+
+        ask = result.step_results["ask"]
+        assert (ask.status, ask.error_classification) == (StepStatus.FAILED, "permanent")
+        assert "template" in (ask.error or "")
+        assert len(provider.calls) == 1  # neither asked again nor retried
+        assert ask.cost_usd == pytest.approx(0.1)
+
 
 class TestAgentApi:
     async def test_iterations_count_the_agents_own_calls(self) -> None:
