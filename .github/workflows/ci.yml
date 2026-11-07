@@ -27,12 +27,21 @@ jobs:
       - run: uv run mypy src/
 
   test:
-    name: Test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # Branch protection requires the Linux jobs by name: they stay "Test (Python X.Y)"
+    name: Test (Python ${{ matrix.python-version }}${{ matrix.os-name && format(', {0}', matrix.os-name) || '' }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        os: [ubuntu-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: macos-latest
+            os-name: macOS
+            python-version: "3.14"
+          - os: windows-latest
+            os-name: Windows
+            python-version: "3.14"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8
@@ -50,13 +59,44 @@ jobs:
       # ``continue-on-error`` is what actually keeps a Codecov infra failure
       # from blocking main. The codecov/patch status check still reports on PRs.
       - uses: codecov/codecov-action@18283e04ce6e62d37312384ff67231eb8fd56d24  # v5
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.12' && runner.os == 'Linux'
         continue-on-error: true
         with:
           files: coverage.xml
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  lowest:
+    name: Test (lowest dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      # The lowest versions pyproject.toml allows, not the lock's: each minimum must hold
+      - run: uv sync --resolution lowest-direct --group dev --all-extras
+      # pydantic before 2.10 writes a Literal as `enum` next to `const`: the same schema, though
+      # not the committed text, so only the check that the committed file is regenerated stays out
+      - run: >-
+          uv run --no-sync pytest
+          --deselect tests/core/test_inter_agent.py::test_committed_schema_matches_the_models
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8
+        with:
+          enable-cache: true
+      - run: uv run --group docs mkdocs build --strict
 
   package:
     name: Package
