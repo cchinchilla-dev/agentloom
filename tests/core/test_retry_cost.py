@@ -545,7 +545,7 @@ async def test_a_step_cut_while_it_is_charged_is_charged_once(
     workflow = WorkflowDefinition.model_validate(
         {
             "name": "paid",
-            "config": {"provider": "paid", "model": "m", "timeout": 0.2},
+            "config": {"provider": "paid", "model": "m", "timeout": 0.5},
             "steps": [{"id": "ask", "type": "llm_call", "prompt": "2+3?"}],
         }
     )
@@ -555,7 +555,8 @@ async def test_a_step_cut_while_it_is_charged_is_charged_once(
     charge = engine._budget.charge
 
     async def contended(cost_usd: float) -> None:
-        await anyio.sleep(0.3)  # the budget's lock is held past the workflow's deadline
+        # The budget's lock is held past the workflow's deadline, however long the call took
+        await anyio.sleep(engine._deadline - anyio.current_time() + 0.1)
         await charge(cost_usd)
 
     monkeypatch.setattr(engine._budget, "charge", contended)

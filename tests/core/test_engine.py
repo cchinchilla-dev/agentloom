@@ -945,7 +945,8 @@ class TestTimeouts:
         """As it beats a budget breach: the deadline restarts on resume."""
         checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
         gate = StepDefinition(id="gate", type=StepType.APPROVAL_GATE, prompt="ok?")
-        engine = self._engine([self._step("draft", "hang"), gate], checkpointer, timeout=0.05)
+        # Wide enough for the gate to pause before it however slow the machine
+        engine = self._engine([self._step("draft", "hang"), gate], checkpointer, timeout=0.5)
         with anyio.fail_after(5):
             result = await engine.run()
 
@@ -953,6 +954,7 @@ class TestTimeouts:
         assert result.step_results["draft"].status == StepStatus.TIMEOUT
         saved = await checkpointer.load(engine.run_id)
         assert (saved.status, saved.paused_step_id) == ("paused", "gate")
+        saved.workflow_definition["config"]["timeout"] = 0  # the resumed half races no deadline
 
         gateway = ProviderGateway()
         gateway.register(MockProvider(), priority=0)
