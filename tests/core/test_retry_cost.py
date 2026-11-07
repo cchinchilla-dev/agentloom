@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 import anyio
@@ -1235,3 +1236,62 @@ async def test_a_subworkflow_that_fails_outside_its_steps_is_charged_what_they_s
     assert sub.token_usage.prompt_tokens == 10
     assert engine._budget.spent == pytest.approx(0.1)
     assert engine.observer.seen == [("m", 10)]
+
+
+class _StreamsThenFails(BaseProvider):
+    """Streams an answer; the first stream fails once the provider has billed it."""
+
+    name = "paid"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.streams = 0
+
+    async def complete(self, **kw: Any) -> ProviderResponse:
+        raise AssertionError("the step streams")
+
+    async def stream(self, **kw: Any) -> StreamResponse:
+        self.streams += 1
+        fails = self.streams == 1
+        response = StreamResponse(model="m", provider="paid")
+
+        async def chunks() -> AsyncIterator[str]:
+            yield "5"
+            response.usage = _paid().usage
+            response.cost_usd = 0.1
+            if fails:
+                raise ProviderError("paid", "reset after its usage", status_code=503)
+
+        response._set_iterator(chunks())
+        return response
+
+    def supports_model(self, _m: str) -> bool:
+        return True
+
+
+async def test_a_stream_that_fails_after_its_usage_reaches_the_token_metrics() -> None:
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "paid",
+            "config": {"provider": "paid", "model": "m"},
+            "steps": [
+                {
+                    "id": "ask",
+                    "type": "llm_call",
+                    "prompt": "2+3?",
+                    "stream": True,
+                    "retry": {"max_retries": 1, "backoff_base": 0, "jitter": False},
+                }
+            ],
+        }
+    )
+    gateway = ProviderGateway()
+    gateway.register(_StreamsThenFails())
+    engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway, observer=_Tokens())
+    result = await engine.run()
+
+    ask = result.step_results["ask"]
+    assert ask.status == StepStatus.SUCCESS
+    assert (ask.cost_usd, ask.token_usage.prompt_tokens) == (pytest.approx(0.2), 20)
+    assert engine._budget.spent == pytest.approx(0.2)
+    assert engine.observer.seen == [("m", 10), ("m", 10)]

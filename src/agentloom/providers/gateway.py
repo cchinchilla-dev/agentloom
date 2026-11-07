@@ -440,13 +440,14 @@ class ProviderGateway:
                             await _entry.rate_limiter.consume_response_tokens(
                                 _inner.usage.completion_tokens
                             )
+                    finally:
+                        # Paid however the stream ends once its usage came, a failure after it too
                         record_spend(
                             _inner.cost_usd,
                             _entry.provider.name,
                             _inner.model or model,
                             _inner.usage,
                         )
-                    finally:
                         _outer.usage = _inner.usage
                         _outer.cost_usd = _inner.cost_usd
                         _outer.reasoning_content = _inner.reasoning_content
