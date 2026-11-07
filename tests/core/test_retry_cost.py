@@ -1206,3 +1206,32 @@ async def test_a_subworkflow_sharing_the_budget_that_breaks_it_reports_its_token
     assert engine._budget.spent == pytest.approx(0.2)
     assert engine.observer.seen == [("m", 10), ("m", 10)]  # by the child's steps only
     assert ("sub", "budget_exceeded", 0.0) in engine.observer.ends
+
+
+class _ChildEndFails(_Tokens):
+    """An observer that raises when the child run ends: its step fails outside its steps."""
+
+    def on_workflow_end(self, name: str, *args: Any, **kwargs: Any) -> None:
+        super().on_workflow_end(name, *args, **kwargs)
+        if name == "child":
+            raise RuntimeError("observer down")
+
+
+@pytest.mark.parametrize("child_budget", [None, 10.0], ids=["shared", "own"])
+async def test_a_subworkflow_that_fails_outside_its_steps_is_charged_what_they_spent(
+    child_budget: float | None,
+) -> None:
+    result, engine = await _run_subworkflow(
+        _Paid(_paid("a")),
+        child_budget,
+        _PAYS,
+        observer=_ChildEndFails(),
+        retry={"max_retries": 0},
+    )
+
+    sub = result.step_results["sub"]
+    assert sub.status == StepStatus.FAILED
+    assert sub.cost_usd == pytest.approx(0.0 if child_budget is None else 0.1)
+    assert sub.token_usage.prompt_tokens == 10
+    assert engine._budget.spent == pytest.approx(0.1)
+    assert engine.observer.seen == [("m", 10)]

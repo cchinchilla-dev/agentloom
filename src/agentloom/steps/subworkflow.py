@@ -191,6 +191,8 @@ class SubworkflowStep(BaseStep):
             record_spend(own_spend(), "", "", TokenUsage())  # as below, without results
             raise PauseRequestedError(qualified, str(pause)) from pause
         except Exception as e:
+            # Failed outside its steps: they were paid all the same (#120)
+            record_spend(own_spend(), "", "", ran_tokens(await engine.state.all_step_results()))
             duration = (time.monotonic() - start) * 1000
             return StepResult(
                 step_id=step.id,
