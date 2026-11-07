@@ -1,15 +1,24 @@
 name: Docker
 
+# A release's image is built when release.yml calls this workflow with the tag (the tag that
+# Auto Tag pushes starts no workflow itself), or by hand for a tag that has none.
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
     branches: [main]
-
-concurrency:
-  group: docker-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to build (vX.Y.Z)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build (vX.Y.Z)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -19,15 +28,44 @@ jobs:
   docker:
     name: Build & Push
     runs-on: ubuntu-latest
+    # A release build runs from main's context too: the tag keeps it apart from main's own build
+    concurrency:
+      group: docker-${{ inputs.tag || github.ref }}
+      cancel-in-progress: true
     steps:
+      - name: Resolve the build
+        id: build
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ -z "$TAG" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # Only the newest release moves `latest`: an older tag built by hand leaves it
+            newest=$(git ls-remote --tags --refs "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" 'v*' \
+              | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+            {
+              echo "release=true"
+              echo "ref=refs/tags/$TAG"
+              echo "version=${TAG#v}"
+              echo "latest=$([ "$TAG" = "$newest" ] && echo true || echo false)"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::'$TAG' is not a release tag (vX.Y.Z)"
+            exit 1
+          fi
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          ref: ${{ steps.build.outputs.ref }}
+          persist-credentials: false
 
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # v3
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -39,16 +77,16 @@ jobs:
           images: ghcr.io/cchinchilla-dev/agentloom
           tags: |
             type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=sha,prefix=main-,enable=${{ steps.build.outputs.release == 'false' && github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}},value=${{ steps.build.outputs.version }},enable=${{ steps.build.outputs.release }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.build.outputs.version }},enable=${{ steps.build.outputs.release }}
+            type=raw,value=latest,enable=${{ steps.build.outputs.latest == 'true' }}
 
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
           context: .
-          platforms: ${{ startsWith(github.ref, 'refs/tags/') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          push: ${{ github.event_name == 'push' }}
+          platforms: ${{ steps.build.outputs.release == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ github.event_name != 'pull_request' }}
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -58,6 +96,17 @@ jobs:
 
       - name: Smoke test
         if: github.event_name == 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
-          IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n 1)
+          IMAGE=$(echo "$TAGS" | head -n 1)
           docker run --rm "$IMAGE" validate /workflows/01_simple_qa.yaml
+
+      - name: Smoke test the release image
+        if: steps.build.outputs.release == 'true'
+        env:
+          IMAGE: ghcr.io/cchinchilla-dev/agentloom:${{ steps.build.outputs.version }}
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          info=$(docker run --rm "$IMAGE" info)
+          grep -qF "AgentLoom v$VERSION" <<<"$info" || { echo "::error::$IMAGE is not $VERSION"; exit 1; }

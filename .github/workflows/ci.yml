@@ -58,7 +58,22 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8
+        with:
+          enable-cache: true
+      - run: uv build
+      # What release.yml checks before it publishes, on every change
+      - run: scripts/check_dist.sh dist
+
   version-linearity:
+    # Branch protection requires this check by name: rename it there first
     name: Version linearity (pyproject ↔ CHANGELOG)
     runs-on: ubuntu-latest
     steps:

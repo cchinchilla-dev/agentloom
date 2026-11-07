@@ -222,10 +222,11 @@ curl -X POST -H "X-AgentLoom-Token: $CALLBACK_SECRET" http://host:8642/approve/<
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| `ci.yml` | Push / PR to `main` | Lint, type check, test, Docker build, K8s validation, Helm lint |
-| `docker.yml` | Push to `main` / tags `v*` | Build multi-arch image, push to GHCR |
+| `ci.yml` | Push / PR to `main` | Lint, type check, test, build and check the wheel and sdist, version linearity, K8s validation, Helm lint |
+| `docker.yml` | Push / PR to `main` / called by `release.yml` / manual, for a tag | Build the image (multi-arch for a release), push to GHCR |
 | `auto-tag.yml` | Push to `main` | Tag `vX.Y.Z` when the commit is a `bump version to X.Y.Z` release |
-| `release.yml` | Tags `v*` / after Auto Tag | Build wheel, GitHub release, publish to PyPI |
+| `release.yml` | Tags `v*` / after Auto Tag | Build and check the wheel and sdist, GitHub release with the version's changelog, publish to PyPI, Docker image |
+| `pricing-update.yml` | Weekly (Monday) / manual | Refresh the pricing table and open a pull request with the changes |
 | `docs.yml` | Push to `main` (docs, mkdocs.yml, overrides, CHANGELOG, CONTRIBUTING) | Build and deploy documentation to GitHub Pages |
 | `e2e-ollama.yml` | `release/**` / `e2e` label / manual | Ollama integration tests against live Docker instance |
 | `pr-labeler.yml` | PR opened/updated | Auto-label PRs based on file paths |
@@ -237,7 +238,7 @@ curl -X POST -H "X-AgentLoom-Token: $CALLBACK_SECRET" http://host:8642/approve/<
 | Event | Tag pattern | Example |
 |-------|-------------|---------|
 | Push to `main` | `main-<sha>` | `main-a1b2c3d` |
-| Tag `v1.2.3` | `1.2.3`, `1.2`, `latest` | `1.2.3` |
+| Release `v1.2.3` | `1.2.3`, `1.2`, `latest` (the newest release only) | `1.2.3` |
 | Pull request | `pr-<number>` | `pr-42` |
 
 Images are published to `ghcr.io/cchinchilla-dev/agentloom`.

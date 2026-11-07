@@ -12,7 +12,7 @@ Releases go through a **pull request**, same as any other change. No direct push
 CI does the tagging and publishing once the PR merges:
 
 - `.github/workflows/auto-tag.yml` watches `main` for commits whose message starts with `bump version to` → reads the version from `pyproject.toml` and pushes `v<X.Y.Z>`.
-- `.github/workflows/release.yml` runs when Auto Tag completes (`workflow_run`), not on the tag push: a tag pushed with the workflow's `GITHUB_TOKEN` does not trigger other workflows. It resolves the tag, builds the wheel, creates a GitHub Release with auto-generated notes, and publishes to PyPI via OIDC. `workflow_dispatch` is the manual fallback. Dispatched on a tag ref, it releases exactly that tag; dispatched on a branch, it falls back to the nearest `v*` tag, which may not be the one that failed.
+- `.github/workflows/release.yml` runs when Auto Tag completes (`workflow_run`), not on the tag push: a tag pushed with the workflow's `GITHUB_TOKEN` does not trigger other workflows. It resolves the tag, builds the wheel and the sdist and checks them (`scripts/check_dist.sh`: metadata, the tag's version, a clean install that runs), creates a GitHub Release whose notes are the version's `CHANGELOG.md` section, publishes to PyPI via OIDC, and calls `docker.yml` to build the image from the tag (`X.Y.Z`, `X.Y` and, for the newest release, `latest`). `workflow_dispatch` is the manual fallback. Dispatched on a tag ref, it releases exactly that tag; dispatched on a branch, it falls back to the nearest `v*` tag, which may not be the one that failed.
 
 So the commit message prefix (`bump version to`) is load-bearing. Don't paraphrase it.
 
@@ -52,6 +52,7 @@ So the commit message prefix (`bump version to`) is load-bearing. Don't paraphra
 5. **Bump**
    - `version` in `pyproject.toml`
    - `__version__` in `src/agentloom/__init__.py`
+   - `appVersion` in `deploy/helm/agentloom/Chart.yaml` (the image tag Helm installs by default), and the chart's own `version` up a patch
    - `uv lock`, so `uv.lock` records the new version; include it in the same commit.
 
 6. **Branch + commit** — create `release/<X.Y.Z>` from an up-to-date `main`. Commit message **must** start with `bump version to <X.Y.Z>`. No type or scope on this one, unlike other commits; no Co-Authored-By. Do **not** run `git tag` locally — the workflow creates it on merge.
@@ -64,7 +65,7 @@ So the commit message prefix (`bump version to`) is load-bearing. Don't paraphra
 
 8. **Wait for checks + squash-merge** — all required status checks must pass. **Squash-merge only** (this repo's convention). The squash commit takes the PR title (repo setting), so it starts with `bump version to <X.Y.Z> (#NN)` as long as the PR title is exact; `auto-tag.yml` greps that prefix and skips tagging otherwise. Once that squash commit lands on `main`:
    - Auto Tag creates `v<X.Y.Z>`.
-   - Release builds + publishes. Watch: `gh run list --limit 5`.
+   - Release builds, checks and publishes the packages and the Docker image. Watch: `gh run list --limit 5`.
 
    Pushing `release/<X.Y.Z>` also starts the e2e Ollama workflow. It is not a required check; read its result before merging.
 
