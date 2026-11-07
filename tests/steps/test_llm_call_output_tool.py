@@ -304,6 +304,19 @@ class TestOutputTool:
         assert await state.get("reply") == {"anything": [1, 2]}
         assert gateway.calls[0]["agentloom_tools"][1].parameters == {"type": "object"}
 
+    async def test_a_schema_with_properties_and_no_type_is_an_object(self) -> None:
+        schema = ResponseSchema(
+            type="json_schema",
+            schema={"properties": {"x": {"type": "string"}}, "required": ["x"]},
+        )
+        gateway = _Gateway(_turn("", _final(1, x="1")))
+        result, state, _ = await _run(_step(), gateway, executor=_Typed(schema))
+
+        assert result.status == StepStatus.SUCCESS
+        assert await state.get("reply") == {"x": "1"}
+        parameters = gateway.calls[0]["agentloom_tools"][1].parameters
+        assert (parameters["type"], parameters["additionalProperties"]) == ("object", False)
+
     async def test_arguments_that_are_no_json_go_back_instead_of_an_empty_reply(self) -> None:
         """A reply cut short at the token limit is not ``{}``, which json_object takes (#120)."""
         gateway = _Gateway(

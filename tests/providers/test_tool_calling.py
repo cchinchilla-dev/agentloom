@@ -12,6 +12,7 @@ import respx
 
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import (
+    ResponseSchema,
     StepDefinition,
     StepType,
     ToolDefinition,
@@ -24,6 +25,7 @@ from agentloom.providers.anthropic import AnthropicProvider
 from agentloom.providers.base import ToolCall
 from agentloom.providers.gateway import ProviderGateway
 from agentloom.providers.openai import OpenAIProvider
+from agentloom.steps._structured import output_tool
 from agentloom.steps._tools import (
     INVALID_ARGUMENTS,
     FailsStep,
@@ -106,6 +108,31 @@ class TestToolTranslation:
         assert len(out) == 1
         decls = out[0]["function_declarations"]
         assert {d["name"] for d in decls} == {"add", "lookup"}
+
+    @pytest.mark.parametrize("strict", [True, False])
+    def test_openai_holds_the_output_tool_of_a_strict_schema_to_it(self, strict: bool) -> None:
+        """As a strict reply is held to its schema, every property required (#120)."""
+        schema = {
+            "type": "object",
+            "properties": {"n": {"type": "integer"}, "note": {"type": "string"}},
+            "required": ["n"],
+        }
+        tool = output_tool(ResponseSchema(type="json_schema", schema=schema, strict=strict), "s")
+        (wire,) = translate_tools_for_openai([tool])
+
+        function = wire["function"]
+        assert function.get("strict", False) is strict
+        assert function["parameters"]["required"] == (["n", "note"] if strict else ["n"])
+        assert function["parameters"]["additionalProperties"] is False
+        assert tool.parameters["required"] == ["n"]  # the tool itself is left as it was
+
+    def test_openai_leaves_other_tools_and_a_json_object_reply_free(self) -> None:
+        tools = [
+            ToolDefinition(name="add", parameters={"type": "object"}),
+            output_tool(ResponseSchema(type="json_object"), "s"),
+        ]
+
+        assert all("strict" not in wire["function"] for wire in translate_tools_for_openai(tools))
 
     def test_google_parameters_lose_the_keys_gemini_rejects(self) -> None:
         """An agent's output tool carries ``additionalProperties``, which Gemini 400s on (#120)."""

@@ -8,7 +8,7 @@ import json
 import re
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, PrivateAttr, ValidationError
 
 from agentloom.core.models import (
     OUTPUT_TOOL,
@@ -144,7 +144,7 @@ def translate_for_openai(response_schema: ResponseSchema, step_id: str) -> dict[
     schema = schema_dict_for(response_schema, step_id)
     if schema is not None and response_schema.strict:
         # Strict mode also requires every property in ``required``.
-        _enforce_openai_strict_required(schema)
+        enforce_openai_strict_required(schema)
     payload: dict[str, Any] = {
         "type": "json_schema",
         "json_schema": {
@@ -158,7 +158,7 @@ def translate_for_openai(response_schema: ResponseSchema, step_id: str) -> dict[
     return payload
 
 
-def _enforce_openai_strict_required(schema: dict[str, Any]) -> None:
+def enforce_openai_strict_required(schema: dict[str, Any]) -> None:
     """In-place: every ``properties`` key gets listed in ``required``."""
 
     def _walk(node: Any) -> None:
@@ -369,6 +369,10 @@ def extract_parsed(content: str) -> Any:
 def validate_parsed(parsed: Any, response_schema: ResponseSchema, step_id: str) -> Any:
     """Validate *parsed*; return the coerced value (Pydantic instance or dict)."""
     if response_schema.type == "json_object":
+        if not isinstance(parsed, dict):  # an object, as the providers' JSON mode answers (#120)
+            raise TypeError(
+                f"response_schema.type='json_object' expects an object; got {type(parsed).__name__}"
+            )
         return parsed
     if response_schema.type == "pydantic":
         cls = load_pydantic_model(response_schema.model or "")
@@ -427,12 +431,16 @@ def output_tool(response_schema: ResponseSchema, step_id: str) -> ToolDefinition
     Tool calling works on every provider, a schema enforced next to tools does not:
     the reply comes as the arguments of this tool, validated as a structured reply.
     """
-    parameters = _resolve_root_ref(schema_dict_for(response_schema, step_id) or {"type": "object"})
+    schema = schema_dict_for(response_schema, step_id)
+    parameters = _resolve_root_ref(schema or {"type": "object"})
+    if "type" not in parameters and "properties" in parameters:
+        # Properties with no type describe the object the arguments are
+        parameters = _normalize_schema_for_strict({"type": "object", **parameters})
     if parameters.get("type") != "object":
         raise ResponseSchemaConfigError(
             f"a schema delivered through the {OUTPUT_TOOL!r} tool must describe an object."
         )
-    return ToolDefinition(
+    tool = _OutputTool(
         name=OUTPUT_TOOL,
         description=(
             "Deliver your final reply. Call it once, with the reply as its arguments, "
@@ -440,6 +448,19 @@ def output_tool(response_schema: ResponseSchema, step_id: str) -> ToolDefinition
         ),
         parameters=parameters,
     )
+    tool._strict = schema is not None and response_schema.strict
+    return tool
+
+
+class _OutputTool(ToolDefinition):
+    """The output tool. Its strictness is no field: a recording's request hash stays as it was."""
+
+    _strict: bool = PrivateAttr(default=False)
+
+    @property
+    def strict(self) -> bool:
+        """A strict schema: OpenAI holds the arguments to it, as it does a strict reply (#120)."""
+        return self._strict
 
 
 def _resolve_root_ref(schema: dict[str, Any]) -> dict[str, Any]:
@@ -468,6 +489,7 @@ __all__ = [
     "OUTPUT_TOOL_REMINDER",
     "OUTPUT_TOOL_UNUSED",
     "anthropic_system_prefix",
+    "enforce_openai_strict_required",
     "extract_parsed",
     "format_output_feedback",
     "format_validation_feedback",

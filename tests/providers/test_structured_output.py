@@ -268,6 +268,13 @@ class TestValidateParsed:
         rs = ResponseSchema(type="json_object")
         assert validate_parsed({"anything": 1}, rs, "step") == {"anything": 1}
 
+    @pytest.mark.parametrize("parsed", [None, [1, 2], "text", 3])
+    def test_json_object_mode_refuses_what_is_no_object(self, parsed: Any) -> None:
+        """A reply of ``null`` is no reply: it is asked for again, as a schema's mismatch (#120)."""
+        rs = ResponseSchema(type="json_object")
+        with pytest.raises(TypeError, match="expects an object"):
+            validate_parsed(parsed, rs, "step")
+
     def test_pydantic_coerces_to_model_instance(self) -> None:
         rs = ResponseSchema(
             type="pydantic", model="tests.providers.test_structured_output._Classification"

@@ -39,17 +39,24 @@ logger = logging.getLogger("agentloom.steps")
 
 def translate_tools_for_openai(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
     """OpenAI shape: ``[{"type": "function", "function": {name, description, parameters}}]``."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters or {"type": "object", "properties": {}},
-            },
-        }
-        for t in tools
-    ]
+    return [{"type": "function", "function": _openai_function(t)} for t in tools]
+
+
+def _openai_function(tool: ToolDefinition) -> dict[str, Any]:
+    function: dict[str, Any] = {
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.parameters or {"type": "object", "properties": {}},
+    }
+    if getattr(tool, "strict", False):
+        # The output tool of a strict schema: its arguments are held to it, as a strict
+        # reply is, every property listed in ``required`` as strict mode needs (#120)
+        from agentloom.steps._structured import enforce_openai_strict_required
+
+        parameters = copy.deepcopy(function["parameters"])
+        enforce_openai_strict_required(parameters)
+        function.update(parameters=parameters, strict=True)
+    return function
 
 
 def translate_tools_for_anthropic(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
