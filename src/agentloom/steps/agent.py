@@ -16,6 +16,7 @@ from agentloom.core.models import (
     AgentTool,
     Conversation,
     ResponseSchema,
+    ResponseSchemaConfigError,
     RetryConfig,
     StepDefinition,
     StepType,
@@ -25,6 +26,7 @@ from agentloom.core.results import ModelUsage, StepResult, StepStatus, TokenUsag
 from agentloom.core.state import StateManager
 from agentloom.exceptions import RecordingMismatchError, StepError, ToolNotFoundError
 from agentloom.providers.base import ProviderResponse, ToolCall
+from agentloom.steps._structured import output_tool, schema_dict_for
 from agentloom.steps._tools import FailsStep
 from agentloom.steps.base import StepContext
 from agentloom.steps.llm_call import LLMCallStep
@@ -302,12 +304,15 @@ def _scoped_registry(
     return view
 
 
-def _check_tools(agent: AgentDefinition, base: Any) -> None:
+def _check_tools(agent: AgentDefinition, base: Any, callers: tuple[int, ...] = ()) -> None:
     """Raise ``LookupError`` for a tool of *agent*, or of an agent it calls, the registry lacks.
 
-    The agents it calls are checked before its first model call too: one of them that cannot
-    run would only fail once the model calls it, every time it does (#120).
+    The agents it calls are checked before its first model call too, their output schema
+    included: one of them that cannot run would only fail once the model calls it, every
+    time it does (#120).
     """
+    if id(agent) in callers:  # built in Python: a file's cycle fails when it loads
+        raise LookupError(f"agent {agent.name!r} calls itself through the agents it calls")
     names = [t for t in agent.tools if isinstance(t, str)]
     if names and base is None:
         raise LookupError(f"tools {names} need a tool registry")
@@ -320,9 +325,23 @@ def _check_tools(agent: AgentDefinition, base: Any) -> None:
                 raise LookupError(e.args[0]) from e
         else:
             try:
-                _check_tools(entry.agent, base)
+                _check_output(entry.agent)
+                _check_tools(entry.agent, base, (*callers, id(agent)))
             except LookupError as e:
                 raise LookupError(f"agent tool {entry.name!r}: {e}") from e
+
+
+def _check_output(agent: AgentDefinition) -> None:
+    """Raise ``LookupError`` for an output schema *agent*'s turn could not use."""
+    if agent.output_schema is None:
+        return
+    try:
+        if agent.tools:
+            output_tool(agent.output_schema, agent.name)
+        else:
+            schema_dict_for(agent.output_schema, agent.name)
+    except ResponseSchemaConfigError as e:
+        raise LookupError(str(e)) from e
 
 
 class _OwnTape:

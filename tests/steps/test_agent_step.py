@@ -17,6 +17,7 @@ from agentloom.core.engine import WorkflowEngine
 from agentloom.core.inter_agent import EventLog, recording_events
 from agentloom.core.models import (
     AgentDefinition,
+    AgentTool,
     Conversation,
     Message,
     StepDefinition,
@@ -1382,6 +1383,51 @@ class TestNestedAgents:
         assert "template" in (ask.error or "")
         assert len(provider.calls) == 1  # neither asked again nor retried
         assert ask.cost_usd == pytest.approx(0.1)
+
+    @pytest.mark.parametrize(
+        ("nested", "message"),
+        [
+            (
+                {"output_schema": {"type": "pydantic", "model": "no.such.module:Thing"}},
+                "cannot import module 'no.such.module'",
+            ),
+            (  # delivered through final_result next to its tool, so an object it must be
+                {
+                    "tools": ["add"],
+                    "output_schema": {"type": "json_schema", "schema": {"type": "array"}},
+                },
+                "must describe an object",
+            ),
+        ],
+        ids=["a-model-that-does-not-load", "no-object-with-tools"],
+    )
+    async def test_a_nested_agent_whose_output_schema_cannot_be_used_fails_before_any_call(
+        self, nested: dict[str, Any], message: str
+    ) -> None:
+        provider = _Scripted()
+        result = await _run(
+            _workflow(_agent_step(self._support(**nested)), state={"question": "q"}),
+            provider,
+            _registry(_Add()),
+        )
+
+        ask = result.step_results["ask"]
+        assert (ask.status, ask.error_classification) == (StepStatus.FAILED, "permanent")
+        assert (ask.error or "").startswith("Agent 'support': agent tool 'escalate': ")
+        assert message in (ask.error or "")
+        assert provider.calls == []
+
+    async def test_agents_built_to_call_each_other_fail_before_any_call(self) -> None:
+        first = AgentDefinition(name="first", model="m")
+        second = AgentDefinition(name="second", tools=[AgentTool(name="ask_first", agent=first)])
+        first.tools.append(AgentTool(name="ask_second", agent=second))  # a file refuses this
+        provider = _Scripted()
+        gateway = ProviderGateway()
+        gateway.register(provider)
+
+        with pytest.raises(AgentError, match="agent 'first' calls itself"):
+            await Agent(first, gateway=gateway).invoke("hi")
+        assert provider.calls == []
 
 
 class TestAgentApi:
