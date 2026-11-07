@@ -718,3 +718,61 @@ async def test_a_subworkflow_with_a_budget_of_its_own_that_pauses_is_charged(
     assert (await checkpointer.load(engine.run_id)).spent_usd == pytest.approx(0.1)
     assert engine.observer.seen == [("m", 10)]  # by the child's step, not again by the parent
     assert engine.observer.runs == [("child", pytest.approx(0.1)), ("parent", pytest.approx(0.1))]
+
+
+class _BreaksAt(_Tokens):
+    """An observer that raises when step ``b`` starts: the run ends ``failed`` from outside."""
+
+    def on_step_start(self, step_id: str, *_: Any, **__: Any) -> None:
+        if step_id == "b":
+            raise RuntimeError("observer down")
+
+
+_CHILD = {"name": "child", "config": {"provider": "paid", "model": "m"}, "steps": [_PAYS]}
+
+
+@pytest.mark.parametrize(
+    ("status", "steps", "budget", "observer"),
+    [
+        # its child charged the shared budget, and its step reports cost 0
+        (
+            WorkflowStatus.PAUSED,
+            [
+                {"id": "sub", "type": "subworkflow", "workflow_inline": _CHILD},
+                {**_GATE, "depends_on": ["sub"]},
+            ],
+            1.0,
+            _Tokens,
+        ),
+        (WorkflowStatus.BUDGET_EXCEEDED, [_PAYS], 0.05, _Tokens),
+        (WorkflowStatus.FAILED, [_PAYS, _HANGS], None, _BreaksAt),
+    ],
+    ids=["paused", "budget-exceeded", "failed-from-outside"],
+)
+async def test_a_run_reports_what_it_spent_however_it_ends(
+    tmp_path: Any,
+    status: WorkflowStatus,
+    steps: list[dict[str, Any]],
+    budget: float | None,
+    observer: type[_Tokens],
+) -> None:
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "paid",
+            "config": {"provider": "paid", "model": "m", "budget_usd": budget},
+            "steps": steps,
+        }
+    )
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("ok")))
+    engine = WorkflowEngine(
+        workflow=workflow,
+        provider_gateway=gateway,
+        observer=observer(),
+        checkpointer=FileCheckpointer(checkpoint_dir=tmp_path),
+    )
+    result = await engine.run()
+
+    assert result.status == status
+    assert (result.total_cost_usd, result.total_tokens) == (pytest.approx(0.1), 13)
+    assert engine.observer.runs[-1] == ("paid", pytest.approx(0.1))

@@ -666,19 +666,7 @@ class WorkflowEngine:
             step_results = await self.state.all_step_results()
             final_state = await self.state.get_state_snapshot()
 
-            total_tokens = sum(r.token_usage.total_tokens for r in step_results.values())
-            # Report the larger of the per-step sum and the enforcer's
-            # recorded spend. They agree for an ordinary run, but a
-            # subworkflow that shared this engine's enforcer reports
-            # ``cost_usd=0`` on its step result (its child steps already
-            # charged the enforcer directly — re-counting it would
-            # double-charge), so the per-step sum alone would under-
-            # report. ``self._spent`` carries the child charges, and only
-            # this run's: a shared enforcer counts its parent's too (#120).
-            total_cost = max(
-                sum(r.cost_usd for r in step_results.values()),
-                self._spent,
-            )
+            total_tokens, total_cost = self._totals(step_results)
 
             failed_steps = [r for r in step_results.values() if r.status in _FAILED]
             status = WorkflowStatus.FAILED if failed_steps else WorkflowStatus.SUCCESS
@@ -747,13 +735,10 @@ class WorkflowEngine:
                 await self._save_checkpoint("paused", paused_step_id=pause_err.step_id)
                 step_results = await self.state.all_step_results()
                 final_state = await self.state.get_state_snapshot()
+                total_tokens, total_cost = self._totals(step_results)
                 if self.observer:
                     self.observer.on_workflow_end(
-                        workflow_name,
-                        "paused",
-                        duration,
-                        sum(r.token_usage.total_tokens for r in step_results.values()),
-                        sum(r.cost_usd for r in step_results.values()),
+                        workflow_name, "paused", duration, total_tokens, total_cost
                     )
                 logger.info(
                     "Workflow '%s' paused at step '%s'",
@@ -766,8 +751,8 @@ class WorkflowEngine:
                     step_results=step_results,
                     final_state=final_state,
                     total_duration_ms=duration,
-                    total_tokens=sum(r.token_usage.total_tokens for r in step_results.values()),
-                    total_cost_usd=sum(r.cost_usd for r in step_results.values()),
+                    total_tokens=total_tokens,
+                    total_cost_usd=total_cost,
                     error=str(pause_err),
                 )
                 await self._finalize_result(result, workflow_name)
@@ -776,21 +761,20 @@ class WorkflowEngine:
             budget_err = _extract_budget_error(e)
             if budget_err is not None:
                 await self._save_checkpoint("budget_exceeded")
+                step_results = await self.state.all_step_results()
+                total_tokens, total_cost = self._totals(step_results)
                 if self.observer:
                     self.observer.on_workflow_end(
-                        workflow_name,
-                        "budget_exceeded",
-                        duration,
-                        0,
-                        self._spent,
+                        workflow_name, "budget_exceeded", duration, total_tokens, total_cost
                     )
                 result = WorkflowResult(
                     workflow_name=workflow_name,
                     status=WorkflowStatus.BUDGET_EXCEEDED,
-                    step_results=await self.state.all_step_results(),
+                    step_results=step_results,
                     final_state=await self.state.get_state_snapshot(),
                     total_duration_ms=duration,
-                    total_cost_usd=self._spent,
+                    total_tokens=total_tokens,
+                    total_cost_usd=total_cost,
                     error=str(budget_err),
                 )
                 await self._finalize_result(result, workflow_name)
@@ -799,8 +783,7 @@ class WorkflowEngine:
             if isinstance(e, WorkflowTimeoutError):
                 await self._save_checkpoint("timeout")
                 step_results = await self.state.all_step_results()
-                total_tokens = sum(r.token_usage.total_tokens for r in step_results.values())
-                total_cost = max(sum(r.cost_usd for r in step_results.values()), self._spent)
+                total_tokens, total_cost = self._totals(step_results)
                 if self.observer:
                     self.observer.on_workflow_end(
                         workflow_name, "timeout", duration, total_tokens, total_cost
@@ -820,15 +803,21 @@ class WorkflowEngine:
                 return result
 
             await self._save_checkpoint("failed")
+            step_results = await self.state.all_step_results()
+            total_tokens, total_cost = self._totals(step_results)
             if self.observer:
-                self.observer.on_workflow_end(workflow_name, "failed", duration, 0, self._spent)
+                self.observer.on_workflow_end(
+                    workflow_name, "failed", duration, total_tokens, total_cost
+                )
             logger.error("Workflow '%s' failed: %s", workflow_name, e)
             result = WorkflowResult(
                 workflow_name=workflow_name,
                 status=WorkflowStatus.FAILED,
-                step_results=await self.state.all_step_results(),
+                step_results=step_results,
                 final_state=await self.state.get_state_snapshot(),
                 total_duration_ms=duration,
+                total_tokens=total_tokens,
+                total_cost_usd=total_cost,
                 error=str(e),
             )
             await self._finalize_result(result, workflow_name)
@@ -846,6 +835,19 @@ class WorkflowEngine:
                     self._spent,
                 )
             raise
+
+    def _totals(self, step_results: dict[str, StepResult]) -> tuple[int, float]:
+        """The run's tokens and cost, however it ends: what its steps report (#120).
+
+        The cost is no less than what this run charged: a subworkflow that shares its
+        enforcer reports ``cost_usd=0`` (its steps charged it already), and a step cut
+        by a breach gets no result. A shared enforcer counts its parent's charges too,
+        so ``self._spent`` is this run's only.
+        """
+        return (
+            sum(r.token_usage.total_tokens for r in step_results.values()),
+            max(sum(r.cost_usd for r in step_results.values()), self._spent),
+        )
 
     async def _execute_step_with_limit(self, step_id: str, limiter: anyio.CapacityLimiter) -> None:
         """Execute a step with concurrency limiting."""
