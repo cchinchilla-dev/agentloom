@@ -105,6 +105,10 @@ def _unavailable() -> ProviderError:
     return ProviderError("paid", "unavailable", status_code=503)
 
 
+def _bad_request() -> ProviderError:
+    return ProviderError("paid", "bad request", status_code=400)
+
+
 async def _run(
     provider: _Paid,
     *,
@@ -319,11 +323,14 @@ async def test_a_summary_counts_when_its_step_succeeds() -> None:
 class _OwnGateway:
     """A gateway of its own: the engine never sees its calls."""
 
-    def __init__(self, *turns: ProviderResponse) -> None:
+    def __init__(self, *turns: ProviderResponse | Exception) -> None:
         self._turns = list(turns)
 
     async def complete(self, **kw: Any) -> ProviderResponse:
-        return self._turns.pop(0)
+        turn = self._turns.pop(0)
+        if isinstance(turn, Exception):
+            raise turn
+        return turn
 
 
 async def test_a_failed_step_keeps_what_a_gateway_of_its_own_spent() -> None:
@@ -804,3 +811,73 @@ async def test_a_subworkflow_cut_short_reports_its_steps_tokens(
     assert (result.total_tokens, result.total_cost_usd) == (13, pytest.approx(0.1))
     assert engine._budget.spent == pytest.approx(0.1)
     assert engine.observer.seen == [("m", 10)]  # by the child's step, not again by the parent
+
+
+_LONG_CHAT = {
+    "messages": [
+        {"role": "user", "content": "x" * 400},
+        {"role": "assistant", "content": "x" * 400},
+    ],
+    "token_budget": 60,
+    "trim_policy": "summarize_oldest",
+}
+
+
+@pytest.mark.parametrize(
+    ("step", "turns", "status"),
+    [
+        (  # a tool call answered, then the provider fails for good
+            {"tools": [{"name": "add", "parameters": _Add.parameters_schema}]},
+            [_paid("", ToolCall(id="c1", name="add", arguments={"a": 2, "b": 3})), _bad_request()],
+            StepStatus.FAILED,
+        ),
+        (  # a structured reply never valid, asked again once
+            {"response_schema": {"type": "json_object"}, "retry": {"max_retries": 1}},
+            [_paid("not JSON"), _paid("not JSON either")],
+            StepStatus.FAILED,
+        ),
+        (  # a summary paid before the reply fails
+            {"conversation": "state.chat"},
+            [_paid("summary"), _bad_request()],
+            StepStatus.FAILED,
+        ),
+        (  # or before it succeeds
+            {"conversation": "state.chat"},
+            [_paid("summary"), _paid("reply")],
+            StepStatus.SUCCESS,
+        ),
+    ],
+    ids=["tool-loop", "structured-reply", "summary", "summary-then-reply"],
+)
+async def test_an_llm_call_reports_what_a_gateway_of_its_own_spent(
+    step: dict[str, Any], turns: list[ProviderResponse | Exception], status: StepStatus
+) -> None:
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "paid",
+            "config": {"provider": "paid", "model": "m"},
+            "state": {"chat": _LONG_CHAT},
+            "steps": [
+                {
+                    "id": "ask",
+                    "type": "llm_call",
+                    "prompt": "2+3?",
+                    "retry": {"max_retries": 0},
+                    **step,
+                }
+            ],
+        }
+    )
+    registry = ToolRegistry()
+    registry.register(_Add())
+    paid = sum(isinstance(turn, ProviderResponse) for turn in turns)
+    engine = WorkflowEngine(
+        workflow=workflow, provider_gateway=_OwnGateway(*turns), tool_registry=registry
+    )
+    result = await engine.run()
+
+    ask = result.step_results["ask"]
+    assert ask.status == status
+    assert ask.cost_usd == pytest.approx(0.1 * paid)
+    assert ask.token_usage.prompt_tokens == 10 * paid
+    assert engine._budget.spent == pytest.approx(0.1 * paid)

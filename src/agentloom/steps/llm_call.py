@@ -17,11 +17,11 @@ from agentloom.core.models import (
     ResponseSchema,
     StepDefinition,
 )
-from agentloom.core.results import PromptMetadata, StepResult, StepStatus
+from agentloom.core.results import PromptMetadata, StepResult, StepStatus, TokenUsage
 from agentloom.core.templates import SafeFormatDict, build_template_vars
 from agentloom.exceptions import RecordingMismatchError, StepError
 from agentloom.observability.schema import SpanAttr
-from agentloom.providers.base import ProviderResponse
+from agentloom.providers.base import ProviderResponse, StreamResponse
 from agentloom.providers.multimodal import (
     ContentBlock,
     build_multimodal_content,
@@ -42,6 +42,38 @@ logger = logging.getLogger("agentloom.steps")
 # placeholder, including ``state.items[0].name``-style indexed paths so the
 # emitted ``agentloom.prompt.template_vars`` reflects the full reference.
 _TEMPLATE_VAR_RE = re.compile(r"\{([\w][\w.\[\]]*?)(?:[!:][^}]*)?\}")
+
+
+class _Tally:
+    """The gateway of one ``llm_call`` step: counts what its calls cost as they answer.
+
+    A stream counts what it reports once it has run.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._cost_usd = 0.0
+        self._usage = TokenUsage()
+        self._streams: list[StreamResponse] = []
+
+    async def complete(self, **kwargs: Any) -> ProviderResponse:
+        response: ProviderResponse = await self._inner.complete(**kwargs)
+        # Kept now: the tool loop rewrites its last response's usage and cost with its totals
+        self._cost_usd += response.cost_usd
+        self._usage += response.usage
+        return response
+
+    async def stream(self, **kwargs: Any) -> StreamResponse:
+        response: StreamResponse = await self._inner.stream(**kwargs)
+        self._streams.append(response)
+        return response
+
+    def spent(self) -> tuple[float, TokenUsage]:
+        """What the step's calls cost, and their tokens."""
+        return (
+            self._cost_usd + sum(s.cost_usd for s in self._streams),
+            sum((s.usage for s in self._streams), self._usage),
+        )
 
 
 def _build_prompt_metadata(
@@ -532,11 +564,18 @@ class LLMCallStep(BaseStep):
             return current_response
 
     async def execute(self, context: StepContext) -> StepResult:
+        if context.provider_gateway is None:
+            raise StepError(context.step_definition.id, "No provider gateway configured")
+        tally = _Tally(context.provider_gateway)
+        result = await self._execute(context.model_copy(update={"provider_gateway": tally}))
+        # Every call the step made, failed or not, its summaries and re-asks included: a
+        # gateway of its own (``GatewayProtocol``) tells the engine nothing of them (#120)
+        result.cost_usd, result.token_usage = tally.spent()
+        return result
+
+    async def _execute(self, context: StepContext) -> StepResult:
         step = context.step_definition
         start = time.monotonic()
-
-        if context.provider_gateway is None:
-            raise StepError(step.id, "No provider gateway configured")
 
         # A conversation-backed llm_call may omit ``prompt`` — the trailing
         # user turn already lives in the loaded messages. Free-form calls
