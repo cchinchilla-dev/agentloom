@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -126,8 +127,20 @@ class TestRunCheckpoint:
             assert "Run ID:" not in result.output
 
 
+@pytest.fixture
+def no_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset what provider discovery reads: ``AGENTLOOM_*``, ``*_API_KEY`` and ``*_BASE_URL``.
+
+    Clearing the whole environment instead leaves OpenSSL unable to start on Windows.
+    """
+    for name in list(os.environ):
+        if name.startswith("AGENTLOOM_") or name.endswith(("_API_KEY", "_BASE_URL")):
+            monkeypatch.delenv(name)
+
+
 class TestSetupProviders:
-    def test_ollama_registered_when_explicit_default(self) -> None:
+    @pytest.mark.usefixtures("no_provider_env")
+    def test_ollama_registered_when_explicit_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A workflow that names ``ollama`` as its primary provider
         opts in via ``AGENTLOOM_OLLAMA_FALLBACK``. The post-0.5.0 default
         no longer auto-registers it for the no-config case."""
@@ -135,11 +148,12 @@ class TestSetupProviders:
         from agentloom.providers.gateway import ProviderGateway
 
         gw = ProviderGateway()
-        with patch.dict("os.environ", {"AGENTLOOM_OLLAMA_FALLBACK": "1"}, clear=True):
-            _setup_providers(gw, "ollama")
+        monkeypatch.setenv("AGENTLOOM_OLLAMA_FALLBACK", "1")
+        _setup_providers(gw, "ollama")
         assert len(gw._providers) >= 1
         assert any(e.provider.name == "ollama" for e in gw._providers)
 
+    @pytest.mark.usefixtures("no_provider_env")
     def test_ollama_not_registered_by_default(self) -> None:
         """Mirror of the config-layer test — the CLI surface honours the
         opt-in too. Pre-0.5.0 this returned an Ollama provider even with
@@ -148,18 +162,18 @@ class TestSetupProviders:
         from agentloom.providers.gateway import ProviderGateway
 
         gw = ProviderGateway()
-        with patch.dict("os.environ", {}, clear=True):
-            _setup_providers(gw, "openai")
+        _setup_providers(gw, "openai")
         names = [e.provider.name for e in gw._providers]
         assert "ollama" not in names
 
-    def test_openai_registered_when_key_set(self) -> None:
+    @pytest.mark.usefixtures("no_provider_env")
+    def test_openai_registered_when_key_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from agentloom.cli.run import _setup_providers
         from agentloom.providers.gateway import ProviderGateway
 
         gw = ProviderGateway()
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=True):
-            _setup_providers(gw, "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        _setup_providers(gw, "openai")
         names = [e.provider.name for e in gw._providers]
         assert "openai" in names
         # ollama is opt-in (post-0.5.0) — must NOT show up here.
@@ -185,7 +199,8 @@ class TestSetupProviders:
         names = [e.provider.name for e in gw._providers]
         assert "google" in names
 
-    def test_priority_reflects_default(self) -> None:
+    @pytest.mark.usefixtures("no_provider_env")
+    def test_priority_reflects_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When both OpenAI (primary) and Ollama (opt-in fallback) are
         registered, the default provider should sort ahead of the
         fallback. Force ``AGENTLOOM_OLLAMA_FALLBACK=1`` here because
@@ -194,12 +209,9 @@ class TestSetupProviders:
         from agentloom.providers.gateway import ProviderGateway
 
         gw = ProviderGateway()
-        with patch.dict(
-            "os.environ",
-            {"OPENAI_API_KEY": "sk-test", "AGENTLOOM_OLLAMA_FALLBACK": "1"},
-            clear=True,
-        ):
-            _setup_providers(gw, "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("AGENTLOOM_OLLAMA_FALLBACK", "1")
+        _setup_providers(gw, "openai")
         openai_entry = next(e for e in gw._providers if e.provider.name == "openai")
         ollama_entry = next(e for e in gw._providers if e.provider.name == "ollama")
         assert openai_entry.priority < ollama_entry.priority

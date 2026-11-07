@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,11 @@ def _parse(*steps: dict[str, object]) -> list[StepDefinition]:
     return WorkflowParser.from_dict({"name": "w", "steps": list(steps)}).steps
 
 
+def _shown(*paths: str) -> str:
+    """A pattern for *paths* as messages print them: with the platform's separator, joined by ->."""
+    return re.escape(" -> ".join(str(Path(p)) for p in paths))
+
+
 class TestLoading:
     def test_agent_loads_from_yaml(self, agents: Path) -> None:
         agent = load_agent("agents/support.yaml")
@@ -111,17 +117,20 @@ class TestLoading:
         ]
 
     def test_missing_file(self, agents: Path) -> None:
-        with pytest.raises(ValidationError, match="agent file 'agents/nope.yaml' not found"):
+        missing = f"agent file '{_shown('agents/nope.yaml')}' not found"
+        with pytest.raises(ValidationError, match=missing):
             _parse(_step("agents/nope.yaml"))
 
     def test_invalid_yaml(self, agents: Path) -> None:
         (agents / "broken.yaml").write_text("name: [unclosed\n")
-        with pytest.raises(ValueError, match="agent file 'agents/broken.yaml': invalid YAML"):
+        invalid = f"agent file '{_shown('agents/broken.yaml')}': invalid YAML"
+        with pytest.raises(ValueError, match=invalid):
             load_agent("agents/broken.yaml")
 
     def test_not_a_mapping(self, agents: Path) -> None:
         (agents / "list.yaml").write_text("- name: a\n")
-        with pytest.raises(ValueError, match="agent file 'agents/list.yaml' must hold a mapping"):
+        not_mapping = f"agent file '{_shown('agents/list.yaml')}' must hold a mapping"
+        with pytest.raises(ValueError, match=not_mapping):
             load_agent("agents/list.yaml")
 
     @pytest.mark.parametrize(
@@ -140,12 +149,14 @@ class TestLoading:
         (agents / "bad.yaml").write_text("name: bad\n" + extra)
         with pytest.raises(ValueError, match=match) as raised:
             load_agent("agents/bad.yaml")
-        assert str(raised.value).startswith("agent file 'agents/bad.yaml':")
+        assert str(raised.value).startswith(f"agent file '{Path('agents/bad.yaml')}':")
 
     def test_agent_definition_cycle_rejected(self, agents: Path) -> None:
         (agents / "a.yaml").write_text("name: a\ntools:\n  - {name: to_b, agent: agents/b.yaml}\n")
         (agents / "b.yaml").write_text("name: b\ntools:\n  - {name: to_a, agent: agents/a.yaml}\n")
-        cycle = "agent definitions form a cycle: agents/a.yaml -> agents/b.yaml -> agents/a.yaml"
+        cycle = "agent definitions form a cycle: " + _shown(
+            "agents/a.yaml", "agents/b.yaml", "agents/a.yaml"
+        )
         with pytest.raises(ValueError, match=cycle):
             load_agent("agents/a.yaml")
         with pytest.raises(ValidationError, match=cycle):
@@ -155,7 +166,8 @@ class TestLoading:
         (agents / "self.yaml").write_text(
             "name: s\ntools:\n  - {name: me, agent: agents/self.yaml}\n"
         )
-        with pytest.raises(ValueError, match="cycle: agents/self.yaml -> agents/self.yaml"):
+        cycle = "cycle: " + _shown("agents/self.yaml", "agents/self.yaml")
+        with pytest.raises(ValueError, match=cycle):
             load_agent("agents/self.yaml")
 
     def test_a_cycle_through_an_inline_agent_is_a_cycle(self, agents: Path) -> None:
@@ -163,7 +175,8 @@ class TestLoading:
             "name: l\ntools:\n  - name: inner\n    agent:\n      name: i\n      tools:\n"
             "        - {name: back, agent: agents/loop.yaml}\n"
         )
-        with pytest.raises(ValueError, match="cycle: agents/loop.yaml -> agents/loop.yaml"):
+        cycle = "cycle: " + _shown("agents/loop.yaml", "agents/loop.yaml")
+        with pytest.raises(ValueError, match=cycle):
             load_agent("agents/loop.yaml")
 
     def test_the_same_agent_twice_is_not_a_cycle(self, agents: Path) -> None:

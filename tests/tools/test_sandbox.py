@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -88,7 +89,8 @@ class TestShellCommandSandbox:
     def test_path_arg_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             sandbox = ToolSandbox(enabled=True, allowed_commands=["cat"], allowed_paths=[tmpdir])
-            sandbox.validate_command(f"cat {tmpdir}/data.txt")
+            # The tool runs ``sh -c``, where a backslash escapes: a Windows path goes in with /
+            sandbox.validate_command(f"cat {Path(tmpdir).as_posix()}/data.txt")
 
     def test_path_arg_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -105,8 +107,8 @@ class TestShellCommandSandbox:
                 readable_paths=[rdir],
                 writable_paths=[wdir],
             )
-            sandbox.validate_command(f"cat {rdir}/a.txt")
-            sandbox.validate_command(f"cat {wdir}/b.txt")
+            sandbox.validate_command(f"cat {Path(rdir).as_posix()}/a.txt")
+            sandbox.validate_command(f"cat {Path(wdir).as_posix()}/b.txt")
             with pytest.raises(SandboxViolationError, match="Path argument"):
                 sandbox.validate_command("cat /etc/shadow")
 
@@ -580,6 +582,11 @@ class TestValidatePathSurfacesViolationOnUnresolvable:
     and surfaced it as an internal error instead of a sandbox refusal.
     """
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows resolves a path with a null byte; it is rejected as outside the "
+        "allowed directories instead",
+    )
     def test_null_byte_path_raises_sandbox_violation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             sandbox = ToolSandbox(enabled=True, allowed_paths=[tmp])
@@ -813,7 +820,7 @@ class TestValidateCommandFlagEmbeddedPath:
                 allowed_commands=["tee"],
                 allowed_paths=[tmp],
             )
-            sandbox.validate_command(f"tee --output={tmp}/log")
+            sandbox.validate_command(f"tee --output={Path(tmp).as_posix()}/log")
 
 
 class TestSandboxHelperEdges:
@@ -951,7 +958,8 @@ class TestValidateWebhookUrlEnabledSandboxBranches:
 
         def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
             return [
-                (_socket.AF_UNIX, _socket.SOCK_STREAM, 0, "", ("/tmp/sock",)),
+                # Python on Windows has no AF_UNIX constant; Winsock's value is 1 too
+                (getattr(_socket, "AF_UNIX", 1), _socket.SOCK_STREAM, 0, "", ("/tmp/sock",)),
             ]
 
         monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)

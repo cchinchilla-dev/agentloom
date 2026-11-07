@@ -190,7 +190,8 @@ steps:
             rec_path = Path(tmp) / "rec.json"
             rec_path.write_text(json.dumps(RECORDING))
             yaml_path = Path(tmp) / "wf.yaml"
-            yaml_path.write_text(YAML_MOCK_CONFIG.format(responses_file=str(rec_path)))
+            # In a double-quoted YAML string a Windows backslash starts an escape
+            yaml_path.write_text(YAML_MOCK_CONFIG.format(responses_file=rec_path.as_posix()))
             with patch("agentloom.cli.run._setup_observer", return_value=None):
                 result = runner.invoke(app, ["run", str(yaml_path), "--lite"])
         assert result.exit_code == 0, f"stdout: {result.output}"

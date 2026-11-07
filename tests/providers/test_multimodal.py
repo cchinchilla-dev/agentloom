@@ -248,14 +248,12 @@ class TestSandboxRestrictions:
         with pytest.raises(PermissionError, match="readable_paths"):
             await resolve_attachments([att], sandbox=sandbox)
 
-    async def test_file_path_allowed_by_sandbox(self) -> None:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir="/tmp") as f:
-            f.write(_TINY_PNG)
-            f.flush()
-            path = f.name
+    async def test_file_path_allowed_by_sandbox(self, tmp_path) -> None:
+        path = tmp_path / "image.png"
+        path.write_bytes(_TINY_PNG)
 
-        sandbox = SandboxConfig(enabled=True, readable_paths=["/tmp"])
-        att = Attachment(type="image", source=path)
+        sandbox = SandboxConfig(enabled=True, readable_paths=[str(tmp_path)])
+        att = Attachment(type="image", source=str(path))
         blocks = await resolve_attachments([att], sandbox=sandbox)
         assert isinstance(blocks[0], ImageBlock)
 
