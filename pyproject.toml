@@ -55,6 +55,7 @@ dev = [
     "respx>=0.21",
     "pytest-cov>=4.0",
     "types-pyyaml>=6.0.12.20250915",
+    "zizmor>=1.32",
 ]
 
 [project.scripts]

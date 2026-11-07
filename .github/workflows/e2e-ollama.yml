@@ -24,15 +24,18 @@ jobs:
       || contains(github.event.pull_request.labels.*.name, 'e2e')
     services:
       ollama:
-        image: ollama/ollama:latest
+        image: ollama/ollama:0.40.15
         ports:
           - 11434:11434
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8
         with:
-          enable-cache: true
+          # It runs for release branches: no cache another run could have written
+          enable-cache: false
 
       - name: Wait for Ollama
         run: |

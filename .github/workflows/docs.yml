@@ -23,8 +23,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false  # gh-deploy pushes through gh instead
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8
         with:
           enable-cache: true
       - run: uv sync --group docs
-      - run: uv run mkdocs gh-deploy --force --strict
+      - name: Deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth setup-git
+          uv run mkdocs gh-deploy --force --strict

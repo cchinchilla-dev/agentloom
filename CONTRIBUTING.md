@@ -133,3 +133,5 @@ it: run the quality gate, read the diff, and be ready to explain any line.
 ## Reporting bugs
 
 Use the [bug report template](https://github.com/cchinchilla-dev/agentloom/issues/new?template=bug_report.yml) and include your workflow YAML if applicable.
+
+Report a security vulnerability privately instead, as the [security policy](https://github.com/cchinchilla-dev/agentloom/security/policy) describes.
