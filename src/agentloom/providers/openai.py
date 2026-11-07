@@ -242,7 +242,7 @@ class OpenAIProvider(BaseProvider):
         data = response.json()
         message = data["choices"][0]["message"]
         content = message.get("content") or ""
-        usage = _usage(data.get("usage", {}))
+        usage = _usage(data.get("usage") or {})  # null from some compatible servers
         cost = calculate_cost(
             model,
             usage.prompt_tokens,

@@ -131,6 +131,7 @@ config:
 - The key is read from the variable `api_key_env` names, never from `OPENAI_API_KEY`, so an OpenAI key is not sent to another server. Without `api_key_env`, requests carry no `Authorization` header.
 - A model missing from the pricing table costs 0. A served model whose name starts like a priced one (`gpt-4o…`) is priced at that rate; override it with `AGENTLOOM_PRICING_FILE`.
 - Streams ask for `stream_options.include_usage`, as with OpenAI. vLLM, LM Studio and recent TGI accept it; an older server may not.
+- Usage is read as OpenAI reports it: `completion_tokens` counts the reasoning tokens that `completion_tokens_details.reasoning_tokens` reports, and the visible ones are the difference. A `usage` of `null` counts no tokens.
 - In traces, `gen_ai.provider.name` is `generic_openai`.
 
 From Python, register `agentloom.providers.generic_openai.GenericOpenAIProvider(base_url=...)` on the gateway like any other provider.

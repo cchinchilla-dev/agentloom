@@ -36,6 +36,21 @@ class TestOpenAIProvider:
         await provider.close()
 
     @respx.mock
+    async def test_a_null_usage_counts_no_tokens(self) -> None:
+        # Some OpenAI-compatible servers send the key with no value
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={**MOCK_RESPONSE, "usage": None})
+        )
+        provider = OpenAIProvider(api_key="k")
+        result = await provider.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-4o-mini",
+        )
+        assert result.content == "Hello!"
+        assert result.usage.total_tokens == 0
+        await provider.close()
+
+    @respx.mock
     async def test_api_error_raises(self) -> None:
         # 500 — generic server error stays a plain ProviderError with the
         # status code encoded in the message. 429 gets its own dedicated
