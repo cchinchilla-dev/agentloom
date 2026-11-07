@@ -1,0 +1,68 @@
+name: Pricing update
+
+# Refreshes providers/pricing.yaml from LiteLLM's public price list and opens one pull request
+# with the changes; it never pushes to main. The repository must let GitHub Actions create pull
+# requests (Settings → Actions → General).
+on:
+  schedule:
+    - cron: "17 6 * * 1"  # Mondays, off the hour, when scheduled runs pile up less
+  workflow_dispatch:
+
+concurrency:
+  group: pricing-update
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    name: Refresh the pricing table
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # push the update branch
+      pull-requests: write
+    env:
+      BRANCH: chore/pricing-update
+      TITLE: "chore(providers): refresh the pricing table"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false  # the push step authenticates through gh instead
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8
+        with:
+          enable-cache: true
+
+      - name: Refresh the table
+        run: python3 scripts/update_pricing.py --changes "$RUNNER_TEMP/changes.md"
+
+      - name: Check for changes
+        id: diff
+        run: |
+          git diff --quiet -- src/agentloom/providers/pricing.yaml \
+            || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # A pull request opened with GITHUB_TOKEN triggers no workflow, so the tests run here
+      - name: Test
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          uv sync --group dev --all-extras
+          uv run pytest
+
+      - name: Open or update the pull request
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          gh auth setup-git
+          git switch -C "$BRANCH"
+          git commit -q -m "$TITLE" -- src/agentloom/providers/pricing.yaml
+          git push --force origin "$BRANCH"
+          if [ "$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null)" = "OPEN" ]; then
+            gh pr edit "$BRANCH" --body-file "$RUNNER_TEMP/changes.md"
+          else
+            gh pr create --head "$BRANCH" --base main --title "$TITLE" \
+              --body-file "$RUNNER_TEMP/changes.md" --label providers
+          fi

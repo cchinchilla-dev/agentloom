@@ -120,7 +120,7 @@ it: run the quality gate, read the diff, and be ready to explain any line.
 
 1. Create `src/agentloom/providers/<name>.py` extending `BaseProvider`
 2. Register it in `_PROVIDER_CLASSES` (`cli/run.py`) and give it defaults in `_PROVIDER_DEFAULTS` (`config.py`)
-3. Add pricing data to `providers/pricing.yaml`
+3. Add pricing data to `providers/pricing.yaml` (the weekly refresh, `scripts/update_pricing.py`, covers OpenAI, Anthropic and Gemini only)
 4. Add tests in `tests/providers/`
 5. Update the capability matrix in `docs/providers.md` and the providers table in the README
 

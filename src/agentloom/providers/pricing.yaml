@@ -1,20 +1,26 @@
-# Model pricing (USD per 1K tokens) — updated July 2026.
+# Model pricing (USD per 1K tokens) — updated 2026-11-07.
 # Override with AGENTLOOM_PRICING_FILE=/path/to/your.yaml.
+#
+# scripts/update_pricing.py refreshes the OpenAI, Anthropic and Gemini entries
+# from LiteLLM's public price list, weekly through a reviewed pull request. It
+# never removes an entry, and one whose key line ends in ``# pinned`` keeps
+# its prices.
 #
 # Reasoning tokens (o-series, Claude thinking, Gemini thinking) bill at
 # the ``output`` rate — ``calculate_cost`` folds them into completion.
-# Gemini Pro tiered pricing is flattened to the ≤200K tier.
+# Tiered prices are flattened to their first tier: Gemini Pro's ≤200K,
+# Claude Haiku 5.5's ≤100K and OpenAI's short context (below 272K).
 
 # --- OpenAI ---
 gpt-5.6-sol:
-  input: 0.00500
-  output: 0.03000
+  input: 0.00400
+  output: 0.02000
 gpt-5.6-terra:
-  input: 0.00250
-  output: 0.01500
+  input: 0.00200
+  output: 0.01200
 gpt-5.6-luna:
-  input: 0.00100
-  output: 0.00600
+  input: 0.00020
+  output: 0.00120
 gpt-5.5:
   input: 0.00500
   output: 0.03000
@@ -111,11 +117,76 @@ o4-mini:
 o4-mini-deep-research:
   input: 0.00200
   output: 0.00800
+gpt-3.5-turbo:
+  input: 0.00050
+  output: 0.00150
+gpt-3.5-turbo-1106:
+  input: 0.00100
+  output: 0.00200
+gpt-3.5-turbo-16k:
+  input: 0.00300
+  output: 0.00400
+gpt-4:
+  input: 0.03000
+  output: 0.06000
+gpt-4-1106-preview:
+  input: 0.01000
+  output: 0.03000
+gpt-4-turbo:
+  input: 0.01000
+  output: 0.03000
+gpt-4o-2024-05-13:
+  input: 0.00500
+  output: 0.01500
+gpt-5-chat:
+  input: 0.00125
+  output: 0.01000
+gpt-5.1-codex-mini:
+  input: 0.00025
+  output: 0.00200
+gpt-5.5-cyber:
+  input: 0.01250
+  output: 0.07500
+gpt-5.5-cyber-preview:
+  input: 0.01250
+  output: 0.07500
+gpt-5.6:
+  input: 0.00400
+  output: 0.02000
+gpt-5.6-cyber:
+  input: 0.01250
+  output: 0.07500
+gpt-6-astra:
+  input: 0.01000
+  output: 0.05000
+gpt-6-astra-law:
+  input: 0.01000
+  output: 0.05000
+gpt-6-cyber:
+  input: 0.02000
+  output: 0.10000
+gpt-6-luna:
+  input: 0.00010
+  output: 0.00050
+gpt-6-rosalind:
+  input: 0.01500
+  output: 0.07500
+gpt-6-sol:
+  input: 0.00200
+  output: 0.01000
+gpt-6.1-sol:
+  input: 0.00200
+  output: 0.01000
+gpt-6.1-terra:
+  input: 0.00100
+  output: 0.00500
+gpt-rosalind-discovery:
+  input: 0.00500
+  output: 0.02500
 
 # --- Anthropic ---
 # Undated aliases (``claude-sonnet-4-5``) resolve to the latest dated SKU
-# via longest-prefix match. Sonnet 5 carries intro pricing until
-# 2026-08-31, then jumps to 0.00300 / 0.01500.
+# via longest-prefix match.
 claude-opus-4-8:
   input: 0.00500
   output: 0.02500
@@ -179,6 +250,27 @@ claude-haiku-3-5-20241022:
 claude-haiku-3-5:
   input: 0.00080
   output: 0.00400
+claude-fable-5-1:
+  input: 0.01000
+  output: 0.05000
+claude-haiku-5-5:
+  input: 0.00010
+  output: 0.00050
+claude-mythos-5-1:
+  input: 0.01000
+  output: 0.05000
+claude-mythos-preview:
+  input: 0.01000
+  output: 0.05000
+claude-opus-5:
+  input: 0.00500
+  output: 0.02500
+claude-opus-5-5:
+  input: 0.00400
+  output: 0.02000
+claude-sonnet-5-5:
+  input: 0.00200
+  output: 0.01000
 
 # --- Google Gemini ---
 gemini-3.5-flash:
@@ -211,6 +303,33 @@ gemini-2.5-flash:
 gemini-2.5-flash-lite:
   input: 0.00010
   output: 0.00040
+gemini-3.1-flash-lite-preview:
+  input: 0.00025
+  output: 0.00150
+gemini-3.5-flash-lite:
+  input: 0.00030
+  output: 0.00250
+gemini-3.6-flash:
+  input: 0.00075
+  output: 0.00375
+gemini-3.7-flash:
+  input: 0.00075
+  output: 0.00375
+gemini-3.8-flash:
+  input: 0.00075
+  output: 0.00375
+gemini-4-argon:
+  input: 0.00200
+  output: 0.01000
+gemini-omni-1.1-flash:
+  input: 0.00150
+  output: 0.00900
+gemini-omni-1.2-flash:
+  input: 0.00150
+  output: 0.00900
+gemini-omni-flash-preview:
+  input: 0.00150
+  output: 0.00900
 
 # --- Ollama (local — free) ---
 qwen3:
@@ -250,4 +369,13 @@ nomic-embed-text:
   output: 0.0
 mxbai-embed-large:
   input: 0.0
+  output: 0.0
+gemini-embedding-2-preview:
+  input: 0.00020
+  output: 0.0
+text-embedding-ada-002:
+  input: 0.00010
+  output: 0.0
+text-embedding-ada-002-v2:
+  input: 0.00010
   output: 0.0
