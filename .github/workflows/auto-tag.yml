@@ -14,11 +14,15 @@ jobs:
     if: startsWith(github.event.head_commit.message, 'bump version to')
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
 
       - name: Extract version and create tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           TAG="v${VERSION}"
           echo "Tagging ${TAG}"
-          git tag "${TAG}"
-          git push origin "${TAG}"
+          # Through the API, as the checkout keeps no git credentials
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${GITHUB_SHA}" --silent

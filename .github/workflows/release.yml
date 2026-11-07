@@ -3,14 +3,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  workflow_run:
+  # Auto Tag runs only on a push to main: no pull request's code reaches this run
+  workflow_run:  # zizmor: ignore[dangerous-triggers]
     workflows: ["Auto Tag"]
     types: [completed]
   workflow_dispatch:
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
   resolve-tag:
@@ -29,6 +29,7 @@ jobs:
           # workflow_run: check out the exact commit from the triggering run
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Determine tag
         id: tag
@@ -59,9 +60,11 @@ jobs:
         with:
           ref: refs/tags/${{ needs.resolve-tag.outputs.tag }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8
         with:
-          enable-cache: true
+          # No cache in a release build: a poisoned one would reach the published packages
+          enable-cache: false
       - run: uv build
       # The wheel and the sdist must carry the tag's version and install and run before they ship
       - name: Check the distributions
@@ -77,6 +80,8 @@ jobs:
     name: GitHub Release
     needs: [resolve-tag, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
@@ -99,11 +104,13 @@ jobs:
           name: dist
           path: dist/
 
-      - uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe  # v2
-        with:
-          tag_name: ${{ needs.resolve-tag.outputs.tag }}
-          body_path: ${{ runner.temp }}/notes.md
-          files: dist/*
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+        run: >-
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag
+          --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
 
   docker:
     name: Docker image
@@ -111,7 +118,8 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: ./.github/workflows/docker.yml
+    # actionlint does not know the self-repository syntax ($/) yet
+    uses: ./.github/workflows/docker.yml  # zizmor: ignore[self-repository]
     with:
       tag: ${{ needs.resolve-tag.outputs.tag }}
 

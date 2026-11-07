@@ -222,7 +222,7 @@ curl -X POST -H "X-AgentLoom-Token: $CALLBACK_SECRET" http://host:8642/approve/<
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| `ci.yml` | Push / PR to `main` | Lint, type check, test, build and check the wheel and sdist, version linearity, K8s validation, Helm lint |
+| `ci.yml` | Push / PR to `main` | Lint, type check, workflow audit, tests (Python 3.11–3.14 on Linux, 3.14 on macOS and Windows, the lowest dependency versions), strict documentation build, build and check the wheel and sdist, version linearity, K8s validation, Helm lint |
 | `docker.yml` | Push / PR to `main` / called by `release.yml` / manual, for a tag | Build the image (multi-arch for a release), push to GHCR |
 | `auto-tag.yml` | Push to `main` | Tag `vX.Y.Z` when the commit is a `bump version to X.Y.Z` release |
 | `release.yml` | Tags `v*` / after Auto Tag | Build and check the wheel and sdist, GitHub release with the version's changelog, publish to PyPI, Docker image |
@@ -232,6 +232,8 @@ curl -X POST -H "X-AgentLoom-Token: $CALLBACK_SECRET" http://host:8642/approve/<
 | `pr-labeler.yml` | PR opened/updated | Auto-label PRs based on file paths |
 | `labels.yml` | Push to `main` (labels.json) | Sync GitHub labels from config |
 | `stale.yml` | Weekly (Monday 9am UTC) | Close unanswered `question` issues |
+
+Dependabot (`.github/dependabot.yml`) opens weekly pull requests for the GitHub Actions, `uv.lock` and the Dockerfile's images, minor and patch updates grouped by kind, for releases a week old or more; `uv.lock` moves, the minimums in `pyproject.toml` do not. CodeQL scans the Python code and the workflows on every pull request. `make check` and the lint job audit the workflows with [zizmor](https://docs.zizmor.sh).
 
 ### Image tags
 
