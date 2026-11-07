@@ -1328,3 +1328,53 @@ async def test_a_subworkflow_whose_step_id_no_checkpoint_takes_resumes_its_child
 
     assert result.status == WorkflowStatus.SUCCESS
     assert not provider._turns  # the child ran from its first step
+
+
+async def test_a_step_the_deadline_cuts_before_it_runs_again_keeps_what_it_spent(
+    tmp_path: Any,
+) -> None:
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "paid",
+            "config": {"provider": "paid", "model": "m", "timeout": 0.3, "max_concurrent_steps": 1},
+            "steps": [
+                # One step at a time: "aaa" runs before "ask"
+                {"id": "aaa", "type": "llm_call", "prompt": "x", "retry": {"max_retries": 0}},
+                {
+                    "id": "ask",
+                    "type": "llm_call",
+                    "prompt": "2+3?",
+                    "retry": {"max_retries": 0},
+                    "tools": [{"name": "add", "parameters": _Add.parameters_schema}],
+                },
+            ],
+        }
+    )
+    checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+    registry = ToolRegistry()
+    registry.register(_Add())
+    call = ToolCall(id="c1", name="add", arguments={"a": 2, "b": 3})
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_bad_request(), _paid("", call), None))  # "ask" pays, then hangs
+    engine = WorkflowEngine(
+        workflow=workflow,
+        provider_gateway=gateway,
+        tool_registry=registry,
+        checkpointer=checkpointer,
+    )
+    assert (await engine.run()).step_results["ask"].cost_usd == pytest.approx(0.1)
+
+    gateway = ProviderGateway()
+    gateway.register(_Paid(None))  # "aaa" hangs: the deadline comes before "ask" starts
+    resumed = await WorkflowEngine.from_checkpoint(
+        await checkpointer.load(engine.run_id),
+        checkpointer=checkpointer,
+        provider_gateway=gateway,
+        tool_registry=registry,
+    )
+    result = await resumed.run()
+
+    ask = result.step_results["ask"]
+    assert (result.status, ask.status) == (WorkflowStatus.TIMEOUT, StepStatus.TIMEOUT)
+    assert (ask.cost_usd, ask.token_usage.prompt_tokens) == (pytest.approx(0.1), 10)
+    assert (result.total_cost_usd, result.total_tokens) == (pytest.approx(0.1), 13)

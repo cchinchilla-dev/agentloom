@@ -579,10 +579,13 @@ class WorkflowEngine:
                 if layer_scope.cancelled_caught:
                     message = f"Workflow timed out after {timeout}s"
                     for step_id in active_steps:  # the steps the deadline cut short
-                        if await self.state.get_step_result(step_id) is previous[step_id]:
+                        before = previous[step_id]
+                        if await self.state.get_step_result(step_id) is before:
                             cut = StepResult(
                                 step_id=step_id, status=StepStatus.TIMEOUT, error=message
                             )
+                            if before is not None:  # never started: keeps what it spent before
+                                cut.cost_usd, cut.token_usage = before.cost_usd, before.token_usage
                             await self.state.set_step_result(step_id, cut)
                     raise WorkflowTimeoutError(message)
 
