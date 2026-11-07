@@ -173,7 +173,7 @@ All metrics are prefixed with `agentloom_`.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `agentloom_agent_invocations_total` | counter | name, status | Turns of each agent, by the step's status (one per attempt, a turn that fails before a model call included) |
+| `agentloom_agent_invocations_total` | counter | name, status | Turns of each agent, by the step's status (one per attempt, a turn that fails before a model call included; `timeout` or `cancelled` for one cut short), those of an agent used as a tool included |
 | `agentloom_agent_iterations` | histogram | name | Model calls per turn of each agent |
 
 ### Provider metrics

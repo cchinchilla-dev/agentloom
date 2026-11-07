@@ -75,7 +75,7 @@ class AgentStep(LLMCallStep):
         try:
             registry = _scoped_registry(agent, context, gateway)
         except LookupError as e:
-            self._observe(context, StepStatus.FAILED, gateway)
+            self._observe(context, StepStatus.FAILED.value, gateway)
             return StepResult(
                 step_id=step.id,
                 status=StepStatus.FAILED,
@@ -118,6 +118,7 @@ class AgentStep(LLMCallStep):
             }
         )
         latency = agent.constraints.max_latency_ms
+        deadline = anyio.current_effective_deadline()  # a cancelled scope reports -inf
         try:
             with anyio.fail_after(latency / 1000 if latency is not None else None):
                 result = await super().execute(inner)
@@ -132,7 +133,12 @@ class AgentStep(LLMCallStep):
             )
         except Exception:
             # A turn that cannot run (a prompt that does not render, a stale replay) failed too
-            self._observe(context, StepStatus.FAILED, gateway)
+            self._observe(context, StepStatus.FAILED.value, gateway)
+            raise
+        except BaseException:
+            # Cut short, by a timeout or with its layer: its calls ran all the same (#120)
+            cut = anyio.current_time() >= deadline
+            self._observe(context, "timeout" if cut else "cancelled", gateway)
             raise
         finally:
             self.iterations = gateway.calls
@@ -142,7 +148,7 @@ class AgentStep(LLMCallStep):
         result.cost_usd = gateway.spent
         result.token_usage = gateway.usage
         result.usage_by_model = gateway.usage_by_model()
-        self._observe(context, result.status, gateway)
+        self._observe(context, result.status.value, gateway)
         succeeded = result.status == StepStatus.SUCCESS
         if succeeded and context.stream and context.on_stream_chunk and result.output:
             try:
@@ -151,7 +157,7 @@ class AgentStep(LLMCallStep):
                 logger.warning("Stream chunk callback failed")
         return result
 
-    def _observe(self, context: StepContext, status: StepStatus, gateway: _MeteredGateway) -> None:
+    def _observe(self, context: StepContext, status: str, gateway: _MeteredGateway) -> None:
         hook = getattr(context.observer, "on_agent_turn", None)
         if not callable(hook):
             return
@@ -159,7 +165,7 @@ class AgentStep(LLMCallStep):
             hook(
                 step_id=context.step_definition.id,
                 agent=self._agent.name,
-                status=status.value,
+                status=status,
                 iterations=gateway.calls,
                 tool_calls=gateway.tool_calls,
                 cost_usd=gateway.spent,
@@ -390,6 +396,7 @@ class _AgentAsTool(BaseTool):
                 state=await self._context.state_manager.get_state_snapshot(),
                 # A provider error the calling step would not retry is no transient failure
                 retryable_status_codes=self._context.step_definition.retry.retryable_status_codes,
+                caller=self._context,
             )
         except (RecordingMismatchError, StepError) as e:
             # A stale replay fails at once, as anywhere else, and so does a turn that cannot
@@ -410,6 +417,17 @@ class _AgentAsTool(BaseTool):
         return reply.model_dump(mode="json") if isinstance(reply, BaseModel) else reply
 
 
+_CALLERS = (
+    "observer",
+    "capture_prompts",
+    "redaction_policy",
+    "sandbox_config",
+    "run_id",
+    "workflow_name",
+)
+"""What the turn of an agent used as a tool takes from the step that calls it."""
+
+
 async def run_turn(
     agent: AgentDefinition,
     message: str,
@@ -421,6 +439,7 @@ async def run_turn(
     conversation: Conversation | None = None,
     retryable_status_codes: list[int] | None = None,
     state: dict[str, Any] | None = None,
+    caller: StepContext | None = None,
 ) -> tuple[StepResult, StateManager, AgentStep]:
     """Run a turn of *agent* on its own state: for ``Agent.invoke`` and agents as tools.
 
@@ -429,7 +448,8 @@ async def run_turn(
     tool, so its prompts render as the caller's do); the caller decides what the turn logs in the
     inter-agent event log. ``model`` applies when the agent names none;
     ``retryable_status_codes`` classify a provider error of the turn as transient (the
-    defaults of a step otherwise).
+    defaults of a step otherwise). The turn of an agent used as a tool reports to its
+    ``caller``'s observer, under its run and sandbox, as the calling step does.
     """
     retry = RetryConfig(max_retries=0)
     if retryable_status_codes is not None:
@@ -451,12 +471,14 @@ async def run_turn(
         output="reply",
         retry=retry,
     )
+    inherited = {} if caller is None else {field: getattr(caller, field) for field in _CALLERS}
     context = StepContext(
         step_definition=step,
         state_manager=turn_state,
         provider_gateway=gateway,
         tool_registry=tool_registry,
         workflow_model=model,
+        **inherited,
     )
     executor = AgentStep()
     result = await executor.execute(context)

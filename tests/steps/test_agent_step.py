@@ -707,12 +707,16 @@ class _Watcher:
     def __init__(self) -> None:
         self.turns: list[dict[str, Any]] = []
         self.tokens: list[tuple[str, str, int, int]] = []
+        self.tools: list[tuple[str, str]] = []
 
     def __getattr__(self, name: str) -> Any:
         return lambda *args, **kwargs: None
 
     def on_agent_turn(self, **kwargs: Any) -> None:
         self.turns.append(kwargs)
+
+    def on_tool_call(self, *, step_id: str, tool_name: str, **_: Any) -> None:
+        self.tools.append((step_id, tool_name))
 
     def on_tokens(self, provider: str, model: str, prompt: int, completion: int, **_: Any) -> None:
         self.tokens.append((provider, model, prompt, completion))
@@ -732,6 +736,59 @@ def _used(
 
 
 class TestAgentObservability:
+    async def test_the_turn_of_an_agent_used_as_a_tool_is_reported_too(self) -> None:
+        watcher = _Watcher()
+        support = {
+            "name": "support",
+            "tools": [{"name": "escalate", "agent": {**SUPPORT, "name": "specialist"}}],
+        }
+        provider = _Scripted(
+            _used("", _call("escalate", message="2+3?")),
+            _used("", _call("add", a=2, b=3)),
+            _used("5"),
+            _used("It is 5."),
+        )
+        await _run(
+            _workflow(_agent_step(support), state={"question": "q"}),
+            provider,
+            _registry(_Add()),
+            observer=watcher,
+        )
+
+        turns = [(turn["step_id"], turn["agent"], turn["status"]) for turn in watcher.turns]
+        assert turns == [
+            ("ask::escalate#1", "specialist", "success"),
+            ("ask", "support", "success"),
+        ]
+        assert watcher.tools == [("ask::escalate#1", "add"), ("ask", "escalate")]
+
+    async def test_a_turn_cut_by_its_steps_timeout_is_reported(self) -> None:
+        watcher = _Watcher()
+        await _run(
+            _workflow(_agent_step(SUPPORT, timeout=0.1), state={"question": "q"}),
+            _Scripted(_used("5"), delay=5),
+            _registry(_Add()),
+            observer=watcher,
+        )
+
+        assert [turn["status"] for turn in watcher.turns] == ["timeout"]
+
+    async def test_a_turn_cancelled_from_outside_is_reported(self) -> None:
+        watcher = _Watcher()
+        provider = _Scripted(_used("5"), delay=5)
+        workflow = _workflow(_agent_step(SUPPORT), state={"question": "q"})
+
+        async def run() -> None:
+            await _run(workflow, provider, _registry(_Add()), observer=watcher)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(run)
+            while not provider.calls:  # its first model call is under way
+                await anyio.sleep(0)
+            tg.cancel_scope.cancel()
+
+        assert [turn["status"] for turn in watcher.turns] == ["cancelled"]
+
     async def test_the_turn_is_reported_to_the_observer(self) -> None:
         watcher = _Watcher()
         provider = _Scripted(
