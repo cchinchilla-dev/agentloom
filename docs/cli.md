@@ -12,6 +12,7 @@ The `agentloom` command is installed with the package. Every command accepts `--
 | [`history`](#history) | Query per-run history records |
 | [`validate`](#validate) | Check a workflow file without running it |
 | [`visualize`](#visualize) | Draw the workflow DAG |
+| [`agent inspect`](#agent-inspect) | Show an agent definition as it loads |
 | [`info`](#info) | Show version, dependencies, and provider configuration |
 | [`callback-server`](#callback-server) | Serve approval callbacks and webhook notifications |
 
@@ -36,7 +37,7 @@ agentloom run WORKFLOW.yaml [OPTIONS]
 | `--lite` | Disable observability |
 | `--json` | Print the result as JSON |
 
-`--record` and `--mock-responses` are mutually exclusive.
+`--record` and `--mock-responses` are mutually exclusive, and `--record` needs a live provider: on a workflow that declares `provider: mock`, pass `--provider`.
 
 ## `replay`
 
@@ -84,7 +85,7 @@ Replays the recording strictly several times and compares the results and the [i
 agentloom resume RUN_ID [OPTIONS]
 ```
 
-Continues a run from its last checkpoint. For a run paused at an [`approval_gate`](workflow-yaml.md#approval_gate), pass the decision:
+Continues a run from its last checkpoint, on the providers `run` would use: a workflow that declares `provider: mock` resumes against its mock. For a run paused at an [`approval_gate`](workflow-yaml.md#approval_gate), pass the decision:
 
 | Option | Description |
 |--------|-------------|
@@ -137,6 +138,14 @@ agentloom visualize WORKFLOW.yaml [--format ascii|mermaid]
 ```
 
 Prints the DAG as an ASCII diagram (default) or as a Mermaid graph.
+
+## `agent inspect`
+
+```bash
+agentloom agent inspect AGENT.yaml [--json]
+```
+
+Loads an [agent definition](workflow-yaml.md#agent) and prints it as YAML, or as JSON with `--json`: its model and that model's prices from the pricing table, found as a run finds them (a dated id such as `gpt-4o-mini-2024-07-18` takes the entry it starts with; `null` when the definition names no model, or the table has no price for it), each tool with its parameters (a tool that is not built in is the workflow's to register, so only its name is known), each agent used as a tool with its own definition under it, memory, loop policy, the output schema with the JSON Schema it resolves to, and constraints. A `pydantic` output schema is imported from the working directory, as `run` does. A definition that does not load exits with status 1, and a file that does not exist with status 2, as for every command that takes a file.
 
 ## `info`
 

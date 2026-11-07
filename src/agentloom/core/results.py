@@ -38,6 +38,14 @@ class PromptMetadata(BaseModel):
     finish_reason: str | None = None
 
 
+class ModelUsage(BaseModel):
+    """The tokens a step spent on one model."""
+
+    provider: str
+    model: str
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)
+
+
 class StepResult(BaseModel):
     """Result from executing a single step.
 
@@ -64,6 +72,9 @@ class StepResult(BaseModel):
     time_to_first_token_ms: float | None = None
     prompt_metadata: PromptMetadata | None = None
     error_classification: str | None = None
+    # By model, when the step's calls ran on several (an agent and the agents it calls), so
+    # the token metrics count each under its own; empty otherwise, ``model`` holding them all
+    usage_by_model: list[ModelUsage] = Field(default_factory=list)
 
 
 class WorkflowStatus(StrEnum):

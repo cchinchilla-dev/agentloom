@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import itertools
 from contextvars import ContextVar
+from dataclasses import dataclass, field
+
+from agentloom.contracts.stable import TokenUsage
 
 Attempt = tuple[int, ...]
 """The ids of an attempt and of the attempts enclosing it, outermost first."""
@@ -19,6 +22,36 @@ _RUNNING: ContextVar[Attempt] = ContextVar("agentloom_attempt", default=())
 _NUMBER: ContextVar[int] = ContextVar("agentloom_attempt_number", default=1)
 _STEPS: ContextVar[tuple[str, ...]] = ContextVar("agentloom_steps", default=())
 _IDS = itertools.count(1)
+
+
+@dataclass
+class Spend:
+    """What the provider calls of a step attempt cost, by provider and model, as they ended.
+
+    Every call counts, those of the agents a step calls as tools and of its summaries
+    included, so what an attempt spent is known however it ends (#120).
+    """
+
+    cost_usd: float = 0.0
+    by_model: dict[tuple[str, str], TokenUsage] = field(default_factory=dict)
+
+    def add(self, cost_usd: float, provider: str, model: str, usage: TokenUsage) -> None:
+        self.cost_usd += cost_usd
+        self.by_model[(provider, model)] = (
+            self.by_model.get((provider, model), TokenUsage()) + usage
+        )
+
+    def absorb(self, other: Spend) -> None:
+        for (provider, model), usage in other.by_model.items():
+            self.add(0.0, provider, model, usage)
+        self.cost_usd += other.cost_usd
+
+    @property
+    def usage(self) -> TokenUsage:
+        return sum(self.by_model.values(), TokenUsage())
+
+
+_SPEND: ContextVar[Spend | None] = ContextVar("agentloom_attempt_spend", default=None)
 
 
 def running_attempt() -> Attempt:
@@ -49,7 +82,25 @@ def enter_attempt(outer: Attempt, number: int = 1) -> Attempt:
     attempt = (*outer, next(_IDS))
     _RUNNING.set(attempt)
     _NUMBER.set(number)
+    _SPEND.set(Spend())
     return attempt
+
+
+def record_spend(cost_usd: float, provider: str, model: str, usage: TokenUsage) -> None:
+    """Count a provider call that answered against the running attempt, if there is one."""
+    if (spend := _SPEND.get()) is not None:
+        spend.add(cost_usd, provider, model, usage)
+
+
+def attempt_spend() -> Spend:
+    """What the running attempt has spent so far."""
+    return _SPEND.get() or Spend()
+
+
+def restart_spend() -> None:
+    """Count the running attempt's calls from zero again, once what they spent is charged."""
+    if _SPEND.get() is not None:
+        _SPEND.set(Spend())
 
 
 class AttemptLog:

@@ -43,6 +43,8 @@ class SpanAttr:
       "experimental / development" — names are not yet "stable" per
       OTel maturity tags but are widely adopted).
     * ``tool.*`` — Tool-call details surfaced by tool_step and agent loops.
+    * ``agent.*`` — An agent step's turn: its model calls, tool calls, cost and
+      whether its reply validated.
     * ``agentloom.*`` — AgentLoom-specific attributes that don't map onto
       an existing OTel namespace (prompt metadata, approval decisions,
       webhook status, record/replay origin, quality annotations).
@@ -128,6 +130,17 @@ class SpanAttr:
     CONVERSATION_TRIMMED_MESSAGES = "agentloom.conversation.trimmed_messages"
     CONVERSATION_EVENT = "agentloom.conversation.turn"
 
+    # Agent step (#120), on its step span. ``gen_ai.agent.name`` is the GenAI
+    # registry's; ``agent.*`` count the turn: its model calls, the tool calls
+    # its model made (its reply through ``final_result`` aside), what it spent
+    # (the agents it called included) and, with an ``output_schema``, whether
+    # it ended on a reply that validates.
+    GEN_AI_AGENT_NAME = "gen_ai.agent.name"
+    AGENT_ITERATIONS = "agent.iterations"
+    AGENT_TOOL_CALLS = "agent.tool_calls"
+    AGENT_COST_USD = "agent.cost_usd"
+    AGENT_OUTPUT_VALID = "agent.output_valid"
+
     # Approval gate / webhook / record-replay
     APPROVAL_DECISION = "agentloom.approval_gate.decision"
     WEBHOOK_STATUS = "agentloom.webhook.status"
@@ -200,6 +213,10 @@ class MetricName:
     # each ``llm_call`` so dashboards can plot conversation growth.
     CONVERSATION_TRIMS_TOTAL = "agentloom_conversation_trims_total"
     CONVERSATION_MESSAGE_COUNT = "agentloom_conversation_message_count"
+
+    # Agent step (#120): turns by agent and status, and model calls per turn.
+    AGENT_INVOCATIONS_TOTAL = "agentloom_agent_invocations_total"
+    AGENT_ITERATIONS = "agentloom_agent_iterations"
 
     # Resilience gauges
     CIRCUIT_BREAKER_STATE = "agentloom_circuit_breaker_state"

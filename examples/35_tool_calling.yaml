@@ -10,7 +10,7 @@ description: |
   the model picks the tool autonomously.
 
   Producing a fresh recording:
-    agentloom run examples/35_tool_calling.yaml --provider openai \\
+    agentloom run examples/35_tool_calling.yaml --provider openai \
       --model gpt-4o-mini --record recordings/tool_calling.json
 
 config:

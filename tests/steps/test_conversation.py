@@ -1000,7 +1000,7 @@ class TestApplyTrimPolicyAsync:
 
 
 class TestSpeakerTagging:
-    async def test_speaker_tags_user_and_assistant_turns(self) -> None:
+    async def test_speaker_tags_the_reply_only(self) -> None:
         provider = MockProvider(responses={"go": "reply"})
         gw = ProviderGateway()
         gw.register(provider, models=["mock-model"])
@@ -1018,8 +1018,9 @@ class TestSpeakerTagging:
         )
         await LLMCallStep().execute(ctx)
         chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
-        assert chat.messages[0].name == "alice"  # user turn
+        assert chat.messages[0].name is None  # user turn: the caller's words
         assert chat.messages[1].name == "alice"  # assistant reply
+        assert provider.calls[0]["messages"] == [{"role": "user", "content": "go"}]
 
     async def test_speaker_system_prompt_not_persisted(self) -> None:
         # With a speaker, the system_prompt is a transient per-turn message,
@@ -1187,7 +1188,7 @@ class TestStreamingConversation:
         )
         await LLMCallStep().execute(ctx)
         chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
-        assert chat.messages[0].name == "bob"
+        assert chat.messages[0].name is None
         assert chat.messages[1].name == "bob"
 
 
@@ -1275,6 +1276,72 @@ class TestPromptOmittedGuard:
         )
         with pytest.raises(StepError, match="unreadable"):
             await LLMCallStep().execute(ctx)
+
+    @pytest.mark.parametrize("policy", ["drop_oldest", "drop_pairs", "summarize_oldest"])
+    async def test_raises_when_the_budget_cannot_hold_the_prompt(self, policy: str) -> None:
+        from agentloom.exceptions import StepError
+
+        chat = {
+            "messages": [
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": "old answer"},
+            ],
+            "token_budget": 20,
+            "trim_policy": policy,
+        }
+        gw = ProviderGateway()
+        gw.register(MockProvider(), models=["mock-model"])
+        ctx = _make_context(
+            StepDefinition(
+                id="turn", type=StepType.LLM_CALL, prompt="word " * 200, conversation="state.chat"
+            ),
+            state={"chat": chat},
+            gateway=gw,
+        )
+        with pytest.raises(StepError, match=r"token_budget \(20\) cannot hold the turn to answer"):
+            await LLMCallStep().execute(ctx)
+        assert await ctx.state_manager.get("chat") == chat
+
+    async def test_raises_when_the_budget_cannot_hold_the_last_turn(self) -> None:
+        from agentloom.exceptions import StepError
+
+        gw = ProviderGateway()
+        gw.register(MockProvider(), models=["mock-model"])
+        ctx = _make_context(
+            StepDefinition(id="turn", type=StepType.LLM_CALL, conversation="state.chat"),
+            state={
+                "chat": {
+                    "messages": [{"role": "user", "content": "word " * 200}],
+                    "token_budget": 20,
+                }
+            },
+            gateway=gw,
+        )
+        with pytest.raises(StepError, match=r"token_budget \(20\) cannot hold the turn to answer"):
+            await LLMCallStep().execute(ctx)
+
+    async def test_ok_when_the_budget_drops_older_turns_only(self) -> None:
+        provider = MockProvider(responses={"short?": "yes"})
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+        ctx = _make_context(
+            StepDefinition(id="turn", type=StepType.LLM_CALL, conversation="state.chat"),
+            state={
+                "chat": {
+                    "messages": [
+                        {"role": "user", "content": "old question " * 40},
+                        {"role": "assistant", "content": "old answer " * 40},
+                        {"role": "user", "content": "short?"},
+                    ],
+                    "token_budget": 20,
+                }
+            },
+            gateway=gw,
+        )
+        result = await LLMCallStep().execute(ctx)
+
+        assert result.status == StepStatus.SUCCESS
+        assert [m["content"] for m in provider.calls[0]["messages"]] == ["short?"]
 
     async def test_ok_when_conversation_ends_on_tool_turn(self) -> None:
         provider = MockProvider(responses={})

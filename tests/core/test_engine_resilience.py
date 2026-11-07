@@ -23,7 +23,7 @@ from agentloom.core.models import (
     WorkflowConfig,
     WorkflowDefinition,
 )
-from agentloom.core.results import StepStatus, WorkflowStatus
+from agentloom.core.results import StepResult, StepStatus, WorkflowStatus
 from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.gateway import ProviderGateway
 
@@ -381,6 +381,34 @@ class TestPauseOverBudgetPrecedence:
         gate_result = result.step_results.get("gate")
         assert gate_result is not None
         assert gate_result.status == StepStatus.PAUSED
+
+    async def test_a_pause_from_the_checkpoint_does_not_hide_a_budget_breach(self) -> None:
+        provider = _CostedProvider(cost_per_call=0.001)
+        workflow = WorkflowDefinition(
+            name="resumed",
+            config=WorkflowConfig(
+                provider="costed-mock", model="x", budget_usd=0.0005, on_step_failure="continue"
+            ),
+            state={},
+            steps=[
+                StepDefinition(id="llm", type=StepType.LLM_CALL, prompt="warm"),
+                StepDefinition(
+                    id="gate", type=StepType.APPROVAL_GATE, prompt="approve?", depends_on=["llm"]
+                ),
+            ],
+        )
+        engine = WorkflowEngine(workflow=workflow, provider_gateway=_gateway_for(provider))
+        # What a checkpoint restores after the run paused at the gate, approved since
+        await engine.state.set_step_result(
+            "llm", StepResult(step_id="llm", status=StepStatus.FAILED)
+        )
+        await engine.state.set_step_result(
+            "gate", StepResult(step_id="gate", status=StepStatus.PAUSED)
+        )
+        await engine.state.set("_approval.gate", "approved")
+        result = await engine.run()
+
+        assert result.status == WorkflowStatus.BUDGET_EXCEEDED
 
     async def test_budget_breach_alone_still_ends_budget_exceeded(self) -> None:
         """Regression net: without a pause in the same layer, the

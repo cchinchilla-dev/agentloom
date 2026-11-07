@@ -247,7 +247,7 @@ def load_records(runs_dir: str | Path | None = None) -> list[dict[str, Any]]:
     records: list[tuple[float, dict[str, Any]]] = []
     for path in base.glob("*.json"):
         try:
-            doc = json.loads(path.read_text())
+            doc = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             logger.warning("Skipping unreadable run record: %s", path)
             continue

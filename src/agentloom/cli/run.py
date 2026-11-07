@@ -11,13 +11,13 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import typer
 
-from agentloom.core.inter_agent import EVENTS_KEY, EventLog, dump_events, recording_events
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.results import WorkflowStatus
 from agentloom.core.state import StateManager
 from agentloom.exceptions import ProviderError
 
 if TYPE_CHECKING:
+    from agentloom.core.inter_agent import EventLog
     from agentloom.core.models import WorkflowConfig, WorkflowDefinition
     from agentloom.observability.observer import WorkflowObserver
     from agentloom.providers.gateway import ProviderGateway
@@ -130,15 +130,10 @@ async def _run_async(
     force_live: list[str] | None = None,
 ) -> None:
     """Async implementation of the run command."""
-    import sys
-
     from agentloom.core.engine import WorkflowEngine
     from agentloom.providers.gateway import ProviderGateway
 
-    # Prepend CWD so dotted imports from workflow YAML resolve.
-    cwd = str(Path.cwd())
-    if cwd not in sys.path:
-        sys.path.insert(0, cwd)
+    _import_from_cwd()
 
     try:
         workflow = WorkflowParser.from_yaml(workflow_path)
@@ -154,6 +149,11 @@ async def _run_async(
         workflow.config.budget_usd = budget
     if stream:
         workflow.config.stream = True
+    if record is not None and mock_responses is None and workflow.config.provider == "mock":
+        typer.echo(
+            "Error: --record needs a live provider; pass --provider instead of mock.", err=True
+        )
+        raise typer.Exit(2)
 
     state_manager = StateManager(initial_state=_initial_state(workflow, state_args))
 
@@ -167,7 +167,9 @@ async def _run_async(
 
         live = live_from is not None or bool(force_live)  # a cut keeps the workflow's providers
         if not live:
+            # In the checkpoint too, so `resume` replays the same recording
             workflow.config.provider = "mock"
+            workflow.config.responses_file = str(mock_responses.resolve())
         try:
             mock = MockProvider(
                 responses_file=mock_responses,
@@ -190,19 +192,8 @@ async def _run_async(
                 gateway.wrap_providers(lambda p: RecordingProvider(p, record, observer=observer))
         else:
             gateway.register(mock, priority=0)
-    elif workflow.config.provider == "mock" and record is None:
-        from agentloom.providers.mock import MockProvider
-
-        gateway.register(
-            MockProvider(
-                responses_file=workflow.config.responses_file,
-                latency_model=workflow.config.latency_model,
-                latency_ms=workflow.config.latency_ms,
-                observer=observer,
-                workflow_name=workflow.name,
-            ),
-            priority=0,
-        )
+    elif workflow.config.provider == "mock":
+        _setup_mock(gateway, workflow.config, observer, workflow.name)
     else:
         _setup_live(gateway, workflow.config)
         if record is not None:
@@ -259,6 +250,8 @@ async def _run_async(
     # checkpoint).
     if checkpointer is not None:
         typer.echo(f"Run ID: {engine.run_id}")
+    from agentloom.core.inter_agent import EventLog, recording_events
+
     events = EventLog() if record is not None else None  # #135
     with recording_events(events) if events is not None else nullcontext():
         result = await engine.run()
@@ -321,6 +314,27 @@ def _setup_observer(lite: bool) -> WorkflowObserver | None:
     return None
 
 
+def _setup_mock(
+    gateway: ProviderGateway,
+    config: WorkflowConfig,
+    observer: WorkflowObserver | None,
+    workflow_name: str,
+) -> None:
+    """Register ``provider: mock`` from the workflow's own ``config:`` (#76)."""
+    from agentloom.providers.mock import MockProvider
+
+    gateway.register(
+        MockProvider(
+            responses_file=config.responses_file,
+            latency_model=config.latency_model,
+            latency_ms=config.latency_ms,
+            observer=observer,
+            workflow_name=workflow_name,
+        ),
+        priority=0,
+    )
+
+
 def _setup_live(gateway: ProviderGateway, config: WorkflowConfig) -> None:
     """Register the workflow's own providers."""
     try:
@@ -379,6 +393,15 @@ def _initial_state(workflow: WorkflowDefinition, state_args: list[str]) -> dict[
     return initial_state
 
 
+def _import_from_cwd() -> None:
+    """Prepend the working directory so dotted imports from workflow YAML resolve."""
+    import sys
+
+    cwd = str(Path.cwd())
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+
+
 def _tool_registry(workflow: WorkflowDefinition) -> ToolRegistry:
     """The built-in tools behind the workflow's sandbox."""
     from agentloom.tools.builtins import register_builtins
@@ -406,6 +429,7 @@ def _tool_registry(workflow: WorkflowDefinition) -> ToolRegistry:
 
 def _record_events(path: Path, events: EventLog) -> None:
     """Keep the run's inter-agent events in its recording (#135)."""
+    from agentloom.core.inter_agent import EVENTS_KEY, dump_events
     from agentloom.providers.recorder import merge_into_recording
 
     logged = dump_events(events.events())

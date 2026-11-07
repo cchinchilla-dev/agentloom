@@ -44,9 +44,9 @@ class BudgetEnforcer:
     unenforced.
     """
 
-    def __init__(self, limit_usd: float | None = None) -> None:
+    def __init__(self, limit_usd: float | None = None, spent_usd: float = 0.0) -> None:
         self.limit_usd = limit_usd
-        self._spent: float = 0.0
+        self._spent: float = spent_usd  # a resumed run's, from its checkpoint
         self._lock = anyio.Lock()
 
     @property

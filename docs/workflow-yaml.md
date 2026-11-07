@@ -39,11 +39,11 @@ steps:                                      # at least one step required
 | `api_key_env` | `string` | `null` | Name of the environment variable holding the key for `provider: generic_openai`; without it, requests carry no `Authorization` header |
 | `max_retries` | `int` | `3` | Retry attempts on failure |
 | `budget_usd` | `float` | `null` | Maximum spend in USD |
-| `timeout` | `float` | `null` | Workflow timeout in seconds |
+| `timeout` | `float` | `null` | Workflow timeout in seconds; `0` sets no limit. Past it the run ends `timeout`: the steps it cut short are marked `timeout`, the later ones do not run, and a checkpointed run resumes with the full timeout again. An approval gate that pauses in the layer it cuts wins: the run ends `paused`, and resuming it runs the cut steps again |
 | `max_concurrent_steps` | `int` | `10` | Max parallel steps per layer. Bounded `1 ≤ N ≤ 1024` at parse time — values outside that range raise a Pydantic error instead of deadlocking the limiter or surfacing a cryptic `total_tokens must be >= 0`. |
 | `stream` | `bool` | `false` | Enable streaming by default |
 | `sandbox` | `object` | disabled | Security sandbox config |
-| `on_step_failure` | `string` | `skip_downstream` | Behaviour when a step (or router) ends in FAILED. `skip_downstream` (default) marks every transitive dependent as SKIPPED with an `error` field naming the closest failed ancestor; `continue` keeps the pre-0.5.0 best-effort behaviour where dependents still run against partial state. |
+| `on_step_failure` | `string` | `skip_downstream` | Behaviour when a step (or router) ends in FAILED or TIMEOUT. `skip_downstream` (default) marks every transitive dependent as SKIPPED with an `error` field naming the closest failed ancestor; `continue` keeps the pre-0.5.0 best-effort behaviour where dependents still run against partial state. |
 | `strict_outputs` | `bool` | `false` | Promote the parallel-output collision warning to a parse error. Two parallel-eligible steps writing the same `output:` key normally trigger a `UserWarning` listing both step ids; set `strict_outputs: true` to refuse the workflow at parse time. Sequential overwrite via `depends_on` is exempt — it's an intentional pattern. |
 | `responses_file` | `string` | `null` | Mock provider recording path (when `provider: mock`) |
 | `latency_model` | `string` | `constant` | Mock latency mode: `constant` / `normal` / `replay` |
@@ -180,9 +180,9 @@ Sends a prompt to an LLM and stores the response.
 | `attachments` | `list[Attachment]` | `[]` | Multi-modal inputs (see [Providers](providers.md#multi-modal-attachments)) |
 | `thinking` | `ThinkingConfig` | `null` | Extended-thinking / reasoning config (see [Reasoning models](providers.md#reasoning-models)) |
 | `conversation` | `string` | `null` | Dotted state path to a `Conversation` — enables multi-turn history + token-budget trimming (see [Conversation history](#conversation-history)) |
-| `speaker` | `string` | `null` | Multi-agent speaker name (only with `conversation`). Tags the turn with `Message.name` and re-asserts `system_prompt` per turn |
+| `speaker` | `string` | `null` | Multi-agent speaker name (only with `conversation`). Tags the assistant reply with `Message.name` and re-asserts `system_prompt` per turn |
 | `output` | `string` | `null` | State key to store result |
-| `timeout` | `float` | `null` | Per-step timeout in seconds |
+| `timeout` | `float` | `null` | Per-step timeout in seconds, for each attempt; `0` sets no limit. A step out of retries on it ends `timeout` and fails the workflow, as a failed step does |
 | `depends_on` | `list[string]` | `[]` | Step IDs that must complete first |
 
 **Thinking config:**
@@ -300,7 +300,7 @@ Three modes pick the precision / portability trade-off per step:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `type` | `"pydantic" \| "json_schema" \| "json_object"` | `"json_object"` | `pydantic` coerces to a Pydantic model instance; `json_schema` validates against an inline JSON Schema; `json_object` enforces "any JSON object" with no schema. |
+| `type` | `"pydantic" \| "json_schema" \| "json_object"` | `"json_object"` | `pydantic` coerces to a Pydantic model instance; `json_schema` validates against an inline JSON Schema; `json_object` enforces "any JSON object" with no schema: a reply that is no object (`null`, an array) is asked for again. |
 | `model` | `string` | — | Dotted Python path to a Pydantic `BaseModel` subclass (e.g. `examples.schemas.Classification` or `pkg.module:Classification`). Required for `type: pydantic`. The CLI adds the current working directory to `sys.path` before parsing so paths resolve from the repo root. |
 | `schema` | `dict` | — | Inline JSON Schema object. Required for `type: json_schema`. `additionalProperties: true` is refused at parse time so the same schema works against OpenAI's strict mode. |
 | `name` | `string` | step id | Optional schema name; OpenAI's strict `json_schema` mode requires one. Defaults to the step id, which is unique within a workflow. |
@@ -314,7 +314,7 @@ The parsed value lands in `state[output]` directly — for `pydantic` mode it's 
 | Provider | Native API | Behavior |
 |----------|-----------|----------|
 | OpenAI | `response_format={"type": "json_schema", "json_schema": {...}}` (strict) or `{"type": "json_object"}` | Server-side schema enforcement; the model can't emit invalid JSON. Requires `gpt-4o-2024-08-06+` for strict mode. |
-| Google Gemini | `generationConfig.responseSchema` + `responseMimeType: "application/json"` | Server-side enforcement. The adapter strips Pydantic-emitted `title` / `examples` / `default` keys that Gemini's parser rejects. |
+| Google Gemini | `generationConfig.responseSchema` + `responseMimeType: "application/json"` | Server-side enforcement. The adapter strips Pydantic-emitted `title` / `examples` / `default` keys that Gemini's parser rejects, drops `additionalProperties`, keeps what its dialect can say of `const`, `exclusiveMinimum`, `exclusiveMaximum` and `prefixItems` (an `enum`, a `minimum`, a `maximum`, an `items`) and drops `uniqueItems`, the reply being validated against the full schema; and inlines local `$ref`s, as Gemini has no `$defs`: a nested model works; a recursive one, or a `$ref` whose neighbouring keywords contradict its definition, does not. A `dict` field comes back empty, as Gemini's dialect has no `additionalProperties`; a `json_object` reply sends no schema, only `responseMimeType`, so any object comes back. An agent's `json_object` reply next to tools comes back empty (`{}`): its `final_result` tool names no parameters, and Gemini fills none; a `json_schema` or `pydantic` one names them. |
 | Ollama | `format: "json"` (free-form) or `format: <schema>` (strict, Ollama 0.5+) | Model-side enforcement; quality varies by model. |
 | Anthropic | _No native API._ Prefill + system-prompt instructions + client-side validation. | Best-effort: the assistant turn is prefilled with `"{"` so the model continues from there. Validation failures trigger the same retry-with-feedback loop. |
 
@@ -329,6 +329,8 @@ The parsed value lands in `state[output]` directly — for `pydantic` mode it's 
 | `backoff_max` | `float` | `60.0` | Maximum wait between retries in seconds |
 | `jitter` | `bool` | `true` | Apply ±25% jitter to each backoff so concurrent retries don't cluster |
 | `retryable_status_codes` | `list[int]` | `[429, 500, 502, 503, 504]` | Provider status codes that trigger a retry. Other 4xx (e.g. 400/401/403/404) bail out immediately so the retry budget isn't burned on permanent failures. Status-less exceptions (network errors, generic provider failures) are always treated as transient and retried. |
+
+A retry runs the step again from its start. A step with `tools`, or an `agent` step, calls its tools again, those that had already run in the failed attempt included: a tool with side effects (a write, a message, a payment) should be idempotent, or its step should set `max_retries: 0`.
 
 ### `router`
 
@@ -485,7 +487,7 @@ The parent's `output:` key is written only when the child workflow succeeds, as 
 
 #### Pause / resume through nested approval gates
 
-A `subworkflow` containing an `approval_gate` pauses the parent at a fully-qualified path like `sub.gate`. The parent workflow status becomes `paused` (not `failed`), the checkpoint records `paused_step_id: sub.gate`, and `agentloom resume <parent_run_id> --approve` continues through to the next layer after the gate clears — no separate child resume command needed.
+A `subworkflow` containing an `approval_gate` pauses the parent at a fully-qualified path like `sub.gate`. The parent workflow status becomes `paused` (not `failed`), the checkpoint records `paused_step_id: sub.gate`, and `agentloom resume <parent_run_id> --approve` continues through to the next layer after the gate clears — no separate child resume command needed. The child goes on from its own checkpoint (`<parent_run_id>.<step_id>`), as a resumed workflow does: the steps it finished before the gate keep their results and are not run, nor paid, again. The step's `cost_usd` and `token_usage` add up both halves.
 
 #### Step-id namespace across subworkflows
 
@@ -555,6 +557,97 @@ The `MockProvider` serves embeddings from a recording keyed by `step_id` (with a
 
 `agentloom_embedding_calls_total{provider, model}` counter and `agentloom_embedding_dimensions{provider, model}` histogram land on the metrics surface whenever observability is enabled.
 
+### `agent`
+
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+
+Runs one turn of an agent: a system prompt, a set of tools, a memory policy, a bounded tool loop, a typed reply and constraints, defined once and reused across steps and workflows. The step compiles to an [`llm_call`](#llm_call) turn with the agent's settings.
+
+```yaml
+# examples/agents/support.yaml
+name: support_desk
+description: Answers billing questions for ACME customers.
+system_prompt: |
+  You answer billing questions for ACME customers. ...
+tools:
+  - file_read                     # a tool of the workflow's registry
+  - name: ask_refunds             # another agent, offered as a tool
+    agent: examples/agents/refunds.yaml
+memory:
+  token_budget: 4000
+  trim_policy: drop_pairs
+loop_policy:
+  max_iterations: 6
+  on_max_iterations: error        # or warn_and_return
+output_schema:
+  type: pydantic
+  model: examples.structured_output_schemas.SupportReply
+constraints:
+  max_cost_usd: 0.05
+  max_latency_ms: 60000
+  forbidden_patterns: ["as an AI language model"]
+```
+
+```yaml
+- id: answer
+  type: agent
+  agent: examples/agents/support.yaml   # a path, or the definition inline
+  prompt: "{state.question}"             # the user turn
+  conversation: state.chat               # optional; created when the key is absent
+  output: reply                          # typed per output_schema; the text without one
+```
+
+**Definition fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | `string` | — | The agent's name: the `speaker` of its turns and its `agent_id` in the [event log](testing-and-replay.md). Letters, digits, `_` and `-`, up to 64, starting with a letter or `_`, as a tool's `name`. |
+| `description` | `string` | `""` | What the agent does; the tool description when another agent calls it. |
+| `model`, `system_prompt`, `temperature`, `max_tokens` | | inherited | As on `llm_call`. |
+| `tools` | `list` | `[]` | Names from the workflow's tool registry, and `{name, agent, description}` entries that offer another agent as a tool. Such a `name` is one every provider takes for a function: letters, digits, `_` and `-`, up to 64, starting with a letter or `_`. |
+| `memory` | `object` | `null` | `token_budget` and `trim_policy` (`drop_oldest`, `drop_pairs`, `summarize_oldest`) applied to the conversation on each of the agent's turns, without changing the settings it stores; each one left out keeps the conversation's own. The conversation is stored as trimmed, so the agents that share it share the trim and the smallest `memory` wins; to give them one budget, set it on the conversation instead. |
+| `loop_policy.max_iterations` | `int` | `5` | Model calls of the tool loop per turn. The loop ends when the agent replies without calling a tool. Without tools, a typed reply that fails validation is asked for again within the same number of model calls, and the step fails if none validates, under either `on_max_iterations`; the step's `retry` does not bound these, it repeats the whole turn after a transient failure. |
+| `loop_policy.on_max_iterations` | `string` | `error` | Reaching the cap fails the step (`error`) or returns the last reply with a warning (`warn_and_return`); a last reply with no text, only tool calls, fails the step under either. With tools, that reply is the text that came with the calls left pending (such as "I'll check the policy"), returned and stored as it is. |
+| `output_schema` | `object` | `null` | As `response_schema` on `llm_call` (`pydantic`, `json_schema`, `json_object`). |
+| `constraints.max_cost_usd` | `float` | `null` | Checked after each model call, the calls of agents used as tools and summaries included, and when the turn ends; the turn stops once it is exceeded. The step reports what its turn spent, failed or not. |
+| `constraints.max_latency_ms` | `int` | `null` | Bounds the turn as `timeout` does; the shorter of the two applies. |
+| `constraints.forbidden_patterns` | `list[str]` | `[]` | A reply that contains one (plain text, case-insensitive) fails the step. A typed reply is read by its values, not its field names. |
+
+**Behaviour:**
+
+- The definition is loaded and checked when the workflow is parsed: unknown keys, duplicate tool names and cycles between agent files are errors. A path is relative to the working directory, as a subworkflow's `workflow_path`. An agent step cannot set the fields its agent defines (`model`, `system_prompt`, `tools`, `response_schema`, `speaker`, ...). The definition's `system_prompt` is a template, as on `llm_call`: a literal brace is written twice (`{{`, `}}`).
+- The turn sees only the agent's tools: a call to any other tool, even one the workflow registers, comes back to the model as unregistered. A tool the registry lacks, the agent's own or one of an agent it calls as a tool, fails the step before the first model call.
+- `speaker` is the agent's name, so several agents can share a [conversation](#multi-agent-conversations): each one's system prompt applies to its own turns only.
+- `output_schema` without tools uses the provider's structured output, as `response_schema` does. With tools, the reply comes through a `final_result` tool whose arguments follow the schema, which OpenAI holds them to when it is `strict`, as it does a reply; a `json_schema` with `properties` and no `type` describes an object. The other calls of the same response run, and the loop ends on the first `final_result` call with valid arguments, unless one of those calls failed: the reply then goes back to the model, which had not seen that call's result. Invalid arguments, and arguments that are no JSON object (a reply cut short at its token limit), go back to the model as the tool's error, and a reply in plain text is sent back asking for the tool. Reaching `max_iterations` before a reply fails the step under either `on_max_iterations`. `final_result` is a reserved tool name in an agent with an `output_schema`; the conversation keeps the validated reply as JSON.
+- A broken constraint, the cap under `on_max_iterations: error` or with no reply to return, and a missing `final_result` fail the step without a retry. `max_latency_ms` fails it as a transient failure, which the step's `retry` repeats, as for a step `timeout`. The conversation and `output` are written only when the step succeeds.
+- An agent turn does not stream: with `stream: true`, its reply reaches the stream callback in one chunk once it has passed the checks.
+- `agentloom agent inspect AGENT.yaml` prints a definition as it loads, with its model's prices, its tools' parameters and the agents it calls ([CLI](cli.md#agent-inspect)).
+
+**Agents as tools.** A `{name, agent}` entry offers another agent as a tool with one `message` parameter. Each call runs a turn of that agent on a fresh conversation, its prompts rendered against the calling workflow's state with the call's `message` on top, and returns its reply, as JSON when it has an `output_schema`. A turn that fails for good (a constraint, `on_max_iterations: error`) comes back to the caller as the tool's error; one that cannot run (a `system_prompt` that is no template, a `memory.token_budget` that cannot hold the call's `message`) fails the calling step at once, without a retry, and an agent whose tools the registry lacks or whose `output_schema` does not load fails it before its first model call, at any depth; one that fails on a transient error (the provider's, under the calling step's `retryable_status_codes`, or `max_latency_ms`) fails the calling step as transient, so the step's `retry` repeats the whole turn and a recording keeps only the attempt that finished. Its model calls are recorded under `<step_id>::<tool name>#<n>`, the n-th call of that tool in the turn, so they replay in order, in every `--tools` mode: the tool tape holds the calls of its own tools, under that key, not its reply. Its cost and tokens add to the calling step's, the token metrics counting them under its own model; its turn and its tool calls reach the workflow's observer, and the [inter-agent event log](testing-and-replay.md#inter-agent-events) shows its turn under its own name, as a task the caller sent it.
+
+**From Python:**
+
+```python
+from agentloom import Agent
+from agentloom.exceptions import AgentError
+
+agent = Agent.from_yaml(
+    "examples/agents/support.yaml",
+    gateway=gateway,
+    tool_registry=registry,
+    model="claude-haiku-4-5",  # the file names no model
+)
+result = await agent.invoke("My bill seems wrong", conversation=previous)  # conversation optional
+# A turn that fails, or cannot start (a broken template, an empty prompt), raises AgentError
+result.reply         # SupportReply, typed per output_schema; str without one
+result.conversation  # Conversation, with the new turns
+result.cost_usd      # float
+result.iterations    # the agent's own model calls, not those of agents it calls
+```
+
+`Agent` takes `model=` for a definition that names none, and `invoke` raises `AgentError` when the turn fails. Example [41](examples.md#41-agent) runs the support desk above offline.
+
 ---
 
 ## Conversation history
@@ -593,7 +686,7 @@ The `Conversation` envelope:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `messages` | `list[Message]` | `[]` | Ordered turn list. Each entry has `role` (`system` / `user` / `assistant` / `tool`), `content`, optional `name` (multi-agent), `tool_call_id`, `tool_calls`, `metadata`. |
-| `token_budget` | `int` | `null` | Soft cap on estimated tokens. Trimming runs before the call when exceeded. `null` = unbounded (checkpoint size is the effective cap). |
+| `token_budget` | `int` | `null` | Soft cap on estimated tokens. Trimming runs before the call when exceeded; a budget that cannot hold the turn to answer fails the step. `null` = unbounded (checkpoint size is the effective cap). |
 | `trim_policy` | `string` | `drop_oldest` | `drop_oldest` (remove from the head, pin system prefix), `drop_pairs` (remove oldest `user`+`assistant` pair together), `summarize_oldest` (fold oldest turns into `conversation.summary`). |
 | `summary` | `string` | `null` | Populated by `summarize_oldest`. Injected on the wire as a labelled `system` context block *after* the conversation's own system prefix (never ahead of it), so a summary can't override the real system prompt. |
 | `metadata` | `dict` | `{}` | Free-form annotations that ride along the checkpoint but never reach the provider. |
@@ -602,7 +695,7 @@ The `Conversation` envelope:
 
 - `prompt` is optional when `conversation` is set — but then the conversation must already end on a `user` or `tool` turn the provider can answer. Ending on a `system` or `assistant` turn raises a `StepError` instead of shipping a request the model can't continue.
 - `system_prompt` is prepended once as a `system` message if none exists yet in the conversation. With a `speaker:` set (multi-agent), the system prompt is re-asserted as a transient per-turn message instead — never persisted — so each agent gets its own instruction without clobbering the shared history.
-- `speaker:` (optional) tags this step's user turn and assistant reply with `Message.name`, letting one conversation carry several distinct agents. See [multi-agent](#multi-agent-conversations) below.
+- `speaker:` (optional) tags this step's assistant reply with `Message.name` (the user turn holds the caller's words and stays untagged), letting one conversation carry several distinct agents. See [multi-agent](#multi-agent-conversations) below.
 - The step's `output` still stores the raw assistant text (structured-output mode stores the parsed value); the `Conversation` carries the semantic turn.
 - Tool loops (`tools:`) run mechanically inside the step; only the final assistant text answer lands in the conversation. The tool calls and their `tool_result` turns stay out — persisting a tool-call turn without its paired result would make the next request malformed (OpenAI requires each `tool_calls` message be followed by its `role="tool"` results), so keeping only the answer is both semantically clean and replay-safe.
 - Attachments (`attachments:`) still work with a conversation — the resolved image / PDF / audio blocks ride on the current turn's provider message but are **not** persisted into the conversation (base64 payloads would balloon the checkpoint).
@@ -642,7 +735,7 @@ steps:
     output: critique
 ```
 
-Each turn is tagged with its speaker's `Message.name`; OpenAI forwards it natively, the other providers prepend `"[alice] …"` inline. Because `speaker:` makes `system_prompt` a transient per-turn message, Bob never inherits Alice's instructions from the shared history.
+Each reply is tagged with its speaker's `Message.name`; OpenAI forwards it natively, the other providers prepend `"[alice] …"` inline. Because `speaker:` makes `system_prompt` a transient per-turn message, Bob never inherits Alice's instructions from the shared history.
 
 Observability wires a `on_conversation_turn` hook on the workflow observer that emits:
 

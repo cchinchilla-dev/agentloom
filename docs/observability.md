@@ -169,6 +169,13 @@ All metrics are prefixed with `agentloom_`.
 | `step_executions_total` | counter | step_type, status, stream | Step execution count |
 | `step_duration_seconds` | histogram | step_type, stream | Per-step latency |
 
+### Agent metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `agentloom_agent_invocations_total` | counter | name, status | Turns of each agent, by the step's status (one per attempt, a turn that fails before a model call included; `timeout` or `cancelled` for one cut short), those of an agent used as a tool included |
+| `agentloom_agent_iterations` | histogram | name | Model calls per turn of each agent |
+
 ### Provider metrics
 
 AgentLoom-specific counters live alongside the canonical OTel GenAI client histogram. The histogram replaces the previous `provider_latency_seconds` — distributions are required by the spec.
@@ -184,7 +191,7 @@ AgentLoom-specific counters live alongside the canonical OTel GenAI client histo
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `gen_ai.client.token.usage` | histogram (`{token}`) | gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model, gen_ai.token.type | OTel canonical per-call token observations. `gen_ai.token.type` is `input` / `output` / `reasoning` (reasoning is an AgentLoom extension to the spec's `input`/`output` enum) |
+| `gen_ai.client.token.usage` | histogram (`{token}`) | gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model, gen_ai.token.type | OTel canonical per-call token observations. `gen_ai.token.type` is `input` / `output` / `reasoning` (reasoning is an AgentLoom extension to the spec's `input`/`output` enum). An agent step's tokens count under each model its calls ran on, the agents it called as tools included |
 | `agentloom_attachments_total` | counter | step_type | Attachment count by step type |
 
 ### Streaming metrics
@@ -225,6 +232,7 @@ Inference spans follow the **canonical OTel GenAI registry** (May 2026 spec). Wo
 | `error.*` | OTel general semantic conventions | `error.type` (set on errored inference spans alongside `step.error`) |
 | `workflow.*` / `step.*` | AgentLoom orchestration metadata | `workflow.run_id`, `workflow.status`, `step.id`, `step.type`, `step.duration_ms`, `step.cost_usd` |
 | `tool.*` | Tool-call details | `tool.name`, `tool.args_hash`, `tool.success` |
+| `agent.*` | An agent step's turn, on its step span with `gen_ai.agent.name` | `agent.iterations`, `agent.tool_calls`, `agent.cost_usd`, `agent.output_valid` |
 | `agentloom.*` | AgentLoom-specific (no OTel equivalent) | `agentloom.prompt.hash`, `agentloom.approval_gate.decision`, `agentloom.webhook.status`, `agentloom.recording.provider` |
 
 ### Workflow-level attributes
@@ -244,13 +252,17 @@ Inference spans follow the **canonical OTel GenAI registry** (May 2026 spec). Wo
 | `step.id`, `step.type`, `step.status` | Step identification; `step.status` is the step's result, or `cancelled` / `budget_exceeded` when its layer is cancelled or it breaches the budget |
 | `step.duration_ms`, `step.cost_usd` | Per-step latency / spend |
 | `step.stream`, `step.attachments` | Streaming flag, attachment count |
-| `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` | Operation type (`chat` for `llm_call`), provider (e.g. `openai`, `gcp.gemini`), model |
+| `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` | Operation type (`chat` for `llm_call`, `invoke_agent` for `agent`), provider (e.g. `openai`, `gcp.gemini`), model |
 | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | Visible token counts |
 | `gen_ai.usage.reasoning.output_tokens` | Chain-of-thought tokens (o-series, Gemini 2.5+ thinking) — emitted only when non-zero |
 | `gen_ai.response.finish_reasons` | Array of provider-supplied stop reasons (e.g. `["stop"]`) |
 | `gen_ai.response.time_to_first_chunk` | Streaming-only, in seconds |
 | `agentloom.prompt.hash`, `agentloom.prompt.length_chars` | Prompt fingerprint for correlating failures with the prompt that caused them |
 | `agentloom.prompt.template_id`, `agentloom.prompt.template_vars` | Template provenance |
+| `gen_ai.agent.name` | An `agent` step's agent; its `gen_ai.operation.name` is `invoke_agent` |
+| `agent.iterations`, `agent.tool_calls` | The turn's model calls, and the tool calls its model made (its reply through `final_result` aside) |
+| `agent.cost_usd` | What the turn spent, the agents it called as tools included |
+| `agent.output_valid` | With an `output_schema`: whether the turn ended on a reply the schema validates |
 
 ### Inference-level attributes (provider span)
 
@@ -357,6 +369,10 @@ The engine routes all workflow spend through `BudgetEnforcer` (`agentloom.resili
 
 * **Pre-dispatch gate** (`estimate(0)`) — before launching any step, the engine reads `spent` under the lock and refuses to start if the budget is already exhausted. This bounds the worst-case overshoot to the in-flight set of a single layer rather than letting it compound across layers.
 * **Post-completion charge** (`charge(cost_usd)`) — when a step succeeds, the engine adds the actual cost inside the lock and raises `BudgetExceededError` if the post-charge total is over. The exception propagates through the task group to the engine's terminal classifier, which surfaces `WorkflowStatus.BUDGET_EXCEEDED`.
+* **Failed attempts** — an attempt that fails (a provider error after paid calls, its step `timeout`, a structured reply never valid, a broken agent constraint) is charged too, as soon as it fails, with what its calls that answered cost, the agents it called and its summaries included; a breach stops the step's retries. The step's `cost_usd` and `token_usage` add up all its attempts, those before a resume included, and the token metrics count each attempt's tokens once, under their model.
+* **What an attempt spent** — what its calls cost as the gateway counted them, or what its step reports when that is more: the calls of a gateway of its own (`GatewayProtocol`), or the rolled-up cost of a subworkflow with a budget of its own. Cost and tokens are compared apart.
+* **Resume** — a checkpoint keeps what the run had charged (`spent_usd`), and a resumed run's budget goes on from it; a checkpoint written before it had that field goes on from its step results' cost. A resumed run reports its whole spend, the part before its pause included, in its result and to `on_workflow_end`; a process that ran the paused run too, such as the callback server, adds that part to `agentloom_cost_usd_total` twice.
+* **Cut steps** — a step cut short, by the workflow's `timeout` or when another step of its layer breaks the budget, is charged what its finished calls cost, without raising a second breach, and its span and token metrics carry it. One cut by the timeout keeps it on its `timeout` result; one cut by a breach gets no result, and the run's `total_cost_usd` and `total_tokens` count it. A subworkflow cut by its step's `timeout` or the workflow's keeps its steps' tokens on its result, and, with a budget of its own, charges its parent what they spent.
 
 ### Cross-subworkflow accounting
 
@@ -364,14 +380,16 @@ When a parent workflow launches a subworkflow step:
 
 | Parent budget | Child budget | Behaviour |
 |---------------|--------------|-----------|
-| Set (`$0.10`) | None | Child engine inherits the parent's enforcer. Child charges count against the parent's `_spent`, so the parent's gate trips at the right step. |
-| Set (`$0.10`) | Set (`$0.05`) | Child uses a fresh enforcer scoped to its own limit. Pre-0.5.0 behaviour preserved. The parent's per-step accounting still adds the rolled-up subworkflow cost to the parent counter. |
+| Set (`$0.10`) | None | Child engine inherits the parent's enforcer. Child charges count against the parent's `_spent`, so the parent's gate trips at the right step. The child's own `total_cost_usd` is what its steps charged, not the parent's total. A child that breaks the parent's budget gives its step a `failed` result with its steps' tokens and `cost_usd: 0`, as they charged it already. |
+| Set (`$0.10`) | Set (`$0.05`) | Child uses a fresh enforcer scoped to its own limit. Pre-0.5.0 behaviour preserved. The parent's per-step accounting still adds the rolled-up subworkflow cost to the parent counter, whether the child succeeds, fails, pauses at an approval gate or breaks its own budget; a breach fails the step without a retry, and a pause that breaks the parent's budget still pauses. |
 | None | Set (`$0.05`) | Child enforces its own budget; parent has no limit to enforce. |
 | None | None | No enforcement at either level. |
 
 ### Pause-over-budget precedence
 
 When an `approval_gate` and a budget-blowing LLM step land in the same layer, **pause wins**. Pre-0.5.0 budget short-circuited the pause: the LLM step completed (spending the money), the pause was dropped, and the workflow ended `budget_exceeded` with no resumable checkpoint at the gate. The reversed precedence preserves both options — the human can `--approve` or `--reject`, and the workflow re-evaluates budget on resume. A workflow that resumes with budget already exhausted will then surface `BudgetExceededError` on the next dispatch (the user explicitly chose to look at the pause first).
+
+The workflow's `timeout` gives way to a pause the same way: the steps it cut short are marked `timeout` and run again on resume. Only a pause of the current run counts: a resumed run that breaks its budget or its timeout before it reaches the gate it had paused at ends `budget_exceeded` or `timeout`, not `paused` at that gate again.
 
 ---
 

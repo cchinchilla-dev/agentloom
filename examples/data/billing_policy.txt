@@ -1,0 +1,8 @@
+ACME billing policy
+
+Duplicate charges: when the same invoice is charged twice, the second charge is
+refunded in full. No questions asked.
+
+Other refunds: a charge can be refunded within 30 days of the charge date.
+
+Timing: refunds reach the original card within 5 to 7 business days.

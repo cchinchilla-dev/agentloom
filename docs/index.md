@@ -127,6 +127,6 @@ agentloom visualize my_workflow.yaml   # render the DAG
 | [Graph API](graph-api.md) | Analyze, visualize, and export workflow DAGs |
 | [Testing & Replay](testing-and-replay.md) | Record real runs and replay them offline, deterministically |
 | [Observability](observability.md) | Traces, metrics, and Grafana dashboards |
-| [Examples](examples.md) | 37 example workflows from basic to production-grade |
+| [Examples](examples.md) | 39 example workflows from basic to production-grade |
 | [Deployment](deployment.md) | Docker, Kubernetes, Helm, Terraform, and ArgoCD |
 | [Changelog](changelog.md) | Version history and release notes |

@@ -67,6 +67,15 @@ class TestFileCheckpointerSaveLoad:
         await cp.save(_make_checkpoint())
         assert (nested / "abc123.json").exists()
 
+    @pytest.mark.usefixtures("latin1_locale")
+    async def test_a_checkpoint_is_read_as_utf8_whatever_the_locale(self, tmp_path: Path) -> None:
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        data = _make_checkpoint()
+        data.state = {"question": "¿qué tal? — ñandú"}
+        await cp.save(data)
+
+        assert (await cp.load("abc123")).state == {"question": "¿qué tal? — ñandú"}
+
     async def test_save_overwrites_existing(self, tmp_path: Path) -> None:
         cp = FileCheckpointer(checkpoint_dir=tmp_path)
         await cp.save(_make_checkpoint(status="running"))

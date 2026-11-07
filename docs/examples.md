@@ -1,6 +1,6 @@
 # Examples
 
-37 example workflows, numbered 01–39, covering basic patterns to production-grade pipelines. Most run with Ollama (free, local) or any cloud provider; the multi-modal ones need a provider that supports the attachment type, examples 35–39 run offline against recordings committed under `recordings/`, and 31–32 replay a recording you capture first.
+39 example workflows, numbered 01–41, covering basic patterns to production-grade pipelines. Most run with Ollama (free, local) or any cloud provider; the multi-modal ones need a provider that supports the attachment type, examples 35–41 run offline against recordings committed under `recordings/`, and 31–32 replay a recording you capture first.
 
 ```bash
 # Validate any example
@@ -324,6 +324,9 @@ agentloom run examples/32_yaml_mock.yaml --lite
 
 ### 40 — Fault replay
 
+!!! info "New in 0.5.0 (unreleased)"
+    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+
 A recording that fails `draft` with a 429 and then a 503 before it answers. Every run fails the same two calls the same way, and the step's retry policy recovers on the third attempt.
 
 **Demonstrates:** `fault` entries in a recording, deterministic failure replay, `retry` recovering through the gateway.
@@ -410,4 +413,19 @@ agentloom run examples/39_multi_agent_conversation.yaml --lite
 
 # Real calls (any provider that supports chat completions):
 agentloom run examples/39_multi_agent_conversation.yaml --provider openai --model gpt-4o-mini
+```
+
+### 41 — Agent
+
+A support desk defined once in `examples/agents/support.yaml`: a system prompt, the `file_read` tool and a refunds agent offered as a tool (`examples/agents/refunds.yaml`), a memory budget, a loop policy, a typed `SupportReply` and constraints. Two `agent` steps run two turns of it on one conversation: the first reads the billing policy and asks the refunds agent in parallel, then replies through `final_result`; the second answers a follow-up on the same conversation.
+
+**Demonstrates:** the `agent` step type, tool scoping, an agent called as a tool, `output_schema` with tools, a shared conversation across turns.
+
+```bash
+# Mock-replay against the committed recording (no API calls)
+agentloom run examples/41_agent.yaml --lite
+agentloom verify-determinism examples/41_agent.yaml -r recordings/agent.json
+
+# Real calls:
+agentloom run examples/41_agent.yaml --provider anthropic --model claude-haiku-4-5
 ```

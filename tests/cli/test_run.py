@@ -6,12 +6,13 @@ import tempfile
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from agentloom.cli.main import app
 
 if TYPE_CHECKING:
-    import pytest
+    from pathlib import Path
 
 runner = CliRunner()
 
@@ -311,6 +312,20 @@ class TestRunRecordAndReplay:
         combined = result.output + (result.stderr or "")
         assert "mutually exclusive" in combined
 
+    @pytest.mark.parametrize("flags", [[], ["--provider", "mock"]])
+    def test_record_refuses_a_mock_provider(self, tmp_path: Path, flags: list[str]) -> None:
+        workflow = tmp_path / "wf.yaml"
+        workflow.write_text(
+            SIMPLE_YAML.replace("provider: mock", "provider: openai") if flags else SIMPLE_YAML
+        )
+        recording = tmp_path / "rec.json"
+        result = runner.invoke(
+            app, ["run", str(workflow), *flags, "--record", str(recording), "--lite"]
+        )
+        assert result.exit_code == 2
+        assert "--record needs a live provider" in (result.output + (result.stderr or ""))
+        assert not recording.exists()
+
     def test_record_tools_needs_record(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             f.write(SIMPLE_YAML)
@@ -414,6 +429,8 @@ class TestRunRecordAndReplay:
                         [
                             "run",
                             str(yaml_path),
+                            "--provider",
+                            "openai",
                             "--record",
                             str(rec_path),
                             "--lite",

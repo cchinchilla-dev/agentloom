@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -55,6 +56,13 @@ budget_limit_usd: 1.5
         assert cfg.log_level == "DEBUG"
         assert cfg.default_provider == "ollama"
         assert cfg.budget_limit_usd == 1.5
+
+    @pytest.mark.usefixtures("latin1_locale")
+    def test_a_config_file_is_read_as_utf8_whatever_the_locale(self, tmp_path: Path) -> None:
+        path = tmp_path / "agentloom.yaml"
+        path.write_text("# configuración — local\nlog_level: DEBUG\n", encoding="utf-8")
+
+        assert load_config(str(path)).log_level == "DEBUG"
 
     def test_load_empty_yaml_returns_defaults(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:

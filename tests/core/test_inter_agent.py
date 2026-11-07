@@ -20,6 +20,7 @@ from agentloom.core.attempts import enter_step
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.inter_agent import (
     EventLog,
+    called_agent,
     dump_events,
     load_events,
     log_tools,
@@ -429,3 +430,11 @@ async def test_a_tool_step_logs_its_call(tool: BaseTool, answer: Any, status: St
     assert back.parent_event_ids == [call.event_id]
     assert back.payload_hash == payload_hash(answer)
     assert (("t", "response_sent") in _kinds(events)) == (status == StepStatus.SUCCESS)
+
+
+def test_an_agent_called_outside_a_logged_step_logs_nothing() -> None:
+    log = EventLog()
+    with recording_events(log), called_agent("ask", 1, "helper", "hi"):
+        log_tools([("add", {"a": 1})], [("2", True)])
+
+    assert log.events() == []

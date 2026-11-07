@@ -8,9 +8,14 @@ import json
 import re
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, PrivateAttr, ValidationError
 
-from agentloom.core.models import ResponseSchema, ResponseSchemaConfigError
+from agentloom.core.models import (
+    OUTPUT_TOOL,
+    ResponseSchema,
+    ResponseSchemaConfigError,
+    ToolDefinition,
+)
 
 _JSON_CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 
@@ -139,7 +144,7 @@ def translate_for_openai(response_schema: ResponseSchema, step_id: str) -> dict[
     schema = schema_dict_for(response_schema, step_id)
     if schema is not None and response_schema.strict:
         # Strict mode also requires every property in ``required``.
-        _enforce_openai_strict_required(schema)
+        enforce_openai_strict_required(schema)
     payload: dict[str, Any] = {
         "type": "json_schema",
         "json_schema": {
@@ -153,7 +158,7 @@ def translate_for_openai(response_schema: ResponseSchema, step_id: str) -> dict[
     return payload
 
 
-def _enforce_openai_strict_required(schema: dict[str, Any]) -> None:
+def enforce_openai_strict_required(schema: dict[str, Any]) -> None:
     """In-place: every ``properties`` key gets listed in ``required``."""
 
     def _walk(node: Any) -> None:
@@ -190,19 +195,115 @@ def translate_for_google(
 # Gemini's ``responseSchema`` parser 400s on these keys (Pydantic-emitted
 # noise plus ``additionalProperties``, which our strict normalizer adds for
 # OpenAI but Gemini's schema dialect doesn't understand).
-_GOOGLE_DROP_KEYS = frozenset({"title", "examples", "default", "additionalProperties"})
+_GOOGLE_DROP_KEYS = frozenset(
+    {
+        "title",
+        "examples",
+        "default",
+        "additionalProperties",
+        # Constraints Pydantic emits (``Literal``, ``gt=``, ``set``, ``tuple``) that Gemini 400s
+        # on: kept as close as its dialect allows (``_approximate_for_google``), and still
+        # enforced on the reply by local validation
+        "const",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "uniqueItems",
+        "prefixItems",
+    }
+)
+
+
+# Maps whose keys are names (a property called ``title``), not schema keywords.
+_SCHEMA_NAME_MAPS = frozenset({"properties", "patternProperties"})
+
+
+_LOCAL_REF = re.compile(r"#/(\$defs|definitions)/([^/]+)")
+
+
+def _pointer_name(segment: str) -> str:
+    """A JSON Pointer segment as a name: ``~1`` is ``/`` and ``~0`` is ``~``, in that order."""
+    return segment.replace("~1", "/").replace("~0", "~")
+
+
+# Keywords that describe a schema without constraining it: the ones beside a ``$ref`` win.
+_ANNOTATIONS = frozenset({"description", "title", "default", "examples"})
+
+
+def _merge_beside_ref(target: dict[str, Any], siblings: dict[str, Any]) -> dict[str, Any] | None:
+    """A definition with the keywords beside its ``$ref``, which JSON Schema applies both.
+
+    ``required`` and ``properties`` add up; any other constraint on both sides must agree,
+    or ``None``: Gemini's dialect has no ``allOf`` to keep the two.
+    """
+    merged = dict(target)
+    for key, value in siblings.items():
+        if key == "required":
+            merged[key] = list(dict.fromkeys([*target.get(key, []), *value]))
+        elif key == "properties":
+            shared = target.get(key, {}).keys() & value.keys()
+            if any(target[key][name] != value[name] for name in shared):
+                return None
+            merged[key] = {**target.get(key, {}), **value}
+        elif key in target and target[key] != value and key not in _ANNOTATIONS:
+            return None
+        else:
+            merged[key] = value
+    return merged
+
+
+def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Replace each local ``$ref`` by a copy of its definition: Gemini's dialect has neither.
+
+    The keywords beside a ``$ref`` apply with it (``_merge_beside_ref``). A reference that
+    cannot be inlined, recursive or contradicted by them, stays, for Gemini to refuse.
+    """
+    groups = {group: schema.get(group) or {} for group in ("$defs", "definitions")}
+
+    def _resolve(node: Any, seen: frozenset[str]) -> Any:
+        if isinstance(node, list):
+            return [_resolve(item, seen) for item in node]
+        if not isinstance(node, dict):
+            return node
+        ref = node.get("$ref")
+        match = _LOCAL_REF.fullmatch(ref) if isinstance(ref, str) else None
+        name = _pointer_name(match.group(2)) if match else None
+        if match and ref not in seen and name in groups[match.group(1)]:
+            siblings = {k: v for k, v in node.items() if k != "$ref"}
+            merged = _merge_beside_ref(groups[match.group(1)][name], siblings)
+            if merged is not None:
+                return _resolve(merged, seen | {match.group(0)})
+        return {k: _resolve(v, seen) for k, v in node.items()}
+
+    root = {k: v for k, v in schema.items() if k not in groups}
+    inlined: dict[str, Any] = _resolve(root, frozenset())
+    return inlined
+
+
+def _approximate_for_google(node: dict[str, Any]) -> None:
+    """In place: what Gemini's dialect can say of the constraints it lacks, before they go."""
+    if isinstance(node.get("const"), str) and "enum" not in node:
+        node["enum"] = [node["const"]]  # Gemini's enum takes strings only
+    for bound in ("minimum", "maximum"):
+        exclusive = node.get(f"exclusive{bound.title()}")
+        if isinstance(exclusive, int | float) and not isinstance(exclusive, bool):
+            node.setdefault(bound, exclusive)
+    if isinstance(node.get("prefixItems"), list) and "items" not in node:
+        node["items"] = {"anyOf": node["prefixItems"]}  # a tuple: any of its item schemas
 
 
 def _strip_unsupported_google_keys(schema: dict[str, Any]) -> dict[str, Any]:
-    """Recursively remove keys Gemini's ``responseSchema`` rejects."""
+    """Inline local references and remove the keys Gemini's schema dialect rejects."""
+    schema = _inline_refs(schema)
 
-    def _walk(node: Any) -> None:
+    def _walk(node: Any, names: bool = False) -> None:
         if isinstance(node, dict):
-            for k in list(node):
-                if k in _GOOGLE_DROP_KEYS:
-                    node.pop(k)
-            for v in node.values():
-                _walk(v)
+            if not names:
+                _approximate_for_google(node)
+                for k in list(node):
+                    if k in _GOOGLE_DROP_KEYS:
+                        node.pop(k)
+            for k, v in node.items():
+                _walk(v, names=not names and k in _SCHEMA_NAME_MAPS)
         elif isinstance(node, list):
             for item in node:
                 _walk(item)
@@ -268,6 +369,10 @@ def extract_parsed(content: str) -> Any:
 def validate_parsed(parsed: Any, response_schema: ResponseSchema, step_id: str) -> Any:
     """Validate *parsed*; return the coerced value (Pydantic instance or dict)."""
     if response_schema.type == "json_object":
+        if not isinstance(parsed, dict):  # an object, as the providers' JSON mode answers (#120)
+            raise TypeError(
+                f"response_schema.type='json_object' expects an object; got {type(parsed).__name__}"
+            )
         return parsed
     if response_schema.type == "pydantic":
         cls = load_pydantic_model(response_schema.model or "")
@@ -287,8 +392,8 @@ def validate_parsed(parsed: Any, response_schema: ResponseSchema, step_id: str) 
     return parsed
 
 
-def format_validation_feedback(error: Exception, step_id: str) -> str:
-    """Retry message after a validation failure. Capped at 800 chars."""
+def _render_validation_error(error: Exception) -> str:
+    """One line per Pydantic error, else the error's text. Capped at 800 chars."""
     rendered = str(error)
     if isinstance(error, ValidationError):
         rendered = "\n".join(
@@ -297,19 +402,99 @@ def format_validation_feedback(error: Exception, step_id: str) -> str:
         )
     if len(rendered) > 800:
         rendered = rendered[:800] + "… (truncated)"
+    return rendered
+
+
+def format_validation_feedback(error: Exception, step_id: str) -> str:
+    """Retry message after a validation failure. Capped at 800 chars."""
     return (
         f"Your previous response failed structured-output validation for step "
-        f"{step_id!r}. Errors:\n{rendered}\n\nRespond again with a single JSON "
-        f"object that conforms to the declared schema. No prose, no markdown "
-        f"fences — just the JSON."
+        f"{step_id!r}. Errors:\n{_render_validation_error(error)}\n\nRespond again "
+        f"with a single JSON object that conforms to the declared schema. No prose, "
+        f"no markdown fences — just the JSON."
+    )
+
+
+# Sent back when a model that must reply through the output tool answers in text instead.
+OUTPUT_TOOL_REMINDER = f"Reply by calling the {OUTPUT_TOOL} tool, with your reply as its arguments."
+
+# The result of a valid output-tool call next to a call that failed, so the model replies again.
+OUTPUT_TOOL_UNUSED = (
+    f"Not used: another call of this response failed. Call {OUTPUT_TOOL} again "
+    "once you have read its result."
+)
+
+
+def output_tool(response_schema: ResponseSchema, step_id: str) -> ToolDefinition:
+    """The tool a step with both ``tools`` and a schema delivers its reply through (#120).
+
+    Tool calling works on every provider, a schema enforced next to tools does not:
+    the reply comes as the arguments of this tool, validated as a structured reply.
+    """
+    schema = schema_dict_for(response_schema, step_id)
+    parameters = _resolve_root_ref(schema or {"type": "object"})
+    if "type" not in parameters and "properties" in parameters:
+        # Properties with no type describe the object the arguments are
+        parameters = _normalize_schema_for_strict({"type": "object", **parameters})
+    if parameters.get("type") != "object":
+        raise ResponseSchemaConfigError(
+            f"a schema delivered through the {OUTPUT_TOOL!r} tool must describe an object."
+        )
+    tool = _OutputTool(
+        name=OUTPUT_TOOL,
+        description=(
+            "Deliver your final reply. Call it once, with the reply as its arguments, "
+            "when you need no other tool."
+        ),
+        parameters=parameters,
+    )
+    tool._strict = schema is not None and response_schema.strict
+    return tool
+
+
+class _OutputTool(ToolDefinition):
+    """The output tool. Its strictness is no field: a recording's request hash stays as it was."""
+
+    _strict: bool = PrivateAttr(default=False)
+
+    @property
+    def strict(self) -> bool:
+        """A strict schema: OpenAI holds the arguments to it, as it does a strict reply (#120)."""
+        return self._strict
+
+
+def _resolve_root_ref(schema: dict[str, Any]) -> dict[str, Any]:
+    """A schema whose root is a local ``$ref`` (Pydantic's, for a model that contains itself),
+    as its definition; ``$defs`` stay, for the references inside it."""
+    ref = schema.get("$ref")
+    match = _LOCAL_REF.fullmatch(ref) if isinstance(ref, str) else None
+    target = (
+        (schema.get(match.group(1)) or {}).get(_pointer_name(match.group(2))) if match else None
+    )
+    if not isinstance(target, dict):
+        return schema
+    return {**target, **{k: v for k, v in schema.items() if k != "$ref"}}
+
+
+def format_output_feedback(error: Exception) -> str:
+    """The result of an output-tool call whose arguments failed validation."""
+    return (
+        f"The arguments of {OUTPUT_TOOL} failed validation. Errors:\n"
+        f"{_render_validation_error(error)}\n\nCall {OUTPUT_TOOL} again with "
+        f"arguments that follow its schema."
     )
 
 
 __all__ = [
+    "OUTPUT_TOOL_REMINDER",
+    "OUTPUT_TOOL_UNUSED",
     "anthropic_system_prefix",
+    "enforce_openai_strict_required",
     "extract_parsed",
+    "format_output_feedback",
     "format_validation_feedback",
     "load_pydantic_model",
+    "output_tool",
     "schema_dict_for",
     "schema_name_for",
     "translate_for_google",

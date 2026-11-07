@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    Tag,
+    field_validator,
+    model_validator,
+)
 
 from agentloom.contracts.stable import Attachment as Attachment
 from agentloom.contracts.stable import Message as Message
@@ -22,6 +30,7 @@ class StepType(StrEnum):
     SUBWORKFLOW = "subworkflow"
     APPROVAL_GATE = "approval_gate"
     EMBED = "embed"
+    AGENT = "agent"
 
 
 class RetryConfig(BaseModel):
@@ -223,6 +232,115 @@ class ResponseSchemaConfigError(ValueError):
     """Workflow-author error in a :class:`ResponseSchema` — never retried."""
 
 
+# The tool through which a step with both ``tools`` and a schema delivers its reply (#120).
+OUTPUT_TOOL = "final_result"
+
+
+class AgentMemory(BaseModel):
+    """The conversation budget and trim policy an agent applies on each of its turns.
+
+    Each one left out keeps the conversation's own.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    token_budget: int | None = Field(default=None, ge=1)
+    trim_policy: Literal["drop_oldest", "drop_pairs", "summarize_oldest"] | None = None
+
+
+class LoopPolicy(BaseModel):
+    """How many model calls an agent's turn may make, and what reaching the cap does."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_iterations: int = Field(default=5, ge=1)
+    on_max_iterations: Literal["error", "warn_and_return"] = "error"
+
+
+class AgentConstraints(BaseModel):
+    """Limits that fail an agent's turn when it breaks them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_cost_usd: float | None = Field(default=None, gt=0)
+    max_latency_ms: int | None = Field(default=None, ge=1)
+    # Plain text, matched case-insensitively against the reply.
+    forbidden_patterns: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
+
+
+# A function name every provider accepts (OpenAI, Anthropic and Gemini's rules together).
+_FUNCTION_NAME = r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
+
+
+class AgentTool(BaseModel):
+    """Another agent offered as a tool that takes a single ``message``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(pattern=_FUNCTION_NAME)
+    agent: AgentDefinition
+    description: str | None = None
+
+    @field_validator("agent", mode="before")
+    @classmethod
+    def _load_agent(cls, value: Any) -> Any:
+        from agentloom.core.agent import resolve_agent
+
+        return resolve_agent(value)
+
+
+def _tool_kind(value: Any) -> str:
+    return "name" if isinstance(value, str) else "agent"
+
+
+# A tool name, or another agent; tagged so a malformed entry reports one error, not one per kind.
+AgentToolEntry = Annotated[
+    Annotated[str, Tag("name")] | Annotated[AgentTool, Tag("agent")],
+    Discriminator(_tool_kind),
+]
+
+
+class AgentDefinition(BaseModel):
+    """A reusable agent: system prompt, tools, memory, loop policy and constraints (#120).
+
+    An ``agent`` step runs one turn of it as an ``llm_call`` with the agent's
+    settings; :class:`agentloom.core.agent.Agent` runs one from Python.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Also the message name of its turns, which OpenAI refuses outside these characters.
+    name: str = Field(pattern=_FUNCTION_NAME)
+    description: str = ""
+    model: str | None = None
+    system_prompt: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    # Names from the workflow's tool registry, and other agents.
+    tools: list[AgentToolEntry] = Field(default_factory=list)
+    memory: AgentMemory | None = None
+    loop_policy: LoopPolicy = Field(default_factory=LoopPolicy)
+    output_schema: ResponseSchema | None = None
+    constraints: AgentConstraints = Field(default_factory=AgentConstraints)
+
+    @model_validator(mode="after")
+    def _validate_tool_names(self) -> AgentDefinition:
+        names = self.tool_names()
+        duplicated = sorted({n for n in names if names.count(n) > 1})
+        if duplicated:
+            raise ValueError(f"Agent {self.name!r}: duplicate tool names {duplicated}")
+        if self.output_schema is not None and OUTPUT_TOOL in names:
+            raise ValueError(
+                f"Agent {self.name!r}: the tool name {OUTPUT_TOOL!r} is reserved for "
+                f"the reply of an agent with an output_schema"
+            )
+        return self
+
+    def tool_names(self) -> list[str]:
+        """The names the agent's tools go by, in declaration order."""
+        return [t if isinstance(t, str) else t.name for t in self.tools]
+
+
 class StepDefinition(BaseModel):
     """Definition of a single workflow step.
 
@@ -283,8 +401,8 @@ class StepDefinition(BaseModel):
     # Output mapping
     output: str | None = None
 
-    # Per-step config
-    timeout: float | None = None
+    # Per-step config; 0 means no limit
+    timeout: float | None = Field(default=None, ge=0)
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
     # Reasoning / extended thinking
@@ -319,14 +437,49 @@ class StepDefinition(BaseModel):
     # itself carries the structured turn.
     conversation: str | None = None
     # Multi-agent speaker name. When set (only meaningful with
-    # ``conversation``), the appended user turn and the assistant reply
-    # are tagged with ``Message.name`` so a shared conversation can carry
-    # several distinct agents (OpenAI forwards ``name`` natively; the
-    # other adapters prepend ``"[<speaker>] …"`` inline). Also lets the
+    # ``conversation``), the assistant reply is tagged with
+    # ``Message.name`` (the user turn holds the caller's words and stays
+    # untagged) so a shared conversation can carry several distinct
+    # agents (OpenAI forwards ``name`` natively; the other adapters
+    # prepend ``"[<speaker>] …"`` inline). Also lets the
     # step's ``system_prompt`` re-assert each turn — without a speaker the
     # system turn is inserted once, but a multi-agent workflow needs each
     # agent's own instruction on its turn.
     speaker: str | None = None
+
+    # Agent step (#120): the agent's definition, inline or as a path resolved like
+    # ``workflow_path`` when the step is validated. Its settings replace the llm_call fields.
+    agent: AgentDefinition | None = None
+
+    @field_validator("agent", mode="before")
+    @classmethod
+    def _load_agent(cls, value: Any) -> Any:
+        from agentloom.core.agent import resolve_agent
+
+        return resolve_agent(value)
+
+    @model_validator(mode="after")
+    def _validate_agent_fields(self) -> StepDefinition:
+        """An ``agent`` step names its agent; the agent's settings come from its definition."""
+        if self.type != StepType.AGENT:
+            if self.agent is not None:
+                raise ValueError(f"Step {self.id!r}: 'agent' applies only to agent steps")
+            return self
+        if self.agent is None:
+            raise ValueError(f"Agent step {self.id!r} requires an 'agent'")
+        # A dumped step (a checkpoint) lists every field: only a value other than the default counts
+        fields = type(self).model_fields
+        overridden = sorted(
+            name
+            for name in self.model_fields_set & _AGENT_SETTINGS
+            if getattr(self, name) != fields[name].get_default(call_default_factory=True)
+        )
+        if overridden:
+            raise ValueError(
+                f"Agent step {self.id!r}: {overridden} come from the agent's definition "
+                f"and cannot be set on the step"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_tools_and_response_schema_are_exclusive(self) -> StepDefinition:
@@ -339,6 +492,23 @@ class StepDefinition(BaseModel):
                 f"JSON schema (no tool dispatch)."
             )
         return self
+
+
+# StepDefinition fields an agent step takes from its agent instead.
+_AGENT_SETTINGS = frozenset(
+    {
+        "model",
+        "system_prompt",
+        "temperature",
+        "max_tokens",
+        "thinking",
+        "tools",
+        "tool_choice",
+        "max_tool_iterations",
+        "response_schema",
+        "speaker",
+    }
+)
 
 
 class SandboxConfig(BaseModel):
@@ -387,7 +557,7 @@ class WorkflowConfig(BaseModel):
     api_key_env: str | None = None
     max_retries: int = 3
     budget_usd: float | None = None
-    timeout: float | None = None
+    timeout: float | None = Field(default=None, ge=0)  # 0 means no limit, as a step's
     # ``ge=1`` catches both ``0`` (which makes ``anyio.CapacityLimiter(0)``
     # block every ``start_soon`` and deadlocks the workflow with no timeout)
     # and negatives (which used to surface as a cryptic

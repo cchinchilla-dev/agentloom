@@ -160,6 +160,18 @@ class TestAnthropicProvider:
         assert content[1]["source"]["data"] == "pdf_b64"
         await provider.close()
 
+    def test_every_system_turn_reaches_the_system_prompt(self) -> None:
+        """A speaker's prompt and a conversation summary are both system turns (#120)."""
+        system, messages = AnthropicProvider._format_messages(
+            [
+                {"role": "system", "content": "You are Bob."},
+                {"role": "system", "content": "Summary of earlier turns: x"},
+                {"role": "user", "content": "hi"},
+            ]
+        )
+        assert system == "You are Bob.\n\nSummary of earlier turns: x"
+        assert messages == [{"role": "user", "content": "hi"}]
+
     async def test_audio_attachment_raises(self) -> None:
         from agentloom.providers.multimodal import AudioBlock, TextBlock
 

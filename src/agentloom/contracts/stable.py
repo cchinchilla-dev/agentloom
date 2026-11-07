@@ -45,6 +45,8 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    # Gemini 3's ``thoughtSignature``, required back on its part; an opaque blob, out of dumps
+    signature: str | None = Field(default=None, exclude=True)
 
 
 class Message(BaseModel):
@@ -149,6 +151,15 @@ class TokenUsage(BaseModel):
         which field to add.
         """
         return self.completion_tokens + self.reasoning_tokens
+
+    def __add__(self, other: TokenUsage) -> TokenUsage:
+        """The tokens of two calls together."""
+        return TokenUsage(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
+        )
 
 
 class ResponseMeta(BaseModel):

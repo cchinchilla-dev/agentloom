@@ -268,6 +268,13 @@ class TestValidateParsed:
         rs = ResponseSchema(type="json_object")
         assert validate_parsed({"anything": 1}, rs, "step") == {"anything": 1}
 
+    @pytest.mark.parametrize("parsed", [None, [1, 2], "text", 3])
+    def test_json_object_mode_refuses_what_is_no_object(self, parsed: Any) -> None:
+        """A reply of ``null`` is no reply: it is asked for again, as a schema's mismatch (#120)."""
+        rs = ResponseSchema(type="json_object")
+        with pytest.raises(TypeError, match="expects an object"):
+            validate_parsed(parsed, rs, "step")
+
     def test_pydantic_coerces_to_model_instance(self) -> None:
         rs = ResponseSchema(
             type="pydantic", model="tests.providers.test_structured_output._Classification"
@@ -868,6 +875,157 @@ class TestStructuredHelperEdgeCases:
         assert mime == "application/json"
         assert schema is not None
         assert schema["type"] == "object"
+
+    def test_translate_for_google_inlines_local_refs(self) -> None:
+        """Gemini's dialect has no ``$defs`` or ``$ref``: a nested model is inlined (#120)."""
+        item = {
+            "type": "object",
+            "description": "An item.",
+            "properties": {"tag": {"$ref": "#/definitions/Tag"}},
+        }
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {
+                    "items": {"type": "array", "items": {"$ref": "#/$defs/Item"}},
+                    "main": {"$ref": "#/$defs/Item", "description": "The first one."},
+                },
+                "$defs": {"Item": item},
+                "definitions": {"Tag": {"type": "string", "title": "Tag"}},
+            },
+        )
+        _, schema = translate_for_google(rs, "step")
+        inlined = {
+            "type": "object",
+            "description": "An item.",
+            "properties": {"tag": {"type": "string"}},
+        }
+        assert schema == {
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": inlined},
+                "main": {**inlined, "description": "The first one."},
+            },
+        }
+
+    def test_translate_for_google_decodes_escaped_names(self) -> None:
+        """A JSON Pointer writes ``/`` as ``~1`` and ``~`` as ``~0``, in that order (RFC 6901)."""
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {"a": {"$ref": "#/$defs/A~1B"}, "b": {"$ref": "#/$defs/x~01y"}},
+                "$defs": {"A/B": {"type": "string"}, "x~1y": {"type": "integer"}},
+            },
+        )
+        _, schema = translate_for_google(rs, "step")
+        assert schema == {
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
+        }
+
+    def test_translate_for_google_adds_the_constraints_beside_a_ref(self) -> None:
+        """JSON Schema applies the keywords beside a ``$ref`` with its definition, not instead."""
+        order = {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        }
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {
+                    "x": {
+                        "$ref": "#/$defs/Order",
+                        "type": "object",
+                        "properties": {"code": {"type": "string"}},
+                        "required": ["code", "id"],
+                    }
+                },
+                "$defs": {"Order": order},
+            },
+        )
+        _, schema = translate_for_google(rs, "step")
+        assert schema is not None
+        assert schema["properties"]["x"] == {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "code": {"type": "string"}},
+            "required": ["id", "code"],
+        }
+
+    @pytest.mark.parametrize(
+        "beside",
+        [{"properties": {"id": {"type": "integer"}}}, {"minProperties": 2}],
+        ids=["a property", "a keyword"],
+    )
+    def test_translate_for_google_leaves_a_ref_its_neighbours_contradict(
+        self, beside: dict[str, Any]
+    ) -> None:
+        """Both cannot hold in Gemini's dialect, which has no ``allOf``: it refuses the ``$ref``."""
+        order = {"type": "object", "properties": {"id": {"type": "string"}}, "minProperties": 1}
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {"x": {"$ref": "#/$defs/Order", **beside}},
+                "$defs": {"Order": order},
+            },
+        )
+        _, schema = translate_for_google(rs, "step")
+        assert schema is not None
+        assert schema["properties"]["x"] == {"$ref": "#/$defs/Order", **beside}
+
+    def test_translate_for_google_leaves_a_recursive_ref(self) -> None:
+        """A model that contains itself cannot be inlined: Gemini refuses it with a 400."""
+        node = {"type": "object", "properties": {"child": {"$ref": "#/$defs/Node"}}}
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {"root": {"$ref": "#/$defs/Node"}},
+                "$defs": {"Node": node},
+            },
+        )
+        _, schema = translate_for_google(rs, "step")
+        assert schema is not None
+        assert schema["properties"]["root"]["properties"]["child"] == {"$ref": "#/$defs/Node"}
+        assert "$defs" not in schema
+
+    def test_translate_for_google_approximates_the_constraints_gemini_lacks(self) -> None:
+        """Gemini 400s on these: what its dialect can say stays, local validation does the rest."""
+        pair = [{"type": "string"}, {"type": "integer"}]
+        rs = ResponseSchema(
+            type="json_schema",
+            schema_={
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "const": "a"},
+                    "one": {"type": "integer", "const": 1},
+                    "n": {"type": "integer", "exclusiveMinimum": 0},
+                    "m": {"type": "number", "exclusiveMaximum": 5, "maximum": 4},
+                    "flag": {"type": "integer", "exclusiveMinimum": True},
+                    "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": True},
+                    "pair": {"type": "array", "prefixItems": pair, "minItems": 2, "maxItems": 2},
+                    "const": {"type": "string"},
+                },
+            },
+        )
+        _, schema = translate_for_google(rs, "step")
+        assert schema == {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["a"]},
+                "one": {"type": "integer"},
+                "n": {"type": "integer", "minimum": 0},
+                "m": {"type": "number", "maximum": 4},
+                "flag": {"type": "integer"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "pair": {"type": "array", "items": {"anyOf": pair}, "minItems": 2, "maxItems": 2},
+                "const": {"type": "string"},
+            },
+        }
 
     def test_translate_for_google_json_object_returns_no_schema(self) -> None:
         # ``json_object`` mode → just the mime type, no ``responseSchema``.

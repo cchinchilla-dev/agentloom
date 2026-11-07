@@ -335,6 +335,15 @@ class TestCheckpoint:
         assert step_result.status == StepStatus.SUCCESS
         assert step_result.output == "restored_output"
 
+    @pytest.mark.usefixtures("latin1_locale")
+    async def test_a_checkpoint_is_read_as_utf8_whatever_the_locale(self, tmp_path: Path) -> None:
+        path = tmp_path / "checkpoint.json"
+        checkpoint = json.dumps({"state": {"city": "Málaga"}}, ensure_ascii=False)
+        path.write_text(checkpoint, encoding="utf-8")
+
+        restored = await StateManager.from_checkpoint(path)
+        assert restored._get_sync_unsafe("city") == "Málaga"
+
     async def test_checkpoint_creates_parent_dirs(self, tmp_path: Path) -> None:
         sm = StateManager(initial_state={"a": 1})
         nested_path = tmp_path / "sub" / "dir" / "checkpoint.json"

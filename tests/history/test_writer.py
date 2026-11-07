@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+import pytest
+
 from agentloom.core.models import (
     StepDefinition,
     StepType,
@@ -26,8 +28,6 @@ from agentloom.history.writer import (
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def _make_workflow(name: str = "wf-test") -> WorkflowDefinition:
@@ -207,6 +207,13 @@ class TestLoadRecords:
         (tmp_path / "list.json").write_text(json.dumps(["not", "a", "record"]))
         records = load_records(tmp_path)
         assert records == []
+
+    @pytest.mark.usefixtures("latin1_locale")
+    async def test_a_record_is_read_as_utf8_whatever_the_locale(self, tmp_path: Path) -> None:
+        record = {"run_id": "r1", "workflow_name": "café"}
+        (tmp_path / "r1.json").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+        assert load_records(tmp_path)[0]["workflow_name"] == "café"
 
     async def test_falls_back_to_mtime_when_timestamp_missing(self, tmp_path: Path) -> None:
         # No ``timestamp`` field → ordering uses the file's mtime so the

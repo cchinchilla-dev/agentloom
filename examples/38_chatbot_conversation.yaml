@@ -12,8 +12,8 @@ description: |
   --model claude-haiku-4-5-20251001`` at the same file to exercise a real
   API. Producing a fresh recording:
 
-    agentloom run examples/38_chatbot_conversation.yaml \\
-      --provider openai --model gpt-4o-mini \\
+    agentloom run examples/38_chatbot_conversation.yaml \
+      --provider openai --model gpt-4o-mini \
       --record recordings/chatbot_conversation.json
 
 config:

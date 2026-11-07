@@ -10,6 +10,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+from agentloom.cli.agent import agent_app  # noqa: E402
 from agentloom.cli.callback_server import callback_server  # noqa: E402
 from agentloom.cli.history import history  # noqa: E402
 from agentloom.cli.info import info  # noqa: E402
@@ -31,6 +32,7 @@ app.command("verify-determinism")(verify_determinism)
 app.command("visualize")(visualize)
 app.command("info")(info)
 app.command("callback-server")(callback_server)
+app.add_typer(agent_app, name="agent")
 
 
 if __name__ == "__main__":

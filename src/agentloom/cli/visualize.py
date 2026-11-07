@@ -59,6 +59,9 @@ def _print_ascii(workflow: object, dag: object) -> None:
         StepType.TOOL: "TOOL",
         StepType.ROUTER: "IF/ELSE",
         StepType.SUBWORKFLOW: "SUB",
+        StepType.EMBED: "EMBED",
+        StepType.APPROVAL_GATE: "APPROVAL",
+        StepType.AGENT: "AGENT",
     }
 
     typer.echo(f"\n  Workflow: {w.name}")

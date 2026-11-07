@@ -15,7 +15,7 @@ description: |
   Ollama ``format`` schema).
 
   Producing a fresh recording:
-    agentloom run examples/36_structured_output.yaml --provider openai \\
+    agentloom run examples/36_structured_output.yaml --provider openai \
       --model gpt-4o-mini --record recordings/structured_output.json
 
 config:

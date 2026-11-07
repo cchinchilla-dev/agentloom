@@ -5,8 +5,13 @@ the state manager write into it. For each step attempt: a ``task_sent`` from
 every step it depends on that finished, its ``task_received``, its tool calls
 and returns, and, when it succeeds, its ``response_sent`` and one
 ``state_transition`` per state key it wrote. An agent is the step's
-``speaker``, or the step itself. A retry forgets what the failed attempt
-logged, the steps of a subworkflow included, as the recorder forgets its turns.
+``speaker``, the agent an ``agent`` step runs, or the step itself. An agent
+called as a tool logs its turn under its own name and the step id its model
+calls are recorded under: a ``task_sent`` from its caller after the call, its
+``task_received``, tool calls and returns, and its ``response_sent``, which the
+caller's return of the call follows; it writes no state of the workflow. A retry
+forgets what the failed attempt logged, the steps of a subworkflow and the agents
+it called included, as the recorder forgets its turns.
 
 Event ids derive from the step path, the event type and the position, so two
 runs that do the same thing write the same log, and ``order_events`` sorts it
@@ -47,6 +52,9 @@ StepPath = tuple[str, ...]
 
 _NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, SCHEMA_URI)
 _ACTIVE: ContextVar[EventLog | None] = ContextVar("agentloom_inter_agent_log", default=None)
+# An agent called as a tool is no step of the engine: its events go under a path of their own
+_CALLED: ContextVar[StepPath | None] = ContextVar("agentloom_called_agent", default=None)
+_CALL: ContextVar[int] = ContextVar("agentloom_tool_call", default=0)
 
 
 def payload_hash(value: Any) -> str:
@@ -106,13 +114,54 @@ def active_log() -> EventLog | None:
 def log_tools(calls: list[tuple[str, Any]], results: list[tuple[Any, bool]]) -> None:
     """Log a round of tool calls of the running step, if a log is active."""
     if (log := _ACTIVE.get()) is not None:
-        log.tool_round(running_steps(), calls, results)
+        log.tool_round(_running(), calls, results)
 
 
 def log_write(key: str, value: Any) -> None:
     """Log a state write of the running step, if a log is active."""
     if (log := _ACTIVE.get()) is not None:
-        log.write(running_steps(), key, value)
+        log.write(_running(), key, value)
+
+
+def _running() -> StepPath:
+    """Where the running events go: under the agent called as a tool, else the step."""
+    return _CALLED.get() or running_steps()
+
+
+def calling(index: int) -> None:
+    """Mark the running tool call as the ``index``-th of its round, for the rest of its task."""
+    _CALL.set(index)
+
+
+@contextmanager
+def called_agent(tool: str, number: int, agent: str, message: str) -> Iterator[None]:
+    """Log the turn of ``agent``, the ``number``-th call of ``tool``, under its own name."""
+    log, caller = _ACTIVE.get(), _running()
+    if log is None or not log.start_called(caller, tool, number, agent, message, _CALL.get()):
+        with paused_events():
+            yield
+        return
+    previous = _CALLED.set((*caller, f"{tool}#{number}"))
+    try:
+        yield
+    finally:
+        _CALLED.reset(previous)
+
+
+def log_reply(output: Any) -> None:
+    """The agent called as a tool that is running answered ``output``."""
+    if (log := _ACTIVE.get()) is not None and (path := _CALLED.get()) is not None:
+        log.finish_step(path, output)
+
+
+@contextmanager
+def paused_events() -> Iterator[None]:
+    """Log nothing inside the block: a turn that is no step of the run, as ``Agent.invoke``'s."""
+    previous = _ACTIVE.set(None)
+    try:
+        yield
+    finally:
+        _ACTIVE.reset(previous)
 
 
 @contextmanager
@@ -168,6 +217,8 @@ class _Step:
     """What one attempt of a step has logged so far."""
 
     agent: str
+    label: str  # the events' step_id
+    call: tuple[int, int] | None = None  # (round, index) of the call, for an agent called as a tool
     events: list[InterAgentEvent] = field(default_factory=list)
     received: uuid.UUID | None = None
     tail: list[uuid.UUID] = field(default_factory=list)  # what the next event follows
@@ -191,7 +242,7 @@ class EventLog:
         """An attempt of the step at ``path`` starts after the steps it ``depends_on``."""
         for logged in [p for p in self._steps if p[: len(path)] == path]:
             del self._steps[logged]  # a retry: the failed attempt and its subworkflow steps
-        step = self._steps[path] = _Step(agent)
+        step = self._steps[path] = _Step(agent, ".".join(path))
         sent: list[TaskSentEvent] = []
         for upstream in sorted(depends_on):
             source = self._steps.get((*path[:-1], upstream))
@@ -202,7 +253,7 @@ class EventLog:
                     type="task_sent",
                     event_id=self._id(path, "task_sent", upstream),
                     agent_id=source.agent,
-                    step_id=".".join((*path[:-1], upstream)),
+                    step_id=source.label,
                     recipient_agent_id=agent,
                     parent_event_ids=[source.response],
                     payload_hash=payload_hash({"output": source.output, "state": source.writes}),
@@ -218,7 +269,7 @@ class EventLog:
             type="task_received",
             event_id=self._id(path, "task_received"),
             agent_id=agent,
-            step_id=".".join(path),
+            step_id=step.label,
             parent_event_ids=parents,
             payload_hash=payload_hash(sorted(e.payload_hash for e in sent)),
             timestamp_ns=time.monotonic_ns(),
@@ -226,6 +277,42 @@ class EventLog:
         step.events.extend([*sent, received])
         step.received = received.event_id
         step.tail = [received.event_id]
+
+    def start_called(
+        self, caller: StepPath, tool: str, number: int, agent: str, message: str, index: int
+    ) -> bool:
+        """``agent`` starts as the ``number``-th call of ``tool``, ``index`` in its round."""
+        source = self._steps.get(caller)
+        if source is None:
+            return False
+        path = (*caller, f"{tool}#{number}")
+        step = self._steps[path] = _Step(
+            agent, f"{source.label}::{tool}#{number}", (source.rounds, index)
+        )
+        sent = TaskSentEvent(
+            type="task_sent",
+            event_id=self._id(path, "task_sent"),
+            agent_id=source.agent,
+            step_id=source.label,
+            recipient_agent_id=agent,
+            # The caller's call, logged once its round ends, has an id known now
+            parent_event_ids=[self._id(caller, "tool_call", f"{source.rounds}.{index}")],
+            payload_hash=payload_hash({"message": message}),
+            timestamp_ns=time.monotonic_ns(),
+        )
+        received = TaskReceivedEvent(
+            type="task_received",
+            event_id=self._id(path, "task_received"),
+            agent_id=agent,
+            step_id=step.label,
+            parent_event_ids=[sent.event_id],
+            payload_hash=payload_hash([sent.payload_hash]),
+            timestamp_ns=time.monotonic_ns(),
+        )
+        step.events.extend([sent, received])
+        step.received = received.event_id
+        step.tail = [received.event_id]
+        return True
 
     def tool_round(
         self, path: StepPath, calls: list[tuple[str, Any]], results: list[tuple[Any, bool]]
@@ -235,6 +322,7 @@ class EventLog:
         if step is None:
             return
         round_, step.rounds = step.rounds, step.rounds + 1
+        answered = {s.call: s.response for p, s in self._steps.items() if p[:-1] == path and s.call}
         returns: list[uuid.UUID] = []
         pairs = zip(calls, results, strict=True)
         for i, ((name, arguments), (result, success)) in enumerate(pairs):
@@ -242,7 +330,7 @@ class EventLog:
                 type="tool_call",
                 event_id=self._id(path, "tool_call", f"{round_}.{i}"),
                 agent_id=step.agent,
-                step_id=".".join(path),
+                step_id=step.label,
                 tool_name=name,
                 parent_event_ids=sorted(step.tail),
                 payload_hash=payload_hash(arguments),
@@ -252,9 +340,11 @@ class EventLog:
                 type="tool_return",
                 event_id=self._id(path, "tool_return", f"{round_}.{i}"),
                 agent_id=step.agent,
-                step_id=".".join(path),
+                step_id=step.label,
                 tool_name=name,
-                parent_event_ids=[call.event_id],
+                parent_event_ids=sorted(
+                    {call.event_id, *filter(None, [answered.get((round_, i))])}
+                ),
                 payload_hash=payload_hash({"result": result, "success": success}),
                 timestamp_ns=time.monotonic_ns(),
             )
@@ -265,7 +355,7 @@ class EventLog:
     def write(self, path: StepPath, key: str, value: Any) -> None:
         """The step at ``path`` wrote ``value`` to the state ``key``."""
         step = self._steps.get(path)
-        if step is not None:
+        if step is not None and step.call is None:  # a called agent's state is its own
             step.writes[key] = payload_hash(value)
 
     def finish_step(self, path: StepPath, output: Any) -> None:
@@ -275,12 +365,16 @@ class EventLog:
             return
         step.output = payload_hash(output)
         # A subworkflow step answers once its own steps have answered.
-        inner = [s.response for p, s in self._steps.items() if p[:-1] == path and s.response]
+        inner = [
+            s.response
+            for p, s in self._steps.items()
+            if p[:-1] == path and s.response and s.call is None
+        ]
         response = ResponseSentEvent(
             type="response_sent",
             event_id=self._id(path, "response_sent"),
             agent_id=step.agent,
-            step_id=".".join(path),
+            step_id=step.label,
             parent_event_ids=sorted({*step.tail, *inner}),
             payload_hash=step.output,
             timestamp_ns=time.monotonic_ns(),
@@ -293,7 +387,7 @@ class EventLog:
                     type="state_transition",
                     event_id=self._id(path, "state_transition", key),
                     agent_id=step.agent,
-                    step_id=".".join(path),
+                    step_id=step.label,
                     key=key,
                     parent_event_ids=[response.event_id],
                     payload_hash=step.writes[key],

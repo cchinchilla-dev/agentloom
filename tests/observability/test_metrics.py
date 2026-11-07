@@ -32,6 +32,7 @@ class TestMetricsDisabled:
         mm.record_mock_replay("wf", "step_id")
         mm.record_mock_fault("wf", "timeout")
         mm.record_recording_capture("anthropic", "m", 0.5)
+        mm.record_agent_turn("support", "success", 2)
         mm.set_budget_remaining("wf", 0.5)
         mm.set_circuit_state("openai", 1)
         mm.shutdown()
@@ -80,6 +81,18 @@ class TestMetricsEnabled:
         mm.record_tokens("openai", "gpt-4o-mini", 100, 50)
         if mm._backend == "otel":
             mm.shutdown()
+
+    def test_record_agent_turn(self) -> None:
+        mm = MetricsManager(enabled=True)
+        if mm._backend != "otel":
+            return
+        counter_spy, histogram_spy = MagicMock(), MagicMock()
+        mm._agent_counter = counter_spy
+        mm._agent_iterations_histogram = histogram_spy
+        mm.record_agent_turn("support", "failed", 3)
+
+        counter_spy.add.assert_called_once_with(1, {"name": "support", "status": "failed"})
+        histogram_spy.record.assert_called_once_with(3, {"name": "support"})
 
     def test_record_tool_call(self) -> None:
         # Records both the per-tool counter (with status label) and the

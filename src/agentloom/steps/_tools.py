@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -10,13 +11,27 @@ from typing import Any
 
 import anyio
 
-from agentloom.core.inter_agent import log_tools
+from agentloom.core.inter_agent import calling, log_tools
 from agentloom.core.models import ToolDefinition
 from agentloom.providers.base import ToolCall
+
+# The key a call's arguments hold their raw text under when it is not a JSON object.
+INVALID_ARGUMENTS = "__agentloom_invalid_arguments__"
 
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+class FailsStep(Exception):  # noqa: N818 — it carries the failure, it is not one
+    """Raised by an agent called as a tool: ``error`` fails the calling step (#120).
+
+    Any other exception of a tool goes back to the model as the call's error.
+    """
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
 
 
 logger = logging.getLogger("agentloom.steps")
@@ -24,17 +39,24 @@ logger = logging.getLogger("agentloom.steps")
 
 def translate_tools_for_openai(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
     """OpenAI shape: ``[{"type": "function", "function": {name, description, parameters}}]``."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters or {"type": "object", "properties": {}},
-            },
-        }
-        for t in tools
-    ]
+    return [{"type": "function", "function": _openai_function(t)} for t in tools]
+
+
+def _openai_function(tool: ToolDefinition) -> dict[str, Any]:
+    function: dict[str, Any] = {
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.parameters or {"type": "object", "properties": {}},
+    }
+    if getattr(tool, "strict", False):
+        # The output tool of a strict schema: its arguments are held to it, as a strict
+        # reply is, every property listed in ``required`` as strict mode needs (#120)
+        from agentloom.steps._structured import enforce_openai_strict_required
+
+        parameters = copy.deepcopy(function["parameters"])
+        enforce_openai_strict_required(parameters)
+        function.update(parameters=parameters, strict=True)
+    return function
 
 
 def translate_tools_for_anthropic(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
@@ -54,15 +76,20 @@ def translate_tools_for_google(tools: list[ToolDefinition]) -> list[dict[str, An
 
     Google groups all functions under one ``Tool`` object; we put them all
     in a single declaration list since AgentLoom doesn't yet expose tool
-    grouping (everything is a function).
+    grouping (everything is a function). Parameters lose the keys Gemini's
+    schema dialect rejects, as a ``responseSchema`` does: an agent's output
+    tool (#120) carries ``additionalProperties``.
     """
+    from agentloom.steps._structured import _strip_unsupported_google_keys
+
     return [
         {
             "function_declarations": [
                 {
                     "name": t.name,
                     "description": t.description,
-                    "parameters": t.parameters or {"type": "object", "properties": {}},
+                    "parameters": _strip_unsupported_google_keys(copy.deepcopy(t.parameters))
+                    or {"type": "object", "properties": {}},
                 }
                 for t in tools
             ]
@@ -133,9 +160,13 @@ def parse_tool_calls_from_openai(message: dict[str, Any]) -> list[ToolCall]:
             args: dict[str, Any] = raw_args
         elif isinstance(raw_args, str):
             try:
-                args = json.loads(raw_args or "{}")
+                # vLLM sends "" for a tool without parameters: a call without arguments
+                decoded = json.loads(raw_args or "{}")
             except json.JSONDecodeError:
-                args = {}
+                decoded = None
+            # Cut short (a reply at its token limit) or not an object: the call gets an error,
+            # not ``{}``; kept in the arguments, a recording replays it the same way
+            args = decoded if isinstance(decoded, dict) else {INVALID_ARGUMENTS: raw_args}
         else:
             args = {}
         calls.append(ToolCall(id=call_id, name=call_name, arguments=args))
@@ -172,6 +203,7 @@ def parse_tool_calls_from_google(content_parts: list[dict[str, Any]]) -> list[To
                 id=f"google-{idx}",
                 name=fc.get("name", ""),
                 arguments=fc.get("args", {}) or {},
+                signature=part.get("thoughtSignature"),
             )
         )
     return calls
@@ -198,6 +230,7 @@ async def dispatch_tool_calls(
     served = tape.serve(step_id, calls) if tape is not None else [None] * len(calls)
 
     async def _run(idx: int, call: ToolCall) -> None:
+        calling(idx)  # an agent called as a tool links its events to this call
         start = time.monotonic()
         recorded = served[idx]
         text, success = recorded if recorded is not None else await _execute(call, tool_registry)
@@ -223,9 +256,15 @@ async def dispatch_tool_calls(
                 except Exception:
                     logger.debug("on_tool_call hook failed", exc_info=True)
 
-    async with anyio.create_task_group() as tg:
-        for idx, call in enumerate(calls):
-            tg.start_soon(_run, idx, call)
+    try:
+        async with anyio.create_task_group() as tg:
+            for idx, call in enumerate(calls):
+                tg.start_soon(_run, idx, call)
+    except ExceptionGroup as group:
+        # The call that fails the step, as it was raised, not anyio's wrapper; one a retry would
+        # not fix (a stale replay) first, or a transient failure next to it would retry the step
+        errors = [getattr(e, "error", e) for e in group.exceptions]
+        raise next((e for e in errors if not getattr(e, "is_retryable", True)), errors[0]) from None
 
     log_tools([(c.name, c.arguments) for c, _, _ in results], [(r, ok) for _, r, ok in results])
     if tape is not None:
@@ -238,9 +277,14 @@ async def _execute(call: ToolCall, tool_registry: Any) -> tuple[str, bool]:
     try:
         tool = tool_registry.get(call.name)
     except KeyError as e:
-        return f"tool '{call.name}' not registered: {e}", False
+        # Its message, without the quotes ``KeyError.__str__`` adds.
+        return f"tool '{call.name}' not registered: {e.args[0] if e.args else e}", False
+    if INVALID_ARGUMENTS in call.arguments:
+        return f"tool arguments are not valid JSON: {call.arguments[INVALID_ARGUMENTS]!r}", False
     try:
         outcome = await tool.execute(**call.arguments)
+    except FailsStep:
+        raise
     except Exception as e:  # noqa: BLE001 — reported back to the model
         logger.warning("Tool '%s' failed: %s", call.name, e)
         return f"tool execution failed: {e}", False
@@ -264,7 +308,12 @@ def build_assistant_message_with_tool_calls(
         parts: list[dict[str, Any]] = []
         if content:
             parts.append({"text": content})
-        parts.extend({"functionCall": {"name": c.name, "args": c.arguments}} for c in calls)
+        for c in calls:
+            part: dict[str, Any] = {"functionCall": {"name": c.name, "args": c.arguments}}
+            if c.signature:
+                # Gemini 3 refuses the next request without it on the same part
+                part["thoughtSignature"] = c.signature
+            parts.append(part)
         return {"role": "model", "parts": parts}
     if provider == "ollama":
         # Ollama expects ``arguments`` as a dict (not a JSON-encoded string)

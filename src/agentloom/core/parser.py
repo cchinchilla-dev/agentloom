@@ -33,7 +33,7 @@ class WorkflowParser:
             ValidationError: If the YAML is invalid or the workflow is malformed.
         """
         path = Path(path_or_str)
-        text = path.read_text() if path.exists() else str(path_or_str)
+        text = path.read_text(encoding="utf-8") if path.exists() else str(path_or_str)
 
         try:
             raw = yaml.safe_load(text)

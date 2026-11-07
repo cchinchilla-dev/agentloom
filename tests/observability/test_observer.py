@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from agentloom.observability.noop import NoopObserver
 from agentloom.observability.observer import WorkflowObserver
 
 
@@ -97,6 +98,52 @@ class TestStepLifecycle:
         observer.on_step_end("step1", "llm_call", "success", 100.0)
         attribute_keys = [call.args[0] for call in span.set_attribute.call_args_list]
         assert "gen_ai.usage.reasoning.output_tokens" not in attribute_keys
+
+
+class TestAgentTurn:
+    """An agent step's turn on its span and in the metrics (#120)."""
+
+    def test_the_turn_stamps_the_step_span_and_the_metrics(self) -> None:
+        tracing, metrics = MagicMock(), MagicMock()
+        observer = WorkflowObserver(tracing=tracing, metrics=metrics)
+        observer.on_step_start("ask", "agent")
+        span = tracing.start_span.return_value
+        observer.on_agent_turn(
+            step_id="ask",
+            agent="support",
+            status="success",
+            iterations=3,
+            tool_calls=2,
+            cost_usd=0.25,
+            output_valid=True,
+        )
+
+        metrics.record_agent_turn.assert_called_once_with("support", "success", 3)
+        attributes = {call.args[0]: call.args[1] for call in span.set_attribute.call_args_list}
+        assert attributes == {
+            "gen_ai.operation.name": "invoke_agent",
+            "gen_ai.agent.name": "support",
+            "agent.iterations": 3,
+            "agent.tool_calls": 2,
+            "agent.cost_usd": 0.25,
+            "agent.output_valid": True,
+        }
+
+    def test_the_noop_observer_takes_a_turn(self) -> None:
+        NoopObserver().on_agent_turn(
+            step_id="ask", agent="support", status="success", iterations=1, tool_calls=0, cost_usd=0
+        )
+
+    def test_an_agent_without_a_schema_leaves_output_valid_out(self) -> None:
+        tracing = MagicMock()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_step_start("ask", "agent")
+        span = tracing.start_span.return_value
+        observer.on_agent_turn(
+            step_id="ask", agent="support", status="failed", iterations=1, tool_calls=0, cost_usd=0
+        )
+
+        assert "agent.output_valid" not in [c.args[0] for c in span.set_attribute.call_args_list]
 
 
 class TestRunIdPropagation:

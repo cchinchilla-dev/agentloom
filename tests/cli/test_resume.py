@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import yaml
 from typer.testing import CliRunner
 
 from agentloom.checkpointing.base import CheckpointData
@@ -17,13 +20,16 @@ from agentloom.core.models import (
     WorkflowDefinition,
 )
 
+if TYPE_CHECKING:
+    import pytest
+
 runner = CliRunner()
 
 
-def _make_workflow() -> WorkflowDefinition:
+def _make_workflow(provider: str = "openai") -> WorkflowDefinition:
     return WorkflowDefinition(
         name="resume-test",
-        config=WorkflowConfig(provider="mock", model="mock-model"),
+        config=WorkflowConfig(provider=provider, model="mock-model"),
         state={"input": "hello"},
         steps=[
             StepDefinition(
@@ -66,6 +72,15 @@ def _write_checkpoint(
 
 
 class TestResumeCommand:
+    def test_resume_imports_the_projects_schemas(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """As ``run``: a response_schema model of the working directory imports (#120)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "path", [p for p in sys.path if p not in ("", str(Path.cwd()))])
+        runner.invoke(app, ["resume", "nonexistent", "--checkpoint-dir", str(tmp_path)])
+        assert sys.path[0] == str(Path.cwd())
+
     def test_missing_run_id(self, tmp_path: Path) -> None:
         result = runner.invoke(app, ["resume", "nonexistent", "--checkpoint-dir", str(tmp_path)])
         assert result.exit_code != 0
@@ -189,7 +204,7 @@ class TestResumeCommand:
                         str(tmp_path),
                         "--lite",
                         "--provider",
-                        "mock",
+                        "anthropic",
                         "--model",
                         "mock-v2",
                     ],
@@ -230,6 +245,18 @@ class TestResumeCommand:
 
         assert result.exit_code != 0
 
+    def test_resume_runs_a_mock_workflow_offline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        _write_checkpoint(tmp_path, "run-mock", workflow=_make_workflow("mock"))
+        argv = ["resume", "run-mock", "--checkpoint-dir", str(tmp_path), "--lite", "--json"]
+        result = runner.invoke(app, argv)
+        assert result.exit_code == 0, result.output
+        parsed = json.loads(result.output[result.output.index("{") :])
+        assert parsed["final_state"]["result_a"] == "Mock response"
+
     def test_resume_generic_openai_without_base_url(self, tmp_path: Path) -> None:
         """``--provider generic_openai`` on a workflow without ``base_url`` fails cleanly (#48)."""
         _write_checkpoint(tmp_path, "run-generic", status="failed")
@@ -253,7 +280,7 @@ def _approval_workflow() -> WorkflowDefinition:
     """Workflow with an approval gate."""
     return WorkflowDefinition(
         name="approval-cli-test",
-        config=WorkflowConfig(provider="mock", model="mock-model"),
+        config=WorkflowConfig(provider="openai", model="mock-model"),
         state={"input": "hello"},
         steps=[
             StepDefinition(
@@ -404,3 +431,29 @@ class TestResumeApproval:
 
         assert result.exit_code != 0
         assert "not paused at an approval gate" in (result.output + (result.stderr or ""))
+
+    def test_resume_replays_the_recording_of_a_mock_responses_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        workflow = tmp_path / "wf.yaml"
+        workflow.write_text(yaml.safe_dump(_approval_workflow().model_dump(mode="json")))
+        (tmp_path / "rec.json").write_text(
+            json.dumps({step: {"content": f"recorded {step}"} for step in ("draft", "send")})
+        )
+        checkpoints = tmp_path / "checkpoints"
+        monkeypatch.chdir(tmp_path)
+        run = runner.invoke(
+            app,
+            ["run", str(workflow), "--mock-responses", "rec.json", "--lite"]
+            + ["--checkpoint", "--checkpoint-dir", str(checkpoints)],
+        )
+        assert run.exit_code == 0, run.output
+        (saved,) = checkpoints.glob("*.json")
+        monkeypatch.chdir(checkpoints)  # a relative recording path would not resolve here
+        argv = ["resume", saved.stem, "--checkpoint-dir", str(checkpoints), "--approve"]
+        result = runner.invoke(app, [*argv, "--lite", "--json"])
+        assert result.exit_code == 0, result.output
+        parsed = json.loads(result.output[result.output.index("{") :])
+        assert parsed["final_state"]["result"] == "recorded send"

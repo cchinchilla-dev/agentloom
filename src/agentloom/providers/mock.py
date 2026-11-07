@@ -440,6 +440,7 @@ class MockProvider(BaseProvider):
                         id=str(tc.get("id", "")),
                         name=str(tc.get("name", "")),
                         arguments=tc.get("arguments", {}) or {},
+                        signature=tc.get("signature"),
                     )
                 )
 

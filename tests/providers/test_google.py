@@ -175,6 +175,18 @@ class TestGoogleProvider:
         assert body["systemInstruction"]["parts"][0]["text"] == "Be concise"
         await provider.close()
 
+    def test_every_system_turn_reaches_the_system_instruction(self) -> None:
+        """A speaker's prompt and a conversation summary are both system turns (#120)."""
+        system, contents = GoogleProvider._format_messages(
+            [
+                {"role": "system", "content": "You are Bob."},
+                {"role": "system", "content": "Summary of earlier turns: x"},
+                {"role": "user", "content": "hi"},
+            ]
+        )
+        assert system == "You are Bob.\n\nSummary of earlier turns: x"
+        assert [c["role"] for c in contents] == ["user"]
+
     @respx.mock
     async def test_api_error_raises(self) -> None:
         respx.post(url__regex=r".*/models/gemini.*").mock(

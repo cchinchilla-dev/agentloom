@@ -167,6 +167,21 @@ async def test_a_retried_step_replays_the_calls_of_its_failed_attempt_again(
         await _call()
 
 
+async def test_a_retry_numbers_the_calls_of_its_agents_used_as_tools_from_one(
+    tmp_path: Path,
+) -> None:
+    nested = "s::escalate#1"  # the turn of an agent the step called as a tool
+    tape = ToolReplayer(_recording(tmp_path, {nested: [_entry("5")]}), ToolMode.REPLAY)
+    registry = _registry(_AddTool(), tape)
+    other = ToolCall(id="c2", name="add", arguments={"a": 1, "b": 1})
+
+    failed = await _attempt(tape)
+    await dispatch_tool_calls([ADD], registry, step_id=nested)
+    await _attempt(tape, failed)
+    with pytest.raises(RecordingMismatchError, match=r"tool call #1 'add' is not in the recording"):
+        await dispatch_tool_calls([other], registry, step_id=nested)
+
+
 async def test_a_retried_subworkflow_replays_its_steps_calls_again(tmp_path: Path) -> None:
     recorded = {"s": [_entry("5"), _entry("6")]}
     tape = ToolReplayer(_recording(tmp_path, recorded), ToolMode.REPLAY)

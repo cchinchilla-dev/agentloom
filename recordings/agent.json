@@ -1,0 +1,429 @@
+{
+  "_version": 2,
+  "answer": [
+    {
+      "content": "",
+      "model": "claude-haiku-4-5-20251001",
+      "provider": "anthropic",
+      "usage": {
+        "prompt_tokens": 1022,
+        "completion_tokens": 100,
+        "total_tokens": 1122,
+        "reasoning_tokens": 0
+      },
+      "cost_usd": 0.0015220000000000001,
+      "latency_ms": 1212.3517920263112,
+      "finish_reason": "tool_use",
+      "request_hash": "daf4cf75772fcb4dcd97469f73c77551bf3ab5e67cb168900448c159b807e6c0",
+      "tool_calls": [
+        {
+          "id": "toolu_017mdaT4ff5ExPJx1EvRc7k5",
+          "name": "file_read",
+          "arguments": {
+            "path": "examples/data/billing_policy.txt"
+          }
+        },
+        {
+          "id": "toolu_01FC9ar2dtHoVc18y3NvhNAc",
+          "name": "ask_refunds",
+          "arguments": {
+            "message": "Customer was charged twice for their May invoice. Is the duplicate charge eligible for refund?"
+          }
+        }
+      ],
+      "meta": {
+        "request_id": "req_011CggCWeJQm5GTt22Suyu3G",
+        "rate_limit": {
+          "anthropic-ratelimit-input-tokens-limit": "10000000",
+          "anthropic-ratelimit-input-tokens-remaining": "9999000",
+          "anthropic-ratelimit-input-tokens-reset": "2026-11-03T15:04:00Z",
+          "anthropic-ratelimit-output-tokens-limit": "2000000",
+          "anthropic-ratelimit-output-tokens-remaining": "2000000",
+          "anthropic-ratelimit-output-tokens-reset": "2026-11-03T15:04:01Z",
+          "anthropic-ratelimit-requests-limit": "10000",
+          "anthropic-ratelimit-requests-remaining": "9999",
+          "anthropic-ratelimit-requests-reset": "2026-11-03T15:04:00Z",
+          "anthropic-ratelimit-tokens-limit": "12000000",
+          "anthropic-ratelimit-tokens-remaining": "11999000",
+          "anthropic-ratelimit-tokens-reset": "2026-11-03T15:04:00Z"
+        },
+        "received_at": "2026-11-03T15:04:01.545352Z"
+      }
+    },
+    {
+      "content": "",
+      "model": "claude-haiku-4-5-20251001",
+      "provider": "anthropic",
+      "usage": {
+        "prompt_tokens": 1294,
+        "completion_tokens": 100,
+        "total_tokens": 1394,
+        "reasoning_tokens": 0
+      },
+      "cost_usd": 0.001794,
+      "latency_ms": 1187.6004579244182,
+      "finish_reason": "tool_use",
+      "request_hash": "343d9161780867a182b6138dc23bdb5f99efb06fdf954442dfe4f829a173e5d4",
+      "tool_calls": [
+        {
+          "id": "toolu_01Wbnn6HXMMegw8xRcZtKxYN",
+          "name": "final_result",
+          "arguments": {
+            "answer": "Good news! Since you were charged twice for the same May invoice, the duplicate charge is eligible for a full refund. You should see the refund on your original card within 5 to 7 business days.",
+            "refund": "eligible"
+          }
+        }
+      ],
+      "meta": {
+        "request_id": "req_011CggCWmVksUCu3msWnoR6g",
+        "rate_limit": {
+          "anthropic-ratelimit-input-tokens-limit": "10000000",
+          "anthropic-ratelimit-input-tokens-remaining": "9999000",
+          "anthropic-ratelimit-input-tokens-reset": "2026-11-03T15:04:02Z",
+          "anthropic-ratelimit-output-tokens-limit": "2000000",
+          "anthropic-ratelimit-output-tokens-remaining": "2000000",
+          "anthropic-ratelimit-output-tokens-reset": "2026-11-03T15:04:03Z",
+          "anthropic-ratelimit-requests-limit": "10000",
+          "anthropic-ratelimit-requests-remaining": "9999",
+          "anthropic-ratelimit-requests-reset": "2026-11-03T15:04:02Z",
+          "anthropic-ratelimit-tokens-limit": "12000000",
+          "anthropic-ratelimit-tokens-remaining": "11999000",
+          "anthropic-ratelimit-tokens-reset": "2026-11-03T15:04:02Z"
+        },
+        "received_at": "2026-11-03T15:04:03.266823Z"
+      }
+    }
+  ],
+  "answer::ask_refunds#1": {
+    "content": "Eligible for refund because duplicate charges are always refundable regardless of when they occurred.",
+    "model": "claude-haiku-4-5-20251001",
+    "provider": "anthropic",
+    "usage": {
+      "prompt_tokens": 76,
+      "completion_tokens": 22,
+      "total_tokens": 98,
+      "reasoning_tokens": 0
+    },
+    "cost_usd": 0.000186,
+    "latency_ms": 528.388625010848,
+    "finish_reason": "end_turn",
+    "request_hash": "d7e674ba2abc010e11c96f4989b3d589323e720ec92976f993880b650cd03ee2",
+    "meta": {
+      "request_id": "req_011CggCWjHo8xAcCC8VnWANC",
+      "rate_limit": {
+        "anthropic-ratelimit-input-tokens-limit": "10000000",
+        "anthropic-ratelimit-input-tokens-remaining": "10000000",
+        "anthropic-ratelimit-input-tokens-reset": "2026-11-03T15:04:01Z",
+        "anthropic-ratelimit-output-tokens-limit": "2000000",
+        "anthropic-ratelimit-output-tokens-remaining": "2000000",
+        "anthropic-ratelimit-output-tokens-reset": "2026-11-03T15:04:02Z",
+        "anthropic-ratelimit-requests-limit": "10000",
+        "anthropic-ratelimit-requests-remaining": "9999",
+        "anthropic-ratelimit-requests-reset": "2026-11-03T15:04:01Z",
+        "anthropic-ratelimit-tokens-limit": "12000000",
+        "anthropic-ratelimit-tokens-remaining": "12000000",
+        "anthropic-ratelimit-tokens-reset": "2026-11-03T15:04:01Z"
+      },
+      "received_at": "2026-11-03T15:04:02.077198Z"
+    }
+  },
+  "follow_up": [
+    {
+      "content": "",
+      "model": "claude-haiku-4-5-20251001",
+      "provider": "anthropic",
+      "usage": {
+        "prompt_tokens": 1101,
+        "completion_tokens": 46,
+        "total_tokens": 1147,
+        "reasoning_tokens": 0
+      },
+      "cost_usd": 0.001331,
+      "latency_ms": 691.2742500426248,
+      "finish_reason": "tool_use",
+      "request_hash": "10a94973dac55465343a037aadf0709397cf852086045fd45651dfead59b361e",
+      "tool_calls": [
+        {
+          "id": "toolu_015tHn9WLS1vCBUB2NYAU8uS",
+          "name": "file_read",
+          "arguments": {
+            "path": "examples/data/billing_policy.txt"
+          }
+        }
+      ],
+      "meta": {
+        "request_id": "req_011CggCWrbqGubc2avncTEHF",
+        "rate_limit": {
+          "anthropic-ratelimit-input-tokens-limit": "10000000",
+          "anthropic-ratelimit-input-tokens-remaining": "9999000",
+          "anthropic-ratelimit-input-tokens-reset": "2026-11-03T15:04:03Z",
+          "anthropic-ratelimit-output-tokens-limit": "2000000",
+          "anthropic-ratelimit-output-tokens-remaining": "2000000",
+          "anthropic-ratelimit-output-tokens-reset": "2026-11-03T15:04:03Z",
+          "anthropic-ratelimit-requests-limit": "10000",
+          "anthropic-ratelimit-requests-remaining": "9999",
+          "anthropic-ratelimit-requests-reset": "2026-11-03T15:04:03Z",
+          "anthropic-ratelimit-tokens-limit": "12000000",
+          "anthropic-ratelimit-tokens-remaining": "11999000",
+          "anthropic-ratelimit-tokens-reset": "2026-11-03T15:04:03Z"
+        },
+        "received_at": "2026-11-03T15:04:03.961030Z"
+      }
+    },
+    {
+      "content": "",
+      "model": "claude-haiku-4-5-20251001",
+      "provider": "anthropic",
+      "usage": {
+        "prompt_tokens": 1249,
+        "completion_tokens": 76,
+        "total_tokens": 1325,
+        "reasoning_tokens": 0
+      },
+      "cost_usd": 0.0016290000000000002,
+      "latency_ms": 953.097082907334,
+      "finish_reason": "tool_use",
+      "request_hash": "aa21dca1d4bbe685fa2bfc77a89230e3efc187ef10d7ee279192073bd96e34f2",
+      "tool_calls": [
+        {
+          "id": "toolu_01AKD3QNvYxy9YDHzwme3Kki",
+          "name": "final_result",
+          "arguments": {
+            "answer": "Refunds are processed to your original card within 5 to 7 business days.",
+            "refund": "not_requested"
+          }
+        }
+      ],
+      "meta": {
+        "request_id": "req_011CggCWuZSY7i4eBZ7w8Y3W",
+        "rate_limit": {
+          "anthropic-ratelimit-input-tokens-limit": "10000000",
+          "anthropic-ratelimit-input-tokens-remaining": "9999000",
+          "anthropic-ratelimit-input-tokens-reset": "2026-11-03T15:04:04Z",
+          "anthropic-ratelimit-output-tokens-limit": "2000000",
+          "anthropic-ratelimit-output-tokens-remaining": "2000000",
+          "anthropic-ratelimit-output-tokens-reset": "2026-11-03T15:04:04Z",
+          "anthropic-ratelimit-requests-limit": "10000",
+          "anthropic-ratelimit-requests-remaining": "9998",
+          "anthropic-ratelimit-requests-reset": "2026-11-03T15:04:04Z",
+          "anthropic-ratelimit-tokens-limit": "12000000",
+          "anthropic-ratelimit-tokens-remaining": "11999000",
+          "anthropic-ratelimit-tokens-reset": "2026-11-03T15:04:04Z"
+        },
+        "received_at": "2026-11-03T15:04:04.916043Z"
+      }
+    }
+  ],
+  "_inter_agent_events": [
+    {
+      "event_id": "5d9fc5cb-8567-5055-8c16-0793888e1086",
+      "agent_id": "support_desk",
+      "step_id": "answer",
+      "parent_event_ids": [],
+      "payload_hash": "4f53cda18c2baa0c",
+      "timestamp_ns": 640512303048125,
+      "type": "task_received"
+    },
+    {
+      "event_id": "78bd164e-1edb-59c3-a1aa-d3080a29e923",
+      "agent_id": "support_desk",
+      "step_id": "answer",
+      "parent_event_ids": [
+        "5d9fc5cb-8567-5055-8c16-0793888e1086"
+      ],
+      "payload_hash": "776c527033fe46fe",
+      "timestamp_ns": 640514075124000,
+      "type": "tool_call",
+      "tool_name": "file_read"
+    },
+    {
+      "event_id": "a5b29cf0-127b-5b61-8860-b1ee9a8f0bfa",
+      "agent_id": "support_desk",
+      "step_id": "answer",
+      "parent_event_ids": [
+        "5d9fc5cb-8567-5055-8c16-0793888e1086"
+      ],
+      "payload_hash": "52c9e06f907856fc",
+      "timestamp_ns": 640514075184750,
+      "type": "tool_call",
+      "tool_name": "ask_refunds"
+    },
+    {
+      "event_id": "cd03296b-8789-535b-9774-01e034de54e3",
+      "agent_id": "support_desk",
+      "step_id": "answer",
+      "parent_event_ids": [
+        "a5b29cf0-127b-5b61-8860-b1ee9a8f0bfa"
+      ],
+      "payload_hash": "52c9e06f907856fc",
+      "timestamp_ns": 640513544270291,
+      "type": "task_sent",
+      "recipient_agent_id": "refunds"
+    },
+    {
+      "event_id": "77a72996-bb9f-5561-9c19-f07215eec6f3",
+      "agent_id": "support_desk",
+      "step_id": "answer",
+      "parent_event_ids": [
+        "78bd164e-1edb-59c3-a1aa-d3080a29e923"
+      ],
+      "payload_hash": "b099294d34d94803",
+      "timestamp_ns": 640514075159625,
+      "type": "tool_return",
+      "tool_name": "file_read"
+    },
+    {
+      "event_id": "186afd9f-6a56-58b4-93f2-c3d45dd6d119",
+      "agent_id": "refunds",
+      "step_id": "answer::ask_refunds#1",
+      "parent_event_ids": [
+        "cd03296b-8789-535b-9774-01e034de54e3"
+      ],
+      "payload_hash": "c777ae4cc2fe80c0",
+      "timestamp_ns": 640513544329250,
+      "type": "task_received"
+    },
+    {
+      "event_id": "dc7ee38e-ea81-5ca2-ac23-f9ee7c223d84",
+      "agent_id": "refunds",
+      "step_id": "answer::ask_refunds#1",
+      "parent_event_ids": [
+        "186afd9f-6a56-58b4-93f2-c3d45dd6d119"
+      ],
+      "payload_hash": "a0db589e5f77ecdf",
+      "timestamp_ns": 640514074835833,
+      "type": "response_sent"
+    },
+    {
+      "event_id": "20a78966-d478-5076-94ad-0e545a4b8094",
+      "agent_id": "support_desk",
+      "step_id": "answer",
+      "parent_event_ids": [
+        "a5b29cf0-127b-5b61-8860-b1ee9a8f0bfa",
+        "dc7ee38e-ea81-5ca2-ac23-f9ee7c223d84"
+      ],
+      "payload_hash": "81de3990802e4235",
+      "timestamp_ns": 640514075202000,
+      "type": "tool_return",
+      "tool_name": "ask_refunds"
+    },
+    {
+      "event_id": "2e03d9a9-57e0-5600-a856-1ace00bbb49c",
+      "agent_id": "support_desk",
+      "step_id": "answer",
+      "parent_event_ids": [
+        "20a78966-d478-5076-94ad-0e545a4b8094",
+        "77a72996-bb9f-5561-9c19-f07215eec6f3"
+      ],
+      "payload_hash": "bb20efba2581a121",
+      "timestamp_ns": 640515264739375,
+      "type": "response_sent"
+    },
+    {
+      "event_id": "77e64318-7145-5770-b84f-09b9f8e25593",
+      "agent_id": "support_desk",
+      "step_id": "answer",
+      "parent_event_ids": [
+        "2e03d9a9-57e0-5600-a856-1ace00bbb49c"
+      ],
+      "payload_hash": "2b922beb0a500517",
+      "timestamp_ns": 640515265295666,
+      "type": "task_sent",
+      "recipient_agent_id": "support_desk"
+    },
+    {
+      "event_id": "a652b925-65aa-5cbc-bb6f-2421c6fdedd1",
+      "agent_id": "support_desk",
+      "step_id": "answer",
+      "parent_event_ids": [
+        "2e03d9a9-57e0-5600-a856-1ace00bbb49c"
+      ],
+      "payload_hash": "7bf9ac4ebf658f89",
+      "timestamp_ns": 640515264768666,
+      "type": "state_transition",
+      "key": "chat"
+    },
+    {
+      "event_id": "b16cb13b-199b-5e9f-b846-b5b6353a77a7",
+      "agent_id": "support_desk",
+      "step_id": "answer",
+      "parent_event_ids": [
+        "2e03d9a9-57e0-5600-a856-1ace00bbb49c"
+      ],
+      "payload_hash": "263bb60eebeab459",
+      "timestamp_ns": 640515264798625,
+      "type": "state_transition",
+      "key": "reply"
+    },
+    {
+      "event_id": "4ff54183-0976-572a-9306-30ce7037dd4a",
+      "agent_id": "support_desk",
+      "step_id": "follow_up",
+      "parent_event_ids": [
+        "77e64318-7145-5770-b84f-09b9f8e25593"
+      ],
+      "payload_hash": "b0f3a0e5468fec54",
+      "timestamp_ns": 640515265316125,
+      "type": "task_received"
+    },
+    {
+      "event_id": "34f0ddcd-7ad2-512c-9f11-8dd9b4675a74",
+      "agent_id": "support_desk",
+      "step_id": "follow_up",
+      "parent_event_ids": [
+        "4ff54183-0976-572a-9306-30ce7037dd4a"
+      ],
+      "payload_hash": "776c527033fe46fe",
+      "timestamp_ns": 640515958924291,
+      "type": "tool_call",
+      "tool_name": "file_read"
+    },
+    {
+      "event_id": "7a6fe629-b1a2-5364-8eec-e70ae6c74394",
+      "agent_id": "support_desk",
+      "step_id": "follow_up",
+      "parent_event_ids": [
+        "34f0ddcd-7ad2-512c-9f11-8dd9b4675a74"
+      ],
+      "payload_hash": "b099294d34d94803",
+      "timestamp_ns": 640515958951333,
+      "type": "tool_return",
+      "tool_name": "file_read"
+    },
+    {
+      "event_id": "9e155f48-339b-57e9-8ef0-54eeda57ff50",
+      "agent_id": "support_desk",
+      "step_id": "follow_up",
+      "parent_event_ids": [
+        "7a6fe629-b1a2-5364-8eec-e70ae6c74394"
+      ],
+      "payload_hash": "67f6a328a905fd18",
+      "timestamp_ns": 640516913893583,
+      "type": "response_sent"
+    },
+    {
+      "event_id": "3ed1b44f-185d-5892-8458-fe621fb6d120",
+      "agent_id": "support_desk",
+      "step_id": "follow_up",
+      "parent_event_ids": [
+        "9e155f48-339b-57e9-8ef0-54eeda57ff50"
+      ],
+      "payload_hash": "032270185245d9e0",
+      "timestamp_ns": 640516913915083,
+      "type": "state_transition",
+      "key": "chat"
+    },
+    {
+      "event_id": "a8e0ac23-c20f-5162-a5ed-532c5303fc52",
+      "agent_id": "support_desk",
+      "step_id": "follow_up",
+      "parent_event_ids": [
+        "9e155f48-339b-57e9-8ef0-54eeda57ff50"
+      ],
+      "payload_hash": "f1d3a4860f5e051b",
+      "timestamp_ns": 640516913924833,
+      "type": "state_transition",
+      "key": "follow_up"
+    }
+  ]
+}

@@ -150,12 +150,13 @@ class GoogleProvider(BaseProvider):
         prepended to the turn's leading text part as ``"[<name>] …"`` so
         the model still sees who spoke.
         """
-        system_instruction: str | None = None
+        # Every system turn applies, in order: a speaker's prompt and a conversation summary both
+        systems: list[str] = []
         contents: list[dict[str, Any]] = []
         for msg in messages:
             if msg["role"] == "system":
                 content = msg.get("content", "")
-                system_instruction = content if isinstance(content, str) else str(content)
+                systems.append(content if isinstance(content, str) else str(content))
                 continue
             # Tool-loop messages already in Gemini wire shape (role=``model``
             # with ``functionCall`` parts, role=``function`` with
@@ -194,7 +195,7 @@ class GoogleProvider(BaseProvider):
                 if name:
                     parts.insert(0, {"text": f"[{name}]"})
                 contents.append({"role": role, "parts": parts})
-        return system_instruction, contents
+        return "\n\n".join(systems) or None, contents
 
     async def complete(
         self,

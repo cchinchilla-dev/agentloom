@@ -79,6 +79,24 @@ _OPENAI_EXTRA_PAYLOAD_KEYS = frozenset(
 )
 
 
+def _usage(usage_data: dict[str, Any]) -> TokenUsage:
+    """The usage of a response, its reasoning tokens apart from the visible ones.
+
+    o-series and gpt-5 models report their reasoning under
+    ``completion_tokens_details``, and count it in ``completion_tokens`` too;
+    ``TokenUsage`` keeps the two apart, as cost adds them (#120). Ordinary
+    gpt-* responses omit the field, which resolves to 0.
+    """
+    details = usage_data.get("completion_tokens_details") or {}
+    reasoning = details.get("reasoning_tokens", 0) or 0
+    return TokenUsage(
+        prompt_tokens=usage_data.get("prompt_tokens", 0),
+        completion_tokens=max(0, (usage_data.get("completion_tokens", 0) or 0) - reasoning),
+        total_tokens=usage_data.get("total_tokens", 0),
+        reasoning_tokens=reasoning,
+    )
+
+
 class OpenAIProvider(BaseProvider):
     """OpenAI API adapter via httpx (no SDK dependency)."""
 
@@ -224,17 +242,7 @@ class OpenAIProvider(BaseProvider):
         data = response.json()
         message = data["choices"][0]["message"]
         content = message.get("content") or ""
-        usage_data = data.get("usage", {})
-        # o-series returns reasoning tokens under completion_tokens_details;
-        # ordinary gpt-* responses omit the field and resolve to 0.
-        details = usage_data.get("completion_tokens_details") or {}
-        reasoning_tokens = details.get("reasoning_tokens", 0) or 0
-        usage = TokenUsage(
-            prompt_tokens=usage_data.get("prompt_tokens", 0),
-            completion_tokens=usage_data.get("completion_tokens", 0),
-            total_tokens=usage_data.get("total_tokens", 0),
-            reasoning_tokens=reasoning_tokens,
-        )
+        usage = _usage(data.get("usage") or {})  # null from some compatible servers
         cost = calculate_cost(
             model,
             usage.prompt_tokens,
@@ -348,14 +356,7 @@ class OpenAIProvider(BaseProvider):
                             sr.finish_reason = fr
                     usage_data = data.get("usage")
                     if usage_data:
-                        details = usage_data.get("completion_tokens_details") or {}
-                        reasoning_tokens = details.get("reasoning_tokens", 0) or 0
-                        sr.usage = TokenUsage(
-                            prompt_tokens=usage_data.get("prompt_tokens", 0),
-                            completion_tokens=usage_data.get("completion_tokens", 0),
-                            total_tokens=usage_data.get("total_tokens", 0),
-                            reasoning_tokens=reasoning_tokens,
-                        )
+                        sr.usage = _usage(usage_data)
                         sr.cost_usd = calculate_cost(
                             model,
                             sr.usage.prompt_tokens,

@@ -7,13 +7,18 @@ from typing import TYPE_CHECKING, Any
 __version__ = "0.4.0"
 
 if TYPE_CHECKING:
+    from agentloom.core.agent import Agent, AgentResult
     from agentloom.core.graph import GraphEdge, GraphNode, WorkflowGraph
 
-__all__ = ["GraphEdge", "GraphNode", "WorkflowGraph"]
+__all__ = ["Agent", "AgentResult", "GraphEdge", "GraphNode", "WorkflowGraph"]
 
 
 def __getattr__(name: str) -> Any:
     # Resolved on first access (PEP 562): ``import agentloom.contracts`` must not load the runtime.
+    if name in ("Agent", "AgentResult"):
+        from agentloom.core import agent
+
+        return getattr(agent, name)
     if name in __all__:
         from agentloom.core import graph
 

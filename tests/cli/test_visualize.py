@@ -37,6 +37,24 @@ class TestVisualizeCommand:
         assert "[LLM: a]" in result.output
         assert "[LLM: merge]" in result.output
 
+    def test_ascii_names_agent_embed_and_approval_steps(self) -> None:
+        yaml_text = """\
+name: viz-types
+steps:
+  - {id: ask, type: agent, agent: {name: a}, prompt: "q"}
+  - {id: vec, type: embed, inputs: state.docs, output: v}
+  - {id: gate, type: approval_gate, depends_on: [ask]}
+"""
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(yaml_text)
+            f.flush()
+            result = runner.invoke(app, ["visualize", f.name])
+        assert result.exit_code == 0, result.output
+        assert "[AGENT: ask]" in result.output
+        assert "[EMBED: vec]" in result.output
+        assert "[APPROVAL: gate]" in result.output
+        assert "?" not in result.output
+
     def test_mermaid_output(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             f.write(SAMPLE_YAML)

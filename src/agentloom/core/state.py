@@ -207,7 +207,7 @@ class StateManager:
         """Restore state from a JSON checkpoint file."""
 
         def _read(p: Path) -> dict[str, Any]:
-            return json.loads(p.read_text())  # type: ignore[no-any-return]
+            return json.loads(p.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
 
         data = await anyio.to_thread.run_sync(partial(_read, Path(path)))
         manager = cls(initial_state=data.get("state", {}))

@@ -156,6 +156,9 @@ class ToolReplayer:
     async def begin_attempt(self, step_id: str, failed: Attempt | None) -> None:
         if failed is not None:
             self._cursor.update(self._attempts.take_back(failed))
+        # The calls of its agents used as tools (``<step_id>::<tool>#<n>``) count from 1 again too
+        nested = f"{step_id}::"
+        self._numbers = {k: n for k, n in self._numbers.items() if not k.startswith(nested)}
         self._numbers[step_id] = 0
 
     def _match(self, step_id: str, call: ToolCall) -> tuple[str, dict[str, Any] | None]:

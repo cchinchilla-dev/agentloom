@@ -393,7 +393,11 @@ def _replayed(raw: dict[str, Any], request_hash: str) -> dict[str, Any] | None:
 
 def _tool_calls(calls: list[ToolCall]) -> list[dict[str, Any]]:
     """The shape ``MockProvider`` hydrates back into ``ToolCall`` on replay."""
-    return [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in calls]
+    return [
+        {"id": c.id, "name": c.name, "arguments": c.arguments}
+        | ({"signature": c.signature} if c.signature else {})
+        for c in calls
+    ]
 
 
 def _meta(meta: ResponseMeta | None) -> dict[str, Any]:

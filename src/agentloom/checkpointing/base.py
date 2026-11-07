@@ -40,6 +40,9 @@ class CheckpointData(BaseModel):
     completed_steps: list[str] = Field(default_factory=list)
     status: str = "running"
     paused_step_id: str | None = None
+    # What the run had charged to its budget, so a resumed run starts from it (#120).
+    # Absent from older checkpoints: their step results' cost stands in.
+    spent_usd: float = 0.0
     created_at: str = ""
     updated_at: str = ""
 
