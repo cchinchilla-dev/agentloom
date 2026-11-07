@@ -151,3 +151,44 @@ def test_version_linearity_fails_when_named_package_has_no_version(tmp_path: Pat
     code, message = script.check(tmp_path)
     assert code == 1
     assert "src/pkg/__init__.py has no __version__" in message
+
+
+def _write_chart(tmp_path: Path, line: str) -> None:
+    chart = tmp_path / "deploy" / "helm" / "agentloom"
+    chart.mkdir(parents=True)
+    (chart / "Chart.yaml").write_text(f"apiVersion: v2\nname: agentloom\nversion: 0.2.1\n{line}")
+
+
+def test_version_linearity_fails_when_the_chart_app_version_differs(tmp_path: Path, script) -> None:
+    _write_package(tmp_path, version="1.2.3", init_version="1.2.3")
+    _write_chart(tmp_path, 'appVersion: "0.1.2"\n')
+    code, message = script.check(tmp_path)
+    assert code == 1
+    assert "deploy/helm/agentloom/Chart.yaml appVersion=0.1.2" in message
+
+
+@pytest.mark.parametrize(
+    "line", ['appVersion: "1.2.3"\n', "appVersion: '1.2.3'\n", "appVersion: 1.2.3  # the image\n"]
+)
+def test_version_linearity_accepts_a_quoted_or_bare_chart_app_version(
+    tmp_path: Path, script, line: str
+) -> None:
+    _write_package(tmp_path, version="1.2.3", init_version="1.2.3")
+    _write_chart(tmp_path, line)
+    code, message = script.check(tmp_path)
+    assert code == 0, message
+
+
+def test_version_linearity_fails_when_the_chart_has_no_app_version(tmp_path: Path, script) -> None:
+    _write_package(tmp_path, version="1.2.3", init_version="1.2.3")
+    _write_chart(tmp_path, "")
+    code, message = script.check(tmp_path)
+    assert code == 1
+    assert "deploy/helm/agentloom/Chart.yaml has no appVersion" in message
+
+
+def test_version_linearity_passes_without_a_chart(tmp_path: Path, script) -> None:
+    _write_package(tmp_path, version="1.2.3", init_version="1.2.3")
+    assert not (tmp_path / "deploy").exists()
+    code, _ = script.check(tmp_path)
+    assert code == 0

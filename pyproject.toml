@@ -67,6 +67,24 @@ Repository = "https://github.com/cchinchilla-dev/agentloom"
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentloom"]
 
+# What a packager needs to build and test from source; CI, docs and deploy config stay out
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/agentloom",
+    "tests",
+    "examples",
+    "scripts",
+    "deploy/helm/agentloom",  # tests/scripts checks the chart
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+]
+
+# The examples replay from recordings/, which .gitignore hides from the build; CI's checkout holds
+# only the tracked ones
+[tool.hatch.build.targets.sdist.force-include]
+"recordings" = "recordings"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

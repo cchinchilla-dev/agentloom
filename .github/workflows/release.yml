@@ -62,7 +62,12 @@ jobs:
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8
         with:
           enable-cache: true
-      - run: uv build --wheel
+      - run: uv build
+      # The wheel and the sdist must carry the tag's version and install and run before they ship
+      - name: Check the distributions
+        env:
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+        run: scripts/check_dist.sh dist "${TAG#v}"
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7
         with:
           name: dist
@@ -75,7 +80,19 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
-          fetch-depth: 0
+          ref: refs/tags/${{ needs.resolve-tag.outputs.tag }}
+          persist-credentials: false
+
+      - name: Release notes from the changelog
+        env:
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+        run: |
+          awk -v head="## [${TAG#v}]" '
+            index($0, head) == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          [ -s "$RUNNER_TEMP/notes.md" ] || { echo "::error::CHANGELOG.md has no section for $TAG"; exit 1; }
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
@@ -85,8 +102,18 @@ jobs:
       - uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe  # v2
         with:
           tag_name: ${{ needs.resolve-tag.outputs.tag }}
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/notes.md
           files: dist/*
+
+  docker:
+    name: Docker image
+    needs: [resolve-tag, build]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker.yml
+    with:
+      tag: ${{ needs.resolve-tag.outputs.tag }}
 
   publish:
     name: Publish to PyPI

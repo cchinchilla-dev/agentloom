@@ -29,7 +29,7 @@ Project rules for contributors and AI coding assistants. Any assistant that read
 
 **Commits**: Conventional-Commits with scope (`feat(providers): …`, `fix(core): …`, `docs(core): …`). Imperative, lowercase after the colon, single-line subject. Types and scopes documented in `CONTRIBUTING.md`. The PR title becomes the squash-merge commit on `main`, so the same rule applies to PR titles. Release commits are the one exception: exactly `bump version to X.Y.Z`, with no type or scope, because `auto-tag.yml` only tags commits that start with that prefix. Squash merge only.
 
-**Versions**: when bumping the version, update `pyproject.toml`, `CHANGELOG.md` and `__version__` in `src/agentloom/__init__.py` in the same commit. The `version-linearity` CI job fails when they disagree.
+**Versions**: when bumping the version, update `pyproject.toml`, `CHANGELOG.md`, `__version__` in `src/agentloom/__init__.py` and `appVersion` in `deploy/helm/agentloom/Chart.yaml` in the same commit. The `version-linearity` CI job fails when they disagree.
 
 ## Architecture (read these first)
 - `core/engine.py` — workflow executor, layer-based parallel DAG traversal
@@ -54,7 +54,7 @@ Reviews (local assistant passes during development, and automated PR review) che
 4. **Observability decoupling** — core modules importing code that needs the `[observability]` extra without `compat.try_import()` (the dependency-free `schema` and `quality` modules are fine).
 5. **Template safety** — Jinja2 or f-strings over user input instead of `SafeFormatDict`.
 6. **Tests** — real network calls, sleeps used for synchronisation, assertions that cannot fail.
-7. **Public API changes** without a `CHANGELOG.md` entry; version bumps that skip one of `pyproject.toml` / `CHANGELOG.md` / `__version__`.
+7. **Public API changes** without a `CHANGELOG.md` entry; version bumps that skip one of `pyproject.toml` / `CHANGELOG.md` / `__version__` / the Helm chart's `appVersion`.
 
 Do not flag style or lint issues (ruff and `mypy --strict` run in CI), nor the items listed under Gotchas.
 

@@ -1,4 +1,4 @@
-"""Fail CI if pyproject.toml, CHANGELOG.md and `__version__` disagree on the version.
+"""Fail CI if pyproject.toml, CHANGELOG.md, `__version__` and Helm's `appVersion` disagree.
 
 Invoked from `.github/workflows/ci.yml` job `version-linearity`. Also runnable
 locally as a pre-commit check. Mirrors the same gate used in agentanvil so
@@ -14,6 +14,9 @@ from pathlib import Path
 
 VERSION_HEADER_RE = re.compile(r"^##\s*\[?(\d+\.\d+\.\d+[\w.]*)\]?", re.M)
 INIT_VERSION_RE = re.compile(r"^__version__\s*=\s*[\"']([^\"']+)[\"']", re.M)
+CHART_APP_VERSION_RE = re.compile(r"^appVersion:\s*[\"']?([^\"'\s#]+)", re.M)
+# Helm installs the image tagged with the chart's appVersion unless image.tag says otherwise
+CHART = Path("deploy") / "helm" / "agentloom" / "Chart.yaml"
 
 
 def latest_changelog_version(text: str) -> str | None:
@@ -32,6 +35,15 @@ def package_version(root: Path, project: dict[str, object]) -> tuple[str, str | 
         return path, None
     match = INIT_VERSION_RE.search(init.read_text())
     return path, match.group(1) if match else None
+
+
+def chart_app_version(root: Path) -> tuple[str, str | None] | None:
+    """Return (path, `appVersion`) of the Helm chart; None if the repo has no chart."""
+    chart = root / CHART
+    if not chart.exists():
+        return None
+    match = CHART_APP_VERSION_RE.search(chart.read_text())
+    return CHART.as_posix(), match.group(1) if match else None
 
 
 def check(root: Path) -> tuple[int, str]:
@@ -64,6 +76,13 @@ def check(root: Path) -> tuple[int, str]:
             return 1, f"{path} has no __version__ assignment"
         if version != declared:
             return 1, f"version mismatch: pyproject.toml={declared} vs {path}={version}"
+    chart = chart_app_version(root)
+    if chart is not None:
+        path, version = chart
+        if version is None:
+            return 1, f"{path} has no appVersion"
+        if version != declared:
+            return 1, f"version mismatch: pyproject.toml={declared} vs {path} appVersion={version}"
     return 0, f"version-linearity OK: {declared}"
 
 
