@@ -776,3 +776,31 @@ async def test_a_run_reports_what_it_spent_however_it_ends(
     assert result.status == status
     assert (result.total_cost_usd, result.total_tokens) == (pytest.approx(0.1), 13)
     assert engine.observer.runs[-1] == ("paid", pytest.approx(0.1))
+
+
+async def test_a_step_that_breaks_the_budget_reaches_the_token_metrics() -> None:
+    result, engine = await _run(_Paid(_paid("5")), budget=0.05)
+
+    assert result.status == WorkflowStatus.BUDGET_EXCEEDED
+    assert engine.observer.seen == [("m", 10)]
+
+
+@pytest.mark.parametrize("child_budget", [None, 10.0], ids=["shared", "own"])
+@pytest.mark.parametrize(
+    "cut",
+    [{"timeout": 0.2, "retry": {"max_retries": 0}}, {"workflow_timeout": 0.2}],
+    ids=["its-timeout", "the-workflows"],
+)
+async def test_a_subworkflow_cut_short_reports_its_steps_tokens(
+    cut: dict[str, Any], child_budget: float | None
+) -> None:
+    result, engine = await _run_subworkflow(
+        _Paid(_paid("ok"), None), child_budget, _PAYS, _HANGS, **cut
+    )
+
+    sub = result.step_results["sub"]
+    assert sub.status == StepStatus.TIMEOUT
+    assert sub.token_usage.prompt_tokens == 10
+    assert (result.total_tokens, result.total_cost_usd) == (13, pytest.approx(0.1))
+    assert engine._budget.spent == pytest.approx(0.1)
+    assert engine.observer.seen == [("m", 10)]  # by the child's step, not again by the parent

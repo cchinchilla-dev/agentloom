@@ -1065,6 +1065,7 @@ class WorkflowEngine:
                     await self.state.set_step_result(step_id, result)
                     if (log := active_log()) is not None:
                         log.finish_step(running_steps(), result.output)
+                    self._emit_tokens(spend)  # before a charge that may break the budget
 
                     # ``BudgetEnforcer.charge`` is the single source of
                     # truth for spend — its ``anyio.Lock`` makes the
@@ -1105,7 +1106,6 @@ class WorkflowEngine:
                             prompt_template_id=(pmeta.template_id if pmeta else None),
                             prompt_template_vars=(",".join(pmeta.template_vars) if pmeta else None),
                         )
-                        self._emit_tokens(spend)
                         if result.provider and result.model:
                             if result.time_to_first_token_ms is not None:
                                 self.observer.on_stream_response(
