@@ -1295,3 +1295,36 @@ async def test_a_stream_that_fails_after_its_usage_reaches_the_token_metrics() -
     assert (ask.cost_usd, ask.token_usage.prompt_tokens) == (pytest.approx(0.2), 20)
     assert engine._budget.spent == pytest.approx(0.2)
     assert engine.observer.seen == [("m", 10), ("m", 10)]
+
+
+async def test_a_subworkflow_whose_step_id_no_checkpoint_takes_resumes_its_child_afresh(
+    tmp_path: Any,
+) -> None:
+    child = {"name": "child", "config": {"provider": "paid", "model": "m"}, "steps": [_PAYS, _GATE]}
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "name": "parent",
+            "config": {"provider": "paid", "model": "m"},
+            "steps": [{"id": "my sub", "type": "subworkflow", "workflow_inline": child}],
+        }
+    )
+    checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+    gateway = ProviderGateway()
+    gateway.register(_Paid(_paid("a")))
+    engine = WorkflowEngine(workflow=workflow, provider_gateway=gateway, checkpointer=checkpointer)
+    # The file checkpointer refuses the child's run_id: the parent pauses all the same
+    assert (await engine.run()).status == WorkflowStatus.PAUSED
+
+    provider = _Paid(_paid("a again"))
+    gateway = ProviderGateway()
+    gateway.register(provider)
+    resumed = await WorkflowEngine.from_checkpoint(
+        await checkpointer.load(engine.run_id),
+        checkpointer=checkpointer,
+        provider_gateway=gateway,
+        approval_decisions={"my sub.gate": "approved"},
+    )
+    result = await resumed.run()
+
+    assert result.status == WorkflowStatus.SUCCESS
+    assert not provider._turns  # the child ran from its first step

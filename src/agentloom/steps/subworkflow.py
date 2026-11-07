@@ -347,7 +347,7 @@ async def _paused_child(checkpointer: Any, run_id: str) -> CheckpointData | None
         return None
     try:
         saved: CheckpointData = await checkpointer.load(run_id)
-    except KeyError:
+    except (KeyError, ValueError):  # none, or a run_id it refused to save under (a step id)
         return None
     return saved if saved.status == WorkflowStatus.PAUSED.value else None
 
