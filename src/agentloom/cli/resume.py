@@ -78,6 +78,9 @@ async def _resume_async(
     except KeyError:
         typer.echo(f"No checkpoint found for run '{run_id}'.", err=True)
         raise typer.Exit(1)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
 
     approval_decisions: dict[str, str] = {}
     if decision:
@@ -160,7 +163,7 @@ async def _resume_async(
     if output_json:
         typer.echo(result.model_dump_json(indent=2))
     else:
-        _print_result(result)
+        _print_result(result, run_id=run_id)
 
     if observer:  # pragma: no cover — requires OTel extra
         observer.shutdown()

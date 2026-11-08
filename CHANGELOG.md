@@ -60,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agentloom resume` reports an invalid run id or an unreadable checkpoint in one line and exits 1, instead of a traceback, and a resumed run that pauses at a later approval gate prints its own run id in the approve and reject commands, not `<run_id>` (#215).
 - Tool parameters sent to Gemini lose the keys its schema dialect rejects (`additionalProperties`, `title`, `examples`, `default`), as a `responseSchema` does (#120). A tool whose parameters had one failed with a 400; an agent's `final_result` tool always has `additionalProperties`.
 - The Anthropic and Google adapters send every system turn of a request, in order, instead of the last one only (#120). A step with a `speaker` and a conversation summarized by `summarize_oldest` lost its own system prompt on those providers.
 - A prompt or system prompt that is not a valid template, and an `llm_call` with neither `prompt` nor `conversation`, fail their step without a retry (#120). Every retry failed the same way.
