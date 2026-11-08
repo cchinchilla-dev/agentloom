@@ -36,7 +36,7 @@ steps:                                      # at least one step required
 | `model` | `string` | `gpt-4o-mini` | Default model for all LLM steps |
 | `base_url` | `string` | `null` | Endpoint of `provider: generic_openai` (required there, refused with any other provider). See [Providers](providers.md#generic-openai-compatible-endpoint) |
 | `api_key_env` | `string` | `null` | Name of the environment variable holding the key for `provider: generic_openai`; without it, requests carry no `Authorization` header |
-| `max_retries` | `int` | `3` | Accepted, not read yet: set retries per step with `retry.max_retries` |
+| `max_retries` | `int` | `3` | Retries for each step whose `retry` block does not set `max_retries`. A subworkflow's steps take the child's value |
 | `budget_usd` | `float` | `null` | Maximum spend in USD |
 | `timeout` | `float` | `null` | Workflow timeout in seconds; `0` sets no limit. Past it the run ends `timeout`: the steps it cut short are marked `timeout`, the later ones do not run, and a checkpointed run resumes with the full timeout again. An approval gate that pauses in the layer it cuts wins: the run ends `paused`, and resuming it runs the cut steps again |
 | `max_concurrent_steps` | `int` | `10` | Max parallel steps per layer. Bounded `1 ≤ N ≤ 1024` at parse time — values outside that range raise a Pydantic error instead of deadlocking the limiter or surfacing a cryptic `total_tokens must be >= 0`. |
@@ -326,7 +326,7 @@ The parsed value lands in `state[output]` directly — for `pydantic` mode it's 
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_retries` | `int` | `3` | Number of retry attempts |
+| `max_retries` | `int` | workflow's `config.max_retries` | Retries after the first attempt; `0` runs the step once |
 | `backoff_base` | `float` | `2.0` | Exponential backoff base (wait = base^attempt) |
 | `backoff_max` | `float` | `60.0` | Maximum wait between retries in seconds |
 | `jitter` | `bool` | `true` | Apply ±25% jitter to each backoff so concurrent retries don't cluster |
