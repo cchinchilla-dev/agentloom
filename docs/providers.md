@@ -262,6 +262,10 @@ Embedding responses carry no metadata. Recordings keep it in each entry (see [Te
 
 URL-based attachments (`fetch: local`) are protected against Server-Side Request Forgery. The engine blocks requests to private and reserved IP ranges (RFC 1918, loopback, link-local) before any network call is made.
 
+### Tool network access
+
+With the sandbox enabled and `allowed_domains` empty, the `http_request` tool refuses a host that resolves to an address the [webhook gate](#webhook-destination-gate) blocks, such as loopback, the cloud metadata service or RFC 1918; naming the host in `allowed_domains` allows it. The tool's result leaves out the response headers that can carry a credential: those whose name contains `authorization`, `cookie`, `token`, `secret` or `key`.
+
 ### Webhook destination gate
 
 Approval-gate webhooks (`approval_gate.notify.url`) pass through two independent gates:
@@ -289,7 +293,7 @@ State is reachable from a router predicate **only** through the `state.X` (or `s
 
 ### Allowed paths
 
-`sandbox.allowed_paths` grants both read and write access to a directory tree; `readable_paths` and `writable_paths` narrow it down per direction. Resolved paths must live inside an allowed prefix, and the resolution itself is wrapped — null bytes, oversized components, symlink loops, OS-level rejections, and non-string callers all surface as `SandboxViolationError` (not the raw `ValueError` / `OSError` / `RuntimeError` / `TypeError`).
+`sandbox.allowed_paths` grants both read and write access to a directory tree; `readable_paths` and `writable_paths` narrow it down per direction. With the sandbox enabled and neither list set, no file can be read, by a tool or as an attachment. Resolved paths must live inside an allowed prefix, and the resolution itself is wrapped — null bytes, oversized components, symlink loops, OS-level rejections, and non-string callers all surface as `SandboxViolationError` (not the raw `ValueError` / `OSError` / `RuntimeError` / `TypeError`).
 
 Command argument validation also covers flag-embedded paths: `tee --output=/etc/passwd`, `dd of=/dev/sda`, and similar `--key=value` / `key=value` forms have their value side validated against the allowlist, not just bare positional tokens.
 

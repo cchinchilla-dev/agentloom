@@ -1012,6 +1012,91 @@ class TestProviderFormatPreservesToolMessages:
 
 class TestLLMStepToolLoop:
     @respx.mock
+    async def test_a_tool_the_step_does_not_declare_does_not_run(self) -> None:
+        # The model names a tool the workflow registers for other steps: it must not run
+        ran: list[dict[str, Any]] = []
+
+        class _Spy(_LookupTool):
+            async def execute(self, **kwargs: Any) -> Any:
+                ran.append(kwargs)
+                return "ran"
+
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "model": "gpt-4o-mini",
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "id": "c1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "lookup",
+                                                "arguments": '{"key": "secret"}',
+                                            },
+                                        }
+                                    ],
+                                },
+                                "finish_reason": "tool_calls",
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 5, "completion_tokens": 9},
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "model": "gpt-4o-mini",
+                        "choices": [
+                            {
+                                "message": {"role": "assistant", "content": "I cannot."},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+                    },
+                ),
+            ]
+        )
+        workflow = WorkflowDefinition(
+            name="agent",
+            config=WorkflowConfig(provider="openai", model="gpt-4o-mini"),
+            state={},
+            steps=[
+                StepDefinition(
+                    id="ask",
+                    type=StepType.LLM_CALL,
+                    prompt="What is 2+3?",
+                    tools=[ToolDefinition(name="add", description="add two integers")],
+                    output="answer",
+                )
+            ],
+        )
+        gateway = ProviderGateway()
+        gateway.register(OpenAIProvider(api_key="k"))
+        engine = WorkflowEngine(
+            workflow=workflow,
+            provider_gateway=gateway,
+            tool_registry=_registry_with(_AddTool(), _Spy()),
+        )
+        result = await engine.run()
+        await gateway.close()
+
+        assert result.status == WorkflowStatus.SUCCESS
+        assert ran == []
+        sent = json.loads(route.calls[1].request.content)["messages"][-1]
+        assert sent["role"] == "tool"
+        assert sent["content"] == (
+            "tool 'lookup' not registered: Tool 'lookup' not found. Available: add"
+        )
+
+    @respx.mock
     async def test_step_dispatches_and_iterates(self) -> None:
         # Iteration 1: model asks to call `add`.
         # Iteration 2: model responds with the final answer.
@@ -1552,7 +1637,7 @@ class TestStreamForwardsToolKwargs:
 
         route = respx.post(
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            "gemini-2.5-flash:streamGenerateContent?alt=sse&key=k"
+            "gemini-2.5-flash:streamGenerateContent?alt=sse"
         ).mock(return_value=httpx.Response(200, text="data: {}\n\n"))
         provider = GoogleProvider(api_key="k")
         sr = await provider.stream(
@@ -1581,7 +1666,7 @@ class TestStreamForwardsToolKwargs:
 
         route = respx.post(
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            "gemini-2.5-flash:streamGenerateContent?alt=sse&key=k"
+            "gemini-2.5-flash:streamGenerateContent?alt=sse"
         ).mock(return_value=httpx.Response(200, text="data: {}\n\n"))
         provider = GoogleProvider(api_key="k")
         sr = await provider.stream(

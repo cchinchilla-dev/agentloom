@@ -139,6 +139,7 @@ class LLMCallStep(BaseStep):
         )
         from agentloom.steps._tools import (
             INVALID_ARGUMENTS,
+            DeclaredTools,
             build_assistant_message_with_tool_calls,
             build_tool_result_messages,
             dispatch_tool_calls,
@@ -236,7 +237,7 @@ class LLMCallStep(BaseStep):
                     )
                 results = await dispatch_tool_calls(
                     pending,
-                    context.tool_registry,
+                    DeclaredTools(context.tool_registry, step.tools),
                     observer=context.observer,
                     step_id=step.id,
                 )

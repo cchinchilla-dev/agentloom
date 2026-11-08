@@ -28,6 +28,29 @@ MOCK_RESPONSE = {
 
 class TestGoogleProvider:
     @respx.mock
+    async def test_the_api_key_goes_in_a_header_not_the_url(self) -> None:
+        # httpx logs request URLs at INFO, and they reach error messages
+        route = respx.post(url__regex=r".*/models/.*").mock(
+            side_effect=[
+                httpx.Response(200, json=MOCK_RESPONSE),
+                httpx.Response(200, text='data: {"candidates": []}\n\n'),
+                httpx.Response(200, json={"embeddings": [{"values": [0.1]}]}),
+            ]
+        )
+        provider = GoogleProvider(api_key="secret-key")
+        messages = [{"role": "user", "content": "hi"}]
+        await provider.complete(messages=messages, model="gemini-2.5-flash")
+        sr = await provider.stream(messages=messages, model="gemini-2.5-flash")
+        async for _ in sr:
+            pass
+        await provider.embed(["hi"], model="text-embedding-004")
+        await provider.close()
+        assert route.call_count == 3
+        for call in route.calls:
+            assert call.request.headers["x-goog-api-key"] == "secret-key"
+            assert "secret-key" not in str(call.request.url)
+
+    @respx.mock
     async def test_successful_completion(self) -> None:
         respx.post(url__regex=r".*/models/gemini.*").mock(
             return_value=httpx.Response(200, json=MOCK_RESPONSE)
