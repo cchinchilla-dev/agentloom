@@ -163,7 +163,7 @@ class SubworkflowStep(BaseStep):
         # An over-budget child fails without a retry: a rerun would repeat the over-budget calls.
         if result.status == WorkflowStatus.BUDGET_EXCEEDED:
             # Shared enforcer: the overrun is the parent's own, read from its counter.
-            if parent_enforcer is not None and parent_enforcer is child_enforcer:
+            if parent_enforcer is child_enforcer and parent_enforcer is not None:
                 budget = parent_enforcer.limit_usd or 0.0
                 spent = parent_enforcer.spent
                 record_spend(0.0, "", "", ran_tokens(result.step_results))  # charged already
