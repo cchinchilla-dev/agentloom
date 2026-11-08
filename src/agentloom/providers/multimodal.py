@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import re
 import socket
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote_to_bytes, urlparse
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 
 from agentloom.core.models import Attachment, SandboxConfig
 from agentloom.exceptions import AttachmentResolutionError
+from agentloom.tools.sandbox import send_pinned
 
 logger = logging.getLogger("agentloom.multimodal")
 
@@ -210,10 +212,11 @@ def _is_private_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return any(ip in net for net in _BLOCKED_NETWORKS)
 
 
-async def _resolve_and_validate_host(hostname: str) -> list[tuple[Any, ...]]:
+async def _resolve_and_validate_host(hostname: str) -> tuple[str, ...]:
     """Resolve hostname and validate all IPs are public.
 
-    Returns the ``getaddrinfo`` results on success.
+    Returns the resolved addresses, which the fetch connects to
+    (``send_pinned``) instead of resolving the name again.
     Raises ``PermissionError`` if any resolved IP is private/reserved
     or if DNS resolution fails (fail-closed).
     """
@@ -225,15 +228,18 @@ async def _resolve_and_validate_host(hostname: str) -> list[tuple[Any, ...]]:
     if not results:
         msg = f"DNS returned no results for '{hostname}' (SSRF fail-closed)"
         raise PermissionError(msg)
+    addresses: list[str] = []
     for _family, _, _, _, sockaddr in results:
         ip = ipaddress.ip_address(sockaddr[0])
         if _is_private_ip(ip):
             msg = f"Hostname '{hostname}' resolves to private IP {ip} (SSRF blocked)"
             raise PermissionError(msg)
-    return results
+        if str(ip) not in addresses:
+            addresses.append(str(ip))
+    return tuple(addresses)
 
 
-async def _validate_url_sandbox(url: str, sandbox: SandboxConfig) -> None:
+async def _validate_url_sandbox(url: str, sandbox: SandboxConfig) -> tuple[str, ...]:
     """Raise if the URL is blocked by sandbox policy or SSRF rules."""
     if not sandbox.allow_network:
         msg = f"URL fetching blocked by sandbox (allow_network=false): {url}"
@@ -245,7 +251,7 @@ async def _validate_url_sandbox(url: str, sandbox: SandboxConfig) -> None:
         msg = f"URL domain '{hostname}' not in sandbox allowed_domains: {sandbox.allowed_domains}"
         raise PermissionError(msg)
 
-    await _resolve_and_validate_host(hostname)
+    return await _resolve_and_validate_host(hostname)
 
 
 def _validate_provider_url(url: str, sandbox: SandboxConfig) -> None:
@@ -324,47 +330,44 @@ def _check_size(data: bytes, source: str) -> None:
         raise ValueError(msg)
 
 
-async def _validate_redirect_target(response: httpx.Response) -> None:
-    """Event hook: validate each redirect target against SSRF rules.
-
-    Called by httpx before following a redirect.  Resolves the redirect
-    hostname via DNS and blocks if any IP is private/reserved (fail-closed).
-    """
-    if response.is_redirect and response.has_redirect_location:
-        location = response.headers.get("location", "")
-        parsed = urlparse(location)
-        hostname = parsed.hostname
-        if hostname:
-            await _resolve_and_validate_host(hostname)
+_MAX_REDIRECTS = 5
 
 
-async def _fetch_url(url: str) -> tuple[bytes, str | None]:
+async def _fetch_url(url: str, addresses: Sequence[str]) -> tuple[bytes, str | None]:
     """Fetch URL content with streaming size enforcement.
 
     Reads the response in chunks and aborts if the cumulative size
     exceeds :data:`MAX_ATTACHMENT_BYTES`, preventing OOM from large responses.
-    Redirects are validated against SSRF rules before following.
+    Each request goes to the addresses validated for its host (*addresses*
+    for *url*); a redirect target is validated the same way before it is
+    followed, so no name is resolved twice.
     """
-    async with httpx.AsyncClient(
-        timeout=30.0,
-        follow_redirects=True,
-        max_redirects=5,
-        event_hooks={"response": [_validate_redirect_target]},
-    ) as client:
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
-            chunks: list[bytes] = []
-            total = 0
-            async for chunk in response.aiter_bytes():
-                total += len(chunk)
-                if total > MAX_ATTACHMENT_BYTES:
-                    limit_mb = MAX_ATTACHMENT_BYTES / (1024 * 1024)
-                    msg = f"Attachment '{url}' exceeds {limit_mb:.0f} MB during download"
-                    raise ValueError(msg)
-                chunks.append(chunk)
-            data = b"".join(chunks)
+    target = httpx.URL(url)
+    for _ in range(_MAX_REDIRECTS + 1):
+        # A client per hop: a pool keyed by address would skip the next name's TLS check
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            request = client.build_request("GET", target)
+            response = await send_pinned(client, request, addresses, stream=True)
+            try:
+                if response.has_redirect_location:
+                    target = target.join(response.headers["location"])
+                    addresses = await _resolve_and_validate_host(target.host)
+                    continue
+                response.raise_for_status()
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > MAX_ATTACHMENT_BYTES:
+                        limit_mb = MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                        msg = f"Attachment '{url}' exceeds {limit_mb:.0f} MB during download"
+                        raise ValueError(msg)
+                    chunks.append(chunk)
+            finally:
+                await response.aclose()
         content_type = response.headers.get("content-type", "").split(";")[0].strip() or None
-        return data, content_type
+        return b"".join(chunks), content_type
+    raise httpx.TooManyRedirects("Exceeded maximum allowed redirects.", request=request)
 
 
 def _make_block(
@@ -417,8 +420,8 @@ async def _resolve_single(
             _validate_provider_url(source, sandbox)
             return _make_url_block(attachment.type, source, media_type)
 
-        await _validate_url_sandbox(source, sandbox)
-        raw_bytes, content_type = await _fetch_url(source)
+        addresses = await _validate_url_sandbox(source, sandbox)
+        raw_bytes, content_type = await _fetch_url(source, addresses)
         if not attachment.media_type and content_type:
             media_type = content_type
         encoded = base64.b64encode(raw_bytes).decode("ascii")
@@ -446,7 +449,8 @@ async def resolve_attachments(
 
     * **SSRF protection** — URLs that resolve to private/reserved IP ranges
       (RFC 1918, loopback, link-local) are blocked.  Redirects are validated
-      before following.  DNS failures are fail-closed.
+      before following, and each request connects to the addresses
+      validated for its host.  DNS failures are fail-closed.
     * **Provider passthrough** — ``fetch: provider`` mode still validates
       the URL against private IPs and ``allowed_domains``.
     * **Sandbox domain filtering** — when ``allowed_domains`` is non-empty,

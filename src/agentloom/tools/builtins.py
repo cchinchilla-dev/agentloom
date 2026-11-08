@@ -12,7 +12,7 @@ import anyio
 import httpx
 
 from agentloom.tools.base import BaseTool
-from agentloom.tools.sandbox import ToolSandbox
+from agentloom.tools.sandbox import ToolSandbox, send_pinned
 
 # Credential-bearing header names: the result reaches the model, state, checkpoints, recordings
 _CREDENTIAL_HEADER_PARTS = ("authorization", "cookie", "token", "secret", "key")
@@ -50,15 +50,16 @@ class HttpRequestTool(BaseTool):
         timeout = kwargs.get("timeout", 30)
 
         # The internal-host check resolves the name, which blocks: off the event loop
-        await anyio.to_thread.run_sync(self._sandbox.validate_network, url)
+        addresses = await anyio.to_thread.run_sync(self._sandbox.validate_network, url)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.request(
+            request = client.build_request(
                 method=method,
                 url=url,
                 headers=headers,
                 content=body if body else None,
             )
+            response = await send_pinned(client, request, addresses)
             return {
                 "status_code": response.status_code,
                 "headers": {

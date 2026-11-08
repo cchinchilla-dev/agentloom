@@ -13,8 +13,12 @@ import ipaddress
 import re
 import shlex
 import socket
+import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import urlparse
+
+import httpx
 
 from agentloom.exceptions import SandboxViolationError
 
@@ -96,8 +100,13 @@ def _ip_is_internal(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
-def _host_is_internal(hostname: str) -> bool:
-    """Return ``True`` when *hostname* resolves to an internal address.
+def _check_host(hostname: str) -> tuple[bool, tuple[str, ...]]:
+    """Classify *hostname* and return the addresses it names.
+
+    Returns whether the host is internal and, when it is not, the addresses
+    to connect to, so the name is resolved once (:func:`send_pinned`): a
+    literal IP itself, or every ``getaddrinfo`` answer; none when the name
+    does not resolve.
 
     Inspects the literal host first so a workflow can't smuggle
     ``169.254.169.254`` past the deny-list by using
@@ -115,7 +124,7 @@ def _host_is_internal(hostname: str) -> bool:
     string check.
     """
     if not hostname:
-        return False
+        return False, ()
     try:
         from urllib.parse import unquote
 
@@ -126,14 +135,15 @@ def _host_is_internal(hostname: str) -> bool:
         decoded = decoded.encode("idna").decode("ascii")
     lower = decoded.lower().rstrip(".")
     if not lower:
-        return False
+        return False, ()
     if lower == "localhost" or lower.endswith(".localhost"):
-        return True
+        return True, ()
     try:
         ip = ipaddress.ip_address(lower)
-        return _ip_is_internal(ip)
     except ValueError:
         pass
+    else:
+        return _ip_is_internal(ip), (str(ip),)
     try:
         records = socket.getaddrinfo(
             lower,
@@ -141,7 +151,8 @@ def _host_is_internal(hostname: str) -> bool:
             type=socket.SOCK_STREAM,
         )
     except (OSError, ValueError):
-        return False
+        return False, ()
+    addresses: list[str] = []
     for family, _, _, _, sockaddr in records:
         if family not in (socket.AF_INET, socket.AF_INET6):
             continue
@@ -150,31 +161,96 @@ def _host_is_internal(hostname: str) -> bool:
         except (ValueError, IndexError):
             continue
         if _ip_is_internal(ip_addr):
-            return True
-    return False
+            return True, ()
+        if str(ip_addr) not in addresses:
+            addresses.append(str(ip_addr))
+    return False, tuple(addresses)
+
+
+def _unresolved(hostname: str) -> str:
+    return f"Host {hostname!r} does not resolve, so its address cannot be checked"
+
+
+def _default_deny(url: str) -> tuple[str | None, tuple[str, ...]]:
+    """Return why the default deny-list blocks *url*, or the addresses to connect to."""
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _DEFAULT_ALLOWED_SCHEMES:
+        return f"URL scheme {scheme!r} is not allowed for webhook delivery", ()
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        return f"URL {url!r} has no hostname", ()
+    internal, addresses = _check_host(hostname)
+    if internal:
+        return (
+            f"Hostname {hostname!r} resolves to an internal address; "
+            f"set sandbox.allow_internal_webhook_targets=true to opt in"
+        ), ()
+    if not addresses:
+        return _unresolved(hostname), ()
+    return None, addresses
 
 
 def default_deny_webhook_target(url: str) -> str | None:
     """Return a reason if *url* should be blocked by the default deny-list.
 
-    Used by ``send_webhook`` when the workflow has no explicit
-    ``ToolSandbox`` — keeps loopback / metadata / RFC 1918 hosts off-limits
-    so the SSRF surface stays closed by default. Returns ``None`` when the
+    Applies to webhooks when the workflow has no enabled ``ToolSandbox``
+    — keeps loopback / metadata / RFC 1918 hosts off-limits so the SSRF
+    surface stays closed by default, and refuses a host that does not
+    resolve, whose address cannot be checked. Returns ``None`` when the
     URL is acceptable.
     """
-    parsed = urlparse(url)
-    scheme = (parsed.scheme or "").lower()
-    if scheme not in _DEFAULT_ALLOWED_SCHEMES:
-        return f"URL scheme {scheme!r} is not allowed for webhook delivery"
-    hostname = (parsed.hostname or "").lower()
-    if not hostname:
-        return f"URL {url!r} has no hostname"
-    if _host_is_internal(hostname):
-        return (
-            f"Hostname {hostname!r} resolves to an internal address; "
-            f"set sandbox.allow_internal_webhook_targets=true to opt in"
-        )
-    return None
+    return _default_deny(url)[0]
+
+
+def _proxy_configured(scheme: str) -> bool:
+    # The source httpx reads its proxies from when trust_env is on, as it is by default
+    proxies = urllib.request.getproxies()
+    return bool(proxies.get(scheme) or proxies.get("all"))
+
+
+def _pin(request: httpx.Request, address: str) -> httpx.Request:
+    host = request.url.raw_host.decode("ascii")
+    return httpx.Request(
+        request.method,
+        request.url.copy_with(host=address),
+        headers=request.headers,
+        stream=request.stream,
+        extensions={**request.extensions, "sni_hostname": host},
+    )
+
+
+async def send_pinned(
+    client: httpx.AsyncClient,
+    request: httpx.Request,
+    addresses: Sequence[str],
+    *,
+    stream: bool = False,
+) -> httpx.Response:
+    """Send *request* to the addresses the sandbox checked, not to a new lookup.
+
+    A second lookup could get a different answer than the check did (DNS
+    rebinding) and reach an internal host. The request keeps its host in the
+    ``Host`` header and the TLS server name, so the certificate is checked
+    against it; the addresses are tried in order while the connection fails.
+    A request with no addresses, to a literal IP, or that goes through a
+    proxy from the environment is sent as it is: the proxy resolves the name.
+
+    The client's connection pool is keyed by address, so a client should send
+    to one host: a second name pinned to the same address would reuse the TLS
+    connection verified for the first.
+    """
+    literal = True
+    try:
+        ipaddress.ip_address(request.url.host)
+    except ValueError:
+        literal = False
+    if not addresses or literal or _proxy_configured(request.url.scheme):
+        return await client.send(request, stream=stream)
+    for address in addresses[:-1]:
+        with contextlib.suppress(httpx.ConnectError, httpx.ConnectTimeout):
+            return await client.send(_pin(request, address), stream=stream)
+    return await client.send(_pin(request, addresses[-1]), stream=stream)
 
 
 def _extract_path_candidates(token: str) -> list[str]:
@@ -398,7 +474,7 @@ class ToolSandbox:
                 f"Allowed: {[str(p) for p in paths] or '(none)'}",
             )
 
-    def validate_network(self, url: str) -> None:
+    def validate_network(self, url: str) -> tuple[str, ...]:
         """Validate that network access is permitted.
 
         Rejects non-``http``/``https`` schemes by default (``file://``,
@@ -407,23 +483,33 @@ class ToolSandbox:
         files. When *allow_network* is ``True`` and *allowed_domains*
         is non-empty, the request domain must be in the allowlist; when
         it is empty, a host that resolves to an internal address
-        (loopback, link-local, RFC 1918) is refused, so naming it in
-        *allowed_domains* is the way to reach it.
+        (loopback, link-local, RFC 1918), or does not resolve, is
+        refused, so naming it in *allowed_domains* is the way to reach it.
+
+        Returns:
+            The addresses the internal-host check resolved the host to,
+            for :func:`send_pinned`; empty when no check ran.
 
         Raises:
             SandboxViolationError: If network access is blocked.
         """
         if not self.enabled:
-            return
+            return ()
 
         self._validate_scheme_and_domain(url)
+        if self._allowed_domains:
+            return ()
         hostname = (urlparse(url).hostname or "").lower()
-        if not self._allowed_domains and _host_is_internal(hostname):
+        internal, addresses = _check_host(hostname)
+        if internal:
             raise SandboxViolationError(
                 "http_request",
                 f"Host {hostname!r} resolves to an internal address; "
                 f"list it in sandbox.allowed_domains to allow it",
             )
+        if not addresses:
+            raise SandboxViolationError("http_request", _unresolved(hostname))
+        return addresses
 
     def _validate_scheme_and_domain(self, url: str) -> None:
         """The checks *validate_network* shares with the webhook gate.
@@ -452,7 +538,7 @@ class ToolSandbox:
                     f"Allowed: {sorted(self._allowed_domains)}",
                 )
 
-    def validate_webhook_url(self, url: str) -> None:
+    def validate_webhook_url(self, url: str) -> tuple[str, ...]:
         """Validate a webhook destination URL.
 
         Two independent gates apply, in order:
@@ -463,7 +549,12 @@ class ToolSandbox:
            opts out via ``allow_internal_webhook_targets``. Blocks
            loopback, link-local (incl. cloud metadata at
            ``169.254.169.254``), RFC 1918, CGNAT, IPv4-mapped IPv6 forms,
-           and the unspecified addresses ``0.0.0.0`` / ``::``.
+           and the unspecified addresses ``0.0.0.0`` / ``::``, and a host
+           that does not resolve, whose address cannot be checked.
+
+        Returns:
+            The addresses the internal-host gate resolved the host to, for
+            :func:`send_pinned`; empty when the gate did not run.
 
         Raises:
             SandboxViolationError: If the destination is blocked.
@@ -481,22 +572,28 @@ class ToolSandbox:
             # Enforces allowed_domains; its scheme check cannot reopen what the gate above refused
             self._validate_scheme_and_domain(url)
             if self.allow_internal_webhook_targets:
-                return
+                return ()
             hostname = (parsed.hostname or "").lower()
-            if hostname and _host_is_internal(hostname):
+            if not hostname:
+                return ()
+            internal, addresses = _check_host(hostname)
+            if internal:
                 raise SandboxViolationError(
                     "webhook",
                     f"Webhook destination {hostname!r} resolves to an internal "
                     f"address; set sandbox.allow_internal_webhook_targets=true "
                     f"to opt in",
                 )
-            return
+            if not addresses:
+                raise SandboxViolationError("webhook", _unresolved(hostname))
+            return addresses
 
         if self.allow_internal_webhook_targets:
-            return
-        reason = default_deny_webhook_target(url)
+            return ()
+        reason, addresses = _default_deny(url)
         if reason is not None:
             raise SandboxViolationError("webhook", reason)
+        return addresses
 
     def validate_write_size(self, size: int, tool_name: str = "file_write") -> None:
         """Validate that a write payload does not exceed the size limit.

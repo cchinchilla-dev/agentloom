@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import tempfile
+from typing import Any
 
 import httpx
 import pytest
@@ -139,8 +140,8 @@ class TestResolveAttachments:
         assert blocks[0].data == raw_b64
 
     @respx.mock
-    async def test_url_fetch_local(self) -> None:
-        respx.get("https://example.com/image.jpg").mock(
+    async def test_url_fetch_local(self, public_dns: str) -> None:
+        respx.get(f"https://{public_dns}/image.jpg").mock(
             return_value=httpx.Response(
                 200, content=_TINY_PNG, headers={"content-type": "image/jpeg"}
             )
@@ -207,8 +208,8 @@ class TestSandboxRestrictions:
             await resolve_attachments([att], sandbox=sandbox)
 
     @respx.mock
-    async def test_url_allowed_by_matching_domain(self) -> None:
-        respx.get("https://trusted.com/image.png").mock(
+    async def test_url_allowed_by_matching_domain(self, public_dns: str) -> None:
+        respx.get(f"https://{public_dns}/image.png").mock(
             return_value=httpx.Response(200, content=_TINY_PNG)
         )
         sandbox = SandboxConfig(allowed_domains=["trusted.com"])
@@ -293,16 +294,77 @@ class TestURLClassification:
         assert _is_base64("~/home/file") is False
         assert _is_base64("C:\\windows\\path") is False
 
-    async def test_redirect_to_localhost_blocked(self) -> None:
-        from agentloom.providers.multimodal import _validate_redirect_target
-
-        response = httpx.Response(
-            302,
-            headers={"location": "http://127.0.0.1:8080/secret"},
-            request=httpx.Request("GET", "https://external.com/redir"),
+    @respx.mock
+    async def test_redirect_to_localhost_blocked(self, public_dns: str) -> None:
+        respx.get(f"https://{public_dns}/redir").mock(
+            return_value=httpx.Response(302, headers={"location": "http://127.0.0.1:8080/secret"})
         )
+        internal = respx.get("http://127.0.0.1:8080/secret").mock(return_value=httpx.Response(200))
+        att = Attachment(type="image", source="https://external.com/redir")
         with pytest.raises(PermissionError, match="private IP"):
-            await _validate_redirect_target(response)
+            await resolve_attachments([att])
+        assert not internal.called
+
+
+class TestPinnedFetch:
+    """Each request goes to the address checked for its host, redirects included."""
+
+    @respx.mock
+    async def test_fetch_goes_to_the_checked_address(self, public_dns: str) -> None:
+        route = respx.get(f"https://{public_dns}/image.png").mock(
+            return_value=httpx.Response(200, content=_TINY_PNG)
+        )
+        att = Attachment(type="image", source="https://cdn.example.com/image.png")
+        await resolve_attachments([att])
+        assert route.calls[0].request.headers["host"] == "cdn.example.com"
+        assert route.calls[0].request.extensions["sni_hostname"] == "cdn.example.com"
+
+    @respx.mock
+    async def test_redirect_is_checked_and_pinned(
+        self, public_dns: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clients: list[httpx.AsyncClient] = []
+        real_client = httpx.AsyncClient
+
+        def _client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+            clients.append(real_client(*args, **kwargs))
+            return clients[-1]
+
+        monkeypatch.setattr("agentloom.providers.multimodal.httpx.AsyncClient", _client)
+        respx.get(f"https://{public_dns}/a").mock(
+            return_value=httpx.Response(302, headers={"location": "https://other.example.com/b"})
+        )
+        target = respx.get(f"https://{public_dns}/b").mock(
+            return_value=httpx.Response(200, content=_TINY_PNG)
+        )
+        att = Attachment(type="image", source="https://first.example.com/a")
+        blocks = await resolve_attachments([att])
+        assert base64.b64decode(blocks[0].data) == _TINY_PNG
+        assert target.calls[0].request.headers["host"] == "other.example.com"
+        # Both names share the address: a shared pool would skip the second TLS check
+        assert len(clients) == 2
+
+    @respx.mock
+    async def test_relative_redirect_keeps_the_host(self, public_dns: str) -> None:
+        respx.get(f"https://{public_dns}/a").mock(
+            return_value=httpx.Response(301, headers={"location": "/b"})
+        )
+        target = respx.get(f"https://{public_dns}/b").mock(
+            return_value=httpx.Response(200, content=_TINY_PNG)
+        )
+        att = Attachment(type="image", source="https://first.example.com/a")
+        await resolve_attachments([att])
+        assert target.calls[0].request.headers["host"] == "first.example.com"
+
+    @respx.mock
+    async def test_redirect_loop_stops(self, public_dns: str) -> None:
+        loop = respx.get(f"https://{public_dns}/loop").mock(
+            return_value=httpx.Response(302, headers={"location": "/loop"})
+        )
+        att = Attachment(type="image", source="https://first.example.com/loop")
+        with pytest.raises(httpx.TooManyRedirects):
+            await resolve_attachments([att])
+        assert loop.call_count == 6
 
 
 class TestSizeLimit:
@@ -316,6 +378,18 @@ class TestSizeLimit:
 
         att = Attachment(type="image", source=path)
         with pytest.raises(ValueError, match="exceeds limit"):
+            await resolve_attachments([att])
+
+    @respx.mock
+    async def test_oversized_download_aborted(
+        self, public_dns: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("agentloom.providers.multimodal.MAX_ATTACHMENT_BYTES", 10)
+        respx.get(f"https://{public_dns}/big.png").mock(
+            return_value=httpx.Response(200, content=b"\x00" * 11)
+        )
+        att = Attachment(type="image", source="https://cdn.example.com/big.png")
+        with pytest.raises(ValueError, match="during download"):
             await resolve_attachments([att])
 
 

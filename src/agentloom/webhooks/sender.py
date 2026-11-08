@@ -13,7 +13,7 @@ from agentloom.core.models import WebhookConfig
 from agentloom.core.redact import RedactionPolicy, redact_state
 from agentloom.core.templates import SafeFormatDict, build_template_vars
 from agentloom.exceptions import SandboxViolationError
-from agentloom.tools.sandbox import ToolSandbox, default_deny_webhook_target
+from agentloom.tools.sandbox import ToolSandbox, send_pinned
 
 
 @runtime_checkable
@@ -109,25 +109,25 @@ async def send_webhook(
     timeouts and errors are logged so the calling step can still pause even if
     the webhook endpoint is misbehaving.
 
-    When *sandbox* is provided, ``ToolSandbox.validate_webhook_url`` gates the
-    destination — same allowlist as ``validate_network`` when the sandbox is
-    enabled, default deny-list (loopback / link-local / RFC 1918) when it is
-    not. A blocked URL is logged and emitted as a
-    ``status="sandbox_blocked"`` observer breadcrumb; the workflow's pause
-    or completion is unaffected.
+    ``ToolSandbox.validate_webhook_url`` gates the destination — same
+    allowlist as ``validate_network`` when *sandbox* is enabled, default
+    deny-list (loopback / link-local / RFC 1918) when it is disabled or
+    absent — and each attempt goes to the addresses it checked. A blocked
+    URL is logged and emitted as a ``status="sandbox_blocked"`` observer
+    breadcrumb; the workflow's pause or completion is unaffected.
     """
     import time
 
     import anyio
 
     blocked_reason: str | None = None
-    if sandbox is not None:
-        try:
-            sandbox.validate_webhook_url(config.url)
-        except SandboxViolationError as exc:
-            blocked_reason = str(exc)
-    else:
-        blocked_reason = default_deny_webhook_target(config.url)
+    addresses: tuple[str, ...] = ()
+    try:
+        # A disabled sandbox applies the default deny-list
+        gate = sandbox if sandbox is not None else ToolSandbox()
+        addresses = gate.validate_webhook_url(config.url)
+    except SandboxViolationError as exc:
+        blocked_reason = str(exc)
 
     if blocked_reason is not None:
         logger.warning(
@@ -151,7 +151,10 @@ async def send_webhook(
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
                 async with httpx.AsyncClient(timeout=config.timeout) as client:
-                    resp = await client.post(config.url, content=payload, headers=headers)
+                    request = client.build_request(
+                        "POST", config.url, content=payload, headers=headers
+                    )
+                    resp = await send_pinned(client, request, addresses)
                     resp.raise_for_status()
                 latency = time.monotonic() - t0
                 logger.info(

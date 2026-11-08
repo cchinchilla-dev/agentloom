@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import socket
+from typing import Any
 from unittest.mock import MagicMock
 
 import httpx
@@ -67,18 +69,22 @@ class TestBuildPayload:
 class TestSendWebhook:
     @respx.mock
     @pytest.mark.anyio()
-    async def test_sends_post_request(self, wh_context: WebhookContext) -> None:
-        route = respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(200))
+    async def test_sends_post_request(self, wh_context: WebhookContext, public_dns: str) -> None:
+        route = respx.post(f"https://{public_dns}/wh").mock(return_value=httpx.Response(200))
         config = WebhookConfig(url="https://hooks.example.com/wh")
         await send_webhook(config, wh_context)
         assert route.called
-        body = json.loads(route.calls[0].request.content)
+        request = route.calls[0].request
+        body = json.loads(request.content)
         assert body["run_id"] == "run-123"
+        # Sent to the checked address, under the URL's name
+        assert request.headers["host"] == "hooks.example.com"
+        assert request.extensions["sni_hostname"] == "hooks.example.com"
 
     @respx.mock
     @pytest.mark.anyio()
-    async def test_custom_headers(self, wh_context: WebhookContext) -> None:
-        route = respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(200))
+    async def test_custom_headers(self, wh_context: WebhookContext, public_dns: str) -> None:
+        route = respx.post(f"https://{public_dns}/wh").mock(return_value=httpx.Response(200))
         config = WebhookConfig(
             url="https://hooks.example.com/wh",
             headers={"Authorization": "Bearer tok-123"},
@@ -88,15 +94,19 @@ class TestSendWebhook:
 
     @respx.mock
     @pytest.mark.anyio()
-    async def test_failure_does_not_raise(self, wh_context: WebhookContext) -> None:
-        respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(500))
+    async def test_failure_does_not_raise(
+        self, wh_context: WebhookContext, public_dns: str
+    ) -> None:
+        respx.post(f"https://{public_dns}/wh").mock(return_value=httpx.Response(500))
         config = WebhookConfig(url="https://hooks.example.com/wh", timeout=1.0)
         await send_webhook(config, wh_context)
 
     @respx.mock
     @pytest.mark.anyio()
-    async def test_retry_on_transient_error(self, wh_context: WebhookContext) -> None:
-        route = respx.post("https://hooks.example.com/wh").mock(
+    async def test_retry_on_transient_error(
+        self, wh_context: WebhookContext, public_dns: str
+    ) -> None:
+        route = respx.post(f"https://{public_dns}/wh").mock(
             side_effect=[
                 httpx.Response(500),
                 httpx.Response(500),
@@ -110,16 +120,18 @@ class TestSendWebhook:
 
     @respx.mock
     @pytest.mark.anyio()
-    async def test_all_retries_exhausted(self, wh_context: WebhookContext) -> None:
-        route = respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(500))
+    async def test_all_retries_exhausted(self, wh_context: WebhookContext, public_dns: str) -> None:
+        route = respx.post(f"https://{public_dns}/wh").mock(return_value=httpx.Response(500))
         config = WebhookConfig(url="https://hooks.example.com/wh", timeout=1.0)
         await send_webhook(config, wh_context, deadline_s=30.0)
         assert route.call_count == 3
 
     @respx.mock
     @pytest.mark.anyio()
-    async def test_observer_notified_on_success(self, wh_context: WebhookContext) -> None:
-        respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(200))
+    async def test_observer_notified_on_success(
+        self, wh_context: WebhookContext, public_dns: str
+    ) -> None:
+        respx.post(f"https://{public_dns}/wh").mock(return_value=httpx.Response(200))
         config = WebhookConfig(url="https://hooks.example.com/wh")
         observer = MagicMock()
         await send_webhook(config, wh_context, observer=observer)
@@ -132,8 +144,10 @@ class TestSendWebhook:
 
     @respx.mock
     @pytest.mark.anyio()
-    async def test_observer_notified_on_failure(self, wh_context: WebhookContext) -> None:
-        respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(500))
+    async def test_observer_notified_on_failure(
+        self, wh_context: WebhookContext, public_dns: str
+    ) -> None:
+        respx.post(f"https://{public_dns}/wh").mock(return_value=httpx.Response(500))
         config = WebhookConfig(url="https://hooks.example.com/wh", timeout=0.5)
         observer = MagicMock()
         await send_webhook(config, wh_context, observer=observer, deadline_s=30.0)
@@ -145,9 +159,9 @@ class TestSendWebhook:
 
     @respx.mock
     @pytest.mark.anyio()
-    async def test_deadline_enforced(self, wh_context: WebhookContext) -> None:
+    async def test_deadline_enforced(self, wh_context: WebhookContext, public_dns: str) -> None:
         """The retry backoff stops at ``deadline_s``; the delivery is reported as a timeout."""
-        respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(500))
+        respx.post(f"https://{public_dns}/wh").mock(return_value=httpx.Response(500))
         config = WebhookConfig(url="https://hooks.example.com/wh", timeout=1.0)
         observer = MagicMock()
         # The 1s deadline falls inside the 2s backoff after the first 500.
@@ -155,6 +169,46 @@ class TestSendWebhook:
         observer.on_webhook_delivery.assert_called_once()
         args = observer.on_webhook_delivery.call_args[0]
         assert args[2] == "timeout"
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_every_attempt_goes_to_the_checked_address(
+        self, wh_context: WebhookContext, public_dns: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A later lookup answering with loopback (DNS rebinding) is never made."""
+        lookups: list[str] = []
+
+        def _rebinding(host: Any, port: Any, *args: Any, **kwargs: Any) -> list[tuple[Any, ...]]:
+            address = public_dns if not lookups else "127.0.0.1"
+            lookups.append(address)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", _rebinding)
+        route = respx.post(f"https://{public_dns}/wh").mock(
+            side_effect=[httpx.Response(500), httpx.Response(200)]
+        )
+        config = WebhookConfig(url="https://hooks.example.com/wh", timeout=1.0)
+        await send_webhook(config, wh_context, deadline_s=30.0)
+        assert route.call_count == 2
+        assert lookups == [public_dns]
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_unresolvable_host_is_blocked(
+        self, wh_context: WebhookContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no address to check, nothing is sent."""
+
+        def _fail(*args: Any, **kwargs: Any) -> list[tuple[Any, ...]]:
+            raise socket.gaierror("no such host")
+
+        monkeypatch.setattr(socket, "getaddrinfo", _fail)
+        route = respx.post(url__regex=r".*").mock(return_value=httpx.Response(200))
+        config = WebhookConfig(url="https://hooks.example.com/wh")
+        observer = MagicMock()
+        await send_webhook(config, wh_context, observer=observer)
+        assert not route.called
+        assert observer.on_webhook_delivery.call_args[0][2] == "sandbox_blocked"
 
 
 class TestSandboxGate:
@@ -207,8 +261,10 @@ class TestSandboxGate:
 
     @respx.mock
     @pytest.mark.anyio()
-    async def test_public_https_passes_through(self, wh_context: WebhookContext) -> None:
-        respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(200))
+    async def test_public_https_passes_through(
+        self, wh_context: WebhookContext, public_dns: str
+    ) -> None:
+        respx.post(f"https://{public_dns}/wh").mock(return_value=httpx.Response(200))
         config = WebhookConfig(url="https://hooks.example.com/wh")
         observer = MagicMock()
         await send_webhook(config, wh_context, observer=observer, deadline_s=10.0)
