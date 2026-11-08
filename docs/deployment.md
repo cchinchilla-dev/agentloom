@@ -64,6 +64,8 @@ Plain YAML manifests organized with Kustomize overlays. Three environments provi
 
 Every overlay keeps the base's 600 s deadline (`activeDeadlineSeconds`).
 
+`deploy/k8s/examples/` holds standalone Jobs that check a feature inside the cluster (approval gate, pause and resume, mock provider, webhooks, array indexing, conversations); each runs in the `agentloom` namespace with `kubectl apply -f`.
+
 ```bash
 # Deploy dev overlay
 kubectl apply -k deploy/k8s/overlays/dev
@@ -163,7 +165,12 @@ Set `enable_observability = false` for a lightweight setup without the observabi
 
 GitOps deployment with automated sync, self-heal, and retry policies. ArgoCD watches the Helm chart in the repository and syncs changes automatically.
 
+The chart needs a workflow, and the Application points it at the `agentloom-workflows` ConfigMap, which must exist with a `workflow.yaml` key before the first sync:
+
 ```bash
+kubectl create namespace agentloom
+kubectl create configmap agentloom-workflows -n agentloom \
+  --from-file=workflow.yaml=examples/01_simple_qa.yaml
 kubectl apply -f deploy/argocd/application.yaml
 ```
 

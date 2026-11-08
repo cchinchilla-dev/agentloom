@@ -17,6 +17,10 @@ spec:
     helm:
       valueFiles:
         - values.yaml
+      # The chart needs a workflow: create this ConfigMap, with a workflow.yaml key, before the first sync
+      valuesObject:
+        workflow:
+          existingConfigMap: agentloom-workflows
   destination:
     server: https://kubernetes.default.svc
     namespace: agentloom
