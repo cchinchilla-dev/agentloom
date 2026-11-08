@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
+import socket
+import urllib.request
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
@@ -98,6 +101,29 @@ def latin1_locale(monkeypatch: pytest.MonkeyPatch) -> None:
         return read_text(self, encoding=encoding or "latin-1", errors=errors)
 
     monkeypatch.setattr(Path, "read_text", _read_text)
+
+
+@pytest.fixture
+def public_dns(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Resolve every host name to one public address, with no proxy, and return it.
+
+    A request the sandbox checked then goes to that address (``send_pinned``),
+    so respx routes name it instead of the host. A literal IP resolves to itself.
+    """
+    address = "93.184.215.14"
+
+    def _getaddrinfo(host: Any, port: Any, *args: Any, **kwargs: Any) -> list[tuple[Any, ...]]:
+        name = host.decode() if isinstance(host, bytes) else str(host)
+        try:
+            resolved = str(ipaddress.ip_address(name))
+        except ValueError:
+            resolved = address
+        family = socket.AF_INET6 if ":" in resolved else socket.AF_INET
+        return [(family, socket.SOCK_STREAM, 6, "", (resolved, port or 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo)
+    monkeypatch.setattr(urllib.request, "getproxies", dict)
+    return address
 
 
 @pytest.fixture

@@ -258,11 +258,11 @@ Embedding responses carry no metadata. Recordings keep it in each entry (see [Te
 
 ### SSRF protection
 
-URL-based attachments (`fetch: local`) are protected against Server-Side Request Forgery. The engine blocks requests to private and reserved IP ranges (RFC 1918, loopback, link-local) before any network call is made.
+URL-based attachments (`fetch: local`) are protected against Server-Side Request Forgery. The engine blocks requests to private and reserved IP ranges (RFC 1918, loopback, link-local) before any network call is made, and refuses a host that does not resolve. Redirects are followed one hop at a time, each target checked the same way, and every request goes to the addresses its check resolved (see [DNS rebinding](#dns-rebinding)).
 
 ### Tool network access
 
-With the sandbox enabled and `allowed_domains` empty, the `http_request` tool refuses a host that resolves to an address the [webhook gate](#webhook-destination-gate) blocks, such as loopback, the cloud metadata service or RFC 1918; naming the host in `allowed_domains` allows it. The tool's result leaves out the response headers that can carry a credential: those whose name contains `authorization`, `cookie`, `token`, `secret` or `key`.
+With the sandbox enabled and `allowed_domains` empty, the `http_request` tool refuses a host that resolves to an address the [webhook gate](#webhook-destination-gate) blocks, such as loopback, the cloud metadata service or RFC 1918, or that does not resolve; naming the host in `allowed_domains` allows it. The request then goes to the address the check resolved (see [DNS rebinding](#dns-rebinding)). The tool's result leaves out the response headers that can carry a credential: those whose name contains `authorization`, `cookie`, `token`, `secret` or `key`.
 
 ### Webhook destination gate
 
@@ -271,7 +271,7 @@ Approval-gate webhooks (`approval_gate.notify.url`) pass through two independent
 1. **Scheme gate** — always on. Non-`http`/`https` schemes (`file://`, `data:`, `javascript:`, `gopher://`, ...) are refused regardless of opt-in flags.
 2. **Internal-host gate** — always on unless the workflow explicitly opts out. Blocks loopback (`127.0.0.0/8`, `::1`, `localhost`, `*.localhost`), link-local (`169.254.0.0/16` — covers AWS / GCP / Azure metadata service at `169.254.169.254`; `fe80::/10`), RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT (`100.64/10`), ULA (`fc00::/7`), the unspecified addresses (`0.0.0.0`, `::`), multicast, and reserved ranges. IPv4-mapped IPv6 forms (`::ffff:127.0.0.1`) are normalised first so they hit the same flags.
 
-Hostname classification uses `getaddrinfo` so both A and AAAA records are inspected — an attacker can't smuggle a loopback target through an AAAA-only DNS response. Percent-encoded and IDN hostnames are decoded before the literal-string check.
+Hostname classification uses `getaddrinfo` so both A and AAAA records are inspected — an attacker can't smuggle a loopback target through an AAAA-only DNS response. Percent-encoded and IDN hostnames are decoded before the literal-string check. A host that does not resolve is refused, and the delivery goes to the addresses the gate checked (see [DNS rebinding](#dns-rebinding)).
 
 When the sandbox is enabled, the URL must additionally satisfy `allow_network`, `allowed_schemes`, and `allowed_domains`. Workflows that genuinely need to notify an in-cluster service can waive **only** the internal-host gate via:
 
@@ -282,6 +282,12 @@ config:
 ```
 
 The opt-in does NOT widen the scheme gate — `file://` and friends stay refused. A blocked webhook is logged and emitted as a `status="sandbox_blocked"` observer breadcrumb; the approval gate itself still pauses normally because pause and notify are independent.
+
+### DNS rebinding
+
+A check that resolves a name and lets the HTTP client resolve it again leaves a gap: a DNS server can answer the check with a public address and the connection with `127.0.0.1` or `169.254.169.254`. Wherever an internal-host check runs (URL attachments, `http_request` and approval-gate webhooks), the request connects to the addresses that check resolved, in order while the connection fails. The URL's host stays in the `Host` header and the TLS server name, so the server's certificate is checked against that name as usual.
+
+When a proxy from the environment (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` or the system proxy settings) carries the request, the proxy resolves the name, so nothing is pinned and the check is only as good as the DNS answer at that moment: restrict which hosts the proxy lets through.
 
 ### Router expression boundary
 

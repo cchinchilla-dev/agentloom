@@ -20,7 +20,7 @@ from agentloom.tools.builtins import (
     HttpRequestTool,
     ShellCommandTool,
 )
-from agentloom.tools.sandbox import ToolSandbox, _looks_like_path
+from agentloom.tools.sandbox import ToolSandbox, _looks_like_path, send_pinned
 
 
 class TestToolSandboxDisabled:
@@ -255,9 +255,9 @@ class TestReadWritePathSeparation:
 
 
 class TestNetworkSandbox:
-    def test_network_allowed(self) -> None:
+    def test_network_allowed(self, public_dns: str) -> None:
         sandbox = ToolSandbox(enabled=True, allow_network=True)
-        sandbox.validate_network("https://api.openai.com")
+        assert sandbox.validate_network("https://api.openai.com") == (public_dns,)
 
     def test_network_blocked(self) -> None:
         sandbox = ToolSandbox(enabled=True, allow_network=False)
@@ -282,9 +282,29 @@ class TestNetworkSandbox:
         with pytest.raises(SandboxViolationError, match="not in allowed domains"):
             sandbox.validate_network("https://evil.com/steal")
 
-    def test_empty_domain_list_allows_all(self) -> None:
+    def test_empty_domain_list_allows_all(self, public_dns: str) -> None:
         sandbox = ToolSandbox(enabled=True, allow_network=True, allowed_domains=[])
         sandbox.validate_network("https://anything.com")
+
+    def test_allowed_domains_and_disabled_sandbox_check_no_address(self) -> None:
+        listed = ToolSandbox(enabled=True, allowed_domains=["api.example.com"])
+        assert listed.validate_network("https://api.example.com/v1") == ()
+        assert ToolSandbox(enabled=False).validate_network("https://api.example.com") == ()
+
+    def test_literal_public_ip_is_its_own_address(self) -> None:
+        sandbox = ToolSandbox(enabled=True, allow_network=True)
+        assert sandbox.validate_network("http://93.184.215.14:8080/x") == ("93.184.215.14",)
+
+    def test_host_that_does_not_resolve_is_refused(self, monkeypatch: Any) -> None:
+        """Without an address there is nothing to check, nor to connect to."""
+
+        def boom(*_args: object, **_kwargs: object) -> list[tuple[Any, ...]]:
+            raise OSError("no such host")
+
+        monkeypatch.setattr("socket.getaddrinfo", boom)
+        sandbox = ToolSandbox(enabled=True, allow_network=True)
+        with pytest.raises(SandboxViolationError, match="does not resolve"):
+            sandbox.validate_network("https://gone.example/x")
 
     def test_domain_check_case_insensitive(self) -> None:
         sandbox = ToolSandbox(enabled=True, allow_network=True, allowed_domains=["API.OpenAI.com"])
@@ -466,6 +486,30 @@ class TestHttpToolIntegration:
         with pytest.raises(SandboxViolationError, match="internal address"):
             await tool.execute(url="http://169.254.169.254/latest/meta-data/")
         assert not route.called
+
+    @respx.mock
+    async def test_request_goes_to_the_checked_address(
+        self, public_dns: str, monkeypatch: Any
+    ) -> None:
+        """A second lookup answering with the metadata service (DNS rebinding) is never made."""
+        import socket as _socket
+
+        lookups: list[str] = []
+
+        def rebinding(host: str, *args: object, **kwargs: object):
+            address = public_dns if not lookups else "169.254.169.254"
+            lookups.append(address)
+            return [(_socket.AF_INET, _socket.SOCK_STREAM, 0, "", (address, 0))]
+
+        monkeypatch.setattr("socket.getaddrinfo", rebinding)
+        route = respx.get(f"https://{public_dns}/data").mock(
+            return_value=httpx.Response(200, text="ok")
+        )
+        tool = HttpRequestTool(sandbox=ToolSandbox(enabled=True, allow_network=True))
+        result = await tool.execute(url="https://rebind.example/data")
+        assert result["body"] == "ok"
+        assert route.calls[0].request.headers["host"] == "rebind.example"
+        assert lookups == [public_dns]
 
 
 class TestBlockedOperationHasNoSideEffect:
@@ -700,13 +744,28 @@ class TestValidateWebhookUrl:
             with pytest.raises(SandboxViolationError):
                 sandbox.validate_webhook_url(url)
 
-    def test_disabled_sandbox_allows_public_https(self) -> None:
+    def test_disabled_sandbox_allows_public_https(self, public_dns: str) -> None:
         sandbox = ToolSandbox(enabled=False)
-        sandbox.validate_webhook_url("https://hooks.slack.com/services/T00/B00/abc")
+        url = "https://hooks.slack.com/services/T00/B00/abc"
+        assert sandbox.validate_webhook_url(url) == (public_dns,)
+
+    def test_enabled_sandbox_returns_the_checked_addresses(self, public_dns: str) -> None:
+        sandbox = ToolSandbox(enabled=True, allow_network=True)
+        assert sandbox.validate_webhook_url("https://hooks.example.com/x") == (public_dns,)
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_host_that_does_not_resolve_is_refused(self, enabled: bool, monkeypatch: Any) -> None:
+        def boom(*_args: object, **_kwargs: object) -> list[tuple[Any, ...]]:
+            raise OSError("no such host")
+
+        monkeypatch.setattr("socket.getaddrinfo", boom)
+        sandbox = ToolSandbox(enabled=enabled, allow_network=True)
+        with pytest.raises(SandboxViolationError, match="does not resolve"):
+            sandbox.validate_webhook_url("https://gone.example/x")
 
     def test_opt_in_unblocks_internal(self) -> None:
         sandbox = ToolSandbox(enabled=False, allow_internal_webhook_targets=True)
-        sandbox.validate_webhook_url("http://127.0.0.1:8080/hook")
+        assert sandbox.validate_webhook_url("http://127.0.0.1:8080/hook") == ()
 
     def test_bare_localhost_name_blocked(self) -> None:
         sandbox = ToolSandbox(enabled=False)
@@ -842,27 +901,27 @@ class TestSandboxHelperEdges:
         reason = default_deny_webhook_target("http:///path")
         assert reason is not None and "no hostname" in reason
 
-    def test_default_deny_target_allows_public_https(self) -> None:
+    def test_default_deny_target_allows_public_https(self, public_dns: str) -> None:
         from agentloom.tools.sandbox import default_deny_webhook_target
 
         assert default_deny_webhook_target("https://hooks.example.com/x") is None
 
-    def test_host_is_internal_empty_returns_false(self) -> None:
-        from agentloom.tools.sandbox import _host_is_internal
+    def test_check_host_empty_names_nothing(self) -> None:
+        from agentloom.tools.sandbox import _check_host
 
-        assert _host_is_internal("") is False
+        assert _check_host("") == (False, ())
 
-    def test_host_is_internal_dot_only_returns_false(self) -> None:
-        from agentloom.tools.sandbox import _host_is_internal
+    def test_check_host_dot_only_names_nothing(self) -> None:
+        from agentloom.tools.sandbox import _check_host
 
         # ``.`` strips to empty after ``rstrip('.')``.
-        assert _host_is_internal(".") is False
+        assert _check_host(".") == (False, ())
 
-    def test_host_is_internal_unresolvable_returns_false(self) -> None:
-        from agentloom.tools.sandbox import _host_is_internal
+    def test_check_host_unresolvable_names_no_address(self) -> None:
+        from agentloom.tools.sandbox import _check_host
 
-        # getaddrinfo fails on this name; returning False keeps the sandbox from over-blocking.
-        assert _host_is_internal("nonexistent.invalid.example.test") is False
+        # getaddrinfo fails on this name: not internal, but the validators refuse it
+        assert _check_host("nonexistent.invalid.example.test") == (False, ())
 
     def test_ip_is_internal_cgnat_via_explicit_deny_list(self) -> None:
         # 100.64/10 is not ``is_private``, so only ``_DEFAULT_DENY_NETWORKS`` catches it.
@@ -915,7 +974,7 @@ class TestValidateWebhookUrlEnabledSandboxBranches:
         reason = default_deny_webhook_target("ftp://example.com/x")
         assert reason is not None and "scheme 'ftp'" in reason
 
-    def test_host_is_internal_resolves_ipv4_record(self, monkeypatch: Any) -> None:
+    def test_check_host_resolves_ipv4_record(self, monkeypatch: Any) -> None:
         import socket as _socket
 
         def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
@@ -930,20 +989,35 @@ class TestValidateWebhookUrlEnabledSandboxBranches:
             ]
 
         monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
-        from agentloom.tools.sandbox import _host_is_internal
+        from agentloom.tools.sandbox import _check_host
 
-        assert _host_is_internal("host-with-a-record.example") is True
+        assert _check_host("host-with-a-record.example") == (True, ())
 
-    def test_host_is_internal_returns_false_on_getaddrinfo_error(self, monkeypatch: Any) -> None:
+    def test_check_host_names_no_address_on_getaddrinfo_error(self, monkeypatch: Any) -> None:
         def boom(*_args: object, **_kwargs: object):
             raise OSError("no such host")
 
         monkeypatch.setattr("socket.getaddrinfo", boom)
-        from agentloom.tools.sandbox import _host_is_internal
+        from agentloom.tools.sandbox import _check_host
 
-        assert _host_is_internal("unresolvable.test") is False
+        assert _check_host("unresolvable.test") == (False, ())
 
-    def test_host_is_internal_skips_unknown_socket_family(self, monkeypatch: Any) -> None:
+    def test_check_host_keeps_each_address_once_in_order(self, monkeypatch: Any) -> None:
+        import socket as _socket
+
+        def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
+            return [
+                (_socket.AF_INET6, _socket.SOCK_STREAM, 0, "", ("2606:2800:220:1::1", 0, 0, 0)),
+                (_socket.AF_INET, _socket.SOCK_STREAM, 0, "", ("93.184.215.14", 0)),
+                (_socket.AF_INET, _socket.SOCK_STREAM, 0, "", ("93.184.215.14", 0)),
+            ]
+
+        monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
+        from agentloom.tools.sandbox import _check_host
+
+        assert _check_host("dual.example") == (False, ("2606:2800:220:1::1", "93.184.215.14"))
+
+    def test_check_host_skips_unknown_socket_family(self, monkeypatch: Any) -> None:
         import socket as _socket
 
         def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
@@ -953,11 +1027,11 @@ class TestValidateWebhookUrlEnabledSandboxBranches:
             ]
 
         monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
-        from agentloom.tools.sandbox import _host_is_internal
+        from agentloom.tools.sandbox import _check_host
 
-        assert _host_is_internal("exotic.example") is False
+        assert _check_host("exotic.example") == (False, ())
 
-    def test_host_is_internal_skips_malformed_sockaddr(self, monkeypatch: Any) -> None:
+    def test_check_host_skips_malformed_sockaddr(self, monkeypatch: Any) -> None:
         import socket as _socket
 
         def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
@@ -966,6 +1040,77 @@ class TestValidateWebhookUrlEnabledSandboxBranches:
             ]
 
         monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
-        from agentloom.tools.sandbox import _host_is_internal
+        from agentloom.tools.sandbox import _check_host
 
-        assert _host_is_internal("malformed.example") is False
+        assert _check_host("malformed.example") == (False, ())
+
+
+class TestSendPinned:
+    """``send_pinned`` connects to a checked address and keeps the URL's name for HTTP and TLS."""
+
+    @pytest.fixture(autouse=True)
+    def _no_proxy(self, monkeypatch: Any) -> None:
+        monkeypatch.setattr("urllib.request.getproxies", dict)
+
+    @respx.mock
+    async def test_keeps_the_name_in_host_and_tls(self) -> None:
+        route = respx.get("https://93.184.215.14:8443/x?q=1").mock(return_value=httpx.Response(200))
+        async with httpx.AsyncClient() as client:
+            request = client.build_request("GET", "https://api.example.com:8443/x?q=1")
+            response = await send_pinned(client, request, ("93.184.215.14",))
+        assert response.status_code == 200
+        sent = route.calls[0].request
+        assert sent.headers["host"] == "api.example.com:8443"
+        assert sent.extensions["sni_hostname"] == "api.example.com"
+
+    @respx.mock
+    async def test_ipv6_address_goes_in_brackets(self) -> None:
+        route = respx.get("https://[2606:2800:220:1::1]/x").mock(return_value=httpx.Response(200))
+        async with httpx.AsyncClient() as client:
+            request = client.build_request("GET", "https://api.example.com/x")
+            await send_pinned(client, request, ("2606:2800:220:1::1",))
+        assert route.called
+
+    @pytest.mark.parametrize("failure", [httpx.ConnectError, httpx.ConnectTimeout])
+    @respx.mock
+    async def test_tries_the_next_address_when_the_connection_fails(
+        self, failure: type[httpx.TransportError]
+    ) -> None:
+        first = respx.post("https://93.184.215.14/x").mock(side_effect=failure("down"))
+        second = respx.post("https://93.184.215.15/x").mock(return_value=httpx.Response(201))
+        async with httpx.AsyncClient() as client:
+            request = client.build_request("POST", "https://api.example.com/x", content=b"body")
+            response = await send_pinned(client, request, ("93.184.215.14", "93.184.215.15"))
+        assert response.status_code == 201
+        assert first.called
+        assert second.calls[0].request.content == b"body"
+
+    @respx.mock
+    async def test_last_connection_error_is_raised(self) -> None:
+        respx.get("https://93.184.215.14/x").mock(side_effect=httpx.ConnectError("down"))
+        respx.get("https://93.184.215.15/x").mock(side_effect=httpx.ConnectError("also down"))
+        async with httpx.AsyncClient() as client:
+            request = client.build_request("GET", "https://api.example.com/x")
+            with pytest.raises(httpx.ConnectError, match="also down"):
+                await send_pinned(client, request, ("93.184.215.14", "93.184.215.15"))
+
+    @respx.mock
+    async def test_a_proxy_from_the_environment_gets_the_name(self, monkeypatch: Any) -> None:
+        monkeypatch.setattr("urllib.request.getproxies", lambda: {"https": "http://proxy:3128"})
+        route = respx.get("https://api.example.com/x").mock(return_value=httpx.Response(200))
+        async with httpx.AsyncClient() as client:
+            request = client.build_request("GET", "https://api.example.com/x")
+            await send_pinned(client, request, ("93.184.215.14",))
+        assert route.called
+
+    @respx.mock
+    async def test_literal_ip_or_no_address_is_sent_as_is(self) -> None:
+        literal = respx.get("http://93.184.215.14/x").mock(return_value=httpx.Response(200))
+        by_name = respx.get("http://api.example.com/x").mock(return_value=httpx.Response(200))
+        async with httpx.AsyncClient() as client:
+            await send_pinned(
+                client, client.build_request("GET", "http://93.184.215.14/x"), ("1.1.1.1",)
+            )
+            await send_pinned(client, client.build_request("GET", "http://api.example.com/x"), ())
+        assert literal.called
+        assert by_name.called

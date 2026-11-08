@@ -40,10 +40,8 @@ def _context(
 class TestApprovalGateWebhook:
     @respx.mock
     @pytest.mark.anyio()
-    async def test_sends_webhook_on_pause(self) -> None:
-        route = respx.post("https://hooks.example.com/notify").mock(
-            return_value=httpx.Response(200)
-        )
+    async def test_sends_webhook_on_pause(self, public_dns: str) -> None:
+        route = respx.post(f"https://{public_dns}/notify").mock(return_value=httpx.Response(200))
         step = _gate_step(notify=WebhookConfig(url="https://hooks.example.com/notify"))
         ctx = _context(step, state={"topic": "launch"})
 
@@ -69,10 +67,8 @@ class TestApprovalGateWebhook:
 
     @respx.mock
     @pytest.mark.anyio()
-    async def test_webhook_template_rendered(self) -> None:
-        route = respx.post("https://hooks.example.com/notify").mock(
-            return_value=httpx.Response(200)
-        )
+    async def test_webhook_template_rendered(self, public_dns: str) -> None:
+        route = respx.post(f"https://{public_dns}/notify").mock(return_value=httpx.Response(200))
         step = _gate_step(
             notify=WebhookConfig(
                 url="https://hooks.example.com/notify",
@@ -115,8 +111,8 @@ class TestApprovalGateWebhook:
 
     @respx.mock
     @pytest.mark.anyio()
-    async def test_webhook_failure_still_pauses(self) -> None:
-        respx.post("https://hooks.example.com/notify").mock(return_value=httpx.Response(500))
+    async def test_webhook_failure_still_pauses(self, public_dns: str) -> None:
+        respx.post(f"https://{public_dns}/notify").mock(return_value=httpx.Response(500))
         step = _gate_step(notify=WebhookConfig(url="https://hooks.example.com/notify", timeout=0.5))
         ctx = _context(step)
 
