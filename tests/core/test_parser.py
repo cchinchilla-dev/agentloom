@@ -178,6 +178,31 @@ steps:
         assert "a" in msg
         assert "[0, 1]" in msg
 
+    @pytest.mark.parametrize(
+        "yaml_str",
+        [
+            "name: w\nconfig: {provider: mock, model: x, max_retries: -1}\n"
+            "steps:\n  - {id: a, type: llm_call, prompt: x}\n",
+            "name: w\nconfig: {provider: mock, model: x}\n"
+            "steps:\n  - {id: a, type: llm_call, prompt: x, retry: {max_retries: -1}}\n",
+        ],
+        ids=["workflow", "step"],
+    )
+    def test_rejects_negative_max_retries(self, yaml_str: str) -> None:
+        # A negative count would run the step zero times
+        with pytest.raises(ValidationError, match="max_retries"):
+            WorkflowParser.from_yaml(yaml_str)
+
+    def test_shared_step_keeps_each_workflow_max_retries(self) -> None:
+        from agentloom.core.models import StepDefinition, WorkflowConfig, WorkflowDefinition
+
+        step = StepDefinition(id="a", type="llm_call", prompt="x")
+        none = WorkflowDefinition(name="w0", config=WorkflowConfig(max_retries=0), steps=[step])
+        two = WorkflowDefinition(name="w2", config=WorkflowConfig(max_retries=2), steps=[step])
+        assert none.steps[0].retry.max_retries == 0
+        assert two.steps[0].retry.max_retries == 2
+        assert "max_retries" not in step.retry.model_fields_set
+
     @pytest.mark.parametrize("bad", [0, -1, -100, 9999999])
     def test_rejects_invalid_max_concurrent_steps(self, bad: int) -> None:
         yaml_str = f"""

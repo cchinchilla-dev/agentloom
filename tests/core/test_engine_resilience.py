@@ -443,3 +443,76 @@ class TestBudgetObserverNotification:
         assert call_args[0] == "budget-observer"
         assert call_args[1] == "budget_exceeded"
         assert call_args[4] == pytest.approx(engine._budget.spent)
+
+
+class _FailingProvider(_CostedProvider):
+    """Fails every call with a status-less error, which the engine retries."""
+
+    name = "failing-mock"
+
+    async def complete(self, *args: Any, **kwargs: Any) -> ProviderResponse:
+        self.calls += 1
+        raise RuntimeError("transient hiccup")
+
+
+class TestWorkflowMaxRetries:
+    """A step without its own ``retry.max_retries`` takes its workflow's ``config.max_retries``."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("agentloom.core.engine.compute_backoff", lambda *_args: 0.0)
+
+    async def _calls(self, workflow: WorkflowDefinition) -> int:
+        provider = _FailingProvider()
+        await WorkflowEngine(workflow=workflow, provider_gateway=_gateway_for(provider)).run()
+        return provider.calls
+
+    @pytest.mark.parametrize(("max_retries", "calls"), [(0, 1), (2, 3)])
+    async def test_step_without_retry_block_takes_the_workflow_value(
+        self, max_retries: int, calls: int
+    ) -> None:
+        workflow = WorkflowDefinition(
+            name="wf",
+            config=WorkflowConfig(provider="failing-mock", model="x", max_retries=max_retries),
+            steps=[StepDefinition(id="s1", type=StepType.LLM_CALL, prompt="hi")],
+        )
+        assert await self._calls(workflow) == calls
+
+    async def test_step_max_retries_wins(self) -> None:
+        workflow = WorkflowDefinition(
+            name="wf",
+            config=WorkflowConfig(provider="failing-mock", model="x", max_retries=0),
+            steps=[
+                StepDefinition(
+                    id="s1", type=StepType.LLM_CALL, prompt="hi", retry={"max_retries": 1}
+                )
+            ],
+        )
+        assert await self._calls(workflow) == 2
+
+    async def test_retry_block_without_max_retries_takes_the_workflow_value(self) -> None:
+        workflow = WorkflowDefinition(
+            name="wf",
+            config=WorkflowConfig(provider="failing-mock", model="x", max_retries=0),
+            steps=[
+                StepDefinition(
+                    id="s1", type=StepType.LLM_CALL, prompt="hi", retry={"backoff_base": 1.5}
+                )
+            ],
+        )
+        assert workflow.steps[0].retry.backoff_base == 1.5
+        assert await self._calls(workflow) == 1
+
+    async def test_subworkflow_steps_take_the_child_value(self) -> None:
+        """The child's ``config.max_retries`` (1) applies, not the parent's (0)."""
+        child_yaml = {
+            "name": "child",
+            "config": {"provider": "failing-mock", "model": "x", "max_retries": 1},
+            "steps": [{"id": "c1", "type": "llm_call", "prompt": "hi"}],
+        }
+        workflow = WorkflowDefinition(
+            name="parent",
+            config=WorkflowConfig(provider="failing-mock", model="x", max_retries=0),
+            steps=[StepDefinition(id="sub", type=StepType.SUBWORKFLOW, workflow_inline=child_yaml)],
+        )
+        assert await self._calls(workflow) == 2

@@ -43,9 +43,11 @@ class RetryConfig(BaseModel):
     default — they're typically transient network errors. A 4xx client
     error not in this list (400/401/403/404) is **not** retried, which
     avoids burning the retry budget on permanent failures.
+
+    Without ``max_retries``, a step takes its workflow's ``config.max_retries``.
     """
 
-    max_retries: int = 3
+    max_retries: int = Field(default=3, ge=0)
     backoff_base: float = 2.0
     backoff_max: float = 60.0
     jitter: bool = True
@@ -520,7 +522,8 @@ class WorkflowConfig(BaseModel):
     # Endpoint of ``provider: generic_openai``; its key comes from env var ``api_key_env``.
     base_url: str | None = None
     api_key_env: str | None = None
-    max_retries: int = 3
+    # For each step whose retry block does not set its own
+    max_retries: int = Field(default=3, ge=0)
     budget_usd: float | None = None
     timeout: float | None = Field(default=None, ge=0)  # 0 means no limit, as a step's
     # ge=1: ``CapacityLimiter(0)`` blocks every start, a deadlock; le=1024 is a sanity ceiling
@@ -611,6 +614,25 @@ class WorkflowDefinition(BaseModel):
         if dups:
             msg = "; ".join(f"id={d[0]!r} at indices {d[1]}" for d in dups)
             raise ValueError(f"Duplicate step ids: {msg}")
+        return self
+
+    @model_validator(mode="after")
+    def _apply_workflow_max_retries(self) -> WorkflowDefinition:
+        """Give a step without its own ``retry.max_retries`` the ``config.max_retries``.
+
+        Copies the step instead of changing it: a step object passed in may be
+        shared with a workflow whose config differs.
+        """
+        self.steps = [
+            step
+            if "max_retries" in step.retry.model_fields_set
+            else step.model_copy(
+                update={
+                    "retry": step.retry.model_copy(update={"max_retries": self.config.max_retries})
+                }
+            )
+            for step in self.steps
+        ]
         return self
 
     def get_step(self, step_id: str) -> StepDefinition | None:
