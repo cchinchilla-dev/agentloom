@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -32,20 +31,73 @@ from agentloom.providers.multimodal import (
 logger = logging.getLogger("agentloom.providers.ollama")
 
 # Inline tags from reasoning models on Ollama < 0.9, or when ``think`` is not requested.
-_THINK_TAG_RE = re.compile(r"<think>(.*?)</think>\s*", re.DOTALL)
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def _partial_tag_len(text: str, tag: str) -> int:
+    """Length of the longest end of ``text`` that is a start of ``tag``."""
+    for n in range(min(len(tag) - 1, len(text)), 0, -1):
+        if text.endswith(tag[:n]):
+            return n
+    return 0
+
+
+class _InlineThinkFilter:
+    """Split text fed in chunks into the visible reply and its inline ``<think>`` trace.
+
+    A tag may arrive split across chunks, so the end of a chunk that could start one is held
+    until the next chunk settles it. Whitespace after ``</think>`` is dropped, and a ``<think>``
+    still open when the text ends counts as trace.
+    """
+
+    def __init__(self) -> None:
+        self.trace: list[str] = []
+        self._pending = ""
+        self._inside = False
+        self._after_close = False
+
+    def feed(self, chunk: str) -> str:
+        text, self._pending = self._pending + chunk, ""
+        out: list[str] = []
+        while text:
+            tag = _THINK_CLOSE if self._inside else _THINK_OPEN
+            at = text.find(tag)
+            if at == -1:
+                held = _partial_tag_len(text, tag)
+                self._pending = text[len(text) - held :]
+                self._emit(text[: len(text) - held], out)
+                break
+            self._emit(text[:at], out)
+            text = text[at + len(tag) :]
+            self._inside = not self._inside
+            self._after_close = not self._inside
+        return "".join(out)
+
+    def flush(self) -> str:
+        out: list[str] = []
+        rest, self._pending = self._pending, ""
+        self._emit(rest, out)
+        return "".join(out)
+
+    def _emit(self, text: str, out: list[str]) -> None:
+        if self._inside:
+            if text:
+                self.trace.append(text)
+            return
+        if self._after_close:
+            text = text.lstrip()
+            if not text:
+                return
+            self._after_close = False
+        out.append(text)
 
 
 def _split_inline_think_tags(text: str) -> tuple[str, str | None]:
-    """Strip ``<think>...</think>`` from ``text``; return (clean, trace).
-
-    Returns ``(text, None)`` unchanged when no tags are present so the
-    common case stays a no-op.
-    """
-    matches = _THINK_TAG_RE.findall(text)
-    if not matches:
-        return text, None
-    cleaned = _THINK_TAG_RE.sub("", text)
-    return cleaned, "".join(matches)
+    """Strip ``<think>...</think>`` from ``text``; return (clean, trace)."""
+    inline = _InlineThinkFilter()
+    clean = inline.feed(text) + inline.flush()
+    return clean, "".join(inline.trace) or None
 
 
 def _pop_thinking_config(extras: dict[str, Any]) -> tuple[bool | str | None, bool]:
@@ -218,7 +270,7 @@ class OllamaProvider(BaseProvider):
         message = data.get("message", {})
         content = message.get("content", "")
         # The trace comes in ``message.thinking`` (0.9+ with ``think``) or inline <think> tags,
-        # stripped here even when not captured; stream() leaves them in the text (#214).
+        # stripped even when not captured.
         thinking_field: str | None = message.get("thinking") or None
         content, inline_trace = _split_inline_think_tags(content)
         reasoning_content = (thinking_field or inline_trace) if capture_reasoning else None
@@ -298,6 +350,7 @@ class OllamaProvider(BaseProvider):
 
         sr = StreamResponse(model=model, provider="ollama")
         thinking_buffer: list[str] = []
+        inline = _InlineThinkFilter()
 
         async def _generate() -> AsyncIterator[str]:
             async with self._client.stream("POST", "/api/chat", json=payload) as resp:
@@ -324,16 +377,20 @@ class OllamaProvider(BaseProvider):
                             total_tokens=prompt_tokens + completion_tokens,
                         )
                         sr.model = data.get("model", model)
-                        if thinking_buffer and capture_reasoning:
-                            sr.reasoning_content = "".join(thinking_buffer)
                         break
                     message = data.get("message", {})
                     thinking_chunk = message.get("thinking")
                     if thinking_chunk and capture_reasoning:
                         thinking_buffer.append(thinking_chunk)
-                    text = message.get("content", "")
+                    text = inline.feed(message.get("content", ""))
                     if text:
                         yield text
+                tail = inline.flush()
+                trace = "".join(thinking_buffer) or "".join(inline.trace)
+                if trace and capture_reasoning:
+                    sr.reasoning_content = trace
+                if tail:
+                    yield tail
 
         sr._set_iterator(_generate())
         return sr

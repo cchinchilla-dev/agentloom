@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 import pytest
 import respx
 
 from agentloom.exceptions import ProviderError
+from agentloom.providers.base import StreamResponse
 from agentloom.providers.ollama import OllamaProvider
 
 MOCK_RESPONSE = {
@@ -18,6 +20,27 @@ MOCK_RESPONSE = {
     "eval_count": 10,
     "done_reason": "stop",
 }
+
+
+async def _stream_pieces(pieces: list[str], **kwargs: Any) -> tuple[list[str], StreamResponse]:
+    """Stream a reply whose ``content`` arrives as ``pieces``; return its chunks and response."""
+    lines = [
+        json.dumps(
+            {"model": "qwen3", "message": {"role": "assistant", "content": p}, "done": False}
+        )
+        for p in pieces
+    ]
+    lines.append(json.dumps({"model": "qwen3", "message": {"content": ""}, "done": True}))
+    respx.post("http://localhost:11434/api/chat").mock(
+        return_value=httpx.Response(200, content="\n".join(lines).encode())
+    )
+    provider = OllamaProvider()
+    sr = await provider.stream(
+        messages=[{"role": "user", "content": "hi"}], model="qwen3", **kwargs
+    )
+    chunks = [chunk async for chunk in sr]
+    await provider.close()
+    return chunks, sr
 
 
 class TestOllamaProvider:
@@ -352,6 +375,58 @@ class TestOllamaProvider:
         with pytest.raises(ProviderError, match="404"):
             async for _ in sr:
                 pass
+        await provider.close()
+
+    @respx.mock
+    @pytest.mark.parametrize(
+        "pieces",
+        [
+            ["<think>trace</think>answer"],
+            ["<think>tr", "ace</think>  ", "answer"],
+            ["<thi", "nk>trace</th", "ink>answer"],
+        ],
+        ids=["one-chunk", "trace-split", "tags-split"],
+    )
+    async def test_streaming_drops_inline_think_tags(self, pieces: list[str]) -> None:
+        chunks, sr = await _stream_pieces(pieces)
+        assert "".join(chunks) == "answer"
+        assert sr.reasoning_content == "trace"
+
+    @respx.mock
+    async def test_streaming_keeps_the_trace_out_unless_captured(self) -> None:
+        from agentloom.core.models import ThinkingConfig
+
+        chunks, sr = await _stream_pieces(
+            ["<think>trace</think>answer"],
+            thinking_config=ThinkingConfig(enabled=True, capture_reasoning=False),
+        )
+        assert "".join(chunks) == "answer"
+        assert sr.reasoning_content is None
+
+    @respx.mock
+    async def test_streaming_counts_an_unclosed_think_as_trace(self) -> None:
+        chunks, sr = await _stream_pieces(["<think>cut short by", " num_predict"])
+        assert chunks == []
+        assert sr.reasoning_content == "cut short by num_predict"
+
+    @respx.mock
+    async def test_streaming_yields_a_lone_angle_bracket(self) -> None:
+        chunks, sr = await _stream_pieces(["1 <", " 2 and 3 <"])
+        assert "".join(chunks) == "1 < 2 and 3 <"
+        assert sr.reasoning_content is None
+
+    @respx.mock
+    async def test_complete_counts_an_unclosed_think_as_trace(self) -> None:
+        respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(
+                200,
+                json={**MOCK_RESPONSE, "message": {"role": "assistant", "content": "<think>cut"}},
+            )
+        )
+        provider = OllamaProvider()
+        result = await provider.complete(messages=[{"role": "user", "content": "hi"}], model="phi4")
+        assert result.content == ""
+        assert result.reasoning_content == "cut"
         await provider.close()
 
     @respx.mock
