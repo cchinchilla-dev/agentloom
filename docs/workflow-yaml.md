@@ -42,7 +42,7 @@ steps:                                      # at least one step required
 | `max_concurrent_steps` | `int` | `10` | Max parallel steps per layer. Bounded `1 ≤ N ≤ 1024` at parse time — values outside that range raise a Pydantic error instead of deadlocking the limiter or surfacing a cryptic `total_tokens must be >= 0`. |
 | `stream` | `bool` | `false` | Enable streaming by default |
 | `sandbox` | `object` | disabled | Security sandbox config |
-| `on_step_failure` | `string` | `skip_downstream` | Behaviour when a step (or router) ends in FAILED or TIMEOUT. `skip_downstream` (default) marks every transitive dependent as SKIPPED with an `error` field naming the closest failed ancestor; `continue` keeps the pre-0.5.0 best-effort behaviour where dependents still run against partial state. |
+| `on_step_failure` | `string` | `skip_downstream` | Behaviour when a step (or router) ends in FAILED or TIMEOUT. `skip_downstream` (default) marks every transitive dependent as SKIPPED with an `error` field naming the closest failed ancestor; `continue` is best-effort: dependents still run against partial state. |
 | `strict_outputs` | `bool` | `false` | Promote the parallel-output collision warning to a parse error. Two parallel-eligible steps writing the same `output:` key normally trigger a `UserWarning` listing both step ids; set `strict_outputs: true` to refuse the workflow at parse time. Sequential overwrite via `depends_on` is exempt — it's an intentional pattern. |
 | `responses_file` | `string` | `null` | Mock provider recording path (when `provider: mock`) |
 | `latency_model` | `string` | `constant` | Mock latency mode: `constant` / `normal` / `replay` |
@@ -250,12 +250,12 @@ The model can pick tools at runtime. Declare them on the step; the engine dispat
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `tools` | `list[ToolDefinition]` | `[]` | Tool declarations the model can pick. `parameters` is JSON Schema. Names resolve against the registered `ToolRegistry`; an unknown name is reported back as a tool failure rather than aborting the loop. |
-| `tool_choice` | `string \| dict` | `"auto"` | `"auto"` lets the model decide; `"required"` forces a call; `"none"` disables tools for this turn; `{"name": "..."}` pins to a specific tool. Anthropic has no native `"none"` mode, so when `"none"` is set the adapter drops `tools` from the wire entirely — same observable behavior as the other providers. Ollama ignores `tool_choice` at the wire level (model-side support decides whether a call fires). |
+| `tool_choice` | `string \| dict` | `"auto"` | `"auto"` lets the model decide; `"required"` forces a call; `"none"` disables tools for this turn; `{"name": "..."}` pins to a specific tool. With Anthropic, `"none"` drops `tools` from the request entirely — same observable behavior as the other providers. Ollama ignores `tool_choice` at the wire level (model-side support decides whether a call fires). |
 | `max_tool_iterations` | `int` | `5` | Cap on call→result→re-prompt loops. When hit, `finish_reason` becomes `"max_tool_iterations"` so callers can detect runaway behavior. |
 
-The dispatched tool runs through the existing sandbox (#105), so `http_request`, `shell_command`, `file_read`, `file_write` honor the workflow's `sandbox:` config. Multiple tool calls in one response are dispatched concurrently (anyio task group); results preserve order in the conversation. Cost and tokens accumulate across iterations on the surfaced `StepResult`.
+The dispatched tool runs through the sandbox, so `http_request`, `shell_command`, `file_read`, `file_write` honor the workflow's `sandbox:` config. Multiple tool calls in one response are dispatched concurrently (anyio task group); results preserve order in the conversation. Cost and tokens accumulate across iterations on the surfaced `StepResult`.
 
-The legacy `tool` step (static DAG node, author chooses the tool) keeps working unchanged — `tools=` on `llm_call` is the new dynamic, model-driven path.
+The `tool` step is the static alternative: a DAG node where the author picks the tool, while `tools=` on `llm_call` lets the model pick.
 
 **Structured output:**
 
@@ -404,7 +404,7 @@ tool_args:
     template: false
 ```
 
-Workflows written before 0.5.0 that relied on `{` triggering template expansion on raw JSON / HTML strings would have failed at runtime (`Max string recursion exceeded` or `Invalid format specifier`) — the narrowed grammar removes that footgun.
+Without the narrowed grammar, raw JSON or HTML strings would fail at runtime (`Max string recursion exceeded` or `Invalid format specifier`).
 
 !!! warning "Mixed content with embedded placeholders"
     A string that *mixes* a real placeholder with raw braces — e.g. `'{"user": "{state.user}"}'` — still hits the underlying Python `str.format_map` parser, which interprets the outer `{` as a format field and raises `Invalid format specifier`. Two supported workarounds: (1) compose the JSON in two steps and use `template: false` on the literal half, or (2) escape every literal brace as `{{` / `}}`. AgentLoom cannot disambiguate "intended placeholder" from "intended literal brace" inside the same string. Compact CSS / JS-object shapes like `{color:red}` (no whitespace after `:`) are also inherently ambiguous with `{name:spec}` placeholders — use `template: false` or escape the braces.

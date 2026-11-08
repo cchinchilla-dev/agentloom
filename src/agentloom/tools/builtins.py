@@ -14,13 +14,12 @@ import httpx
 from agentloom.tools.base import BaseTool
 from agentloom.tools.sandbox import ToolSandbox
 
-# Response header names that can carry a credential: the result reaches the
-# model, the workflow state, checkpoints and recordings
+# Credential-bearing header names: the result reaches the model, state, checkpoints, recordings
 _CREDENTIAL_HEADER_PARTS = ("authorization", "cookie", "token", "secret", "key")
 
 
 class HttpRequestTool(BaseTool):
-    """Makes HTTP requests (GET/POST)."""
+    """Tool that makes HTTP requests (GET, POST, PUT, DELETE)."""
 
     name = "http_request"
     description = "Make an HTTP request to a URL and return the response body."
@@ -72,7 +71,7 @@ class HttpRequestTool(BaseTool):
 
 
 class ShellCommandTool(BaseTool):
-    """Executes a shell command with timeout."""
+    """Tool that executes a shell command with a timeout."""
 
     name = "shell_command"
     description = "Execute a shell command and return stdout/stderr."
@@ -141,7 +140,7 @@ async def _run_shell(command: str, cwd: str, timeout: float) -> tuple[int | None
 
 
 class FileReadTool(BaseTool):
-    """Reads a file and returns its contents."""
+    """Tool that reads a file and returns its contents."""
 
     name = "file_read"
     description = "Read the contents of a file."
@@ -167,7 +166,7 @@ class FileReadTool(BaseTool):
 
 
 class FileWriteTool(BaseTool):
-    """Writes content to a file."""
+    """Tool that writes content to a file."""
 
     name = "file_write"
     description = "Write content to a file."
@@ -201,10 +200,7 @@ class FileWriteTool(BaseTool):
 def register_builtins(registry: Any, sandbox: ToolSandbox | None = None) -> None:
     """Register all built-in tools with a ToolRegistry.
 
-    Args:
-        registry: ToolRegistry instance.
-        sandbox: Optional sandbox policy. When provided, built-in tools
-            validate operations before executing.
+    With *sandbox*, the tools validate each operation before executing.
     """
     registry.register(HttpRequestTool(sandbox=sandbox))
     registry.register(ShellCommandTool(sandbox=sandbox))

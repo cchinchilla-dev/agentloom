@@ -111,7 +111,7 @@ class TestToolTranslation:
 
     @pytest.mark.parametrize("strict", [True, False])
     def test_openai_holds_the_output_tool_of_a_strict_schema_to_it(self, strict: bool) -> None:
-        """As a strict reply is held to its schema, every property required (#120)."""
+        """As a strict reply is held to its schema, every property is required."""
         schema = {
             "type": "object",
             "properties": {"n": {"type": "integer"}, "note": {"type": "string"}},
@@ -135,7 +135,7 @@ class TestToolTranslation:
         assert all("strict" not in wire["function"] for wire in translate_tools_for_openai(tools))
 
     def test_google_parameters_lose_the_keys_gemini_rejects(self) -> None:
-        """An agent's output tool carries ``additionalProperties``, which Gemini 400s on (#120)."""
+        """An agent's output tool carries ``additionalProperties``, which Gemini 400s on."""
         parameters = {
             "type": "object",
             "title": "Reply",
@@ -154,7 +154,7 @@ class TestToolTranslation:
         assert tool.parameters["additionalProperties"] is False
 
     def test_google_parameters_keep_properties_named_like_dropped_keys(self) -> None:
-        """A parameter called ``title`` is a name, not the schema keyword (#120)."""
+        """A parameter called ``title`` is a name, not the schema keyword."""
         parameters = {
             "type": "object",
             "properties": {
@@ -208,15 +208,11 @@ class TestToolParsing:
     def test_openai_skips_non_function_entries(self) -> None:
         message = {"tool_calls": [{"id": "x", "type": "code_interpreter"}, {"type": "function"}]}
         calls = parse_tool_calls_from_openai(message)
-        # Both are dropped: the first is non-function, the second has no
-        # ``id`` / ``name`` (would 400 on the follow-up tool message).
+        # The first is not a function; the second lacks the id and name a follow-up turn needs.
         assert calls == []
 
     def test_openai_skips_entries_with_empty_id_or_name(self) -> None:
-        # Defense-in-depth: a malformed model response with blank id/name
-        # would generate an invalid ``tool_call_id`` on the follow-up
-        # message, which OpenAI rejects with 400. Skip + warn rather than
-        # constructing a call we know can't dispatch.
+        # A blank id or name makes an invalid follow-up message, which OpenAI rejects with 400.
         message = {
             "tool_calls": [
                 {"id": "", "type": "function", "function": {"name": "ok"}},
@@ -230,13 +226,7 @@ class TestToolParsing:
         assert calls[0].name == "ok"
 
     def test_ollama_compat_response_with_dict_args_and_no_type(self) -> None:
-        # Real Ollama 0.x ``/api/chat`` returns tool_calls in OpenAI-compatible
-        # shape but (a) omits ``"type": "function"`` and (b) ships
-        # ``arguments`` as an already-decoded dict, not a JSON string. Without
-        # this regression, Ollama tool calling silently drops every call —
-        # the parser's strict ``type == "function"`` check skips entries
-        # missing the field, and ``json.loads(<dict>)`` would TypeError.
-        # Captured from a live ``llama3.1:8b`` response on 2026-05-09.
+        # Ollama's /api/chat omits "type" and sends ``arguments`` as a dict, not a JSON string.
         message = {
             "tool_calls": [
                 {
@@ -244,9 +234,8 @@ class TestToolParsing:
                     "function": {
                         "index": 0,
                         "name": "add",
-                        "arguments": {"a": 17, "b": 25},  # already a dict
+                        "arguments": {"a": 17, "b": 25},
                     },
-                    # NOTE: no "type" key
                 }
             ]
         }
@@ -306,7 +295,7 @@ class TestDispatchToolCalls:
         assert "kaboom" in results[0][1]
 
     async def test_a_tools_own_step_error_goes_back_to_the_model(self) -> None:
-        """Only an agent called as a tool fails its caller's step (#120)."""
+        """Only an agent called as a tool fails its caller's step."""
 
         class _Strict(BaseTool):
             name = "strict"
@@ -324,7 +313,7 @@ class TestDispatchToolCalls:
         assert (text, ok) == ("""tool arguments are not valid JSON: '{"a": 2, "b'""", False)
 
     async def test_a_stale_replay_wins_over_a_transient_failure_next_to_it(self) -> None:
-        """Two agents as tools failing together: the step fails at once, not retried (#120)."""
+        """Two agents as tools failing together: the step fails at once, not retried."""
 
         class _Transient(BaseTool):
             name = "transient"
@@ -474,9 +463,7 @@ class TestAnthropicToolCallingWire:
 
 
 class TestGoogleToolChoiceDictSelectsSpecificFunction:
-    """``tool_choice={"name": "fn"}`` must translate to Gemini's
-    ANY-mode + ``allowedFunctionNames`` rather than silently falling
-    through to AUTO."""
+    """``tool_choice={"name": "fn"}`` maps to Gemini's ANY mode with ``allowedFunctionNames``."""
 
     @respx.mock
     async def test_specific_function_selection(self) -> None:
@@ -515,9 +502,7 @@ class TestGoogleToolChoiceDictSelectsSpecificFunction:
 
 
 class TestDispatchObserverHook:
-    """``dispatch_tool_calls`` calls ``observer.on_tool_call`` per call so
-    each dispatch lands on the trace as a child span tagged by tool +
-    success status."""
+    """``dispatch_tool_calls`` reports each call to ``observer.on_tool_call`` for the trace."""
 
     async def test_observer_hook_fires_with_hashes_and_duration(self) -> None:
         from unittest.mock import MagicMock
@@ -533,7 +518,7 @@ class TestDispatchObserverHook:
         assert kwargs["call_id"] == "c1"
         assert kwargs["tool_name"] == "add"
         assert kwargs["success"] is True
-        # Hashes are non-empty hex strings — args/result never logged raw.
+        # Arguments and result reach the observer only as hashes, never raw.
         assert len(kwargs["args_hash"]) == 16
         assert len(kwargs["result_hash"]) == 16
         assert kwargs["duration_ms"] >= 0.0
@@ -551,15 +536,11 @@ class TestDispatchObserverHook:
 
 
 class TestToolChoiceWireForwarding:
-    """End-to-end checks that ``tool_choice`` reaches the provider's wire
-    payload correctly — Copilot review surfaced silent drops on OpenAI
-    and silent fall-through to AUTO on Google."""
+    """``tool_choice`` reaches the provider's wire payload instead of being dropped."""
 
     @respx.mock
     async def test_openai_forwards_none_to_disable_tools(self) -> None:
-        # ``tool_choice="none"`` MUST reach the wire. With ``tools=`` set
-        # OpenAI defaults to ``"auto"``, so dropping the field would mean
-        # the user's explicit "no tools this turn" gets ignored.
+        # With tools set OpenAI defaults to "auto", so a dropped "none" would let tools run.
         route = respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
                 200,
@@ -585,9 +566,7 @@ class TestToolChoiceWireForwarding:
 
 
 class TestGoogleCompleteStringChoiceMapsToMode:
-    """``complete`` with a string ``tool_choice`` hits the ``else`` branch
-    that maps ``"auto"``/``"required"``/``"none"`` to Gemini's mode enum.
-    The dict-form ``{"name": ...}`` test exercises the other branch."""
+    """A string ``tool_choice`` maps to Gemini's mode enum."""
 
     @respx.mock
     async def test_required_maps_to_any_mode(self) -> None:
@@ -661,9 +640,7 @@ class TestGoogleCompleteStringChoiceMapsToMode:
 
 
 class TestGoogleAssistantMessagePreservesText:
-    """Gemini can return text + functionCall in the same turn. The
-    assistant-message synthesizer must include the text part so iteration
-    2+ replays the model's full prior turn (Copilot finding)."""
+    """The synthesized Gemini turn keeps the text that came with its function calls."""
 
     def test_text_part_kept_alongside_function_calls(self) -> None:
         from agentloom.steps._tools import build_assistant_message_with_tool_calls
@@ -673,13 +650,11 @@ class TestGoogleAssistantMessagePreservesText:
             "Let me check that.",
             [ToolCall(id="g_1", name="lookup", arguments={"key": "x"})],
         )
-        # Text part comes first, then the functionCall part.
         assert msg["role"] == "model"
         assert msg["parts"][0] == {"text": "Let me check that."}
         assert msg["parts"][1] == {"functionCall": {"name": "lookup", "args": {"key": "x"}}}
 
     def test_no_text_part_when_content_empty(self) -> None:
-        # Backward-compat: empty content yields the same shape as before.
         from agentloom.steps._tools import build_assistant_message_with_tool_calls
 
         msg = build_assistant_message_with_tool_calls(
@@ -789,10 +764,7 @@ class TestGeminiThoughtSignature:
 
 
 class TestStreamFallbackPropagatesToolFields:
-    """``BaseProvider.stream()`` default fallback wraps ``complete()``;
-    the rolled-up ``StreamResponse.to_provider_response()`` must include
-    ``tool_calls`` and ``reasoning_content`` so callers don't lose them
-    when streaming through a provider that hasn't overridden ``stream()``."""
+    """The default ``stream()`` keeps the ``tool_calls`` and ``reasoning_content`` of a reply."""
 
     async def test_fallback_copies_tool_calls_and_reasoning(self) -> None:
         from agentloom.providers.base import BaseProvider, ProviderResponse
@@ -824,9 +796,7 @@ class TestStreamFallbackPropagatesToolFields:
 
 
 class TestToolChoiceValidation:
-    """``StepDefinition.tool_choice`` is a constrained union — invalid
-    YAML / Python values fail at model construction rather than silently
-    coercing to AUTO at the wire layer."""
+    """An invalid ``tool_choice`` fails at model construction, not as AUTO on the wire."""
 
     def test_valid_string_choices(self) -> None:
         for value in ("auto", "required", "none"):
@@ -854,8 +824,7 @@ class TestToolChoiceValidation:
             )
 
     def test_max_tool_iterations_zero_rejected(self) -> None:
-        # ``max_tool_iterations >= 1`` invariant guards the loop body
-        # against ``response`` being unset on exit.
+        # At least one iteration guarantees the tool loop exits with ``response`` set.
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
@@ -868,8 +837,7 @@ class TestToolChoiceValidation:
 
 
 class TestDispatchObserverHookFailure:
-    """A flaky observability backend (exporter misconfig, transient OTel
-    failure) must not abort the dispatch task group and break the step."""
+    """A failing observer hook (an OTel exporter down) must not abort the dispatch."""
 
     async def test_observer_hook_exception_swallowed(self) -> None:
         registry = _registry_with(_AddTool())
@@ -879,22 +847,21 @@ class TestDispatchObserverHookFailure:
                 raise RuntimeError("OTel exporter is down")
 
         calls = [ToolCall(id="c1", name="add", arguments={"a": 1, "b": 2})]
-        # Must NOT raise — dispatch succeeds, hook failure is debug-logged.
         results = await dispatch_tool_calls(
             calls, registry, observer=_BrokenObserver(), step_id="s1"
         )
-        assert results[0][2] is True  # tool succeeded despite hook failure
+        assert results[0][2] is True
         assert results[0][1] == "3"
 
 
 class TestStreamEvents:
-    """Typed stream events surface. Adapters that haven't
-    wired the typed iterator fall back to wrapping plain text chunks as
-    ``TextDelta`` events, terminated with ``StreamDone``."""
+    """The typed event surface of ``StreamResponse``.
+
+    Without a typed iterator, ``events()`` wraps text chunks as ``TextDelta`` and ends with
+    ``StreamDone``.
+    """
 
     async def test_event_iterator_when_wired_takes_precedence(self) -> None:
-        # Adapters that emit typed events natively register a separate
-        # iterator; the default text-wrapping path is bypassed entirely.
         from agentloom.providers.base import (
             StreamDone,
             StreamEvent,
@@ -930,9 +897,6 @@ class TestStreamEvents:
         sr.finish_reason = "stop"
 
         events = [evt async for evt in sr.events()]
-        # Two TextDelta events + one StreamDone — the default wrapper
-        # provides the surface even when the adapter doesn't emit typed
-        # events natively.
         assert [type(e).__name__ for e in events] == ["TextDelta", "TextDelta", "StreamDone"]
         assert isinstance(events[0], TextDelta)
         assert events[0].chunk == "hello "
@@ -941,9 +905,10 @@ class TestStreamEvents:
 
 
 class TestProviderFormatPreservesToolMessages:
-    """Regression for the critical bug where providers' ``_format_messages``
-    silently dropped ``tool_calls`` / ``tool_call_id`` / ``parts`` keys on
-    tool-loop iteration 2+, breaking real (non-mock) tool calling."""
+    """Each provider's ``_format_messages`` keeps the wire keys of tool-loop turns.
+
+    ``tool_calls``, ``tool_call_id`` and ``parts`` must survive into iteration 2+.
+    """
 
     def test_openai_passes_through_assistant_with_tool_calls(self) -> None:
         msgs = [
@@ -962,10 +927,7 @@ class TestProviderFormatPreservesToolMessages:
             {"role": "tool", "tool_call_id": "c1", "content": "5"},
         ]
         out = OpenAIProvider._format_messages(msgs)
-        # The two tool-loop messages must round-trip with their wire keys
-        # intact — without this, OpenAI 400s on iteration 2 because the
-        # assistant message has no tool_calls and the tool message has no
-        # tool_call_id to anchor.
+        # Without both keys OpenAI 400s on iteration 2: the tool result has nothing to anchor to.
         assert out[1]["tool_calls"][0]["function"]["name"] == "add"
         assert out[2] == {"role": "tool", "tool_call_id": "c1", "content": "5"}
 
@@ -1002,9 +964,7 @@ class TestProviderFormatPreservesToolMessages:
             },
         ]
         _system, contents = GoogleProvider._format_messages(msgs)
-        # Both ``parts``-based messages must round-trip unchanged so Gemini
-        # sees the prior call + result on iteration 2; previously the
-        # ``content``-based reformatter dropped ``parts`` entirely.
+        # Gemini needs both ``parts`` messages intact to see the prior call and result.
         assert contents[1]["parts"][0]["functionCall"]["name"] == "add"
         assert contents[2]["role"] == "function"
         assert contents[2]["parts"][0]["functionResponse"]["response"] == {"result": "3"}
@@ -1098,8 +1058,7 @@ class TestLLMStepToolLoop:
 
     @respx.mock
     async def test_step_dispatches_and_iterates(self) -> None:
-        # Iteration 1: model asks to call `add`.
-        # Iteration 2: model responds with the final answer.
+        # The model calls ``add`` on iteration 1 and answers on iteration 2.
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
                 httpx.Response(
@@ -1183,7 +1142,6 @@ class TestLLMStepToolLoop:
         assert result.status == WorkflowStatus.SUCCESS
         sr = result.step_results["ask"]
         assert sr.status == StepStatus.SUCCESS
-        # Cost / tokens accumulated across both iterations.
         assert sr.token_usage.prompt_tokens == 5 + 12
         assert sr.token_usage.completion_tokens == 9 + 6
         assert result.final_state["answer"] == "The answer is 5."
@@ -1252,15 +1210,12 @@ class TestLLMStepToolLoop:
 
         sr = result.step_results["ask"]
         assert sr.status == StepStatus.SUCCESS
-        # Cap surfaced via finish_reason on the prompt metadata.
         assert sr.prompt_metadata is not None
         assert sr.prompt_metadata.finish_reason == "max_tool_iterations"
 
     @respx.mock
     async def test_tool_choice_required_cap_sets_no_answer_finish_reason(self) -> None:
-        # F55: tool_choice='required' that loops to the iteration cap with
-        # an empty final message gets a distinct finish_reason so callers
-        # can tell "never answered" apart from a normal cap hit.
+        # A required-choice cap with no final answer is told apart from a normal cap hit.
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
                 200,
@@ -1322,8 +1277,6 @@ class TestLLMStepToolLoop:
         assert sr.prompt_metadata.finish_reason == "max_tool_iterations_no_answer"
 
     async def test_tool_dispatch_without_registry_raises(self) -> None:
-        # When a step declares tools but no registry is attached, the loop
-        # raises StepError surfaced as FAILED.
         with respx.mock:
             respx.post("https://api.openai.com/v1/chat/completions").mock(
                 return_value=httpx.Response(
@@ -1388,9 +1341,7 @@ class TestLLMStepToolLoop:
 
 
 class TestToolChoiceTranslators:
-    """Direct coverage for the per-provider tool_choice translators —
-    each branch (string modes, ``{"name": ...}``, fallback) needs to
-    round-trip through the helper so silent regressions surface."""
+    """Each branch of the per-provider ``tool_choice`` translators."""
 
     def test_openai_translates_name_dict_to_function_envelope(self) -> None:
         from agentloom.steps._tools import translate_tool_choice_for_openai
@@ -1409,8 +1360,7 @@ class TestToolChoiceTranslators:
 
         assert translate_tool_choice_for_anthropic("auto") == {"type": "auto"}
         assert translate_tool_choice_for_anthropic("required") == {"type": "any"}
-        # ``"none"`` becomes ``None`` so the adapter omits the field
-        # entirely — Anthropic has no explicit "disable tools" mode.
+        # "none" maps to no choice: the adapter leaves ``tools`` off the request instead.
         assert translate_tool_choice_for_anthropic("none") is None
 
     def test_anthropic_name_dict_pins_specific_tool(self) -> None:
@@ -1420,16 +1370,12 @@ class TestToolChoiceTranslators:
         assert out == {"type": "tool", "name": "lookup"}
 
     def test_anthropic_unknown_falls_back_to_auto(self) -> None:
-        # An unexpected value (e.g. a stray dict without ``name``) must
-        # not crash the request — fall back to AUTO so the call still
-        # round-trips and the model decides whether to invoke a tool.
+        # A stray dict without ``name`` must not fail the request.
         from agentloom.steps._tools import translate_tool_choice_for_anthropic
 
         assert translate_tool_choice_for_anthropic({"unknown": "x"}) == {"type": "auto"}
 
     def test_ollama_translator_returns_openai_shape(self) -> None:
-        # Ollama uses the OpenAI wire shape; the translator is a thin
-        # delegate but the indirection needs at least one direct call.
         from agentloom.steps._tools import translate_tools_for_ollama
 
         out = translate_tools_for_ollama(
@@ -1441,7 +1387,7 @@ class TestToolChoiceTranslators:
 class TestParseToolCallsEdgeCases:
     @pytest.mark.parametrize("raw", ['{"a": 2, "b', "[1, 2]"], ids=["cut short", "an array"])
     def test_arguments_that_are_no_json_object_keep_their_text(self, raw: str) -> None:
-        """Not ``{}``, which a schema of defaults would take as a reply (#120)."""
+        """Not ``{}``, which a schema of defaults would take as a reply."""
         message = {
             "tool_calls": [
                 {"id": "c1", "type": "function", "function": {"name": "add", "arguments": raw}}
@@ -1452,14 +1398,11 @@ class TestParseToolCallsEdgeCases:
 
 
 class TestAssistantAndResultBuildersOllamaGoogle:
-    """Cover the Ollama assistant-message branch and the Google /
-    Ollama tool-result branches that the existing suite didn't reach."""
+    """The Ollama assistant-message shape and the Google / Ollama tool-result shapes."""
 
     def test_ollama_assistant_message_uses_dict_args(self) -> None:
         c = ToolCall(id="c1", name="add", arguments={"a": 1, "b": 2})
         msg = build_assistant_message_with_tool_calls("ollama", "thinking", [c])
-        # Ollama wire shape: ``arguments`` is a dict (not a JSON string)
-        # and the entry has no ``id`` / ``type`` keys.
         tc = msg["tool_calls"][0]
         assert tc["function"]["name"] == "add"
         assert tc["function"]["arguments"] == {"a": 1, "b": 2}
@@ -1475,49 +1418,37 @@ class TestAssistantAndResultBuildersOllamaGoogle:
         assert fr["response"] == {"result": "ok"}
 
     def test_google_tool_result_message_surfaces_error_on_failure(self) -> None:
-        # Gemini's ``functionResponse`` uses ``response: {error: ...}``
-        # to signal failure; the wire branch must hit on ``success=False``.
         c = ToolCall(id="g_1", name="lookup", arguments={})
         out = build_tool_result_messages("google", [(c, "boom", False)])
         fr = out[0]["parts"][0]["functionResponse"]
         assert fr["response"] == {"error": "boom"}
 
     def test_ollama_tool_result_message_keyed_by_name(self) -> None:
-        # Ollama rejects requests that include the OpenAI ``tool_call_id``
-        # field — the result message must key by tool ``name`` instead.
+        # Ollama rejects the OpenAI ``tool_call_id`` field, so a result is keyed by tool name.
         c = ToolCall(id="ignored", name="add", arguments={})
         out = build_tool_result_messages("ollama", [(c, "5", True)])
         assert out == [{"role": "tool", "name": "add", "content": "5"}]
 
 
 class TestMetricsRecordToolCallDisabled:
-    """When the metrics manager is disabled (no extras installed / no
-    backend configured) ``record_tool_call`` must be a noop — guards the
-    early-return that hot paths rely on."""
+    """A disabled metrics manager (no extra, no backend) makes ``record_tool_call`` a no-op."""
 
     def test_disabled_manager_short_circuits(self) -> None:
         from agentloom.observability.metrics import MetricsManager
 
         mgr = MetricsManager.__new__(MetricsManager)
         mgr._enabled = False  # type: ignore[attr-defined]
-        # Must not touch ``_tool_call_counter`` / ``_tool_call_histogram``;
-        # those attributes don't exist on the bare instance, so any code
-        # path that forgets the guard would AttributeError here.
+        # The bare instance has no counters, so a missed guard raises AttributeError.
         mgr.record_tool_call("add", success=True, duration_s=0.01)
 
 
 class TestMockProviderToolCallingReplay:
-    """``MockProvider`` hydrates ``tool_calls`` from the recording and
-    advances a per-step cursor so a single step replays a multi-turn
-    tool-iteration loop."""
+    """``MockProvider`` replays a step's multi-turn tool loop from a per-step cursor."""
 
     async def test_list_form_replays_turns_in_order_and_clamps(self) -> None:
         from agentloom.providers.mock import MockProvider
 
         provider = MockProvider()
-        # Two-turn loop: first call drives a tool dispatch, second emits
-        # the final answer. A third call must replay the last turn
-        # (clamped) rather than raise mid-step.
         provider._responses["ask"] = [  # type: ignore[assignment]
             {
                 "content": "",
@@ -1540,15 +1471,11 @@ class TestMockProviderToolCallingReplay:
         assert r2.content == "the answer is 3"
         assert r2.tool_calls == []
 
-        # Cursor clamps at the last turn — excess iterations replay the
-        # final answer rather than raising or returning ``None``.
+        # The cursor clamps at the last turn instead of raising mid-step.
         r3 = await provider.complete(messages=[], model="mock", step_id="ask")
         assert r3.content == "the answer is 3"
 
     async def test_empty_list_falls_through_to_default_response(self) -> None:
-        # Defensive: an empty turn list shouldn't crash — the lookup
-        # returns ``None`` and ``complete`` falls back to the configured
-        # default response rather than raising.
         from agentloom.providers.mock import MockProvider
 
         provider = MockProvider(default_response="fallback")
@@ -1558,17 +1485,11 @@ class TestMockProviderToolCallingReplay:
 
 
 class TestStreamForwardsToolKwargs:
-    """Streaming + tool calling was silently broken: each provider's
-    ``stream()`` called ``validate_extra_kwargs`` before popping the
-    ``agentloom_tools`` / ``agentloom_tool_choice`` keys, so the request
-    raised ``TypeError`` before the wire call. Regression for the bug
-    surfaced by the real-provider validation matrix on 2026-05-14."""
+    """Each provider's ``stream()`` pops the tool kwargs before validating the extra kwargs."""
 
     @respx.mock
     async def test_openai_stream_accepts_tool_kwargs_and_forwards(self) -> None:
-        # Empty SSE response is fine — we only assert that the request
-        # body carries ``tools`` + ``tool_choice`` and that the call
-        # didn't crash on extras validation.
+        # An empty SSE body is enough: only the request body is checked.
         route = respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(200, text="data: [DONE]\n\n")
         )
@@ -1590,8 +1511,7 @@ class TestStreamForwardsToolKwargs:
 
     @respx.mock
     async def test_openai_stream_forwards_none_choice_explicitly(self) -> None:
-        # ``"none"`` must reach the wire on streaming too — otherwise the
-        # default ``"auto"`` would let the model invoke tools.
+        # Omitting "none" would leave OpenAI on its "auto" default, free to call tools.
         route = respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(200, text="data: [DONE]\n\n")
         )
@@ -1659,9 +1579,6 @@ class TestStreamForwardsToolKwargs:
 
     @respx.mock
     async def test_google_stream_with_string_choice_hits_mode_lookup(self) -> None:
-        # The ``{"name": "fn"}`` test exercises the dict branch; this
-        # exercises the ``else`` branch that maps plain string choices
-        # to Gemini's mode enum.
         from agentloom.providers.google import GoogleProvider
 
         route = respx.post(
@@ -1680,8 +1597,6 @@ class TestStreamForwardsToolKwargs:
         async for _ in sr:
             pass
         body = json.loads(route.calls[0].request.content)
-        # ``"required"`` maps to Gemini's ANY mode (no allowedFunctionNames
-        # pin since no specific function was named).
         cfg = body["toolConfig"]["functionCallingConfig"]
         assert cfg["mode"] == "ANY"
         assert "allowedFunctionNames" not in cfg
@@ -1701,7 +1616,7 @@ class TestStreamForwardsToolKwargs:
             agentloom_tools=[
                 ToolDefinition(name="add", description="d", parameters={"type": "object"})
             ],
-            agentloom_tool_choice="required",  # silently ignored at wire level
+            agentloom_tool_choice="required",  # never sent: Ollama has no tool_choice
         )
         async for _ in sr:
             pass
@@ -1712,10 +1627,7 @@ class TestStreamForwardsToolKwargs:
 
 
 class TestOllamaCompleteForwardsToolKwargs:
-    """``OllamaProvider.complete`` translates ``agentloom_tools`` to the
-    OpenAI-compatible wire shape and logs a debug message when
-    ``tool_choice`` is set (Ollama ignores it model-side). The bypass
-    + log path was uncovered until now."""
+    """``OllamaProvider.complete`` sends tools in the OpenAI shape and logs the ignored choice."""
 
     @respx.mock
     async def test_complete_forwards_tools_and_logs_choice(
@@ -1746,8 +1658,7 @@ class TestOllamaCompleteForwardsToolKwargs:
                 agentloom_tools=[
                     ToolDefinition(name="add", description="d", parameters={"type": "object"})
                 ],
-                # Non-``auto`` triggers the debug-log branch surfacing the
-                # silent drop so users can debug "why doesn't my tool fire".
+                # Only a choice other than "auto" is logged.
                 agentloom_tool_choice="required",
             )
         body = json.loads(route.calls[0].request.content)
@@ -1757,10 +1668,10 @@ class TestOllamaCompleteForwardsToolKwargs:
 
 
 class TestAnthropicFormatPassesDictBlocksVerbatim:
-    """When an assistant turn carries pre-formed Anthropic blocks
-    (``tool_use`` / ``tool_result`` dicts), the formatter must pass them
-    through verbatim — without this, iteration 2+ of the tool loop loses
-    the prior tool-call context."""
+    """Pre-formed Anthropic ``tool_use`` / ``tool_result`` blocks pass through verbatim.
+
+    Iteration 2+ of the tool loop needs them to keep the prior tool-call context.
+    """
 
     def test_dict_blocks_pass_through(self) -> None:
         msgs = [
@@ -1788,8 +1699,6 @@ class TestAnthropicFormatPassesDictBlocksVerbatim:
             },
         ]
         _system, formatted = AnthropicProvider._format_messages(msgs)
-        # Both list-content messages must round-trip with their blocks
-        # intact; verbatim passthrough is what makes iteration 2+ work.
         assert formatted[0]["content"][0] == {"type": "text", "text": "Let me check."}
         assert formatted[0]["content"][1]["type"] == "tool_use"
         assert formatted[0]["content"][1]["id"] == "tu_1"
@@ -1798,10 +1707,7 @@ class TestAnthropicFormatPassesDictBlocksVerbatim:
 
 
 class TestLLMStepStreamFailurePaths:
-    """``LLMCallStep`` must surface streaming failures as a FAILED
-    ``StepResult`` rather than letting the exception escape — both the
-    gateway crash before any chunk and an iteration error mid-stream
-    were uncovered until now."""
+    """A provider error while streaming fails the step; a failing chunk callback does not."""
 
     async def test_stream_raises_before_first_chunk_yields_failed_step(self) -> None:
         from agentloom.core.engine import WorkflowEngine
@@ -1843,10 +1749,7 @@ class TestLLMStepStreamFailurePaths:
         assert "gateway is down" in (sr.error or "")
 
     async def test_stream_chunk_callback_failure_disables_callback(self) -> None:
-        # When ``on_stream_chunk`` raises, the step must keep iterating
-        # the stream (the callback is best-effort observability), then
-        # disable the callback for subsequent chunks so we don't log on
-        # every yield.
+        # The callback is best-effort: its first failure disables it instead of logging per chunk.
         from agentloom.core.engine import WorkflowEngine
         from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 
@@ -1896,18 +1799,12 @@ class TestLLMStepStreamFailurePaths:
         result = await WorkflowEngine(workflow=wf, provider_gateway=gw, on_stream_chunk=_cb).run()
         await gw.close()
         sr = result.step_results["ask"]
-        # The step still succeeds — the callback failure is swallowed
-        # and the callback is disabled after the first throw, so only
-        # the first chunk was observed by the caller.
         assert sr.status == StepStatus.SUCCESS
         assert seen == ["hello "]
 
 
 class TestLLMStepToolChoiceByNameNormalisation:
-    """``StepDefinition.tool_choice = {"name": "X"}`` is coerced to a
-    ``ToolChoiceByName`` Pydantic model at validation time, and the
-    step layer normalises it back to ``{"name": "X"}`` before forwarding
-    to the provider. The normaliser branch was uncovered until now."""
+    """A ``ToolChoiceByName`` reaches the provider as a plain ``{"name": ...}`` dict."""
 
     @respx.mock
     async def test_typed_choice_round_trips_to_provider_dict(self) -> None:
@@ -1997,9 +1894,6 @@ class TestLLMStepToolChoiceByNameNormalisation:
                             parameters={"type": "object"},
                         )
                     ],
-                    # Pydantic coerces dict → ``ToolChoiceByName``; the
-                    # step layer must convert back to a plain dict so
-                    # the provider translator sees the expected shape.
                     tool_choice=ToolChoiceByName(name="lookup"),
                     max_tool_iterations=3,
                     retry={"max_retries": 0},
@@ -2018,10 +1912,7 @@ class TestLLMStepToolChoiceByNameNormalisation:
 
 
 class TestLLMStepRunToolLoopDefensiveGuard:
-    """``_run_tool_loop`` raises ``StepError`` when invoked with no
-    gateway. The engine layer guards against this earlier so the
-    branch is defensive — exercise it directly so the line stays
-    covered if the guard order ever changes."""
+    """``_run_tool_loop`` raises ``StepError`` without a gateway, which ``execute`` checks first."""
 
     async def test_no_gateway_raises_step_error(self) -> None:
         from unittest.mock import MagicMock
@@ -2048,11 +1939,7 @@ class TestLLMStepRunToolLoopDefensiveGuard:
 
 
 class TestAnthropicNoneSuppressesTools:
-    """Anthropic has no native ``tool_choice="none"`` mode — the translator
-    returns ``None`` so the field is omitted, but historically ``tools``
-    still went on the wire, letting the model invoke them anyway. The fix
-    suppresses ``tools`` from the payload entirely when choice is ``"none"``
-    so user intent is honored across providers."""
+    """``tool_choice="none"`` keeps ``tools`` off the Anthropic payload, so no tool can run."""
 
     @respx.mock
     async def test_complete_omits_tools_when_choice_is_none(self) -> None:
@@ -2077,9 +1964,6 @@ class TestAnthropicNoneSuppressesTools:
             agentloom_tool_choice="none",
         )
         body = json.loads(route.calls[0].request.content)
-        # Neither key should reach the wire — without this, Claude sees the
-        # tool definition and may decide to call it despite the user's
-        # explicit "no tools this turn".
         assert "tools" not in body
         assert "tool_choice" not in body
         await provider.close()

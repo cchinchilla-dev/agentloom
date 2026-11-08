@@ -189,7 +189,7 @@ class AnthropicProvider(BaseProvider):
         )
         capture_reasoning = _translate_thinking_config(extras)
         if agentloom_tools and agentloom_tool_choice != "none":
-            # Anthropic has no tool_choice "none": omit ``tools`` so the model cannot call them.
+            # "none" leaves ``tools`` off the request, so the model cannot call them.
             from agentloom.steps._tools import (
                 translate_tool_choice_for_anthropic,
                 translate_tools_for_anthropic,

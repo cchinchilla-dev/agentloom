@@ -68,7 +68,7 @@ Every `llm_call` step resolves from the JSON. No network, no API key, no cost. L
 
 ### Strict mode
 
-`agentloom replay` runs the mock provider in **strict mode**. A request that misses the recording — or matches a step whose prompt, system prompt, model, or tools spec drifted since capture — raises `RecordingMismatchError` and fails the workflow. This is what makes a green replay trustworthy in CI: pre-0.5.0 the mock provider silently fell through to the placeholder `"Mock response"`, so a replay could pass while answering a prompt the recording no longer matched.
+`agentloom replay` runs the mock provider in **strict mode**. A request that misses the recording — or matches a step whose prompt, system prompt, model, or tools spec drifted since capture — raises `RecordingMismatchError` and fails the workflow. This is what makes a green replay trustworthy in CI: a replay cannot pass while answering a prompt the recording does not match.
 
 Each recorded entry carries a `request_hash`; on replay the mock compares it against the live request and refuses on a mismatch. A mismatch fails its step on the first attempt: the step's retries do not apply, the gateway does not try another provider, and a subworkflow around the step is not run again. Recording files are also validated against the canonical schema when loaded — a malformed file, or one with `_version` below 2, is rejected at startup with a re-record hint.
 

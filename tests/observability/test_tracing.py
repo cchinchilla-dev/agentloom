@@ -253,7 +253,8 @@ class TestParallelSubworkflows:
                     id="child",
                     type=StepType.SUBWORKFLOW,
                     workflow_inline=_localize("es"),
-                    timeout=0.05,
+                    # Lets translate start on slow runners; the provider never returns.
+                    timeout=0.5,
                     retry=RetryConfig(max_retries=0),
                 ),
             ],
