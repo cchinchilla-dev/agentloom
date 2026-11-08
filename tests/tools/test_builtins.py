@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import os
+import signal
+import sys
 import tempfile
+import time
 from pathlib import Path
+from typing import Any
 
+import anyio
 import httpx
+import pytest
 import respx
 
 from agentloom.tools.builtins import (
@@ -19,6 +26,32 @@ from agentloom.tools.registry import ToolRegistry
 
 
 class TestHttpRequestTool:
+    @respx.mock
+    async def test_response_headers_that_can_carry_credentials_are_dropped(self) -> None:
+        respx.get("https://example.com/login").mock(
+            return_value=httpx.Response(
+                200,
+                text="ok",
+                headers=[
+                    ("Content-Type", "text/plain"),
+                    ("Set-Cookie", "session=abc"),
+                    ("Set-Cookie", "csrf=def"),
+                    ("Authorization", "Bearer ghi"),
+                    ("Proxy-Authorization", "Basic jkl"),
+                    ("X-Amz-Security-Token", "mno"),
+                    ("X-Client-Secret", "pqr"),
+                    ("X-Api-Key", "stu"),
+                    ("X-Request-Id", "req-1"),
+                ],
+            )
+        )
+        result = await HttpRequestTool().execute(url="https://example.com/login")
+        assert result["headers"] == {
+            "content-type": "text/plain",
+            "x-request-id": "req-1",
+            "content-length": "2",
+        }
+
     @respx.mock
     async def test_get_request(self) -> None:
         respx.get("https://example.com/api").mock(
@@ -57,6 +90,42 @@ class TestShellCommandTool:
         tool = ShellCommandTool()
         result = await tool.execute(command="exit 42")
         assert result["returncode"] == 42
+
+    async def test_timeout_stops_a_long_command(self) -> None:
+        start = time.monotonic()
+        result = await ShellCommandTool().execute(command="sleep 30", timeout=0.2)
+        assert result == {"returncode": -1, "stdout": "", "stderr": "Command timed out"}
+        assert time.monotonic() - start < 10
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX")
+    async def test_timeout_kills_the_shell_process_group(self, monkeypatch: Any) -> None:
+        killed: list[tuple[int, int]] = []
+        real_killpg = os.killpg
+
+        def spy(pid: int, sig: int) -> None:
+            # The shell must lead its own group, or killing the group misses its children
+            assert os.getpgid(pid) == pid
+            killed.append((pid, sig))
+            real_killpg(pid, sig)
+
+        monkeypatch.setattr("agentloom.tools.builtins.os.killpg", spy)
+        result = await ShellCommandTool().execute(command="sleep 30 & sleep 30", timeout=0.2)
+        assert result["stderr"] == "Command timed out"
+        assert [sig for _, sig in killed] == [signal.SIGKILL]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX")
+    async def test_cancelling_the_step_kills_the_process_group(self, monkeypatch: Any) -> None:
+        killed: list[int] = []
+        real_killpg = os.killpg
+
+        def spy(pid: int, sig: int) -> None:
+            killed.append(sig)
+            real_killpg(pid, sig)
+
+        monkeypatch.setattr("agentloom.tools.builtins.os.killpg", spy)
+        with anyio.move_on_after(0.2):
+            await ShellCommandTool().execute(command="sleep 30 & sleep 30", timeout=60)
+        assert killed == [signal.SIGKILL]
 
 
 class TestFileReadTool:

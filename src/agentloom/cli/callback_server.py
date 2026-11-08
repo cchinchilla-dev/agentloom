@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import json
 import logging
 from typing import Any
@@ -10,6 +12,10 @@ import anyio
 import typer
 
 logger = logging.getLogger("agentloom.callback")
+
+# Bounds on what one request may make the server buffer
+_MAX_HEADER_BYTES = 64 * 1024
+_MAX_BODY_BYTES = 1024 * 1024
 
 
 def callback_server(
@@ -23,9 +29,9 @@ def callback_server(
         None,
         "--token",
         help=(
-            "Optional shared secret. When set, POST /approve and POST /reject "
-            "require a matching `X-AgentLoom-Token` header — defence in depth "
-            "for a server reachable beyond loopback."
+            "Optional shared secret. When set, POST /approve, POST /reject and "
+            "GET /pending require a matching `X-AgentLoom-Token` header — defence "
+            "in depth for a server reachable beyond loopback."
         ),
     ),
 ) -> None:
@@ -48,6 +54,9 @@ async def _serve(  # pragma: no cover
     typer.echo("  POST /approve/<run_id>  — approve a paused workflow")
     typer.echo("  POST /reject/<run_id>   — reject a paused workflow")
     typer.echo("  GET  /pending           — list paused runs")
+    warning = _exposure_warning(host, token)
+    if warning:
+        typer.echo(warning, err=True)
 
     async with anyio.create_task_group() as tg:
 
@@ -60,6 +69,31 @@ async def _serve(  # pragma: no cover
                 await stream.aclose()
 
         await listener.serve(_handle_conn, task_group=tg)
+
+
+def _exposure_warning(host: str, token: str | None) -> str | None:
+    """A warning when *host* is reachable beyond loopback and no token guards the server."""
+    if token is not None:
+        return None
+    try:
+        loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    if loopback:
+        return None
+    return (
+        f"Warning: listening on {host} without --token: anyone who reaches this "
+        f"port can approve or reject a paused run."
+    )
+
+
+def _token_matches(provided: str | None, expected: str | None) -> bool:
+    """``True`` when no token is required or *provided* matches it, compared in constant time."""
+    if expected is None:
+        return True
+    if provided is None:
+        return False
+    return hmac.compare_digest(provided.encode(), expected.encode())
 
 
 def _parse_headers(header_section: str) -> dict[str, str]:
@@ -90,11 +124,16 @@ async def _handle_request(
 
     # Keep reading until we have the full headers + body
     raw = data
-    while b"\r\n\r\n" not in raw:
+    while b"\r\n\r\n" not in raw and len(raw) <= _MAX_HEADER_BYTES:
         chunk = await stream.receive(8192)
         if not chunk:
             break
         raw += chunk
+
+    end = raw.find(b"\r\n\r\n")
+    if end > _MAX_HEADER_BYTES or (end < 0 and len(raw) > _MAX_HEADER_BYTES):
+        await _send_response(stream, 431, {"error": "request headers too large"})
+        return
 
     text = raw.decode("utf-8", errors="replace")
     header_end = text.find("\r\n\r\n")
@@ -116,6 +155,9 @@ async def _handle_request(
                 return
             if content_length < 0:
                 await _send_response(stream, 400, {"error": "bad request"})
+                return
+            if content_length > _MAX_BODY_BYTES:
+                await _send_response(stream, 413, {"error": "request body too large"})
                 return
             break
 
@@ -139,6 +181,9 @@ async def _handle_request(
     if method == "POST" and path == "/webhook":
         await _handle_webhook(stream, body, headers.get("content-type"))
     elif method == "GET" and path == "/pending":
+        if not _token_matches(headers.get("x-agentloom-token"), token):
+            await _send_response(stream, 401, {"error": "invalid or missing X-AgentLoom-Token"})
+            return
         await _handle_pending(stream, checkpoint_dir)
     elif method == "POST" and path.startswith("/approve/"):
         run_id = path[len("/approve/") :]
@@ -240,7 +285,7 @@ async def _handle_decision(
     # Optional shared-secret gate. Only enforced when the server was
     # started with ``--token``; otherwise approve/reject stay open
     # (loopback-only is the assumed default deployment).
-    if expected_token is not None and provided_token != expected_token:
+    if not _token_matches(provided_token, expected_token):
         await _send_response(stream, 401, {"error": "invalid or missing X-AgentLoom-Token"})
         return
 
@@ -344,6 +389,8 @@ async def _send_response(stream: anyio.abc.SocketStream, status: int, body: dict
         401: "Unauthorized",
         404: "Not Found",
         409: "Conflict",
+        413: "Content Too Large",
+        431: "Request Header Fields Too Large",
         500: "Internal Server Error",
     }
     phrase = phrases.get(status, "Unknown")

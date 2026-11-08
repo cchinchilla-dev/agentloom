@@ -134,8 +134,10 @@ class GoogleProvider(BaseProvider):
     ) -> None:
         super().__init__(api_key=api_key, base_url=base_url, **kwargs)
         self.api_key = api_key or os.environ.get("GOOGLE_API_KEY", "")
+        # In a header, not the query string: httpx logs request URLs, and they reach error messages
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
+            headers={"x-goog-api-key": self.api_key},
             timeout=60.0,
         )
 
@@ -256,7 +258,7 @@ class GoogleProvider(BaseProvider):
         for k in _GOOGLE_TOPLEVEL_KEYS & extras.keys():
             payload[_to_gemini_key(k)] = extras[k]
 
-        url = f"/models/{model}:generateContent?key={self.api_key}"
+        url = f"/models/{model}:generateContent"
 
         try:
             response = await self._client.post(url, json=payload)
@@ -381,7 +383,7 @@ class GoogleProvider(BaseProvider):
         for k in _GOOGLE_TOPLEVEL_KEYS & extras.keys():
             payload[_to_gemini_key(k)] = extras[k]
 
-        url = f"/models/{model}:streamGenerateContent?alt=sse&key={self.api_key}"
+        url = f"/models/{model}:streamGenerateContent?alt=sse"
         sr = StreamResponse(model=model, provider="google")
         reasoning_buffer: list[str] = []
 
@@ -469,7 +471,7 @@ class GoogleProvider(BaseProvider):
             if "title" in extras:
                 item["title"] = extras["title"]
             requests_body.append(item)
-        url = f"/models/{model}:batchEmbedContents?key={self.api_key}"
+        url = f"/models/{model}:batchEmbedContents"
         try:
             response = await self._client.post(url, json={"requests": requests_body})
         except httpx.HTTPError as e:

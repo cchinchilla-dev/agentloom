@@ -423,7 +423,10 @@ class ToolSandbox:
         ``gopher://``, ``ftp://``, ``data:`` …) regardless of host, so
         that an allowlisted hostname cannot be reused to fetch local
         files. When *allow_network* is ``True`` and *allowed_domains*
-        is non-empty, the request domain must be in the allowlist.
+        is non-empty, the request domain must be in the allowlist; when
+        it is empty, a host that resolves to an internal address
+        (loopback, link-local, RFC 1918) is refused, so naming it in
+        *allowed_domains* is the way to reach it.
 
         Raises:
             SandboxViolationError: If network access is blocked.
@@ -431,6 +434,20 @@ class ToolSandbox:
         if not self.enabled:
             return
 
+        self._validate_scheme_and_domain(url)
+        hostname = (urlparse(url).hostname or "").lower()
+        if not self._allowed_domains and _host_is_internal(hostname):
+            raise SandboxViolationError(
+                "http_request",
+                f"Host {hostname!r} resolves to an internal address; "
+                f"list it in sandbox.allowed_domains to allow it",
+            )
+
+    def _validate_scheme_and_domain(self, url: str) -> None:
+        """The checks *validate_network* shares with the webhook gate.
+
+        The webhook gate applies its own internal-host rule, with its own opt-in.
+        """
         if not self._allow_network:
             raise SandboxViolationError(
                 "http_request", "Network access is blocked by sandbox policy"
@@ -483,12 +500,12 @@ class ToolSandbox:
             )
 
         if self.enabled:
-            # ``validate_network`` enforces ``allowed_domains`` (and
+            # ``_validate_scheme_and_domain`` enforces ``allowed_domains`` (and
             # would also re-check the scheme against the workflow's
             # ``allowed_schemes`` — but we already refused anything
             # outside http/https above, so widening allowed_schemes
             # cannot reopen the webhook surface).
-            self.validate_network(url)
+            self._validate_scheme_and_domain(url)
             if self.allow_internal_webhook_targets:
                 return
             hostname = (parsed.hostname or "").lower()

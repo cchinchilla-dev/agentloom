@@ -257,6 +257,15 @@ class TestSandboxRestrictions:
         blocks = await resolve_attachments([att], sandbox=sandbox)
         assert isinstance(blocks[0], ImageBlock)
 
+    async def test_file_path_blocked_when_sandbox_lists_no_paths(self, tmp_path) -> None:
+        path = tmp_path / "image.png"
+        path.write_bytes(_TINY_PNG)
+
+        sandbox = SandboxConfig(enabled=True)
+        att = Attachment(type="image", source=str(path))
+        with pytest.raises(PermissionError, match="lists no readable_paths or allowed_paths"):
+            await resolve_attachments([att], sandbox=sandbox)
+
 
 class TestSSRFProtection:
     async def test_localhost_blocked(self) -> None:
