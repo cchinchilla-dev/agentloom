@@ -122,7 +122,7 @@ async def _handle_request(
     if not data:
         return
 
-    # Keep reading until we have the full headers + body
+    # Headers first; the body is read below, up to Content-Length
     raw = data
     while b"\r\n\r\n" not in raw and len(raw) <= _MAX_HEADER_BYTES:
         chunk = await stream.receive(8192)
@@ -144,7 +144,6 @@ async def _handle_request(
     header_section = text[:header_end]
     body_so_far = raw[header_end + 4 :]
 
-    # Parse Content-Length and read remaining body bytes if needed
     content_length = 0
     for line in header_section.split("\r\n")[1:]:
         if line.lower().startswith("content-length:"):
@@ -216,12 +215,9 @@ async def _handle_webhook(
 ) -> None:
     """Receive, validate, and log an incoming webhook notification.
 
-    Pre-0.5.0 the handler acknowledged any body with ``200 received`` —
-    it never parsed it, so a CI suite using the callback server to
-    assert "the workflow sent X" could not tell a correct payload from
-    garbage. A malformed JSON body now returns ``400`` so the sender
-    sees the failure; a missing ``Content-Type`` is still accepted (the
-    server is a notification sink) but logs a warning.
+    A non-empty body that is not a JSON object gets ``400``, so the sender
+    sees the failure; a missing ``Content-Type`` is accepted (the server is a
+    notification sink) but logs a warning.
     """
     if content_type is None:
         logger.warning("Webhook POST /webhook received with no Content-Type header")
@@ -282,9 +278,7 @@ async def _handle_decision(
     from agentloom.tools.registry import ToolRegistry
     from agentloom.tools.sandbox import ToolSandbox
 
-    # Optional shared-secret gate. Only enforced when the server was
-    # started with ``--token``; otherwise approve/reject stay open
-    # (loopback-only is the assumed default deployment).
+    # Without --token approve/reject are open; _serve warns when bound beyond loopback
     if not _token_matches(provided_token, expected_token):
         await _send_response(stream, 401, {"error": "invalid or missing X-AgentLoom-Token"})
         return
@@ -296,10 +290,7 @@ async def _handle_decision(
         await _send_response(stream, 404, {"error": f"no checkpoint for run '{run_id}'"})
         return
     except ValueError as e:
-        # ``FileCheckpointer`` rejects a run_id that would escape the
-        # checkpoint directory (path traversal). Pre-0.5.0 this
-        # ``ValueError`` was uncaught and surfaced as a 500 with a stack
-        # trace in the server log; return a clean 400 instead.
+        # FileCheckpointer rejects a run_id that would escape the checkpoint directory
         await _send_response(stream, 400, {"error": f"invalid run id: {e}"})
         return
 

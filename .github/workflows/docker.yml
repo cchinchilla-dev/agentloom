@@ -90,7 +90,6 @@ jobs:
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: BUILD_OBSERVABILITY=true
           # No layer cache for a release: a poisoned one would reach the published image
           cache-from: ${{ steps.build.outputs.release != 'true' && 'type=gha' || '' }}
           cache-to: ${{ steps.build.outputs.release != 'true' && 'type=gha,mode=max' || '' }}

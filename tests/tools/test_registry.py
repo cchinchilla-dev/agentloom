@@ -9,13 +9,10 @@ from tests.conftest import MockTool
 
 
 class TestToolRegistration:
-    """Test registering tools in the registry."""
-
     def test_register_tool(self) -> None:
         registry = ToolRegistry()
         tool = MockTool()
         registry.register(tool)
-        # Should not raise
         retrieved = registry.get("mock_tool")
         assert retrieved is tool
 
@@ -51,8 +48,6 @@ class TestToolRegistration:
 
 
 class TestToolGet:
-    """Test getting tools from the registry."""
-
     def test_get_existing_tool(self, tool_registry: ToolRegistry) -> None:
         tool = tool_registry.get("mock_tool")
         assert tool is not None
@@ -71,10 +66,7 @@ class TestToolGet:
             registry.get("other_tool")
 
     def test_missing_tool_raises_tool_not_found_error(self) -> None:
-        """The missing-tool path raises ``ToolNotFoundError`` (subclass
-        of ``KeyError`` for backwards compat) carrying the non-retryable
-        marker. Pre-0.5.0 a typo in a workflow's ``tool_name`` field
-        consumed the full retry budget."""
+        """An unknown tool name raises ``ToolNotFoundError``, which is never retried."""
         from agentloom.exceptions import ToolNotFoundError
 
         registry = ToolRegistry()
@@ -84,13 +76,11 @@ class TestToolGet:
         assert excinfo.value.is_retryable is False
         assert excinfo.value.name == "does_not_exist"
         assert "mock_tool" in excinfo.value.available
-        # Backwards compat: still catchable as KeyError.
+        # Callers that catch ``KeyError`` keep working.
         assert isinstance(excinfo.value, KeyError)
 
 
 class TestToolList:
-    """Test listing tools in the registry."""
-
     def test_list_empty_registry(self) -> None:
         registry = ToolRegistry()
         tools = registry.list()
@@ -127,9 +117,7 @@ class TestToolList:
 
 
 class TestDuplicateRegistration:
-    """F44: registering a name that is already taken logs a warning
-    before overwriting — pre-0.5.0 it clobbered the existing tool
-    silently. ``replace=True`` is the deliberate-override opt-out."""
+    """Registering a taken name warns before overwriting; ``replace=True`` opts out."""
 
     def test_duplicate_registration_warns(self, caplog: pytest.LogCaptureFixture) -> None:
         registry = ToolRegistry()

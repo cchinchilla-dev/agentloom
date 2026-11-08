@@ -1,6 +1,7 @@
 """No-op implementations for observability interfaces.
 
-Used as fallbacks when OpenTelemetry / Prometheus are not installed.
+``TracingManager`` falls back to the tracer and span when OpenTelemetry is
+not installed; ``NoopObserver`` implements every observer hook as a no-op.
 """
 
 from __future__ import annotations

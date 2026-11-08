@@ -57,8 +57,7 @@ async def test_matches_by_prompt_hash(responses_file):
 
 
 async def test_prompt_hash_differentiates_model():
-    # Same messages, different model — must produce different keys so that
-    # recordings cannot collide across models.
+    # A key shared across models would let their recordings collide.
     msgs = [{"role": "user", "content": "hello"}]
     assert prompt_hash(msgs, "gpt-4o-mini") != prompt_hash(msgs, "gpt-4o")
 
@@ -74,8 +73,7 @@ async def test_prompt_hash_differentiates_max_tokens():
 
 
 async def test_prompt_hash_stable_across_invocations():
-    # Pydantic-aware serialization: equal inputs hash equal regardless of
-    # instance identity or dict ordering.
+    # Equal inputs hash equal whatever their dict key order.
     msgs_1 = [{"role": "user", "content": "hello"}]
     msgs_2 = [{"content": "hello", "role": "user"}]
     assert prompt_hash(msgs_1, "m", 0.5, 100) == prompt_hash(msgs_2, "m", 0.5, 100)
@@ -148,8 +146,7 @@ def test_rejects_non_object_responses_file(tmp_path):
 
 
 def test_canonical_default_uses_model_dump_for_pydantic_objects() -> None:
-    """`_canonical_default` should call ``model_dump()`` on Pydantic instances
-    so the prompt hash depends on the public field shape, not the repr."""
+    """A Pydantic model is dumped, so the prompt hash follows its fields, not its repr."""
     from pydantic import BaseModel
 
     from agentloom.providers.mock import _canonical_default
@@ -173,9 +170,10 @@ def test_canonical_default_falls_back_to_str_for_plain_objects() -> None:
 
 
 class TestStrictReplay:
-    """Issue #063: strict mode turns a recording miss / prompt drift into
-    a hard error so a green replay cannot silently answer the wrong
-    prompt. ``agentloom replay`` sets ``strict=True``."""
+    """Strict mode turns a recording miss or prompt drift into an error.
+
+    A green replay must not answer the wrong prompt; ``agentloom replay`` sets ``strict=True``.
+    """
 
     def _write(self, tmp_path, payload):
         path = tmp_path / "rec.json"
@@ -224,16 +222,13 @@ class TestStrictReplay:
         r = await provider.complete(
             messages=[{"role": "user", "content": "hi"}], model="m", step_id="missing"
         )
-        # Non-strict keeps the dev fallback, but warns so a CI assertion
-        # passing on the placeholder is at least visible.
+        # Non-strict falls back but warns, so a CI pass on the placeholder stays visible.
         assert r.content == "DEFAULT"
         assert any("no recorded response" in rec.message.lower() for rec in caplog.records)
 
 
 class TestRecordingSchemaValidation:
-    """Issue #063: a malformed / wrong-version recording is rejected at
-    load time (F29) — pre-0.5.0 it loaded silently and every lookup fell
-    through to the placeholder default."""
+    """A malformed or wrong-version recording fails at load, not as silent placeholder answers."""
 
     async def test_malformed_recording_rejected(self, tmp_path) -> None:
         path = tmp_path / "bad.json"
@@ -275,21 +270,17 @@ class TestRecordingSchemaValidation:
         ],
     )
     async def test_malformed_tools_section_rejected(self, tmp_path, tools, message) -> None:
-        # Recorded tool results (#164) are validated with the rest of the file.
+        # Recorded tool results are validated with the rest of the file.
         path = tmp_path / "tools.json"
         path.write_text(json.dumps({"_version": 2, "_tools": tools}))
         with pytest.raises(ValueError, match=message):
             MockProvider(responses_file=path)
 
     async def test_step_id_entry_with_non_dict_value_falls_through(self, tmp_path) -> None:
-        # Recording schema validation rejects non-dict / non-list entries
-        # on load, but defensive code in ``_lookup`` still guards against
-        # a programmatic mutation that bypasses the loader. A non-dict /
-        # non-list entry behaves as a miss — never as a crash.
+        # The loader rejects such entries; ``_lookup`` still treats one as a miss, never a crash.
         path = tmp_path / "ok.json"
         path.write_text(json.dumps({"_version": 2, "s": {"content": "x"}}))
         provider = MockProvider(responses_file=path, default_response="DEFAULT")
-        # Bypass the loader to simulate the defensive branch.
         provider._responses["s"] = "not a dict"  # type: ignore[assignment]
         r = await provider.complete(
             messages=[{"role": "user", "content": "hi"}], model="m", step_id="s"

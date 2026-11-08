@@ -1,4 +1,4 @@
-"""Each adapter reports the sampling it sent and what came back besides the answer (#166)."""
+"""Each adapter reports the sampling it sent and what came back besides the answer."""
 
 from __future__ import annotations
 

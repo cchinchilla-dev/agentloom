@@ -4,7 +4,7 @@ Project rules for contributors and AI coding assistants. Any assistant that read
 
 ## Build & test
 - `uv sync --group dev` — install (add `--all-extras` for observability)
-- `make check` — every CI gate in one go, check-only (no auto-fix)
+- `make check` — lint, format, types, tests, version linearity and the workflow audit, check-only (no auto-fix); CI adds the docs and package builds, more platforms, the lowest dependencies and the K8s manifests
 - `uv run pytest` — tests (~5s)
 - `uv run ruff check src/ tests/` — lint
 - `uv run ruff format src/ tests/` — format
@@ -26,6 +26,8 @@ Project rules for contributors and AI coding assistants. Any assistant that read
 **Observability**: optional via `[observability]` extra. Code that needs the extra (OpenTelemetry, Prometheus) is reached only through `compat.try_import()`, so core degrades to noops. The dependency-free modules (`observability/schema.py`, `observability/quality.py`) may be imported directly; the engine does so to attach the quality emitter.
 
 **Tests**: `respx` for HTTP mocking, `pytest-asyncio` auto mode. Mocks over real API calls.
+
+**Comments**: a comment states a non-obvious why (a constraint, a trap, an ordering, an external quirk) on one line, and never restates the code. No history: no versions (`pre-0.5.0`), no "previously" or "used to", no review or audit ids; git and `CHANGELOG.md` keep it, and the `no-history-comments` pre-commit hook rejects the unambiguous markers (`SKIP=no-history-comments git commit` bypasses it). `#NNN` only where the issue holds a decision the comment cannot carry. Docstrings open with a one-line summary, imperative or a noun phrase; `Args:` / `Returns:` only where they add to the signature.
 
 **Commits**: Conventional-Commits with scope (`feat(providers): …`, `fix(core): …`, `docs(core): …`). Imperative, lowercase after the colon, single-line subject. Types and scopes documented in `CONTRIBUTING.md`. The PR title becomes the squash-merge commit on `main`, so the same rule applies to PR titles. Release commits are the one exception: exactly `bump version to X.Y.Z`, with no type or scope, because `auto-tag.yml` only tags commits that start with that prefix. Squash merge only.
 

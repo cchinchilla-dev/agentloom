@@ -130,8 +130,7 @@ class TestNoopIntegration:
 
 
 class TestNoopObserver:
-    """NoopObserver must implement every hook of WorkflowObserver so a
-    caller can pass it in as a safe default with no AttributeError risk."""
+    """NoopObserver implements every WorkflowObserver hook, so it is a safe default observer."""
 
     def test_has_all_hooks_of_workflow_observer(self) -> None:
         from agentloom.observability.noop import NoopObserver
@@ -160,9 +159,7 @@ class TestNoopObserver:
         obs.on_webhook_delivery("s1", "wf", "success", 0.1, future_extra=True)
 
     def test_every_hook_executes_no_op_body(self) -> None:
-        """Calling every NoopObserver hook executes the ``pass`` body so the
-        full no-op surface stays exercised — guards against regressions where
-        a new hook accidentally raises."""
+        """Every NoopObserver hook runs without raising."""
         from agentloom.observability.noop import NoopObserver
 
         obs = NoopObserver()

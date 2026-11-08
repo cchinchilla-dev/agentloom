@@ -1,8 +1,7 @@
 """Conversation helpers for the ``llm_call`` step.
 
-Kept out of ``llm_call.py`` so trimming policies stay independently
-testable and re-usable by the (upcoming) Agent primitive without pulling
-in the full step-execution surface.
+Kept out of ``llm_call.py`` so the trim policies are testable without the full step
+execution surface.
 """
 
 from __future__ import annotations
@@ -17,10 +16,7 @@ from agentloom.core.models import Conversation, Message
 
 logger = logging.getLogger("agentloom.steps.conversation")
 
-# A summariser is either a plain sync callable (used mainly by tests) or an
-# awaitable one — the ``llm_call`` step passes an async wrapper that hits the
-# gateway. Returning an empty string / raising both trigger the deterministic
-# concat fallback so the budget contract still holds.
+# Sync or async (llm_call wraps the gateway); empty output or a raise falls back to concat.
 Summarizer = Callable[[list[Message]], str | Awaitable[str]]
 
 
@@ -29,12 +25,9 @@ class TrimResult:
     """Outcome of a single trim pass.
 
     ``trimmed_count`` counts messages *removed* from the visible list
-    (either dropped or folded into ``summary``). ``summarized_count``
-    counts messages that specifically ended up rolled into
-    ``Conversation.summary``. ``policy`` is echoed back for the observer
-    hook so the metric label matches what actually ran (a no-op returns
-    ``policy=""`` — see :meth:`Conversation.token_count` for the
-    heuristic notes).
+    (dropped or folded into ``summary``); ``summarized_count`` counts those
+    folded into ``Conversation.summary``. ``policy`` names the policy that
+    ran, for the observer's metric label; a no-op returns ``policy=""``.
     """
 
     trimmed_count: int = 0
@@ -78,8 +71,8 @@ def _split_pinned(messages: list[Message]) -> tuple[list[Message], list[Message]
 
     Every ``role="system"`` message from the head is pinned; the moment a
     non-system message appears, the rest is considered fair game for
-    trimming even if it contains a later system message (rare — usually
-    a workflow bug we'd rather surface than silently retain).
+    trimming even if it contains a later system message (rare, and usually
+    a workflow bug).
     """
     pinned: list[Message] = []
     for i, msg in enumerate(messages):
@@ -93,9 +86,8 @@ def _drop_oldest(convo: Conversation, model: str) -> TrimResult:
     """Drop from the head until the budget is met.
 
     Pins the leading system prefix so the model always sees its
-    instruction turn. If the tail is empty, only the pinned messages
-    remain — nothing more we can shed without breaking the contract,
-    so the pass exits with a warning and leaves the budget over-limit.
+    instruction turn. When that prefix alone reaches the budget, the pass
+    drops nothing, logs a warning and leaves the conversation over budget.
     """
     if convo.token_budget is None:
         return TrimResult(policy="drop_oldest")
@@ -150,8 +142,8 @@ def _plan_summarize_oldest(convo: Conversation, model: str) -> list[Message]:
     """Compute the messages the ``summarize_oldest`` policy would fold.
 
     Split out from :func:`_summarize_oldest` so the caller can run the
-    summariser LLM call *before* mutating the conversation — the pass is
-    idempotent when no summarisation is needed and stays synchronous
+    summarizer LLM call *before* mutating the conversation — the pass is
+    idempotent when no summarization is needed and stays synchronous
     inside ``apply_trim_policy``.
     """
     if convo.token_budget is None:
@@ -173,7 +165,7 @@ def _plan_summarize_oldest(convo: Conversation, model: str) -> list[Message]:
 def _apply_summary(convo: Conversation, folded: list[Message], summary_text: str) -> TrimResult:
     """Attach ``summary_text`` to the conversation and drop ``folded`` turns.
 
-    When ``summary_text`` is empty (no summariser, or the summariser
+    When ``summary_text`` is empty (no summarizer, or the summarizer
     failed) the fallback is a deterministic ``"<speaker>: <body>"``
     concatenation of the folded turns — lossy but budget-respecting.
     """
@@ -191,14 +183,7 @@ def _apply_summary(convo: Conversation, folded: list[Message], summary_text: str
         convo.summary = f"{convo.summary}\n{summary_text}".strip()
     else:
         convo.summary = summary_text.strip()
-    # Remove the folded turns POSITIONALLY, not by value-equality. The
-    # folded set is always the leading ``len(folded)`` messages of the
-    # trimmable tail (``_plan_summarize_oldest`` pops them from the front,
-    # and nothing mutates ``convo.messages`` between planning and applying).
-    # A ``[m for m in messages if m not in folded]`` filter would also drop
-    # a value-equal duplicate that survived in the retained tail — e.g. a
-    # second ``user: "yes"`` turn — silently losing it. Slicing by count
-    # keeps identity-independent and duplicate-safe.
+    # Slice, not a value filter: ``folded`` is the tail's head, and a kept turn may equal one.
     pinned, tail = _split_pinned(convo.messages)
     convo.messages = [*pinned, *tail[len(folded) :]]
     return TrimResult(
@@ -209,11 +194,11 @@ def _apply_summary(convo: Conversation, folded: list[Message], summary_text: str
 
 
 def _summarize_oldest(convo: Conversation, model: str, summarizer: Summarizer | None) -> TrimResult:
-    """Sync variant of ``summarize_oldest`` — kept for tests + non-LLM callers.
+    """Sync variant of ``summarize_oldest``, for tests and non-LLM callers.
 
     When *summarizer* is ``None`` (or returns an empty string) the policy
     still runs the folded-turn concat fallback so the budget contract
-    holds. Async summarisers must be run through :func:`apply_trim_policy_async`
+    holds. Async summarizers must be run through :func:`apply_trim_policy_async`
     — this helper never awaits.
     """
     folded = _plan_summarize_oldest(convo, model)
@@ -223,7 +208,7 @@ def _summarize_oldest(convo: Conversation, model: str, summarizer: Summarizer | 
     if summarizer is not None:
         try:
             result = summarizer(folded)
-        except Exception as exc:  # pragma: no cover — summariser is workflow-provided
+        except Exception as exc:  # pragma: no cover — summarizer is workflow-provided
             logger.warning(
                 "Conversation summarize_oldest policy: summarizer raised %s; "
                 "falling back to a plain concatenation.",
@@ -236,7 +221,7 @@ def _summarize_oldest(convo: Conversation, model: str, summarizer: Summarizer | 
                 "passed to the sync apply_trim_policy; ignoring and falling back "
                 "to concat. Use apply_trim_policy_async instead."
             )
-            # Close the pending coroutine so we don't leak a warning about it.
+            # Close the coroutine, or Python warns that it was never awaited.
             close = getattr(result, "close", None)
             if callable(close):
                 close()
@@ -253,7 +238,7 @@ def apply_trim_policy(
 ) -> TrimResult:
     """Run the configured trim policy in-place on ``convo``.
 
-    Sync-only entry point. Async summarisers must be routed through
+    Sync-only entry point. Async summarizers must be routed through
     :func:`apply_trim_policy_async`. Returns a :class:`TrimResult` even
     when the policy is a no-op so the observer can decide whether to
     emit the ``conversation_trims_total`` counter — a no-op call carries
@@ -269,9 +254,7 @@ def apply_trim_policy(
         return _drop_pairs(convo, model)
     if convo.trim_policy == "summarize_oldest":
         return _summarize_oldest(convo, model, summarizer)
-    # Pydantic already rejects any other value at parse time, but be
-    # explicit here so a future extra policy that isn't wired lands as a
-    # loud failure rather than a silent no-op.
+    # Pydantic rejects other values at parse time; this catches a policy not wired up here.
     raise ValueError(f"Unknown trim_policy: {convo.trim_policy!r}")
 
 
@@ -281,12 +264,12 @@ async def apply_trim_policy_async(
     *,
     summarizer: Summarizer | None = None,
 ) -> TrimResult:
-    """Async trim entry-point — awaits the summariser for ``summarize_oldest``.
+    """Async trim entry point: awaits the summarizer for ``summarize_oldest``.
 
     ``drop_oldest`` / ``drop_pairs`` delegate to the sync path (they don't
     need I/O). ``summarize_oldest`` computes which turns would be folded,
-    invokes the summariser (awaiting when it returns an awaitable), then
-    attaches the result. When the summariser raises the trim still runs
+    invokes the summarizer (awaiting when it returns an awaitable), then
+    attaches the result. When the summarizer raises the trim still runs
     with the deterministic concat fallback so the budget contract holds.
     """
     if convo.token_budget is None:
@@ -317,9 +300,8 @@ async def apply_trim_policy_async(
 def to_provider_messages(convo: Conversation) -> list[dict[str, Any]]:
     """Serialize the conversation into the dict shape providers expect.
 
-    Drops ``metadata`` and other AgentLoom-only fields — they'd be
-    rejected by ``validate_extra_kwargs`` on providers with strict
-    request bodies.
+    Drops ``metadata`` and other AgentLoom-only fields, which providers
+    with strict request bodies reject.
 
     When ``conversation.summary`` is present it is injected as a ``system``
     turn *after* the conversation's own leading system prefix, not before
@@ -338,8 +320,6 @@ def to_provider_messages(convo: Conversation) -> list[dict[str, Any]]:
     summary_inserted = summary_entry is None
     for msg in convo.messages:
         if not summary_inserted and msg.role != "system":
-            # First non-system turn — drop the summary in ahead of it so it
-            # trails the pinned system prefix.
             out.append(summary_entry)  # type: ignore[arg-type]
             summary_inserted = True
         entry: dict[str, Any] = {"role": msg.role, "content": msg.content}

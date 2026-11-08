@@ -1,8 +1,9 @@
 """Sandbox enforcement for built-in tools.
 
-Validates shell commands against an allowlist and restricts
-file operations to allowed paths. When sandbox is disabled,
-all operations pass through without validation.
+Validates shell commands against an allowlist, restricts file operations
+to allowed paths and gates network access. When the sandbox is disabled,
+operations pass through unchecked, except webhook destinations, which keep
+the default deny-list.
 """
 
 from __future__ import annotations
@@ -17,16 +18,11 @@ from urllib.parse import urlparse
 
 from agentloom.exceptions import SandboxViolationError
 
-# Shell metacharacters that can chain, redirect, or inject commands.
-# Checked BEFORE shlex parsing (raw string) to catch operators
-# that shlex treats as literal tokens. Includes \n/\r which act as command
-# separators in sh -c, and process substitutions ``<(...)`` / ``>(...)``.
+# Shell operators that chain, redirect or substitute, matched on the raw string before shlex
+# (which keeps them as literal tokens); \n and \r separate commands under sh -c
 _SHELL_OPERATOR_RE = re.compile(r"[|;&`\n\r]|\$\(|<\(|>\(|[<>]")
 
-# Executables that can execute arbitrary code from their arguments and
-# therefore defeat the command allowlist if permitted. Rejected by default
-# even when listed in ``allowed_commands``; callers must opt in explicitly
-# via ``danger_opt_in``.
+# Run arbitrary code from their arguments: refused even when allowlisted, unless in danger_opt_in
 _DANGEROUS_EXECUTABLES = frozenset(
     {
         "env",
@@ -56,17 +52,11 @@ _DANGEROUS_EXECUTABLES = frozenset(
     }
 )
 
-# Network schemes permitted by default. Anything else (file://, gopher://,
-# ftp://, data://, dict://) must be explicitly opted in via
-# ``allowed_schemes``.
+# Anything else (file://, gopher://, ftp://, data://) needs an explicit allowed_schemes opt-in
 _DEFAULT_ALLOWED_SCHEMES = frozenset({"http", "https"})
 
 
-# Networks denied by default for outbound webhook delivery when the workflow
-# does not declare an explicit sandbox. Covers loopback, link-local (AWS /
-# Azure / GCP metadata service all live in 169.254.169.254), RFC 1918, and the
-# carrier-grade NAT range. Bypassable per workflow via
-# ``SandboxConfig.allow_internal_webhook_targets``.
+# Refused by this module's internal-host checks; 169.254.169.254 is the cloud metadata service
 _DEFAULT_DENY_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("169.254.0.0/16"),
@@ -83,12 +73,9 @@ _DEFAULT_DENY_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...
 def _ip_is_internal(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Classify *ip* against the internal-host categories.
 
-    Uses ``ipaddress``'s built-in flags so IPv4-mapped IPv6 forms
-    (``::ffff:127.0.0.1``, ``::ffff:169.254.169.254``), the unspecified
-    addresses (``0.0.0.0`` / ``::``), and any reserved-range edge case
-    inherit the deny-list automatically — the prior network-containment
-    iteration missed all of these because the literal IPv6 ``::ffff:x``
-    address doesn't match an IPv4 network.
+    An IPv4-mapped IPv6 form (``::ffff:127.0.0.1``) is unwrapped first, as it
+    matches no IPv4 network; ``ipaddress``'s flags then cover the unspecified
+    addresses (``0.0.0.0`` / ``::``) and the reserved and multicast ranges.
     """
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
@@ -115,12 +102,12 @@ def _host_is_internal(hostname: str) -> bool:
     Inspects the literal host first so a workflow can't smuggle
     ``169.254.169.254`` past the deny-list by using
     ``http://metadata.aws/``. Falls back to ``socket.getaddrinfo`` so a
-    hostname that resolves to an internal IPv4 OR IPv6 address (via DNS,
-    ``/etc/hosts``, or a split-horizon AAAA record) is caught.
-    ``gethostbyname`` would have returned only the first IPv4 result and
-    missed an attacker-controlled AAAA-only loopback record.
+    hostname that resolves to an internal IPv4 or IPv6 address (via DNS,
+    ``/etc/hosts``, or a split-horizon AAAA record) is caught;
+    ``gethostbyname`` returns only the first IPv4 result and misses an
+    AAAA-only loopback record.
 
-    Trailing dot is normalised — most resolvers strip it before
+    Trailing dot is normalized — most resolvers strip it before
     delivering the request, so it must not bypass the gate. Percent-
     encoded characters and IDN homographs are decoded so a workflow
     cannot write ``http://%6c%6f%63%61%6c%68%6f%73%74/`` or use a
@@ -194,9 +181,7 @@ def _extract_path_candidates(token: str) -> list[str]:
     """Extract every path-shaped fragment from a command argument.
 
     GNU-style utilities accept paths inside flag values: ``tee
-    --output=/etc/passwd``, ``dd of=/dev/sda``, ``cp -t /etc/ src``. The
-    pre-fix heuristic skipped every token starting with ``-``, so these
-    forms slipped past the directory allowlist.
+    --output=/etc/passwd``, ``dd of=/dev/sda``, ``cp -t /etc/ src``.
     """
     if not token:
         return []
@@ -215,21 +200,21 @@ def _extract_path_candidates(token: str) -> list[str]:
 
 
 def _looks_like_path(token: str) -> bool:
-    """Backwards-compatible thin wrapper around :func:`_extract_path_candidates`."""
+    """Return ``True`` if :func:`_extract_path_candidates` finds a path in *token*."""
     return bool(_extract_path_candidates(token))
 
 
 class ToolSandbox:
-    """Validates tool operations against a sandbox policy.
+    """Sandbox policy that validates tool operations.
 
     Args:
         enabled: Whether sandbox enforcement is active.
-        allowed_commands: Shell command prefixes that are permitted
+        allowed_commands: Executable names that are permitted
             (e.g., ``["echo", "cat", "ls"]``).  An empty list with
-            sandbox enabled means NO commands are allowed.
+            sandbox enabled means no commands are allowed.
         allowed_paths: Directory prefixes for **both** read and write
             file operations (e.g., ``["/tmp/workflows"]``).  An empty
-            list with sandbox enabled means NO file access is allowed.
+            list with sandbox enabled means no file access is allowed.
         readable_paths: Additional directories allowed for **read-only**
             access.  Combined with *allowed_paths* when validating reads.
         writable_paths: Additional directories allowed for **write-only**
@@ -237,7 +222,7 @@ class ToolSandbox:
         allow_network: Whether HTTP requests are permitted.
         allowed_domains: When *allow_network* is ``True``, restrict
             requests to these domains (e.g., ``["api.openai.com"]``).
-            An empty list means all domains are permitted.
+            An empty list permits every domain but internal hosts.
         allowed_schemes: URL schemes permitted in ``validate_network``.
             Defaults to ``{"http", "https"}``. Opt in to ``file``,
             ``ftp``, etc. only when the workflow genuinely requires them.
@@ -250,6 +235,8 @@ class ToolSandbox:
         command_cwd: Directory against which relative path arguments are
             resolved during ``validate_command``. Defaults to the current
             working directory at validation time.
+        allow_internal_webhook_targets: Let webhook destinations reach
+            internal hosts (see ``validate_webhook_url``).
     """
 
     def __init__(
@@ -379,7 +366,7 @@ class ToolSandbox:
         ``allowed_paths + writable_paths``; otherwise against
         ``allowed_paths + readable_paths``.
 
-        Note: the check is best-effort with respect to TOCTOU. A tool that
+        The check is best-effort with respect to TOCTOU. A tool that
         opens the file long after ``validate_path`` returns should re-check
         the opened file descriptor's real path before trusting it.
 
@@ -395,12 +382,7 @@ class ToolSandbox:
         try:
             resolved = Path(path).resolve()
         except (ValueError, OSError, RuntimeError, TypeError) as exc:
-            # ``ValueError`` covers null bytes; ``OSError`` covers ENAMETOOLONG
-            # / EACCES and similar; ``RuntimeError`` is raised by Path.resolve
-            # on symlink loops; ``TypeError`` catches non-string callers
-            # (``None`` / ``int`` / ``bytes``). All four collapse into a
-            # single ``SandboxViolationError`` so callers only need one
-            # except clause.
+            # Null bytes, ENAMETOOLONG/EACCES, symlink loops, non-str input: one class for callers
             raise SandboxViolationError(
                 tool_name,
                 f"Cannot resolve path {path!r}: {exc}",
@@ -486,11 +468,7 @@ class ToolSandbox:
         Raises:
             SandboxViolationError: If the destination is blocked.
         """
-        # Scheme gate is always-on for webhooks, regardless of sandbox
-        # state or ``allowed_schemes``. A workflow that legitimately
-        # widens ``allowed_schemes`` (for an attachment fetch, for
-        # example) must not accidentally widen the webhook surface —
-        # webhook delivery is hard-coded to ``http`` / ``https``.
+        # Always http/https: a wider allowed_schemes (for attachments) must not widen webhooks
         parsed = urlparse(url)
         scheme = (parsed.scheme or "").lower()
         if scheme not in _DEFAULT_ALLOWED_SCHEMES:
@@ -500,11 +478,7 @@ class ToolSandbox:
             )
 
         if self.enabled:
-            # ``_validate_scheme_and_domain`` enforces ``allowed_domains`` (and
-            # would also re-check the scheme against the workflow's
-            # ``allowed_schemes`` — but we already refused anything
-            # outside http/https above, so widening allowed_schemes
-            # cannot reopen the webhook surface).
+            # Enforces allowed_domains; its scheme check cannot reopen what the gate above refused
             self._validate_scheme_and_domain(url)
             if self.allow_internal_webhook_targets:
                 return

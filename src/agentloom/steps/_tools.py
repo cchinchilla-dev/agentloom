@@ -25,7 +25,7 @@ def _hash_text(text: str) -> str:
 
 
 class FailsStep(Exception):  # noqa: N818 — it carries the failure, it is not one
-    """Raised by an agent called as a tool: ``error`` fails the calling step (#120).
+    """Raised by an agent called as a tool: ``error`` fails the calling step.
 
     Any other exception of a tool goes back to the model as the call's error.
     """
@@ -50,8 +50,7 @@ def _openai_function(tool: ToolDefinition) -> dict[str, Any]:
         "parameters": tool.parameters or {"type": "object", "properties": {}},
     }
     if getattr(tool, "strict", False):
-        # The output tool of a strict schema: its arguments are held to it, as a strict
-        # reply is, every property listed in ``required`` as strict mode needs (#120)
+        # Strict output tool: held to its schema as a strict reply is, every property required
         from agentloom.steps._structured import enforce_openai_strict_required
 
         parameters = copy.deepcopy(function["parameters"])
@@ -75,11 +74,11 @@ def translate_tools_for_anthropic(tools: list[ToolDefinition]) -> list[dict[str,
 def translate_tools_for_google(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
     """Google shape: ``[{"function_declarations": [{name, description, parameters}, ...]}]``.
 
-    Google groups all functions under one ``Tool`` object; we put them all
-    in a single declaration list since AgentLoom doesn't yet expose tool
-    grouping (everything is a function). Parameters lose the keys Gemini's
-    schema dialect rejects, as a ``responseSchema`` does: an agent's output
-    tool (#120) carries ``additionalProperties``.
+    Google groups functions under ``Tool`` objects; AgentLoom has no tool
+    grouping (everything is a function), so all go in one declaration list.
+    Parameters lose the keys Gemini's schema dialect rejects, as a
+    ``responseSchema`` does: an agent's output tool carries
+    ``additionalProperties``.
     """
     from agentloom.steps._structured import _strip_unsupported_google_keys
 
@@ -104,8 +103,10 @@ def translate_tools_for_ollama(tools: list[ToolDefinition]) -> list[dict[str, An
 
 
 def translate_tool_choice_for_openai(choice: Any) -> Any:
-    """OpenAI ``tool_choice`` accepts ``"auto"`` / ``"required"`` / ``"none"``
-    or ``{"type": "function", "function": {"name": "..."}}``."""
+    """OpenAI ``tool_choice``: ``"auto"`` / ``"required"`` / ``"none"``, or a named function.
+
+    A ``{"name": ...}`` choice becomes ``{"type": "function", "function": {"name": ...}}``.
+    """
     if isinstance(choice, dict) and "name" in choice:
         return {"type": "function", "function": {"name": choice["name"]}}
     return choice
@@ -134,8 +135,8 @@ def parse_tool_calls_from_openai(message: dict[str, Any]) -> list[ToolCall]:
     * **Ollama / OpenAI-compatible relays**: ``[{id, function:{name, arguments:{...}}}]``
       — ``type`` may be omitted entirely, and ``arguments`` may already be a
       decoded dict. Treat the absence of ``type`` as ``"function"`` (the
-      only call kind we currently dispatch); a non-function explicit
-      ``type`` (e.g. ``"code_interpreter"``) is skipped.
+      only call kind dispatched); a non-function explicit ``type`` (e.g.
+      ``"code_interpreter"``) is skipped.
     """
     raw_calls = message.get("tool_calls") or []
     calls: list[ToolCall] = []
@@ -144,10 +145,7 @@ def parse_tool_calls_from_openai(message: dict[str, Any]) -> list[ToolCall]:
         if entry_type != "function":
             continue
         fn = entry.get("function", {})
-        # OpenAI's ``role:"tool"`` follow-up message requires a non-empty
-        # ``tool_call_id``; an empty id or name would round-trip as garbage
-        # and the next request 400s. Skip + warn instead of constructing a
-        # call we know can't dispatch.
+        # OpenAI's tool follow-up needs a non-empty id and name, or the next request 400s: skip
         call_id = entry.get("id")
         call_name = fn.get("name")
         if not isinstance(call_id, str) or not call_id.strip():
@@ -191,9 +189,11 @@ def parse_tool_calls_from_anthropic(content_blocks: list[dict[str, Any]]) -> lis
 
 
 def parse_tool_calls_from_google(content_parts: list[dict[str, Any]]) -> list[ToolCall]:
-    """Google returns parts with ``functionCall: {name, args}``. Ids aren't
-    provider-assigned so we synthesize them — the result message echoes
-    the same name (no id round-trip needed)."""
+    """Parse Gemini ``functionCall`` parts into calls.
+
+    Gemini assigns no ids, so they are synthesized; the result message
+    echoes the call's name, so no id round-trip is needed.
+    """
     calls: list[ToolCall] = []
     for idx, part in enumerate(content_parts):
         fc = part.get("functionCall")
@@ -241,8 +241,8 @@ async def dispatch_tool_calls(
     recover on the next turn rather than aborting the loop. When *observer*
     is provided, fires ``on_tool_call`` per call with hashes of the args
     and result for trace-level observability without leaking PII. A
-    ``tape`` on the registry (#164) records the results, or serves recorded
-    ones in place of running the tools.
+    ``tape`` on the registry records the results, or serves recorded ones
+    in place of running the tools.
     """
     results: list[tuple[ToolCall, str, bool]] = [None] * len(calls)  # type: ignore[list-item]
     tape = getattr(tool_registry, "tape", None)
@@ -257,9 +257,7 @@ async def dispatch_tool_calls(
         if observer is not None:
             hook = getattr(observer, "on_tool_call", None)
             if callable(hook):
-                # Observability is best-effort: an exporter misconfig or
-                # transient OTel failure must not abort the dispatch task
-                # group and fail the step.
+                # Best-effort: an observer failure must not abort the dispatch and fail the step
                 try:
                     hook(
                         step_id=step_id,
@@ -280,8 +278,8 @@ async def dispatch_tool_calls(
             for idx, call in enumerate(calls):
                 tg.start_soon(_run, idx, call)
     except ExceptionGroup as group:
-        # The call that fails the step, as it was raised, not anyio's wrapper; one a retry would
-        # not fix (a stale replay) first, or a transient failure next to it would retry the step
+        # Raise the call's own error, not anyio's group; a non-retryable one (a stale replay)
+        # first, or a transient failure next to it would retry the step
         errors = [getattr(e, "error", e) for e in group.exceptions]
         raise next((e for e in errors if not getattr(e, "is_retryable", True)), errors[0]) from None
 
@@ -322,8 +320,7 @@ def build_assistant_message_with_tool_calls(
             blocks.append({"type": "tool_use", "id": c.id, "name": c.name, "input": c.arguments})
         return {"role": "assistant", "content": blocks}
     if provider == "google":
-        # Gemini can return text alongside ``functionCall`` parts; preserve
-        # the text so iteration 2+ sees the model's full prior turn.
+        # Gemini can return text beside functionCall parts; keep it so the next turn sees it all
         parts: list[dict[str, Any]] = []
         if content:
             parts.append({"text": content})
@@ -335,18 +332,13 @@ def build_assistant_message_with_tool_calls(
             parts.append(part)
         return {"role": "model", "parts": parts}
     if provider == "ollama":
-        # Ollama expects ``arguments`` as a dict (not a JSON-encoded string)
-        # and rejects unknown keys like ``id`` / ``type``. Captured from a
-        # live ``llama3.1:8b`` request that 400'd with "Value looks like
-        # object, but can't find closing '}' symbol" when sent the OpenAI
-        # canonical shape on iteration 2+.
+        # Ollama wants arguments as a dict and rejects id/type keys: the OpenAI shape gets a 400
         return {
             "role": "assistant",
             "content": content or "",
             "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls],
         }
-    # OpenAI canonical: ``content`` must be a string (formatter rejects None);
-    # empty string is accepted alongside tool_calls.
+    # OpenAI canonical: content must be a string (None is rejected); "" is fine beside tool_calls
     return {
         "role": "assistant",
         "content": content or "",
@@ -394,8 +386,7 @@ def build_tool_result_messages(
             }
         ]
     if provider == "ollama":
-        # Ollama keys the result by ``name`` (not ``tool_call_id``) and
-        # rejects requests that include the OpenAI ``tool_call_id`` field.
+        # Ollama keys the result by name and rejects OpenAI's tool_call_id field
         return [{"role": "tool", "name": call.name, "content": text} for call, text, _ in results]
     # OpenAI canonical: one tool message per call, keyed by tool_call_id.
     return [{"role": "tool", "tool_call_id": call.id, "content": text} for call, text, _ in results]

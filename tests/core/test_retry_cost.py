@@ -1,4 +1,4 @@
-"""What every attempt of a step spent is charged and reported, however it ends (#120)."""
+"""What every attempt of a step spent is charged and reported, however it ends."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from agentloom.tools.registry import ToolRegistry
 
 
 class _Paid(BaseProvider):
-    """Answers each call with the next turn of a script, or raises it, or hangs."""
+    """A provider that answers each call with the next turn of a script, raises it or hangs."""
 
     name = "paid"
 
@@ -57,7 +57,7 @@ class _Add(BaseTool):
 
 
 class _Tokens:
-    """Keeps the token observations of a run, and how its steps ended."""
+    """An observer that keeps the token observations of a run, and how its steps ended."""
 
     def __init__(self) -> None:
         self.seen: list[tuple[str, int]] = []
@@ -416,7 +416,7 @@ async def test_a_resumed_run_goes_on_from_what_it_had_spent(
     assert (await engine.run()).status == WorkflowStatus.PAUSED
     saved = await checkpointer.load(engine.run_id)
     assert saved.spent_usd == pytest.approx(0.1)
-    if older:  # written before the checkpoint kept it: the step results' cost stands in
+    if older:  # a checkpoint without ``spent_usd``: the step results' cost stands in
         saved.spent_usd = 0.0
 
     gateway = ProviderGateway()
@@ -579,7 +579,7 @@ async def test_a_step_cut_while_it_is_charged_is_charged_once(
 
 
 class _Opens(BaseTool):
-    """Opens a gate once its step's first call is paid."""
+    """A tool that opens a gate once its step's first call is paid."""
 
     name = "open"
     description = "Open the gate."
@@ -1239,7 +1239,7 @@ async def test_a_subworkflow_that_fails_outside_its_steps_is_charged_what_they_s
 
 
 class _StreamsThenFails(BaseProvider):
-    """Streams an answer; the first stream fails once the provider has billed it."""
+    """A provider that streams an answer; the first stream fails once it has been billed."""
 
     name = "paid"
 

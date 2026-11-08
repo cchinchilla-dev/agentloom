@@ -42,7 +42,7 @@ class TestRaiseForStatus:
 
     def test_200_does_not_raise(self) -> None:
         resp = httpx.Response(status_code=200)
-        raise_for_status("openai", resp)  # no exception
+        raise_for_status("openai", resp)
 
     def test_429_maps_to_rate_limit_error(self) -> None:
         resp = httpx.Response(status_code=429, headers={"Retry-After": "5"})
@@ -82,7 +82,6 @@ class TestValidateExtraKwargs:
             {"step_id": "my-step", "top_p": 0.5},
             frozenset({"top_p"}),
         )
-        # step_id is silently dropped — must NOT appear in output.
         assert out == {"top_p": 0.5}
 
     def test_unknown_kwarg_raises_typeerror(self) -> None:
@@ -99,9 +98,7 @@ class TestFormatHttpError:
     """``format_http_error`` must surface something useful even when ``str(e)`` is empty."""
 
     def test_empty_str_falls_back_to_class_name(self) -> None:
-        # ``httpx.ReadTimeout`` on the async client returns ``str(e) == ''``.
-        # Pre-fix ``f"HTTP error: {e}"`` yielded ``"HTTP error: "`` — the
-        # error type must survive the format now.
+        # ``httpx.ReadTimeout`` on the async client has ``str(e) == ''``: the type must survive.
         exc = httpx.ReadTimeout("")
         out = format_http_error(exc)
         assert "ReadTimeout" in out
@@ -114,13 +111,11 @@ class TestFormatHttpError:
         assert "connection refused" in out
 
     def test_repr_used_when_str_empty_but_repr_informative(self) -> None:
-        # ``httpx.ReadTimeout("")`` has an empty ``str`` but a repr of
-        # ``ReadTimeout('')``; the formatter picks something up either way.
+        # An empty ``str`` but a ``ReadTimeout('')`` repr: the formatter returns something.
         exc = httpx.ReadTimeout("")
         assert format_http_error(exc)
 
     def test_class_name_always_leads(self) -> None:
-        # Every formatted message must begin with the exception class name
-        # so log grep patterns can hunt for the specific failure mode.
+        # Messages lead with the class name so a log grep can find each failure mode.
         for exc_cls in (httpx.ReadTimeout, httpx.ConnectError, httpx.ConnectTimeout):
             assert format_http_error(exc_cls("boom")).startswith(exc_cls.__name__)

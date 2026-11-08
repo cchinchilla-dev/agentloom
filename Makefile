@@ -1,5 +1,5 @@
 .PHONY: install install-all test test-cov lint format format-check typecheck version workflows check run validate info build clean \
-       docker-build docker-build-obs docker-run docker-stack docker-stack-down \
+       docker-build docker-build-lite docker-run docker-stack docker-stack-down \
        k8s-validate helm-lint helm-template
 
 # Development
@@ -36,7 +36,7 @@ version:
 workflows:
 	uv run zizmor --offline .github/
 
-# Same gates as CI (K8s manifests: make k8s-validate helm-lint)
+# CI's code gates; CI also builds the docs and package (K8s manifests: make k8s-validate helm-lint)
 check: lint format-check typecheck test-cov version workflows
 
 # CLI shortcuts
@@ -59,8 +59,8 @@ build:
 docker-build:
 	docker build -t agentloom:local .
 
-docker-build-obs:
-	docker build --build-arg BUILD_OBSERVABILITY=true -t agentloom:local-obs .
+docker-build-lite:
+	docker build --target production-lite -t agentloom:local-lite .
 
 docker-run:
 	@test -n "$(WORKFLOW)" || (echo "Usage: make docker-run WORKFLOW=01_simple_qa.yaml" && exit 1)

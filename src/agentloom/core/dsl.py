@@ -1,4 +1,4 @@
-"""Python DSL for defining workflows with decorators."""
+"""Python builder DSL for defining workflows in code."""
 
 from __future__ import annotations
 
@@ -89,10 +89,8 @@ class WorkflowBuilder:
         """Add a conditional routing step.
 
         Args:
-            step_id: Step identifier.
             conditions: List of (expression, target_step_id) tuples.
             default: Default target if no condition matches.
-            depends_on: Dependencies.
         """
         self._steps.append(
             StepDefinition(

@@ -134,11 +134,10 @@ class TestCycleSafe:
 
 
 class TestNonStringKeys:
-    """``fnmatch.fnmatchcase`` requires str args.
+    """Non-string keys are coerced to ``str``, the only type ``fnmatch.fnmatchcase`` takes.
 
-    State deserialized from JSON / pickle / tool output can carry int or
-    tuple keys; coerce to ``str`` before matching so a non-string key
-    does not crash the entire checkpoint write.
+    State from JSON, pickle or tool output can carry int or tuple keys, which must not crash the
+    checkpoint write.
     """
 
     def test_int_key_matched_via_str_coercion(self) -> None:
@@ -208,10 +207,7 @@ class TestEngineResumeWarnsOnSentinels:
 
 
 class TestWorkflowDefinitionRejectsUnknownKeys:
-    """``WorkflowDefinition`` uses ``extra="forbid"`` so a typo in
-    ``state_schema:`` (or any other top-level field) fails loud at parse
-    time instead of silently dropping the field.
-    """
+    """``WorkflowDefinition`` forbids unknown keys: a typo fails at parse time, not silently."""
 
     def test_typo_in_state_schema_raises(self) -> None:
         from pydantic import ValidationError
@@ -252,10 +248,7 @@ class TestDoubleRedactionStable:
         assert twice["k"] == once["k"]
 
     def test_user_provided_sentinel_shaped_string_is_preserved(self) -> None:
-        # A user who legitimately stores ``<REDACTED:sha256=abcdef0123456789>``
-        # as a state value shouldn't see it mangled. The redaction policy
-        # applies to keys, not values, so a non-flagged key carrying a
-        # sentinel-shaped string is left untouched.
+        # Redaction applies to keys: a sentinel-shaped value under an unflagged key stays as is.
         policy = RedactionPolicy(["api_key"])
         out = redact_state(
             {"api_key": "sk-real", "note": "<REDACTED:sha256=abcdef0123456789>"},
@@ -266,30 +259,20 @@ class TestDoubleRedactionStable:
 
 
 class TestRedactionContainerCoverage:
-    """Pinned edge cases for container types ``_walk`` does NOT recurse
-    into. Documents the supported subset so a regression that quietly
-    starts redacting (or fails to redact) tuples / sets / Pydantic
-    models is caught.
-    """
+    """Container types ``_walk`` does not recurse into: tuples, sets and Pydantic models."""
 
     def test_tuple_value_passes_through(self) -> None:
-        # Tuples are not recursed; the workflow convention is dict /
-        # list / scalar values. A flagged key whose value is a tuple
-        # gets a single sentinel, not element-wise sentinels.
+        # A flagged tuple gets a single sentinel, not one per element.
         out = redact_state({"creds": ("a", "b")}, RedactionPolicy(["creds"]))
         assert is_redacted(out["creds"])
 
     def test_set_value_passes_through(self) -> None:
-        # Sets are unordered and not part of the JSON-serialisable
-        # state contract; ensure they don't crash redaction.
+        # Sets fall outside the JSON state contract, but they must not crash redaction.
         out = redact_state({"creds": {"a", "b"}}, RedactionPolicy(["creds"]))
         assert is_redacted(out["creds"])
 
     def test_pydantic_model_value_replaced_with_sentinel(self) -> None:
-        # When a Pydantic BaseModel ends up in state (rare but legal in
-        # Python-built workflows), the flagged key is replaced wholesale
-        # with the sentinel — ``str(model)`` is hashed and the original
-        # never lands in the output.
+        # A flagged model is replaced wholesale by the sentinel of ``str(model)``.
         from pydantic import BaseModel
 
         class Creds(BaseModel):
@@ -300,14 +283,9 @@ class TestRedactionContainerCoverage:
 
 
 class TestRedactionGlobMetacharacters:
-    """``fnmatch.fnmatchcase`` interprets pattern brackets as character
-    classes. Pin the contract so a future migration to a different
-    matcher is a deliberate decision.
-    """
+    """Pattern brackets are character classes, as ``fnmatch.fnmatchcase`` reads them."""
 
     def test_bracket_pattern_treated_as_char_class(self) -> None:
-        # Pattern ``foo[1]`` matches the key ``foo1``, NOT the literal
-        # key ``foo[1]``.
         policy = RedactionPolicy(["foo[1]"])
         out = redact_state({"foo1": "v", "foo[1]": "w"}, policy)
         assert is_redacted(out["foo1"])
@@ -315,22 +293,16 @@ class TestRedactionGlobMetacharacters:
 
 
 class TestRedactionEdgeCases:
-    """Behaviours pinned during the audit — not bugs, but documented
-    contracts that future changes must not regress.
-    """
+    """Edge-case contracts of redaction, pinned so that changing one is a deliberate choice."""
 
     def test_glob_match_is_case_sensitive(self) -> None:
-        # ``fnmatch.fnmatchcase`` is case-sensitive on purpose: pattern
-        # ``API_KEY`` does NOT mask ``state.api_key``.
+        # Case-sensitive on purpose, as ``fnmatch.fnmatchcase`` is.
         policy = RedactionPolicy(["API_KEY"])
         out = redact_state({"api_key": "x"}, policy)
         assert out["api_key"] == "x"
 
     def test_empty_list_value_passes_through(self) -> None:
-        # A flagged key whose value is an empty list renders as ``[]`` —
-        # the empty container reveals shape but no plaintext. Pinned so
-        # any future tightening (e.g. emit a sentinel even for empties)
-        # is a deliberate change.
+        # An empty container reveals its shape but no plaintext, so it stays ``[]``.
         out = redact_state({"api_keys": []}, RedactionPolicy(["api_keys"]))
         assert out["api_keys"] == []
 
@@ -339,19 +311,13 @@ class TestRedactionEdgeCases:
         assert out["creds"] == {}
 
     def test_none_value_sentinel_stable(self) -> None:
-        # ``str(None)`` is fed into sha256, so redacting two ``None``
-        # values produces the SAME sentinel. ``None`` and ``""`` happen
-        # to collide because the code maps both to the empty string;
-        # pinned so a future ``repr()`` switch is intentional.
+        # ``None`` and ``""`` share a sentinel: both hash as the empty string.
         a = redact_state({"k": None}, RedactionPolicy(["k"]))
         b = redact_state({"k": ""}, RedactionPolicy(["k"]))
         assert a["k"] == b["k"]
         assert is_redacted(a["k"])
 
     def test_pattern_matches_both_bare_and_dotted_path(self) -> None:
-        # Pattern matches against the bare key AND the dotted path so
-        # ``"access_token"`` redacts both ``state.access_token`` and
-        # ``state.credentials.access_token``.
         policy = RedactionPolicy(["access_token"])
         out = redact_state(
             {

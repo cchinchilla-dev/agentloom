@@ -10,22 +10,22 @@ from agentloom.steps.base import BaseStep, StepContext
 
 
 class ApprovalGateStep(BaseStep):
-    """Pauses the workflow until a human approves or rejects.
+    """Step that pauses the workflow until a human approves or rejects.
 
     On first execution the step raises ``PauseRequestedError`` so the
-    engine serializes the workflow state.  When the user resumes with
-    ``--approve`` or ``--reject``, the CLI injects the decision into
-    state at ``_approval.<step_id>`` and the step returns it as output.
+    engine serializes the workflow state.  When the run resumes with
+    ``--approve`` or ``--reject``, ``WorkflowEngine.from_checkpoint`` writes
+    the decision to state at ``_approval.<step_id>`` and the step returns it
+    as output.
 
     If a ``notify`` webhook is configured on the step definition, a
     POST request is sent before pausing so external systems (Slack, CI,
     dashboards) can act on the pending approval.
 
-    The step body intentionally does **not** write to stdout/stderr — UX
-    rendering is the CLI's job. Under parallel DAG execution two gates
-    pausing concurrently used to interleave their prompts; surfacing the
-    pause via ``PauseRequestedError`` and letting the CLI render after
-    `engine.run()` returns avoids the race entirely.
+    The step body does not write to stdout/stderr: two gates pausing in
+    one parallel layer would interleave their prompts, so the pause
+    surfaces as ``PauseRequestedError`` and the CLI renders it after
+    ``engine.run()`` returns.
     """
 
     async def execute(self, context: StepContext) -> StepResult:
@@ -88,11 +88,7 @@ class ApprovalGateStep(BaseStep):
             redaction_policy=context.redaction_policy,
         )
 
-        # Build a ToolSandbox from the workflow's declared sandbox config so
-        # the webhook URL is gated by the same allowlist/deny-list as every
-        # other network operation. Without this, ``notify.url`` reaches
-        # loopback / link-local / RFC 1918 destinations regardless of
-        # ``allowed_domains`` and the SSRF surface stays open.
+        # Gate ``notify.url`` with the workflow's sandbox, or it can reach internal hosts (SSRF).
         sandbox_cfg = context.sandbox_config
         sandbox = ToolSandbox(
             enabled=sandbox_cfg.enabled,

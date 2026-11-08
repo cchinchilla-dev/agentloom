@@ -103,10 +103,11 @@ async def send_webhook(
 ) -> None:
     """POST a webhook notification with best-effort retry, deadline-bounded.
 
-    The total retry window is capped by *deadline_s* (default 5 s) so a
-    webhook storm can never block a workflow for the 28 s of the raw retry
-    schedule. Never raises — timeouts and errors are logged so the calling
-    step can still pause even if the webhook endpoint is misbehaving.
+    The total retry window is capped by *deadline_s* (default 5 s) so a slow
+    endpoint can never block a workflow for the raw retry schedule (three
+    attempts of ``config.timeout`` plus 2 s and 4 s of backoff). Never raises —
+    timeouts and errors are logged so the calling step can still pause even if
+    the webhook endpoint is misbehaving.
 
     When *sandbox* is provided, ``ToolSandbox.validate_webhook_url`` gates the
     destination — same allowlist as ``validate_network`` when the sandbox is

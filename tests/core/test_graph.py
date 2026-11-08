@@ -21,12 +21,12 @@ from agentloom.core.models import (
 
 # Shared helpers
 def _linear_dag() -> DAG:
-    """a -> b -> c"""
+    """Linear DAG: a -> b -> c."""
     return DAG.from_steps([("a", []), ("b", ["a"]), ("c", ["b"])])
 
 
 def _diamond_dag() -> DAG:
-    """root -> left, root -> right, left -> merge, right -> merge"""
+    """Diamond DAG: root -> left, right -> merge."""
     return DAG.from_steps(
         [
             ("root", []),
@@ -331,12 +331,10 @@ class TestPrimePaths:
     def test_diamond_paths_are_prime(self) -> None:
         g = WorkflowGraph.from_dag(_diamond_dag())
         primes = g.prime_paths()
-        # Both full root-to-merge paths must be present
         assert ["root", "left", "merge"] in primes
         assert ["root", "right", "merge"] in primes
 
     def test_subpaths_filtered_out(self) -> None:
-        # a -> b -> c: ["b", "c"] is a subpath of ["a", "b", "c"]
         g = WorkflowGraph.from_dag(_linear_dag())
         primes = g.prime_paths()
         for path in primes:
@@ -375,7 +373,6 @@ class TestCriticalPath:
         assert len(cp) == 3
 
     def test_parallel_independent_chains_longest_selected(self) -> None:
-        # Two chains: a->b->c (length 3) and x->y (length 2)
         dag = DAG.from_steps([("a", []), ("b", ["a"]), ("c", ["b"]), ("x", []), ("y", ["x"])])
         g = WorkflowGraph.from_dag(dag)
         cp = g.critical_path()
@@ -424,7 +421,7 @@ class TestToDict:
 
         g = WorkflowGraph.from_dag(_diamond_dag())
         d = g.to_dict()
-        # Should not raise — all values must be JSON-serialisable
+        # json.dumps raises on any Pydantic model left in the output.
         json.dumps(d)
 
     def test_roots_and_leaves_are_lists(self) -> None:
@@ -471,7 +468,6 @@ class TestToDot:
     def test_edge_without_label_has_no_label_attr(self) -> None:
         g = WorkflowGraph.from_dag(_linear_dag())
         dot = g.to_dot()
-        # Plain edges should not have [label= on them
         for line in dot.splitlines():
             if "->" in line:
                 assert "label=" not in line
@@ -528,7 +524,6 @@ class TestToMermaid:
     def test_llm_node_uses_bracket_syntax(self) -> None:
         g = WorkflowGraph.from_dag(_linear_dag())
         mmd = g.to_mermaid()
-        # LLM nodes: id["label"]
         assert 'a["a"]' in mmd
 
     def test_router_node_uses_curly_syntax(self) -> None:
@@ -598,7 +593,7 @@ class TestToNetworkx:
             g.to_networkx()
 
 
-# Audit-driven edge-case tests
+# Edge cases
 class TestPrimePathsEdgeCases:
     def test_empty_graph(self) -> None:
         g = WorkflowGraph.from_dag(DAG())
@@ -621,13 +616,11 @@ class TestPrimePathsEdgeCases:
             dag.add_edge("root", nid)
             dag.add_edge(nid, "leaf")
         g = WorkflowGraph.from_dag(dag)
-        # A very low limit should trigger the safeguard
         with pytest.raises(ValueError, match="exceeded"):
             g.prime_paths(max_paths=5)
 
     def test_default_max_paths_allows_normal_graphs(self) -> None:
         g = WorkflowGraph.from_dag(_diamond_dag())
-        # Should not raise — diamond is well within limits
         primes = g.prime_paths()
         assert len(primes) >= 2
 
@@ -635,7 +628,6 @@ class TestPrimePathsEdgeCases:
 class TestCriticalPathDeterminism:
     def test_tie_breaking_is_deterministic(self) -> None:
         g = WorkflowGraph.from_dag(_diamond_dag())
-        # Call multiple times — same result every time
         results = [g.critical_path() for _ in range(10)]
         assert all(r == results[0] for r in results)
 
@@ -658,7 +650,6 @@ class TestPnmlIdCollisions:
         root = ET.fromstring(pnml.split("\n", 1)[1])
         net = root.find("net")
         assert net is not None
-        # All IDs must be unique
         all_ids: list[str] = []
         for elem in net:
             eid = elem.get("id")
@@ -673,7 +664,7 @@ class TestDotEscaping:
         dag.add_node("a\\b")
         g = WorkflowGraph.from_dag(dag)
         dot = g.to_dot()
-        assert "\\\\" in dot  # backslash should be doubled
+        assert "\\\\" in dot
 
 
 class TestMermaidEscaping:
@@ -699,7 +690,7 @@ class TestMermaidEscaping:
         g = WorkflowGraph.from_workflow(wf)
         mmd = g.to_mermaid()
         # The pipe must be escaped so it doesn't break Mermaid -->|label| syntax
-        assert "|a | b|" not in mmd  # raw pipe would break parsing
+        assert "|a | b|" not in mmd
         assert "#vert;" in mmd
 
 
@@ -709,8 +700,7 @@ class TestCriticalPathTieBreaking:
         dag = _diamond_dag()
         g = WorkflowGraph.from_dag(dag)
         cp = g.critical_path()
-        # Both paths (root->left->merge, root->right->merge) have length 3.
-        # Deterministic: sorted preds + (dist, id) key ensures "right" > "left".
+        # Both paths have length 3: the (dist, id) key picks "right" over "left".
         assert cp == ["root", "right", "merge"]
 
     def test_repeated_calls_same_result(self) -> None:
@@ -726,7 +716,6 @@ class TestMermaidSanitization:
         dag.add_node("my node")
         g = WorkflowGraph.from_dag(dag)
         mmd = g.to_mermaid()
-        # ID is sanitized, label preserves original text in quotes
         assert 'my_node["my node"]' in mmd
 
     def test_label_with_brackets_escaped(self) -> None:
@@ -759,7 +748,6 @@ class TestPnmlNamespaceCollision:
         assert net is not None
         all_ids = [elem.get("id") for elem in net if elem.get("id")]
         assert len(all_ids) == len(set(all_ids)), f"Duplicate IDs: {all_ids}"
-        # Place for step "t0" should be "p_t0", transition should be "t0"
         place_ids = {p.get("id") for p in net.findall("place")}
         assert "p_t0" in place_ids
         trans_ids = {t.get("id") for t in net.findall("transition")}

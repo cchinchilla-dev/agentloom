@@ -1,4 +1,4 @@
-"""A turn with both ``tools`` and a schema replies through the output tool (#120)."""
+"""A turn with both ``tools`` and a schema replies through the output tool."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ class _Add(BaseTool):
 
 
 class _Gateway:
-    """Answers ``complete()`` from a script of turns and keeps what each call sent."""
+    """A gateway that answers ``complete()`` from a script and keeps what each call sent."""
 
     def __init__(self, *turns: ProviderResponse) -> None:
         self._turns = list(turns)
@@ -101,7 +101,7 @@ def _add(n: int, a: int, b: int) -> ToolCall:
 
 
 class _Typed(LLMCallStep):
-    """Replies through the output tool, as an agent step with tools and an output_schema."""
+    """An llm_call executor with an output schema, so it replies through the output tool."""
 
     def __init__(self, schema: ResponseSchema = _SUM) -> None:
         self.schema = schema
@@ -318,7 +318,7 @@ class TestOutputTool:
         assert (parameters["type"], parameters["additionalProperties"]) == ("object", False)
 
     async def test_arguments_that_are_no_json_go_back_instead_of_an_empty_reply(self) -> None:
-        """A reply cut short at the token limit is not ``{}``, which json_object takes (#120)."""
+        """A reply cut short at the token limit is not ``{}``, which json_object takes."""
         gateway = _Gateway(
             _turn("", _final(1, **{INVALID_ARGUMENTS: '{"anything": [1,'})),
             _turn("", _final(2, anything=[1, 2])),
@@ -338,7 +338,7 @@ class TestOutputTool:
     async def test_a_schema_whose_root_is_a_ref_is_its_definition(
         self, name: str, pointer: str
     ) -> None:
-        """Pydantic's schema of a model that contains itself: its ``$defs`` stay (#120)."""
+        """Pydantic's schema of a model that contains itself: its ``$defs`` stay."""
         ref = f"#/$defs/{pointer}"
         node = {
             "type": "object",
@@ -417,7 +417,7 @@ class TestOutputTool:
         assert chat.messages[-1] == Message(role="assistant", content='{"total": 5}', name="calc")
 
     async def test_conversation_keeps_the_validated_reply(self) -> None:
-        """Its defaults included, under the field names its schema gave the model."""
+        """The kept reply has its defaults, under the field names its schema gave the model."""
         schema = ResponseSchema(type="pydantic", model=f"{__name__}.Invoice")
         gateway = _Gateway(_turn("", _final(1, total=5)))
         result, state, _ = await _run(_step(conversation="chat"), gateway, executor=_Typed(schema))
@@ -478,7 +478,7 @@ class TestOutputTool:
 
 
 class _Hooked(LLMCallStep):
-    """Sets a turn budget of one message and refuses replies that mention ``nope``."""
+    """An executor with a one-message turn budget that refuses replies mentioning ``nope``."""
 
     def _apply_memory(self, conversation: Conversation) -> None:
         conversation.token_budget, conversation.trim_policy = 20, "drop_oldest"

@@ -1,9 +1,6 @@
 """E2E tests for the Ollama provider against a live Ollama instance.
 
-These tests require a running Ollama server with the test model pulled.
-They are excluded from normal test runs via the ``e2e`` marker.
-
-To run locally::
+Needs a running Ollama server with the test model pulled::
 
     ollama pull qwen2.5:0.5b
     uv run pytest -m e2e -v

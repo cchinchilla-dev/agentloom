@@ -21,11 +21,8 @@ from agentloom.exceptions import StateWriteError
 def _json_default(obj: Any) -> Any:
     """JSON ``default`` that survives Pydantic models on checkpoint write.
 
-    ``json.dumps(..., default=str)`` collapsed Pydantic instances to their
-    ``repr`` (``role='user' content='hi'``) which then failed to deserialize
-    on restore. Route through ``model_dump()`` so a :class:`Conversation`
-    or :class:`Message` stored under a state key round-trips losslessly
-    across a save + load cycle.
+    A model goes through ``model_dump()``, not its ``repr``, so a :class:`Conversation`
+    or :class:`Message` stored under a state key round-trips across save and load.
     """
     if isinstance(obj, BaseModel):
         return obj.model_dump()
@@ -35,9 +32,7 @@ def _json_default(obj: Any) -> Any:
 _SEGMENT_RE = re.compile(r"^([^\[]*)((?:\[-?\d+\])*)$")
 _INDEX_RE = re.compile(r"\[(-?\d+)\]")
 
-# Sentinel for "key absent" lookups. A state value can legitimately be
-# ``None``, so ``key_exists`` must distinguish "path resolves to None"
-# from "path does not resolve" — a plain ``default=None`` cannot.
+# A state value can be ``None``, so ``key_exists`` needs a distinct absent marker
 _KEY_ABSENT = object()
 
 
@@ -70,9 +65,9 @@ def _parse_path(key: str) -> list[str | int]:
 
 
 class StateManager:
-    """Manages shared state and step results during workflow execution.
+    """Shared state and step results of a workflow run.
 
-    Thread-safe via anyio.Lock for concurrent step execution.
+    Task-safe via ``anyio.Lock`` for concurrent steps.
     Serializable to/from JSON for checkpointing.
     """
 
@@ -97,23 +92,15 @@ class StateManager:
     async def update(self, key: str, fn: Callable[[Any], Any]) -> Any:
         """Atomic read-modify-write on a single state key.
 
-        Holds the state lock across the full ``fn(current)`` invocation, so
-        compound updates like "fetch the counter, add one, write it back"
-        no longer collapse under concurrency. Without this primitive, the
-        natural ``cur = await sm.get('counter'); await sm.set('counter',
-        cur + 1)`` pattern drops the lock between the two awaits — anything
-        that yields (a tool call, an ``await anyio.sleep(0)``) lets another
-        writer race and the slower writer overwrites the faster one's
-        result. 50 parallel ``update(key, +1)`` calls produce final 50;
-        the equivalent ``get`` + ``set`` pair produces final 1 deterministically.
+        Holds the state lock across ``fn(current)``, so a compound update ("read the
+        counter, add one, write it back") cannot interleave with other writers. A
+        ``get`` + ``set`` pair drops the lock between its awaits: 50 parallel
+        ``update(key, +1)`` calls end at 50, the equivalent pairs at 1.
 
-        ``fn`` MUST be synchronous and side-effect-free — it runs while the
-        lock is held, so any blocking call would stall every other state
-        operation in the workflow. For an async transformation, compute the
-        new value outside the lock and pass a lambda that returns the
-        already-computed value; this still races if the new value depends
-        on the current state, in which case use ``update`` with a sync
-        function instead.
+        ``fn`` must be synchronous and side-effect-free: it runs under the lock, so a
+        blocking call stalls every other state operation. For an async transformation,
+        compute the value outside the lock and pass a lambda that returns it; that still
+        races when the value depends on the current state, so prefer a sync ``fn`` then.
 
         Returns the new value (also what ``fn`` returned). If the key does
         not exist yet, ``fn`` receives ``None``; the caller chooses whether
@@ -136,8 +123,7 @@ class StateManager:
         async with self._lock:
             self._step_results[step_id] = result
             self._step_status[step_id] = result.status
-            # Store output in state under steps.<step_id>.output; a failed step's stays off the
-            # state, as a failed subworkflow's child state would otherwise land there (#185)
+            # Only a success lands in state: a failed subworkflow would leak its child state there
             if result.status == StepStatus.SUCCESS and result.output is not None:
                 self._state.setdefault("steps", {})[step_id] = {
                     "output": result.output,
@@ -160,15 +146,7 @@ class StateManager:
             return dict(self._step_results)
 
     # ---- internal-only synchronous helpers --------------------------------
-    #
-    # These bypass ``self._lock`` and must not be called from async code
-    # that runs concurrently with ``set``/``get``. They exist so tests and
-    # internal non-async paths (checkpoint hydration, resume bootstrap) can
-    # poke at state without spinning an event loop. Callers in async step
-    # handlers must use the awaitable ``get`` / ``set`` / ``get_state_snapshot``
-    # variants instead — using these under concurrency produces subtle
-    # last-writer-wins bugs because the updates race with in-flight locked
-    # writes.
+    # Test helpers that bypass ``self._lock``: never call them while steps run concurrently
 
     def _get_sync_unsafe(self, key: str, default: Any = None) -> Any:
         return self._resolve_key(self._state, key, default)
@@ -178,12 +156,10 @@ class StateManager:
 
     @property
     def state(self) -> dict[str, Any]:
-        """Raw state dict — **unsafe live reference for internal use only**.
+        """The live internal state dict, not a snapshot; for internal use only.
 
-        This returns the internal state dict directly, not a snapshot.
-        Mutating it bypasses ``self._lock`` and can race with concurrent
-        readers/writers. Do not mutate it and do not rely on it remaining
-        stable across ``await`` points. Prefer
+        Mutating it bypasses ``self._lock`` and races with concurrent readers and
+        writers, and it can change across ``await`` points. Prefer
         ``await self.get_state_snapshot()`` for a defensive copy.
         """
         return self._state
@@ -253,12 +229,9 @@ class StateManager:
         create or resize lists.  For integer path segments the list and indexed
         element must already exist; otherwise ``IndexError`` is raised.
 
-        Refuses to silently overwrite a scalar with a dict: writing to
-        ``user.name`` when ``state.user = "alice"`` (a string) used to
-        replace the string with ``{"name": ...}`` and lose the original
-        value without warning. Such writes now raise ``StateWriteError``
-        so the workflow author either picks a different output key or
-        explicitly overwrites the scalar at the parent path first.
+        Refuses to overwrite a scalar with a dict: writing ``user.name`` when
+        ``state.user`` is ``"alice"`` raises ``StateWriteError``, so the workflow author
+        picks another output key or overwrites the scalar at the parent path first.
         """
         parts = _parse_path(key)
         current: Any = data
@@ -275,12 +248,7 @@ class StateManager:
                     )
             else:
                 if not isinstance(current, dict):
-                    # The path expects a string segment here (e.g. ``user.name``)
-                    # but the intermediate is a list — writing ``foo.bar`` when
-                    # ``state.foo`` is ``[...]`` is the same class of "wrong-
-                    # type intermediate" as the scalar-overwrite case below, so
-                    # raise the same exception for a uniform contract instead
-                    # of leaking a generic ``TypeError`` to the caller.
+                    # A list under a string segment: the same refusal as the scalar case below
                     traversed = ".".join(str(p) for p in parts[:i])
                     raise StateWriteError(
                         f"Cannot write to {key!r}: intermediate {traversed!r} is a "
@@ -315,12 +283,7 @@ class StateManager:
                 )
         else:
             if not isinstance(current, dict):
-                # Same shape as the in-loop wrong-type intermediate check —
-                # ``users.name`` where ``state.users`` is a list lands here
-                # because the final segment expects a dict. Raise
-                # ``StateWriteError`` for the uniform "refused write through
-                # wrong-type intermediate" contract; callers that catch only
-                # the dedicated exception now see this case too.
+                # A list parent under a final string segment: refused as in the loop
                 traversed = ".".join(str(p) for p in parts[:-1])
                 raise StateWriteError(
                     f"Cannot write to {key!r}: parent path {traversed!r} resolves "

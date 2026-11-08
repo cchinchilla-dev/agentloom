@@ -95,9 +95,7 @@ class TestMetricsEnabled:
         histogram_spy.record.assert_called_once_with(3, {"name": "support"})
 
     def test_record_tool_call(self) -> None:
-        # Records both the per-tool counter (with status label) and the
-        # latency histogram. Status maps to ``"success"`` / ``"failure"``
-        # so dashboards can derive a per-tool failure rate.
+        # The status label lets dashboards derive a per-tool failure rate.
         from unittest.mock import MagicMock
 
         mm = MetricsManager(enabled=True)
@@ -117,24 +115,19 @@ class TestMetricsEnabled:
         mm.shutdown()
 
     def test_reasoning_tokens_metric_emitted(self) -> None:
-        # When ``reasoning_tokens`` is non-zero, ``record_tokens`` must
-        # observe the histogram a third time with
-        # ``gen_ai.token.type="reasoning"`` so dashboards can split
-        # chain-of-thought spend from regular completion spend.
+        # A third observation typed "reasoning" splits thinking spend from completion spend.
         from unittest.mock import MagicMock
 
         mm = MetricsManager(enabled=True)
         if mm._backend != "otel":
-            # prom fallback exercised via smoke; OTel path is what we audit.
+            # The spy replaces an OTel instrument; the prom path only gets the smoke tests above.
             return
         spy = MagicMock()
         mm._token_histogram = spy
         mm.record_tokens("anthropic", "claude-opus-4", 100, 50, reasoning_tokens=200)
-        # Expect 3 record() calls: input, output, reasoning.
         assert spy.record.call_count == 3
         token_types = {call.args[1]["gen_ai.token.type"] for call in spy.record.call_args_list}
         assert token_types == {"input", "output", "reasoning"}
-        # The reasoning observation must carry the right value and attrs.
         reasoning_calls = [
             call
             for call in spy.record.call_args_list
@@ -147,11 +140,7 @@ class TestMetricsEnabled:
         mm.shutdown()
 
     def test_token_histogram_translates_provider_name(self) -> None:
-        # The histogram must carry the canonical OTel ``gen_ai.provider.name``
-        # value, not the AgentLoom internal short name. ``google`` →
-        # ``gcp.gemini``. Without this translation, token series for Gemini
-        # land on a non-canonical label and don't correlate with the spans
-        # (which already translate via ``to_genai_provider_name``).
+        # The canonical OTel name (google -> gcp.gemini) keeps token series aligned with spans.
         from unittest.mock import MagicMock
 
         mm = MetricsManager(enabled=True)
@@ -191,10 +180,7 @@ class TestMetricsEnabled:
         assert attrs["gen_ai.provider.name"] == "gcp.gemini"
 
     def test_reasoning_tokens_zero_does_not_emit_third_observation(self) -> None:
-        # Default path — no reasoning tokens — must not emit a reasoning
-        # observation. Dashboards filtering on
-        # ``gen_ai.token.type="reasoning"`` should see zero events for
-        # non-thinking models.
+        # Dashboards filtering on "reasoning" see no events for non-thinking models.
         from unittest.mock import MagicMock
 
         mm = MetricsManager(enabled=True)
@@ -289,15 +275,13 @@ class TestMetricsEnabled:
 
 
 class TestBoundedCardinality:
-    """LRU cap on the lifelong process-global metric dicts. Backend-agnostic
-    — the cap lives in pure Python, not the OTel/Prom layer."""
+    """LRU cap on the process-global metric dicts, enforced in pure Python for any backend."""
 
     def test_bounded_cardinality_circuit_states(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from collections import OrderedDict
 
         monkeypatch.setenv("AGENTLOOM_METRICS_MAX_KEYS", "3")
         mm = MetricsManager(enabled=False)  # backend-agnostic
-        # Inject the bound directly — covers the cap regardless of backend.
         mm._max_metric_keys = 3
         states: OrderedDict[str, int] = OrderedDict()
 
@@ -315,9 +299,7 @@ class TestBoundedCardinality:
         assert states["provider-0"] == 1  # value preserved on touch
 
     def test_bounded_cardinality_default_cap(self) -> None:
-        # The default cap should be reasonable; we read it back from the
-        # manager rather than hard-coding so a future tuning change only
-        # needs one edit.
+        # A loose floor, not the exact default, so tuning the cap needs no test edit.
         mm = MetricsManager(enabled=False)
         assert mm._max_metric_keys >= 64
 

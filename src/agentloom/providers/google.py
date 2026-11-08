@@ -31,14 +31,7 @@ from agentloom.providers.pricing import calculate_cost
 
 logger = logging.getLogger("agentloom.providers.google")
 
-# Keys that become entries under ``generationConfig``. Everything else is
-# rejected so silent drops surface early. ``tools`` is top-level on Google's
-# Generative Language API, not inside generationConfig — keep the two sets
-# separate.
-#
-# We accept snake_case at the public API surface (consistent with the other
-# adapters) and translate to the camelCase shape Gemini's REST endpoint
-# expects when serializing into the request body.
+# Nested under generationConfig; tools and safety settings sit at the request's top level
 _GOOGLE_GEN_CONFIG_KEYS = frozenset(
     {
         "top_p",
@@ -53,9 +46,7 @@ _GOOGLE_GEN_CONFIG_KEYS = frozenset(
     }
 )
 _GOOGLE_TOPLEVEL_KEYS = frozenset({"tools", "tool_config", "safety_settings"})
-# ``thinking_config`` is the provider-uniform reasoning kwarg from ``llm_call``;
-# it doesn't follow the GEN_CONFIG / TOPLEVEL split because we translate it to
-# ``generationConfig.thinkingConfig`` directly with a per-field rename.
+# thinking_config maps field by field onto generationConfig.thinkingConfig, outside both sets
 _GOOGLE_EXTRA_PAYLOAD_KEYS = _GOOGLE_GEN_CONFIG_KEYS | _GOOGLE_TOPLEVEL_KEYS | {"thinking_config"}
 
 # snake_case (public) → camelCase (Gemini wire format).
@@ -83,8 +74,8 @@ def _build_thinking_config_payload(cfg: Any) -> dict[str, Any] | None:
 
     Returns ``None`` when the config is missing or disabled so the caller
     can skip insertion entirely. ``includeThoughts`` is taken from
-    ``capture_reasoning`` — Gemini has historically returned thought
-    summaries (not the full trace) and only when this flag is set.
+    ``capture_reasoning``: Gemini returns thought summaries, not the full
+    trace, and only when this flag is set.
     """
     if cfg is None or not getattr(cfg, "enabled", False):
         return None
@@ -160,11 +151,7 @@ class GoogleProvider(BaseProvider):
                 content = msg.get("content", "")
                 systems.append(content if isinstance(content, str) else str(content))
                 continue
-            # Tool-loop messages already in Gemini wire shape (role=``model``
-            # with ``functionCall`` parts, role=``function`` with
-            # ``functionResponse`` parts) — pass them through verbatim so
-            # iteration 2+ preserves the call context. Identified by the
-            # presence of ``parts`` instead of ``content``.
+            # Tool-loop turns already in Gemini wire shape carry parts: pass them through as-is
             if "parts" in msg:
                 contents.append(msg)
                 continue
@@ -224,9 +211,7 @@ class GoogleProvider(BaseProvider):
             from agentloom.steps._tools import translate_tools_for_google
 
             extras["tools"] = translate_tools_for_google(agentloom_tools)
-            # ``{"name": "fn"}`` selects a specific function via Gemini's
-            # ANY mode + ``allowedFunctionNames``. Plain strings map to
-            # AUTO / ANY / NONE; anything else falls back to AUTO.
+            # A {"name": fn} choice pins one function via ANY mode and allowedFunctionNames
             choice = agentloom_tool_choice or "auto"
             fn_config: dict[str, Any]
             if isinstance(choice, dict) and "name" in choice:
@@ -280,9 +265,7 @@ class GoogleProvider(BaseProvider):
                 reasoning_content = reasoning_trace
 
         usage_data = data.get("usageMetadata", {})
-        # ``thoughtsTokenCount`` was added with Gemini 2.5 thinking and is
-        # intermittently absent on ``gemini-3-flash-preview`` even when
-        # thinking is enabled — default to 0 instead of raising.
+        # Absent on some responses even with thinking on (gemini-3-flash-preview): default 0
         reasoning_tokens = usage_data.get("thoughtsTokenCount", 0) or 0
         prompt_tokens = usage_data.get("promptTokenCount", 0)
         candidates_tokens = usage_data.get("candidatesTokenCount", 0)
@@ -335,8 +318,7 @@ class GoogleProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
-        # Mirror ``complete``: surface the tool spec to streaming requests so
-        # ``--stream`` + ``tools=`` is not rejected by extras validation.
+        # Pop the agentloom_* kwargs as complete() does, or extras validation rejects them
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
@@ -436,9 +418,7 @@ class GoogleProvider(BaseProvider):
                 sr.reasoning_content = "".join(reasoning_buffer)
 
             if sr.usage.total_tokens == 0:
-                # Gemini has historically streamed usage per-chunk, but a
-                # regression or model variant could drop it. Surface the gap
-                # so cost reporting doesn't silently read zero.
+                # Usage comes per chunk; warn when none came, so cost does not silently read 0
                 logger.warning(
                     "Google stream for model '%s' completed without usageMetadata; "
                     "cost will be reported as 0.",
@@ -479,10 +459,7 @@ class GoogleProvider(BaseProvider):
         raise_for_status("google", response)
         data = response.json()
         vectors = [entry["values"] for entry in data.get("embeddings", [])]
-        # Gemini's ``batchEmbedContents`` does not return per-token usage.
-        # Approximate with a ~1.3 tokens/word factor so the cost estimate and
-        # the rate-limiter budget bias slightly high rather than low; the
-        # ``raw_response`` carries the truth for callers who need to audit.
+        # batchEmbedContents returns no usage: ~1.3 tokens/word biases cost and rate limits high
         approx_tokens = int(sum(len(t.split()) for t in inputs) * 1.3)
         return EmbeddingResponse(
             embeddings=vectors,
@@ -494,11 +471,7 @@ class GoogleProvider(BaseProvider):
         )
 
     def supports_model(self, model: str) -> bool:
-        # ``gemini-*`` covers both generation and ``gemini-embedding-*``.
-        # ``embedding-*`` is Google's older bare-name namespace (e.g.
-        # ``embedding-001``). ``text-embedding-*`` is OpenAI territory —
-        # keep it out of this matcher so gateway fallback doesn't ship
-        # OpenAI model strings to Gemini and vice-versa.
+        # Not text-embedding-* (OpenAI's): gateway fallback must not send OpenAI models to Gemini
         return "gemini" in model or model.startswith("embedding-")
 
     async def close(self) -> None:

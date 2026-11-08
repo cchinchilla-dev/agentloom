@@ -1,6 +1,4 @@
-"""Tests for ``agentloom history`` CLI command — focus on the new
-date / cost filters added to close issue #77's "filterable by date,
-workflow, cost, provider" requirement."""
+"""Tests for the ``agentloom history`` command and its date, workflow, cost and provider filters."""
 
 from __future__ import annotations
 
@@ -59,8 +57,7 @@ def test_history_filter_by_provider_prefix(tmp_path: Path) -> None:
 
 
 def test_history_filter_by_since_date(tmp_path: Path) -> None:
-    # Issue #77 requires filtering by date — ``--since YYYY-MM-DD`` keeps
-    # only records timestamped at or after the given UTC midnight.
+    # ``--since YYYY-MM-DD`` keeps records timestamped at or after that day's UTC midnight.
     _write_record(
         tmp_path, "old", run_id="old", workflow_name="x", timestamp="2026-04-30T23:59:59+00:00"
     )
@@ -107,11 +104,7 @@ def test_history_filter_by_since_and_until_combined(tmp_path: Path) -> None:
         ["history", "--runs-dir", str(tmp_path), "--since", "2026-05-01", "--until", "2026-05-02"],
     )
     assert result.exit_code == 0
-    # Closed-open window: ``--since 2026-05-01`` is inclusive of midnight
-    # UTC on 2026-05-01; ``--until 2026-05-02`` is exclusive of midnight
-    # UTC on 2026-05-02. So only ``b`` (12:00 on 2026-05-01) qualifies —
-    # ``a`` is before, ``c`` is on/after the upper bound, ``d`` is after.
-    # Same semantics as ``git log --until`` / ``find -newermt``.
+    # Half-open UTC window: ``--since`` includes its midnight, ``--until`` excludes its own day.
     assert " b " in result.output
     assert " a " not in result.output
     assert " c " not in result.output
@@ -172,8 +165,7 @@ def test_history_invalid_date_emits_clean_error(tmp_path: Path) -> None:
     )
     result = runner.invoke(app, ["history", "--runs-dir", str(tmp_path), "--since", "yesterday"])
     assert result.exit_code != 0
-    # typer.BadParameter surfaces a usage error on stderr; just ensure the
-    # message mentions the offending value rather than a raw traceback.
+    # typer prints BadParameter as a usage error on stderr: it names the value, no traceback.
     assert "yesterday" in (result.output + (result.stderr or ""))
 
 
@@ -184,9 +176,7 @@ def test_history_no_records_message(tmp_path: Path) -> None:
 
 
 def test_history_date_filter_excludes_record_without_timestamp(tmp_path: Path) -> None:
-    # A record that lacks a parseable ``timestamp`` cannot satisfy a date
-    # predicate — it must be excluded when ``--since`` / ``--until`` is set
-    # (rather than being silently included as if it matched).
+    # A record without a parseable timestamp cannot satisfy a date filter, so it is left out.
     _write_record(tmp_path, "no_ts", run_id="no_ts", workflow_name="x")  # no timestamp
     _write_record(
         tmp_path,
@@ -219,9 +209,7 @@ def test_history_date_filter_excludes_record_with_unparseable_timestamp(
 
 
 def test_history_naive_timestamp_treated_as_utc(tmp_path: Path) -> None:
-    # Naive timestamps (no tz suffix) — possible from a record produced
-    # by an older writer or external tool — get treated as already-UTC.
-    # Documented behavior; covers the ``ts.tzinfo is None`` branch.
+    # A timestamp without a tz suffix (written by an external tool) is read as UTC.
     _write_record(
         tmp_path, "naive", run_id="naive", workflow_name="x", timestamp="2026-05-02T10:00:00"
     )
@@ -231,8 +219,6 @@ def test_history_naive_timestamp_treated_as_utc(tmp_path: Path) -> None:
 
 
 def test_history_full_iso_timestamp_accepted(tmp_path: Path) -> None:
-    # ``--since`` accepts full ISO 8601, not only ``YYYY-MM-DD``. Cover
-    # the non-date-only branch in ``_parse_date``.
     _write_record(
         tmp_path,
         "early",

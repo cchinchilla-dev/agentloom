@@ -1,4 +1,4 @@
-"""The step attempt that the running code belongs to (#164).
+"""The step attempt that the running code belongs to.
 
 Every attempt of a step gets an id of its own, and the engine marks the running
 attempt as the chain of ids from the outermost step down to it. A subworkflow's
@@ -29,7 +29,7 @@ class Spend:
     """What the provider calls of a step attempt cost, by provider and model, as they ended.
 
     Every call counts, those of the agents a step calls as tools and of its summaries
-    included, so what an attempt spent is known however it ends (#120).
+    included, so what an attempt spent is known however it ends.
     """
 
     cost_usd: float = 0.0
@@ -60,12 +60,12 @@ def running_attempt() -> Attempt:
 
 
 def attempt_number() -> int:
-    """Which attempt of its step the running one is, from 1; 1 outside any step (#166)."""
+    """Which attempt of its step the running one is, from 1; 1 outside any step."""
     return _NUMBER.get()
 
 
 def running_steps() -> tuple[str, ...]:
-    """The ids of the running step and of the steps enclosing it, outermost first (#165)."""
+    """The ids of the running step and of the steps enclosing it, outermost first."""
     return _STEPS.get()
 
 

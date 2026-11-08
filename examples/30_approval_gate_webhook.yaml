@@ -22,8 +22,6 @@ steps:
     depends_on: [draft]
     notify:
       url: "http://localhost:8642/webhook"
-    timeout_seconds: 3600
-    on_timeout: reject
     output: decision
 
   - id: send

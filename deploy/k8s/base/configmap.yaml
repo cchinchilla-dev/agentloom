@@ -8,7 +8,6 @@ metadata:
     app.kubernetes.io/component: config
 data:
   # Replace with your workflow definition.
-  # The testing library injects this programmatically via kubectl/client-go.
   workflow.yaml: |
     name: placeholder
     version: "1.0"

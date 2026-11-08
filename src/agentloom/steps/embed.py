@@ -3,7 +3,7 @@
 ``inputs`` is a dotted state path (e.g. ``state.documents``). Optional
 ``{...}`` wrapper braces are stripped so ``inputs: {state.docs}`` reads
 the same as a template placeholder even though the step is not a
-template — subscripts like ``state.docs[0]`` are NOT supported.
+template; subscripts like ``state.docs[0]`` are not supported.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ def _resolve_state_ref(ref: str, state: dict[str, object]) -> object:
 
 
 class EmbedStep(BaseStep):
-    """Reads a list of strings from state and writes a list of vectors back."""
+    """Step that embeds strings read from state and writes their vectors back."""
 
     async def execute(self, context: StepContext) -> StepResult:
         step = context.step_definition

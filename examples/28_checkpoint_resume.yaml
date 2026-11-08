@@ -8,7 +8,6 @@ description: >
 config:
   provider: ollama
   model: phi4
-  max_retries: 1
 
 state:
   topic: "renewable energy"

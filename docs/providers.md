@@ -46,31 +46,17 @@ agentloom run workflow.yaml --provider anthropic --model claude-sonnet-4-6
 !!! warning "Breaking change in 0.5.0 — Ollama is now opt-in"
     Pre-0.5.0 AgentLoom auto-registered Ollama as a catch-all fallback whenever no `providers:` block was explicitly configured. Every primary-provider failure — a 404 from a wrong model id, a transient 5xx — triggered a secondary call to `http://localhost:11434`, adding 250 ms – 1 s of latency per failure and a confusing error chain ("Provider 'anthropic' failed: 404 / Provider 'ollama' failed: model not found") for users who didn't run Ollama at all.
 
-    Starting in 0.5.0 you opt in via `AGENTLOOM_OLLAMA_FALLBACK=1`, or by listing `ollama` in the top-level `providers:` block of an `agentloom.yaml` config file. Workflows that set `provider: ollama` directly (no fallback) keep working unchanged — the opt-in only affects the *implicit fallback* path.
-
-### Opt-in via the config file
-
-The `providers:` block is a top-level key of the `agentloom.yaml` config file (the one passed to `load_config` / the CLI's `--config`), **not** a field of a workflow's `config:`. Declaring it disables auto-discovery, so list every provider you want — API keys are still read from the environment when omitted here:
-
-```yaml
-# agentloom.yaml
-providers:
-  - name: openai
-    models: ["gpt-4o-mini"]
-  - name: ollama
-    base_url: http://localhost:11434
-    is_fallback: true
-```
+    Starting in 0.5.0 you opt in via `AGENTLOOM_OLLAMA_FALLBACK=1`. Workflows that set `provider: ollama` directly (no fallback) keep working unchanged — the opt-in only affects the *implicit fallback* path.
 
 ### Recommended model IDs
 
-Pin to date-stamped IDs rather than tracking aliases. Date-pinned IDs reproduce the exact behaviour of the article validations; tracking aliases (`-latest`, `-flash-latest`) may stop accepting console keys without notice.
+Pin to date-stamped IDs rather than tracking aliases. Date-pinned IDs reproduce the exact behaviour you validated against; tracking aliases (`-latest`, `-flash-latest`) may stop accepting console keys without notice.
 
 | Provider | Recommended ID | Notes |
 |----------|----------------|-------|
-| Anthropic | `claude-haiku-4-5-20251001` | Pre-0.5.0 docs referenced `claude-3-5-haiku-latest`, which current console keys reject with `404 not_found_error`. |
-| Google | `gemini-2.5-flash` | Pre-0.5.0 docs referenced `gemini-2.0-flash`, which Google's API now returns as `404 NOT_FOUND` for new users. |
-| OpenAI | `gpt-4o-mini` / `gpt-4o` | No change. |
+| Anthropic | `claude-haiku-4-5-20251001` | Not `claude-3-5-haiku-latest`, which current console keys reject with `404 not_found_error`. |
+| Google | `gemini-2.5-flash` | Not `gemini-2.0-flash`, which Google's API returns as `404 NOT_FOUND` for new users. |
+| OpenAI | `gpt-4o-mini` / `gpt-4o` | — |
 
 ## Pricing
 
@@ -154,14 +140,12 @@ The OpenAI adapter normalizes `base_url` so workflows that point at the bare hos
 | `https://gw.example.com/v2` | `https://gw.example.com/v2` *(preserved)* |
 | `https://gw.example.com/api/v1/foo` | `https://gw.example.com/api/v1/foo` *(preserved)* |
 
-Pre-0.5.0 the rule was "append `/v1` unless the URL ends literally in `/v1`", which silently mangled `/v2` into `/v2/v1` and any deeper path into broken request URLs.
-
 ## Non-retryable errors
 
 !!! info "New in 0.5.0 (unreleased)"
     Available on `main`; the 0.4.0 release on PyPI does not include it yet.
 
-The resilience layer short-circuits the retry loop when an exception carries `is_retryable = False`. Pre-0.5.0 these errors burned the full retry budget (up to 127 s of backoff per workflow) before surfacing the same failure the first attempt returned.
+The resilience layer short-circuits the retry loop when an exception carries `is_retryable = False`. Retrying them would spend the full retry budget (up to 127 s of backoff per workflow) only to surface the failure the first attempt returned.
 
 | Exception | Reason |
 |-----------|--------|

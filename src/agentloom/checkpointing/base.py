@@ -1,4 +1,4 @@
-"""Abstract checkpointer protocol and checkpoint data model."""
+"""Abstract checkpointer base class and checkpoint data model."""
 
 from __future__ import annotations
 
@@ -7,10 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-# Checkpoint file format version this runtime writes and can resume.
-# A checkpoint whose ``schema_version`` exceeds this was written by a
-# newer AgentLoom; ``WorkflowEngine.from_checkpoint`` refuses it with a
-# clear upgrade hint rather than silently mis-resuming.
+# The format this runtime writes; ``WorkflowEngine.from_checkpoint`` refuses a newer one.
 CURRENT_CHECKPOINT_SCHEMA_VERSION = 1
 
 
@@ -24,10 +21,7 @@ class CheckpointData(BaseModel):
 
     workflow_name: str
     run_id: str
-    # Format version. Defaults to the current version so checkpoints
-    # written before this field existed (no key in the JSON) load as
-    # v1. A value ABOVE the runtime's ``CURRENT_CHECKPOINT_SCHEMA_VERSION``
-    # is refused at resume time.
+    # A checkpoint without the key loads as the current version; a newer one is refused on resume.
     schema_version: int = CURRENT_CHECKPOINT_SCHEMA_VERSION
     workflow_definition: dict[str, Any] = Field(
         description="Serialized WorkflowDefinition for reconstruction on resume.",
@@ -40,8 +34,7 @@ class CheckpointData(BaseModel):
     completed_steps: list[str] = Field(default_factory=list)
     status: str = "running"
     paused_step_id: str | None = None
-    # What the run had charged to its budget, so a resumed run starts from it (#120).
-    # Absent from older checkpoints: their step results' cost stands in.
+    # The spend a resumed run starts from; without it, the step results' cost stands in.
     spent_usd: float = 0.0
     created_at: str = ""
     updated_at: str = ""
@@ -70,7 +63,7 @@ class BaseCheckpointer(ABC):
 
     @abstractmethod
     async def list_runs(self) -> list[CheckpointData]:
-        """Return metadata for every stored checkpoint."""
+        """Return every stored checkpoint."""
         ...
 
     @abstractmethod

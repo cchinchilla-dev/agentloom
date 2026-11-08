@@ -1,4 +1,4 @@
-"""The ``ResponseMeta`` that each adapter attaches to its responses (#166)."""
+"""The ``ResponseMeta`` that each adapter attaches to its responses."""
 
 from __future__ import annotations
 

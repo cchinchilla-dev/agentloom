@@ -70,28 +70,22 @@ image (~120MB) with a non-root user.
 # Build
 docker build -t agentloom .
 
-# Run a workflow
-docker run --rm \
-  -e OPENAI_API_KEY=sk-... \
-  -v ./examples:/workflows:ro \
-  agentloom run /workflows/01_simple_qa.yaml
-
 # Validate without running
 docker run --rm \
   -v ./examples:/workflows:ro \
   agentloom validate /workflows/01_simple_qa.yaml
 
-# Override provider and model
+# Run a workflow (01_simple_qa.yaml targets Ollama; this runs it on OpenAI)
 docker run --rm \
   -e OPENAI_API_KEY=sk-... \
   -v ./examples:/workflows:ro \
   agentloom run /workflows/01_simple_qa.yaml --provider openai --model gpt-4o-mini
 ```
 
-Build with observability extras:
+The default image ships the `[observability]` extra. Build the smaller image without it:
 
 ```bash
-docker build --build-arg BUILD_OBSERVABILITY=true -t agentloom:obs .
+docker build --target production-lite -t agentloom:lite .
 ```
 
 ### Docker Compose
@@ -126,10 +120,6 @@ plain YAML without Helm templating.
 # Create a local cluster
 kind create cluster
 
-# Load local image (optional, if not pulling from GHCR)
-docker build -t agentloom:local .
-kind load docker-image agentloom:local
-
 # Deploy dev overlay
 kubectl apply -k deploy/k8s/overlays/dev
 
@@ -159,8 +149,8 @@ The recommended deployment method. Packages all K8s resources into a configurabl
 with built-in validation.
 
 ```bash
-# Lint
-helm lint deploy/helm/agentloom
+# Lint (the chart needs a workflow to render)
+helm lint deploy/helm/agentloom -f deploy/helm/agentloom/ci/test-values.yaml
 
 # Dry-run
 helm template agentloom deploy/helm/agentloom \
@@ -255,10 +245,11 @@ The Application CRD configures:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | Push / PR to `main` | Lint, type check, test, Docker build, K8s validation, Helm lint |
-| `docker.yml` | Push to `main` / tags `v*` | Build multi-arch image, push to GHCR, smoke test on PRs |
+| `ci.yml` | Push / PR to `main` | Lint, type check, workflow audit, tests (Python 3.11–3.14 on Linux, 3.14 on macOS and Windows, the lowest dependency versions), strict documentation build, build and check the wheel and sdist, version linearity, K8s validation, Helm lint |
+| `docker.yml` | Push / PR to `main` / called by `release.yml` / manual, for a tag | Build the image (multi-arch for a release), push to GHCR, smoke test |
 | `auto-tag.yml` | Push to `main` | Tag `vX.Y.Z` when the commit is a `bump version to X.Y.Z` release |
-| `release.yml` | Tags `v*` / after Auto Tag | Build wheel, create GitHub release, publish to PyPI |
+| `release.yml` | Tags `v*` / after Auto Tag | Build and check the wheel and sdist, GitHub release with the version's changelog, publish to PyPI, Docker image |
+| `pricing-update.yml` | Weekly (Monday) / manual | Refresh the pricing table and open a pull request with the changes |
 | `docs.yml` | Push to `main` (docs, mkdocs.yml, overrides, CHANGELOG, CONTRIBUTING) | Build and deploy documentation to GitHub Pages |
 | `e2e-ollama.yml` | `release/**` / `e2e` label / manual | Ollama integration tests against live Docker instance |
 | `pr-labeler.yml` | PR opened/updated | Auto-label PRs based on file paths |
@@ -272,7 +263,7 @@ The Docker workflow produces these tags:
 | Event | Tag pattern | Example |
 |---|---|---|
 | Push to `main` | `main-<sha>` | `main-a1b2c3d` |
-| Tag `v1.2.3` | `1.2.3`, `1.2`, `latest` | `1.2.3` |
+| Release `v1.2.3` | `1.2.3`, `1.2`, `latest` (the newest release only) | `1.2.3` |
 | Pull request | `pr-<number>` | `pr-42` |
 
 Images are published to `ghcr.io/cchinchilla-dev/agentloom`.
@@ -295,7 +286,7 @@ uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 | `ANTHROPIC_API_KEY` | Anthropic API key | — |
 | `GOOGLE_API_KEY` | Google AI API key | — |
 | `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel Collector gRPC endpoint | `http://localhost:4317` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel Collector gRPC endpoint | `http://otel-collector:4317` in the image, else `http://localhost:4317` |
 
 In Kubernetes, these are injected via `envFrom` referencing a Secret. Never bake API
 keys into images or commit them to source control.
@@ -304,16 +295,18 @@ keys into images or commit them to source control.
 
 Three overlays are provided for different environments:
 
-| Overlay | Image tag | Memory (req/limit) | CPU request | NetworkPolicy | activeDeadlineSeconds |
+| Overlay | Image tag | Memory (req/limit) | CPU request | NetworkPolicy | backoffLimit |
 |---|---|---|---|---|---|
-| **dev** | `latest` | 64Mi / 128Mi | 50m | Disabled | — |
-| **staging** | CI SHA | 128Mi / 256Mi | 100m | Enabled | — |
-| **production** | Pinned version | 256Mi / 512Mi | 200m | Enabled (strict, no Ollama) | 600 |
+| **dev** | `latest` | 64Mi / 128Mi | 50m | Disabled | 2 |
+| **staging** | CI SHA | 128Mi / 256Mi | 100m | Enabled | 2 |
+| **production** | Pinned version | 256Mi / 512Mi | 200m | Enabled (strict, no Ollama) | 1 |
+
+Every overlay keeps the base's `activeDeadlineSeconds: 600`.
 
 Key differences:
 - **dev**: Minimal resources, no NetworkPolicy, `latest` tag for fast iteration.
 - **staging**: Moderate resources, NetworkPolicy enabled (allows Ollama egress), matches CI image.
-- **production**: High resources, strict NetworkPolicy (no Ollama — only HTTPS, DNS, OTel), `activeDeadlineSeconds` enforces a hard timeout, image pinned to a specific version.
+- **production**: High resources, strict NetworkPolicy (no Ollama — only HTTPS, DNS, OTel), a single retry, image pinned to a specific version.
 
 No overlay sets CPU limits — this is intentional. CPU limits cause CFS throttling during
 LLM API calls (which are I/O-bound, not CPU-bound). CPU requests are set for scheduling guarantees.
@@ -414,14 +407,16 @@ deploy/
       networkpolicy.yaml          # Egress restrictions
       resourcequota.yaml          # Namespace resource limits
       kustomization.yaml          # Kustomize entrypoint
+    examples/                     # Standalone Jobs exercising single features
     overlays/
       dev/                        # Low resources, no netpol
       staging/                    # Moderate resources, netpol enabled
       production/                 # High resources, strict netpol, deadlines
   helm/
     agentloom/                    # Helm chart
-      Chart.yaml                  # Chart metadata (v0.1.0, appVersion 0.1.2)
+      Chart.yaml                  # Chart metadata (version, appVersion)
       values.yaml                 # Default configuration
+      values.schema.json          # JSON Schema for values.yaml
       .helmignore                 # Files excluded from packaging
       ci/test-values.yaml         # Values for CI lint/template
       templates/
@@ -435,6 +430,7 @@ deploy/
         namespace.yaml            # Namespace (optional)
         networkpolicy.yaml        # NetworkPolicy
         resourcequota.yaml        # ResourceQuota (optional)
+        ollama.yaml               # In-cluster Ollama (optional)
         NOTES.txt                 # Post-install instructions
   terraform/                      # Infrastructure as Code
     versions.tf                   # Provider requirements

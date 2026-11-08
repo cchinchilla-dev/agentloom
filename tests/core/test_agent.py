@@ -1,4 +1,4 @@
-"""Tests for agent definitions and their loading (#120)."""
+"""Tests for agent definitions and their loading."""
 
 from __future__ import annotations
 
@@ -274,7 +274,7 @@ class TestAgentStepFields:
         assert step.agent is not None
 
     def test_a_dumped_agent_step_loads_again(self) -> None:
-        """A checkpoint stores the workflow dumped, every field included (#120)."""
+        """A checkpoint stores the workflow dumped, every field included."""
         agent = {
             "name": "boss",
             "tools": ["add", {"name": "ask", "agent": {"name": "clerk", "tools": ["add"]}}],

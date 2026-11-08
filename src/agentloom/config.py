@@ -33,17 +33,7 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, object]] = {
         "env_key": "GOOGLE_API_KEY",
         "models": ["gemini-2.5-flash"],
     },
-    # Ollama discovery requires an explicit opt-in. Pre-0.5.0 Ollama was
-    # auto-registered as a global fallback (``env_key=""``) which meant
-    # every primary-provider failure (404 on a wrong model id, transient
-    # 5xx, etc.) triggered a secondary call to ``http://localhost:11434``
-    # and only then surfaced the error — adding 250 ms – 1 s of latency
-    # per failure to users who never ran Ollama, plus a confusing error
-    # chain ("Provider 'anthropic' failed: 404 ... / Provider 'ollama'
-    # failed: model not found"). The opt-in via
-    # ``AGENTLOOM_OLLAMA_FALLBACK`` keeps the path for users who do run
-    # Ollama while removing the surprise egress + diagnosis-noise tax
-    # for everyone else.
+    # Opt-in only: an implicit fallback adds a localhost:11434 call to every primary failure.
     "ollama": {
         "env_key": "AGENTLOOM_OLLAMA_FALLBACK",
         "base_url": "http://localhost:11434",
@@ -100,7 +90,7 @@ def _env_flag_enabled(name: str) -> bool:
     """True when an ``AGENTLOOM_*`` boolean opt-in flag is set truthy.
 
     Honours the same vocabulary as :func:`_coerce` — ``1/true/yes/on``
-    enable; an unset var, an empty string, or any falsey / unrecognised
+    enable; an unset var, an empty string, or any falsey / unrecognized
     value does not. Unlike :func:`_coerce` this never raises: a typo in
     an opt-in flag fails closed rather than aborting provider discovery.
     """
@@ -126,10 +116,9 @@ def discover_providers(default_provider: str) -> list[ProviderConfig]:
       key is missing — they cannot make calls without credentials. Any
       non-empty value counts as the credential.
     * Ollama's ``env_key`` is the ``AGENTLOOM_OLLAMA_FALLBACK`` opt-in
-      flag, not a credential. It's skipped by default (post-0.5.0 — no
-      auto-fallback for users who don't run Ollama), but registered
-      when EITHER (a) the flag holds a truthy value (``1/true/yes/on``;
-      ``0/false/no/off`` and unrecognised values do NOT opt in), OR
+      flag, not a credential. It is skipped by default, but registered
+      when either (a) the flag holds a truthy value (``1/true/yes/on``;
+      ``0/false/no/off`` and unrecognized values do not opt in), or
       (b) the workflow has explicitly named ``ollama`` as its primary
       provider. Without (b) a workflow that says ``provider: ollama``
       would silently end up with no registered providers and an opaque
@@ -143,21 +132,15 @@ def discover_providers(default_provider: str) -> list[ProviderConfig]:
 
         if env_key:
             if name == "ollama":
-                # ``env_key`` here is the boolean opt-in flag — honour
-                # the truthy vocabulary so ``AGENTLOOM_OLLAMA_FALLBACK=0``
-                # (or ``false`` / ``no``) does NOT register Ollama.
+                # A flag, not a key: ``AGENTLOOM_OLLAMA_FALLBACK=0`` must not register Ollama.
                 enabled = _env_flag_enabled(env_key)
             else:
-                # API-key providers: any non-empty value is the key.
                 enabled = bool(os.environ.get(env_key))
-            # Ollama-as-primary opt-in exception: when the workflow
-            # names ollama as its default provider, register it even
-            # without the flag (otherwise discovery yields nothing).
+            # Ollama as the workflow's primary registers without the flag, else no provider exists.
             if not enabled and not (name == "ollama" and default_provider == "ollama"):
                 continue
 
-        # Ollama runs keyless; its ``env_key`` is an opt-in flag, never
-        # a credential, so do not leak the flag value into ``api_key``.
+        # Ollama's ``env_key`` is a flag, not a credential: never copy its value into ``api_key``.
         api_key = "" if name == "ollama" else (os.environ.get(env_key, "") if env_key else "")
         default_base = str(defaults.get("base_url", ""))
         base_url = os.environ.get(f"{name.upper()}_BASE_URL", default_base)
@@ -192,13 +175,6 @@ def load_config(
 
     Providers are auto-discovered from API-key env vars when no
     providers are defined in the config file.
-
-    Args:
-        config_path: Path to agentloom.yaml config file.
-        default_provider_override: Override the default provider (e.g. from CLI flag).
-
-    Returns:
-        Validated AgentLoomConfig instance.
     """
     data: dict[str, object] = {}
 
@@ -217,7 +193,6 @@ def load_config(
     if default_provider_override is not None:
         config.default_provider = default_provider_override
 
-    # Auto-discover providers only when none are explicitly configured.
     if not config.providers:
         config.providers = discover_providers(config.default_provider)
 

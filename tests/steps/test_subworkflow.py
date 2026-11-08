@@ -97,7 +97,7 @@ class TestSubworkflowStep:
         )
         result = await step.execute(ctx)
         assert result.status == StepStatus.SUCCESS
-        # MockProvider returns 30 tokens per call, 2 steps = 60
+        # Two steps at MockProvider's 30 tokens per call.
         assert result.token_usage.total_tokens == 60
 
     async def test_parent_state_passed_to_child(
@@ -188,7 +188,6 @@ class TestSubworkflowObservability:
         seen = {name for name, _ in events}
         assert "on_workflow_start" in seen
         assert "on_workflow_end" in seen
-        # Child step events surface to the parent observer.
         assert "on_step_start" in seen
         assert "on_step_end" in seen
 
@@ -248,7 +247,7 @@ class TestSubworkflowFailurePaths:
 
 
 class TestSubworkflowInheritsSecurityPosture:
-    """Subworkflow must inherit the parent's redaction policy AND sandbox."""
+    """A subworkflow inherits the parent's redaction policy and sandbox."""
 
     async def test_child_inherits_parent_redaction_policy(self, tmp_path: Any) -> None:
         from agentloom.checkpointing.file import FileCheckpointer
@@ -328,14 +327,11 @@ class TestSubworkflowInheritsSecurityPosture:
 
 
 class TestSubworkflowStateIsolation:
-    """#057 regression — opt-in state isolation must keep parent state hidden.
+    """Opt-in state isolation keeps parent state hidden from the child.
 
-    The default ``isolated_state: False`` keeps the pre-0.5.0 leaky
-    behaviour for backwards compatibility (every existing workflow keeps
-    running unchanged). Setting it to ``True`` seeds the child only from
-    its own declared ``state:`` plus the explicit ``input:`` mapping —
-    parent state is invisible. ``return_keys`` filters what travels back
-    up so the parent's named ``output:`` key holds only the agreed slice.
+    By default (``isolated_state: False``) the child shares parent state. With ``True`` it is
+    seeded only from its own ``state:`` plus the ``input:`` mapping, and ``return_keys`` filters
+    what travels back to the parent's ``output:`` key.
     """
 
     @pytest.fixture
@@ -375,9 +371,7 @@ class TestSubworkflowStateIsolation:
         result = await SubworkflowStep().execute(ctx)
         assert result.status == StepStatus.SUCCESS
         assert isinstance(result.output, dict)
-        # Parent state did not propagate into the child's final state.
         assert "parent_secret" not in result.output
-        # Child saw its own declared state + the explicit ``input:`` seed.
         assert result.output["child_only"] is True
         assert result.output["forwarded"] == "ok"
         assert result.output["leaf_out"] == "Mock response"
@@ -421,7 +415,7 @@ class TestSubworkflowStateIsolation:
     async def test_default_isolated_state_false_keeps_legacy_behaviour(
         self, gateway: ProviderGateway
     ) -> None:
-        """Default behaviour must continue to leak parent state both ways."""
+        """By default the child sees parent state, and its final state carries it back."""
         inline = {
             "name": "child",
             "config": {"provider": "mock", "model": "mock-model"},
@@ -448,19 +442,15 @@ class TestSubworkflowStateIsolation:
         )
         result = await SubworkflowStep().execute(ctx)
         assert result.status == StepStatus.SUCCESS
-        # Pre-0.5.0 contract: child sees parent keys.
         assert result.output["parent_val"] == "leaked"
 
 
 class TestSubworkflowPausePropagation:
-    """#057 regression — approval-gate pauses must cross subworkflow boundaries.
+    """Approval-gate pauses cross subworkflow boundaries.
 
-    Pre-0.5.0 the parent treated a child pause as a generic exception,
-    marked the subworkflow FAILED, and left no resume path. Now the
-    subworkflow re-raises ``PauseRequestedError`` with a qualified
-    ``parent.child`` step id; the parent checkpoint stores ``sub.gate``
-    so ``agentloom resume <parent_run_id> --approve`` lands on the gate
-    inside the child.
+    The subworkflow raises ``PauseRequestedError`` with a qualified ``parent.child`` step id; the
+    parent checkpoint stores ``sub.gate``, so ``agentloom resume <parent_run_id> --approve`` lands
+    on the gate inside the child.
     """
 
     async def test_subworkflow_with_approval_gate_pauses_parent(self) -> None:
@@ -490,31 +480,25 @@ steps:
         result = await eng.run()
 
         assert result.status == WorkflowStatus.PAUSED
-        # Parent reports the fully-qualified path so the operator sees
-        # ``sub.gate`` not the bare ``sub``.
+        # The operator sees the qualified ``sub.gate``, not the bare ``sub``.
         assert "sub.gate" in (result.error or "")
 
-        # Checkpoint must persist the qualified id so resume can dispatch
-        # the decision to the right child step.
+        # Resume dispatches the decision to the child step by this qualified id.
         chk_data = await chk.load(eng.run_id)
         assert chk_data.paused_step_id == "sub.gate"
 
     async def test_failed_child_workflow_surfaces_error_on_parent_step(self) -> None:
-        """When the child workflow ends FAILED, the parent's subworkflow
-        ``StepResult.error`` must name the underlying child failure so the
-        cascade-skip block's ``skipped due to upstream failure: sub`` message
-        is actually useful — operators should be able to ask ``why did sub
-        fail?`` and get an answer from the parent result alone, without
-        opening the child's checkpoint.
+        """A failed child's error is surfaced on the parent's subworkflow step result.
+
+        Dependents' ``skipped due to upstream failure: sub`` then has a cause visible from the
+        parent result alone, without opening the child's checkpoint.
         """
         from agentloom.core.engine import WorkflowEngine
         from agentloom.core.models import RetryConfig
         from agentloom.core.parser import WorkflowParser
         from agentloom.core.results import WorkflowStatus
 
-        # ``from_dict`` keeps this test off the ``from_yaml`` path because
-        # the inline definition exceeds the OS path-length budget that
-        # ``Path(path_or_str).exists()`` probes inside ``from_yaml``.
+        # ``from_yaml`` calls ``Path.exists()`` on its input: ENAMETOOLONG on a long YAML string.
         wf = WorkflowParser.from_dict(
             {
                 "name": "parent",
@@ -546,8 +530,7 @@ steps:
         assert result.status == WorkflowStatus.FAILED
         sub_result = result.step_results["sub"]
         assert sub_result.status == StepStatus.FAILED
-        # The parent's step error must reference the underlying failure —
-        # either the child workflow's surfaced error or the named child step.
+        # Loose: the child's own error and the fallback naming its step both carry the cause.
         assert sub_result.error is not None
         assert "doomed" in sub_result.error or "does_not_exist" in sub_result.error
 
@@ -592,23 +575,17 @@ steps:
 
 
 class TestSubworkflowApprovalRewriteWithDottedStepId:
-    """Subworkflow step ids that themselves contain a ``.`` must still resume.
+    """Subworkflow step ids that contain a ``.`` still resume.
 
-    ``WorkflowEngine.from_checkpoint`` injects approval decisions via
-    ``state_manager.set(f"_approval.{step_id}", decision)``, which splits
-    dots into nested dict keys. The rewrite that hands the decision down
-    to the child engine has to walk the path segment-by-segment instead
-    of doing a literal ``dict.get(step.id)`` lookup — otherwise a step
-    id like ``my.sub`` lands the decision under
-    ``{"my": {"sub": {...}}}`` but the rewrite would look for the literal
-    key ``"my.sub"`` and miss it, blocking the child gate again on resume.
+    ``WorkflowEngine.from_checkpoint`` sets decisions at ``_approval.{step_id}``, which nests at
+    every dot, so the hand-down to the child walks the path segment by segment: a literal
+    ``"my.sub"`` lookup would miss and block the child gate again.
     """
 
     async def test_dotted_step_id_resolves_nested_approval(self) -> None:
         from agentloom.steps.subworkflow import SubworkflowStep
 
-        # Seed parent state with an approval decision nested under a
-        # two-segment step id (``parent.sub``) → child gate id ``gate``.
+        # As ``from_checkpoint`` nests the decision for gate ``gate`` under step id ``parent.sub``.
         parent_state = StateManager(
             initial_state={"_approval": {"parent": {"sub": {"gate": "approved"}}}}
         )
@@ -649,27 +626,16 @@ class TestSubworkflowApprovalRewriteWithDottedStepId:
             )
             await SubworkflowStep().execute(ctx)
 
-        # The child engine's state must carry the prefix-stripped decision
-        # under ``_approval.gate`` — not buried under ``_approval.parent.sub.gate``.
         assert captured_child_state.get("_approval", {}).get("gate") == "approved"
 
 
 class TestSubworkflowDefensiveBranches:
-    """Cover the defensive paths in ``SubworkflowStep.execute`` that today's
-    child engines do not reach naturally — kept as forward-compat guards.
+    """Defensive paths in ``SubworkflowStep.execute`` that the child engine does not reach.
 
-    * Child engines absorb their own ``PauseRequestedError`` and return a
-      ``WorkflowResult(status=PAUSED)``. A future refactor or a third-party
-      engine that re-raises instead would land in the ``except
-      PauseRequestedError`` arm — the test monkeypatches ``WorkflowEngine.run``
-      to raise, and confirms the qualified ``parent.child`` step id still
-      surfaces.
-    * The ``result.error or fallback`` chain inside the FAILED branch only
-      reaches the for-loop when ``result.error`` is empty AND a child step
-      has a non-empty error. Today's engine always populates
-      ``result.error`` from the first failed step, but a hand-built
-      ``WorkflowResult`` (replay, third-party engine, future refactor) can
-      land in the fallback — the test stubs that case directly.
+    * ``run()`` returns a paused result rather than raising ``PauseRequestedError``; a raised
+      pause still surfaces the qualified ``parent.child`` step id.
+    * The engine always fills ``result.error`` on failure; a hand-built ``WorkflowResult``
+      without one falls back to the first failed child step's error.
     """
 
     @pytest.mark.parametrize("budget", [None, 1.0], ids=["shared", "own"])
@@ -751,10 +717,10 @@ class TestSubworkflowDefensiveBranches:
 
 
 class TestSubworkflowFailedAttempt:
-    """#185 — a failed attempt leaves no output for the retry to inherit.
+    """A failed attempt leaves no output for the retry to inherit.
 
     The child's ``inner`` step is answered from a recording whose turns can
-    be faults (#123): a 503 fails the child, and the parent retries ``sub``.
+    be faults: a 503 fails the child, and the parent retries ``sub``.
     """
 
     FAULT = {"fault": {"type": "http_error", "status_code": 503}}

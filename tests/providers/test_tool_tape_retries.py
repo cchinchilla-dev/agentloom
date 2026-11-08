@@ -1,4 +1,4 @@
-"""Retries and the tool tape (#164): a failed attempt leaves no trace in recording or replay."""
+"""Retries and the tool tape: a failed attempt leaves no trace in recording or replay."""
 
 from __future__ import annotations
 

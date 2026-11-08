@@ -1,4 +1,4 @@
-"""The inter-agent event log (#135): its schema, its order and what a run writes into it."""
+"""The inter-agent event log: its schema, its order and what a run writes into it."""
 
 from __future__ import annotations
 
@@ -290,7 +290,7 @@ async def test_writes_and_tools_outside_a_step_are_not_logged() -> None:
 
 
 class _Ordered(MockProvider):
-    """Answers ``<prompt>!``; the prompts in ``order`` answer one after the other."""
+    """A provider that answers ``<prompt>!``; the prompts in ``order`` answer in turn."""
 
     def __init__(self, order: list[str]) -> None:
         super().__init__()
@@ -393,7 +393,7 @@ async def test_a_retry_drops_what_the_failed_attempt_logged(nested: bool) -> Non
 
 
 class _Mixed(BaseTool):
-    """Answers a mapping that JSON cannot sort."""
+    """A tool that answers a mapping JSON cannot sort."""
 
     name = "mixed"
 

@@ -36,8 +36,7 @@ class TestWorkflowLifecycle:
         observer.on_workflow_end("test", "success", 100.0, 10, 0.001)
 
     def test_workflow_end_without_tracing_uses_span_end(self) -> None:
-        # No Tracing wrapper: observer must still close the workflow span
-        # via ``span.end()`` directly so spans don't leak when tracing is off.
+        # Without a Tracing wrapper the span is closed with ``span.end()``, so it does not leak.
         observer = WorkflowObserver()
         span = MagicMock()
         observer._workflow_span = span
@@ -77,9 +76,7 @@ class TestStepLifecycle:
         span.set_attribute.assert_any_call("step.error", "boom")
 
     def test_step_reasoning_tokens_set_on_span_when_nonzero(self) -> None:
-        # Reasoning tokens land on the span under the OTel GenAI semantic
-        # convention name only when reasoning was actually consumed, so
-        # non-thinking workflows keep the span surface clean.
+        # Set only when reasoning was consumed, so non-thinking workflows keep the span clean.
         tracing = MagicMock()
         observer = WorkflowObserver(tracing=tracing)
         observer.on_step_start("step1", "llm_call")
@@ -88,9 +85,7 @@ class TestStepLifecycle:
         span.set_attribute.assert_any_call("gen_ai.usage.reasoning.output_tokens", 128)
 
     def test_step_reasoning_tokens_absent_when_zero(self) -> None:
-        # The default path should not emit the reasoning-tokens attribute
-        # so dashboards filtering on it see zero events for non-reasoning
-        # models.
+        # Dashboards filtering on the attribute see no events for non-reasoning models.
         tracing = MagicMock()
         observer = WorkflowObserver(tracing=tracing)
         observer.on_step_start("step1", "llm_call")
@@ -101,7 +96,7 @@ class TestStepLifecycle:
 
 
 class TestAgentTurn:
-    """An agent step's turn on its span and in the metrics (#120)."""
+    """An agent step's turn on its span and in the metrics."""
 
     def test_the_turn_stamps_the_step_span_and_the_metrics(self) -> None:
         tracing, metrics = MagicMock(), MagicMock()
@@ -148,8 +143,7 @@ class TestAgentTurn:
 
 class TestRunIdPropagation:
     def test_workflow_end_sets_run_id_attribute(self) -> None:
-        # ``workflow.run_id`` rides on the workflow span end so consumers can
-        # correlate a Jaeger trace with a workflow execution by run_id alone.
+        # The run id on the workflow span lets a trace be matched to its run.
         tracing = MagicMock()
         observer = WorkflowObserver(tracing=tracing)
         observer.on_workflow_start("wf", run_id="rid-42")
@@ -186,8 +180,7 @@ class TestStepEndExtras:
         span.set_attribute.assert_any_call("step.attachments", 3)
 
     def test_time_to_first_token_set_in_seconds(self) -> None:
-        # The observer accepts ms but emits the canonical OTel
-        # ``gen_ai.response.time_to_first_chunk`` in seconds.
+        # The observer takes ms but emits ``gen_ai.response.time_to_first_chunk`` in seconds.
         tracing = MagicMock()
         observer = WorkflowObserver(tracing=tracing)
         observer.on_step_start("s1", "llm_call")
@@ -196,8 +189,7 @@ class TestStepEndExtras:
         span.set_attribute.assert_any_call("gen_ai.response.time_to_first_chunk", 0.25)
 
     def test_step_end_without_tracing_uses_span_end(self) -> None:
-        # When no Tracing wrapper is attached, the observer falls back to
-        # ``span.end()`` directly so spans still close cleanly.
+        # Without a Tracing wrapper the observer closes the span with ``span.end()``.
         observer = WorkflowObserver()
         span = MagicMock()
         observer._step_spans["s1"] = span
@@ -215,15 +207,13 @@ class TestAttachStepEvent:
         span.add_event.assert_called_once_with("agentloom.prompt.captured", {"prompt": "hi"})
 
     def test_attach_event_when_span_missing_is_noop(self) -> None:
-        # Late or out-of-order events on a step that already ended must not
-        # raise — they're silently dropped.
+        # A late event on a step that already ended is dropped, not raised.
         observer = WorkflowObserver()
         observer.attach_step_event("missing-step", "evt", {"x": 1})
 
 
 class TestProviderSpans:
     def test_start_without_tracing_is_noop(self) -> None:
-        # No tracing wrapper → observer skips span creation but doesn't raise.
         observer = WorkflowObserver()
         observer.on_provider_call_start("s1", "openai", "gpt-4o-mini")
         observer.on_provider_call_end("s1", "openai", "gpt-4o-mini", 0.5)
@@ -258,8 +248,7 @@ class TestProviderSpans:
         span.set_attribute.assert_any_call("agentloom.provider.attempt_outcome", "ok")
 
     def test_end_with_error_emits_error_type(self) -> None:
-        # ``error.type`` (general OTel convention) lands alongside
-        # ``step.error`` so OTel-aware consumers light up on the standard key.
+        # The standard OTel ``error.type`` sits beside ``step.error`` for OTel-aware consumers.
         tracing = MagicMock()
         observer = WorkflowObserver(tracing=tracing)
         observer.on_provider_call_start("s1", "openai", "gpt-4o-mini")
@@ -270,9 +259,7 @@ class TestProviderSpans:
         span.set_attribute.assert_any_call("agentloom.provider.attempt_outcome", "error")
 
     def test_end_without_matching_start_is_noop(self) -> None:
-        # The gateway may call ``on_provider_call_end`` for an attempt that
-        # never opened a span (e.g. circuit-open before ``on_provider_call_start``
-        # in some paths) — observer must not raise.
+        # The gateway can end an attempt that never opened a span; the observer must not raise.
         metrics = MagicMock()
         observer = WorkflowObserver(metrics=metrics)
         observer.on_provider_call_end("s1", "openai", "gpt-4o-mini", 0.1)
@@ -288,9 +275,7 @@ class TestProviderSpans:
 
 class TestProviderErrorCleanup:
     def test_dangling_provider_span_closed_on_error(self) -> None:
-        # If gateway raises before ``on_provider_call_end`` fires, an
-        # ``on_provider_error`` with the step_id must close any open provider
-        # spans for that step so traces don't leak.
+        # A gateway raise skips ``on_provider_call_end``; the error hook closes the step's spans.
         tracing = MagicMock()
         observer = WorkflowObserver(tracing=tracing)
         observer.on_provider_call_start("s1", "openai", "gpt-4o-mini", attempt=0)
@@ -308,9 +293,7 @@ class TestProviderErrorCleanup:
 
 
 class TestToolCallObservability:
-    """``on_tool_call`` records the per-tool counter / histogram via the
-    metrics manager and emits an ``execute_tool {name}`` child span carrying
-    the tool name, args/result hashes, duration, and success flag."""
+    """``on_tool_call`` records tool metrics and an ``execute_tool {name}`` child span."""
 
     def test_records_metric_and_emits_span(self) -> None:
         tracing = MagicMock()
@@ -327,10 +310,8 @@ class TestToolCallObservability:
             duration_ms=12.3,
             success=True,
         )
-        # Metric — counter + histogram via record_tool_call.
         metrics.record_tool_call.assert_called_once_with("add", True, 0.0123)
-        # Span — name follows the canonical ``execute_tool {tool_name}``
-        # template; attrs include the run_id propagation + tool fields.
+        # The span name follows the OTel ``execute_tool {tool_name}`` template.
         tracing.start_span.assert_called_once()
         name = tracing.start_span.call_args.args[0]
         attrs = tracing.start_span.call_args.kwargs["attributes"]
@@ -386,8 +367,7 @@ class TestProviderEvents:
         )
 
     def test_on_tokens_reasoning(self) -> None:
-        # Reasoning tokens flow through `on_tokens` as a kwarg-only
-        # parameter so non-thinking call sites stay unchanged.
+        # ``reasoning_tokens`` is keyword-only so non-thinking call sites stay unchanged.
         metrics = MagicMock()
         observer = WorkflowObserver(metrics=metrics)
         observer.on_tokens("anthropic", "claude-opus-4", 100, 50, reasoning_tokens=200)

@@ -118,7 +118,6 @@ def test_latest_changelog_version_returns_none_for_unreleased_only(script) -> No
 
 
 def test_check_against_real_repo_passes() -> None:
-    """The repo itself must always pass version-linearity (regression guard)."""
     repo_root = Path(__file__).resolve().parent.parent.parent
     module = _load_script()
     code, message = module.check(repo_root)

@@ -129,7 +129,7 @@ def _normalize_schema_for_strict(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def schema_name_for(response_schema: ResponseSchema, step_id: str) -> str:
-    """Schema name for OpenAI strict mode; defaults to the step id."""
+    """Schema name for OpenAI strict mode: ``name``, else the model class, else the step id."""
     if response_schema.name:
         return response_schema.name
     if response_schema.type == "pydantic" and response_schema.model:
@@ -159,7 +159,7 @@ def translate_for_openai(response_schema: ResponseSchema, step_id: str) -> dict[
 
 
 def enforce_openai_strict_required(schema: dict[str, Any]) -> None:
-    """In-place: every ``properties`` key gets listed in ``required``."""
+    """List every ``properties`` key in ``required``, in place."""
 
     def _walk(node: Any) -> None:
         if isinstance(node, list):
@@ -192,18 +192,14 @@ def translate_for_google(
     return "application/json", _strip_unsupported_google_keys(schema)
 
 
-# Gemini's ``responseSchema`` parser 400s on these keys (Pydantic-emitted
-# noise plus ``additionalProperties``, which our strict normalizer adds for
-# OpenAI but Gemini's schema dialect doesn't understand).
+# Gemini's ``responseSchema`` 400s on these; ``additionalProperties`` comes from the OpenAI pass.
 _GOOGLE_DROP_KEYS = frozenset(
     {
         "title",
         "examples",
         "default",
         "additionalProperties",
-        # Constraints Pydantic emits (``Literal``, ``gt=``, ``set``, ``tuple``) that Gemini 400s
-        # on: kept as close as its dialect allows (``_approximate_for_google``), and still
-        # enforced on the reply by local validation
+        # Pydantic constraints Gemini 400s on: approximated below, still validated on the reply.
         "const",
         "exclusiveMinimum",
         "exclusiveMaximum",
@@ -230,7 +226,7 @@ _ANNOTATIONS = frozenset({"description", "title", "default", "examples"})
 
 
 def _merge_beside_ref(target: dict[str, Any], siblings: dict[str, Any]) -> dict[str, Any] | None:
-    """A definition with the keywords beside its ``$ref``, which JSON Schema applies both.
+    """A definition merged with the keywords beside its ``$ref``, as JSON Schema applies both.
 
     ``required`` and ``properties`` add up; any other constraint on both sides must agree,
     or ``None``: Gemini's dialect has no ``allOf`` to keep the two.
@@ -280,7 +276,7 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _approximate_for_google(node: dict[str, Any]) -> None:
-    """In place: what Gemini's dialect can say of the constraints it lacks, before they go."""
+    """Approximate, in place, the constraints Gemini's dialect lacks before they are dropped."""
     if isinstance(node.get("const"), str) and "enum" not in node:
         node["enum"] = [node["const"]]  # Gemini's enum takes strings only
     for bound in ("minimum", "maximum"):
@@ -337,7 +333,7 @@ def anthropic_system_prefix(response_schema: ResponseSchema, step_id: str) -> st
 
 
 def extract_parsed(content: str) -> Any:
-    """Strict ``json.loads`` → code-fence strip → first balanced ``{...}`` span."""
+    """Parse JSON from *content*: strict, then in a code fence, then the first ``{...}`` span."""
     text = (content or "").strip()
     if not text:
         raise json.JSONDecodeError("empty response content", "", 0)
@@ -369,7 +365,7 @@ def extract_parsed(content: str) -> Any:
 def validate_parsed(parsed: Any, response_schema: ResponseSchema, step_id: str) -> Any:
     """Validate *parsed*; return the coerced value (Pydantic instance or dict)."""
     if response_schema.type == "json_object":
-        if not isinstance(parsed, dict):  # an object, as the providers' JSON mode answers (#120)
+        if not isinstance(parsed, dict):  # an object, as the providers' JSON mode answers
             raise TypeError(
                 f"response_schema.type='json_object' expects an object; got {type(parsed).__name__}"
             )
@@ -380,14 +376,8 @@ def validate_parsed(parsed: Any, response_schema: ResponseSchema, step_id: str) 
     schema = schema_dict_for(response_schema, step_id)
     if schema is None:
         return parsed
-    try:
-        import jsonschema  # type: ignore[import-untyped]
-    except ImportError:  # pragma: no cover — jsonschema is a hard dep
-        if not isinstance(parsed, dict):
-            raise TypeError(
-                f"response_schema.type='json_schema' expects an object; got {type(parsed).__name__}"
-            ) from None
-        return parsed
+    import jsonschema  # type: ignore[import-untyped]
+
     jsonschema.validate(parsed, schema)
     return parsed
 
@@ -406,7 +396,7 @@ def _render_validation_error(error: Exception) -> str:
 
 
 def format_validation_feedback(error: Exception, step_id: str) -> str:
-    """Retry message after a validation failure. Capped at 800 chars."""
+    """Retry message after a validation failure; its error list is capped at 800 chars."""
     return (
         f"Your previous response failed structured-output validation for step "
         f"{step_id!r}. Errors:\n{_render_validation_error(error)}\n\nRespond again "
@@ -426,7 +416,7 @@ OUTPUT_TOOL_UNUSED = (
 
 
 def output_tool(response_schema: ResponseSchema, step_id: str) -> ToolDefinition:
-    """The tool a step with both ``tools`` and a schema delivers its reply through (#120).
+    """The tool a step with both ``tools`` and a schema delivers its reply through.
 
     Tool calling works on every provider, a schema enforced next to tools does not:
     the reply comes as the arguments of this tool, validated as a structured reply.
@@ -453,19 +443,22 @@ def output_tool(response_schema: ResponseSchema, step_id: str) -> ToolDefinition
 
 
 class _OutputTool(ToolDefinition):
-    """The output tool. Its strictness is no field: a recording's request hash stays as it was."""
+    """The output tool; its strictness is a private attribute, kept out of the request hash."""
 
     _strict: bool = PrivateAttr(default=False)
 
     @property
     def strict(self) -> bool:
-        """A strict schema: OpenAI holds the arguments to it, as it does a strict reply (#120)."""
+        """A strict schema: OpenAI holds the arguments to it, as it does a strict reply."""
         return self._strict
 
 
 def _resolve_root_ref(schema: dict[str, Any]) -> dict[str, Any]:
-    """A schema whose root is a local ``$ref`` (Pydantic's, for a model that contains itself),
-    as its definition; ``$defs`` stay, for the references inside it."""
+    """Resolve a root local ``$ref`` to its definition, keeping the root's other keys.
+
+    Pydantic emits a root ``$ref`` for a model that contains itself; ``$defs`` stay, for the
+    references inside it.
+    """
     ref = schema.get("$ref")
     match = _LOCAL_REF.fullmatch(ref) if isinstance(ref, str) else None
     target = (

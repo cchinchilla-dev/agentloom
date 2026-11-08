@@ -56,9 +56,7 @@ class FileCheckpointer(BaseCheckpointer):
     # public API
 
     async def save(self, data: CheckpointData) -> None:
-        # Do the JSON serialization inside the thread too — for workflows
-        # carrying large accumulated state the ``model_dump_json`` call can
-        # block the event loop for tens of ms per layer.
+        # Serialize in the thread too: dumping large state can block the loop for tens of ms.
         def _dump_and_write() -> None:
             payload = data.model_dump_json(indent=2)
             self._write(data.run_id, payload)

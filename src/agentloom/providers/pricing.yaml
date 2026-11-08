@@ -185,8 +185,7 @@ gpt-rosalind-discovery:
   output: 0.02500
 
 # --- Anthropic ---
-# Undated aliases (``claude-sonnet-4-5``) resolve to the latest dated SKU
-# via longest-prefix match.
+# A dated id with no entry of its own (``claude-opus-4-6-<date>``) prices as its undated key.
 claude-opus-4-8:
   input: 0.00500
   output: 0.02500

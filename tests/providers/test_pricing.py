@@ -45,8 +45,7 @@ class TestCalculateCost:
     def test_no_bidirectional_match(self) -> None:
         """Short model name should NOT match longer keys."""
         cost = calculate_cost("gpt", prompt_tokens=1000, completion_tokens=500)
-        # "gpt" does NOT start with any key (keys are "gpt-4o-mini", "gpt-4o", etc.)
-        # And we removed key.startswith(model), so this should return 0
+        # Matching is one-way: the model must start with a key, not a key with the model.
         assert cost == 0.0
 
 
@@ -138,8 +137,6 @@ class TestPrefixMatchingPrefersLongest:
             "gpt-4": ModelPricing(input_cost_per_1k=1.0, output_cost_per_1k=2.0),
             "gpt-4o-mini": ModelPricing(input_cost_per_1k=0.01, output_cost_per_1k=0.02),
         }
-        # `gpt-4o-mini-2025-xx` must match the longer key, not be swallowed
-        # by the short `gpt-4` entry.
         cost = calculate_cost("gpt-4o-mini-2025-xx", 1000, 1000, pricing_table=table)
         # 1000 tokens * $0.01/1k + 1000 * $0.02/1k = $0.03
         assert cost == pytest.approx(0.03)
@@ -152,8 +149,6 @@ class TestReasoningTokensBilling:
         table = {
             "o3-mini": ModelPricing(input_cost_per_1k=1.0, output_cost_per_1k=4.0),
         }
-        # 1000 prompt @ $1/1k + (50 output + 200 reasoning) @ $4/1k
-        #   = 1.0 + 1.0 = $2.00
         cost = calculate_cost(
             "o3-mini",
             prompt_tokens=1000,
@@ -169,8 +164,6 @@ class TestReasoningTokensBilling:
         table = {
             "gpt-4o-mini": ModelPricing(input_cost_per_1k=0.15, output_cost_per_1k=0.6),
         }
-        # Defaults to 0 — reasoning-aware API must not change pricing for
-        # non-reasoning models.
         no_reasoning = calculate_cost("gpt-4o-mini", 1000, 500, pricing_table=table)
         with_zero = calculate_cost(
             "gpt-4o-mini", 1000, 500, reasoning_tokens=0, pricing_table=table

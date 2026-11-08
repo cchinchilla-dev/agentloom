@@ -1,8 +1,6 @@
 """Recordings are read as UTF-8 whatever the locale.
 
-agentloom writes recordings as ASCII JSON, but one written by hand or by
-another tool can hold UTF-8 text as is. Read with the locale encoding, it
-decoded wrong (latin-1) or not at all (ASCII).
+agentloom writes ASCII JSON, but a recording written by hand or by another tool can hold UTF-8 text.
 """
 
 from __future__ import annotations

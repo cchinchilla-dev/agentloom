@@ -83,19 +83,11 @@ def _skip(msg: str) -> None:
 
 
 def _load_yaml(path: Path) -> dict | list | None:
-    """Load a YAML file. Returns None on parse error."""
+    """Load a YAML file, or return None when PyYAML is missing."""
     if yaml is None:
         return None
     with open(path) as f:
         return yaml.safe_load(f)
-
-
-def _load_yaml_all(path: Path) -> list:
-    """Load a multi-document YAML file."""
-    if yaml is None:
-        return []
-    with open(path) as f:
-        return list(yaml.safe_load_all(f))
 
 
 def _file_exists(path: Path) -> bool:
@@ -122,7 +114,7 @@ def audit_dockerfile() -> None:
     content = path.read_text()
 
     # Multi-stage
-    stages = re.findall(r"^FROM\s+.+\s+AS\s+(\w+)", content, re.MULTILINE)
+    stages = re.findall(r"^FROM\s+.+\s+AS\s+([\w-]+)", content, re.MULTILINE)
     if len(stages) >= 3:
         _pass(f"Multi-stage build: {len(stages)} stages ({', '.join(stages)})")
     else:
@@ -146,11 +138,11 @@ def audit_dockerfile() -> None:
     else:
         _fail("Production ENTRYPOINT should be agentloom CLI")
 
-    # BUILD_OBSERVABILITY build arg
-    if "BUILD_OBSERVABILITY" in content:
-        _pass("BUILD_OBSERVABILITY build arg present")
-    else:
-        _fail("Missing BUILD_OBSERVABILITY build arg")
+    for target in ("production", "production-lite"):
+        if target in stages:
+            _pass(f"Runtime target {target} present")
+        else:
+            _fail(f"Missing runtime target {target}")
 
     # No secrets baked in
     for pattern in ["API_KEY", "SECRET", "PASSWORD"]:
@@ -166,9 +158,9 @@ def audit_dockerfile() -> None:
     else:
         _fail("Missing OTEL_EXPORTER_OTLP_ENDPOINT default")
 
-    # python:3.12-slim base (not alpine)
-    if "python:3.12-slim" in content:
-        _pass("Base image is python:3.12-slim (not alpine)")
+    slim = re.search(r"^FROM\s+python:3\.\d+-slim\b", content, re.MULTILINE)
+    if slim:
+        _pass(f"Base image is {slim.group(0).split()[1]} (not alpine)")
     elif "alpine" in content.lower():
         _fail("Alpine base — pydantic/httpx compilation issues")
     else:

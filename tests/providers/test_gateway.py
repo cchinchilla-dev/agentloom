@@ -13,7 +13,6 @@ from agentloom.providers.gateway import ProviderGateway
 from tests.conftest import MockProvider
 
 
-# StreamResponse unit tests
 class TestStreamResponse:
     async def test_max_accumulated_bytes_exceeded(self) -> None:
         sr = StreamResponse(model="m", provider="p")
@@ -60,7 +59,6 @@ class TestStreamResponse:
         assert resp.finish_reason == "stop"
 
 
-# ProviderGateway tests
 class MidStreamFailProvider(BaseProvider):
     """A provider that yields some chunks then fails mid-stream."""
 
@@ -99,7 +97,7 @@ class MidStreamFailProvider(BaseProvider):
 
 
 class FailingProvider(BaseProvider):
-    """A provider that always raises an error on complete()."""
+    """A provider that always fails: on ``complete()`` and on the first chunk of ``stream()``."""
 
     name = "failing"
 
@@ -174,7 +172,6 @@ class TestProviderRouting:
 
     async def test_no_provider_raises_error(self) -> None:
         gateway = ProviderGateway()
-        # Register a provider that does not support the model
         provider = MockProvider()
         provider.supports_model = lambda m: False  # type: ignore[assignment]
         gateway.register(provider, priority=0)
@@ -187,7 +184,7 @@ class TestProviderRouting:
 
 
 class TestProviderFallback:
-    """Test fallback behavior when primary provider fails."""
+    """Test fallback behaviour when the primary provider fails."""
 
     async def test_fallback_on_primary_failure(self) -> None:
         gateway = ProviderGateway()
@@ -202,7 +199,6 @@ class TestProviderFallback:
             model="test-model",
         )
         assert response.content == "fallback answer"
-        # The failing provider should have been called first
         assert len(failing.calls) == 1
 
     async def test_all_providers_fail_raises_error(self) -> None:
@@ -262,11 +258,7 @@ class TestProviderFallback:
 
 
 class TestProviderSpansPerFallbackAttempt:
-    """The gateway emits one provider span per attempt during fallback so
-    Jaeger / Grafana can show the failed primary attempt alongside the
-    successful fallback. Without this the trace tree collapses both into
-    a single span and the latency split between attempts is invisible.
-    """
+    """One provider span per fallback attempt, so a trace splits the latency between attempts."""
 
     async def test_provider_span_emitted_per_fallback_attempt(self) -> None:
         from unittest.mock import MagicMock
@@ -290,23 +282,19 @@ class TestProviderSpansPerFallbackAttempt:
         )
         assert response.content == "fallback answer"
 
-        # Two start hooks (one per attempt) and two end hooks.
         assert observer.on_provider_call_start.call_count == 2
         assert observer.on_provider_call_end.call_count == 2
 
-        # First attempt: primary, attempt=0.
         first_start = observer.on_provider_call_start.call_args_list[0]
         assert first_start.kwargs["provider"] == "primary"
         assert first_start.kwargs["attempt"] == 0
         assert first_start.kwargs["step_id"] == "my_step"
 
-        # First attempt closed with error.
         first_end = observer.on_provider_call_end.call_args_list[0]
         assert first_end.kwargs["provider"] == "primary"
         assert first_end.kwargs["attempt"] == 0
         assert first_end.kwargs["error"] is not None
 
-        # Second attempt: fallback, attempt=1, success.
         second_start = observer.on_provider_call_start.call_args_list[1]
         assert second_start.kwargs["provider"] == "fallback_provider"
         assert second_start.kwargs["attempt"] == 1
@@ -317,8 +305,6 @@ class TestProviderSpansPerFallbackAttempt:
         assert second_end.kwargs.get("error") is None
 
     async def test_no_step_id_skips_provider_spans(self) -> None:
-        # Backwards compat: callers that don't pass step_id (legacy code,
-        # tests) must not cause an exception. The hooks simply aren't fired.
         from unittest.mock import MagicMock
 
         gateway = ProviderGateway()
@@ -335,9 +321,7 @@ class TestProviderSpansPerFallbackAttempt:
         assert observer.on_provider_call_end.call_count == 0
 
     async def test_step_id_not_forwarded_to_provider(self) -> None:
-        # The step_id kwarg is consumed by the gateway and must not leak
-        # into the provider's HTTP payload (it would be a 400 from any
-        # provider that validates extras).
+        # A provider that validates extras would answer 400 to a leaked ``step_id``.
         gateway = ProviderGateway()
         provider = MockProvider()
         gateway.register(provider, priority=0)
@@ -346,14 +330,10 @@ class TestProviderSpansPerFallbackAttempt:
             model="test-model",
             step_id="should_be_consumed",
         )
-        # MockProvider records each call's kwargs; assert step_id absent.
         assert "step_id" not in provider.calls[0]
 
     async def test_circuit_open_after_start_closes_provider_span(self) -> None:
-        # Cover the path where ``circuit_breaker.call()`` raises
-        # CircuitOpenError after the start hook fired — the gateway must
-        # close the provider span with ``error="CircuitOpenError"`` so the
-        # trace doesn't leak an open span.
+        # The breaker admits the call, then trips inside ``call()``: the span must still close.
         from unittest.mock import AsyncMock, MagicMock
 
         from agentloom.exceptions import CircuitOpenError
@@ -361,7 +341,6 @@ class TestProviderSpansPerFallbackAttempt:
         gateway = ProviderGateway()
         provider = MockProvider()
         gateway.register(provider, priority=0)
-        # Force the breaker to allow start_hook then trip on call().
         gateway._providers[0].circuit_breaker.allow_request = MagicMock(return_value=None)
         gateway._providers[0].circuit_breaker.call = AsyncMock(
             side_effect=CircuitOpenError("tripped")
@@ -375,7 +354,6 @@ class TestProviderSpansPerFallbackAttempt:
                 model="test-model",
                 step_id="s1",
             )
-        # End hook fires once with CircuitOpenError reason.
         assert observer.on_provider_call_end.call_count == 1
         end_call = observer.on_provider_call_end.call_args
         assert end_call.kwargs["error"] == "CircuitOpenError"
@@ -398,9 +376,7 @@ class TestGatewayStreaming:
         assert sr.usage.total_tokens == 30
 
     async def test_stream_forwards_step_id_when_provider_opts_in(self) -> None:
-        # ``accepts_step_id=True`` providers (mock, recorder) must receive
-        # ``step_id`` on the stream() path too — otherwise replay fixtures
-        # keyed by step id never match for streaming workflows.
+        # Recordings are keyed by step id, so a streaming workflow could never replay without it.
         class StreamStepIdCapture(MockProvider):
             accepts_step_id = True
 
@@ -436,7 +412,7 @@ class TestGatewayStreaming:
         gateway.register(failing, priority=0, circuit_fail_threshold=1)
         gateway.register(succeeding, priority=1)
 
-        # First call: failing provider is tried, fails at iteration, CB records failure
+        # The first stream fails while iterating; with threshold 1 that opens the circuit.
         sr1 = await gateway.stream(
             messages=[{"role": "user", "content": "hello"}],
             model="test-model",
@@ -445,7 +421,7 @@ class TestGatewayStreaming:
             async for _ in sr1:
                 pass
 
-        # Second call: failing provider circuit is open, falls through to succeeding
+        # The second stream skips the open circuit and reaches the fallback.
         sr2 = await gateway.stream(
             messages=[{"role": "user", "content": "hello"}],
             model="test-model",
@@ -478,7 +454,6 @@ class TestGatewayStreaming:
             async for _ in sr:
                 pass
 
-        # Circuit breaker should have recorded the failure
         from agentloom.resilience.circuit_breaker import CircuitState
 
         cb = gateway._providers[0].circuit_breaker
@@ -545,7 +520,6 @@ class TestStreamCancellationDoesNotFailCircuit:
             messages=[{"role": "user", "content": "one two three four five"}],
             model="test-model",
         )
-        # Consume one chunk then abort the underlying generator explicitly.
         iterator = sr.__aiter__()
         await iterator.__anext__()
         assert sr._iterator is not None
@@ -569,7 +543,6 @@ class TestCircuitBreakerOrderingInCompleteFlow:
         gateway.register(provider, priority=0, max_rpm=5, max_tpm=1000)
         entry = gateway._providers[0]
 
-        # Force the circuit OPEN.
         for _ in range(entry.circuit_breaker.fail_threshold):
             entry.circuit_breaker.record_failure()
         assert entry.circuit_breaker.state == CircuitState.OPEN
@@ -583,17 +556,14 @@ class TestCircuitBreakerOrderingInCompleteFlow:
                 model="test-model",
             )
 
-        # Rate limiter must be untouched.
         assert entry.rate_limiter._request_tokens == rpm_before
         assert entry.rate_limiter._token_tokens == tpm_before
 
 
 class TestCandidateCacheLRU:
-    """The model→candidates cache must evict LRU entries past its bound.
+    """The model-to-candidates cache evicts LRU entries past its bound.
 
-    Without this, dynamic model strings (templated names, multi-tenant
-    naming) accumulate entries forever — each lookup eventually walks
-    the full table.
+    Templated or multi-tenant model names would otherwise grow it without limit.
     """
 
     def test_candidate_cache_evicts_lru(self) -> None:
@@ -601,7 +571,6 @@ class TestCandidateCacheLRU:
         provider = MockProvider()
         gateway.register(provider, priority=0)
 
-        # Fill with 3 entries.
         for i in range(3):
             gateway._get_candidates(f"model-{i}")
         assert list(gateway._candidate_cache.keys()) == [
@@ -610,7 +579,6 @@ class TestCandidateCacheLRU:
             "model-2",
         ]
 
-        # Touch model-0 → it becomes MRU.
         gateway._get_candidates("model-0")
         assert list(gateway._candidate_cache.keys()) == [
             "model-1",
@@ -618,7 +586,6 @@ class TestCandidateCacheLRU:
             "model-0",
         ]
 
-        # Adding model-3 evicts model-1 (oldest).
         gateway._get_candidates("model-3")
         assert list(gateway._candidate_cache.keys()) == [
             "model-2",
@@ -633,7 +600,6 @@ class TestCandidateCacheLRU:
 
     def test_candidate_cache_default_bound(self) -> None:
         gateway = ProviderGateway()
-        # Default tracks the class constant — change both together.
         assert gateway._candidate_cache_max == ProviderGateway._DEFAULT_CANDIDATE_CACHE_MAX
 
     def test_explicit_model_mapping_bypasses_cache(self) -> None:
@@ -641,7 +607,6 @@ class TestCandidateCacheLRU:
         provider = MockProvider()
         gateway.register(provider, priority=0, models=["explicit-model"])
 
-        # Explicit mapping must not consume cache slots.
         for _ in range(5):
             gateway._get_candidates("explicit-model")
         assert "explicit-model" not in gateway._candidate_cache
@@ -660,24 +625,22 @@ class TestObserverWiring:
 
         gateway.set_observer(Observer())
 
-        # Register provider AFTER set_observer — must wire callback at register time.
         failing = FailingProvider(error_msg="x")
         gateway.register(failing, priority=0, circuit_fail_threshold=1)
 
         with pytest.raises(ProviderError):
             await gateway.complete(messages=[{"role": "user", "content": "hi"}], model="m")
 
-        # The single failure with threshold=1 trips the breaker → state change emitted.
         assert any(new == "open" for _, _, new in events)
 
     def test_observer_without_callback_attribute_does_not_crash(self) -> None:
         """A bare object lacking ``on_circuit_state_change`` must not break wiring."""
         gateway = ProviderGateway()
-        gateway.set_observer(object())  # no hook attribute
+        gateway.set_observer(object())
         provider = MockProvider()
         gateway.register(provider, priority=0)
 
-        # Trigger _set_state by transitioning manually — must not raise.
+        # The test passes if the transition does not raise.
         provider_entry = gateway._providers[0]
         provider_entry.circuit_breaker._set_state(
             provider_entry.circuit_breaker._state.__class__.OPEN
@@ -688,9 +651,10 @@ class TestGatewayStreamErrorPaths:
     """Setup/error branches in ``ProviderGateway.stream()``."""
 
     async def test_stream_rate_limit_releases_half_open_slot(self) -> None:
-        """When ``provider.stream()`` raises RateLimitError while the breaker
-        is HALF_OPEN, the gateway must release the slot it just claimed via
-        ``allow_request()`` so future calls can proceed."""
+        """A RateLimitError from ``stream()`` in HALF_OPEN gives back the half-open slot.
+
+        Otherwise the slot ``allow_request()`` claimed would block every later call.
+        """
         from agentloom.exceptions import RateLimitError
         from agentloom.resilience.circuit_breaker import CircuitState
 
@@ -715,7 +679,7 @@ class TestGatewayStreamErrorPaths:
         )
         cb = gateway._providers[0].circuit_breaker
 
-        # Force the breaker into HALF_OPEN so allow_request claims a slot.
+        # OPEN with an expired timeout: ``allow_request`` moves to HALF_OPEN and claims a slot.
         import time as _time
 
         cb._set_state(CircuitState.OPEN)
@@ -724,12 +688,10 @@ class TestGatewayStreamErrorPaths:
         with pytest.raises(ProviderError, match="All providers failed"):
             await gateway.stream(messages=[{"role": "user", "content": "hi"}], model="any-model")
 
-        # Slot released — counter back to 0.
         assert cb._half_open_calls == 0
 
     async def test_stream_setup_failure_records_breaker_failure(self) -> None:
-        """Setup failures raised by ``provider.stream()`` itself (not the
-        iterator) must feed back to the circuit breaker."""
+        """A failure raised by ``stream()`` itself, not by its iterator, reaches the breaker."""
 
         class SetupFailProvider(BaseProvider):
             name = "setup_fail"
@@ -753,8 +715,7 @@ class TestGatewayStreamErrorPaths:
         assert cb._failure_count >= 1
 
     async def test_stream_iterator_failure_records_breaker_failure(self) -> None:
-        """An exception raised by the iterator (after stream() returned)
-        must invoke ``record_failure()`` and surface to the caller."""
+        """An iterator failure after ``stream()`` returned is recorded and reaches the caller."""
         gateway = ProviderGateway()
         gateway.register(MidStreamFailProvider(), priority=0, circuit_fail_threshold=2)
 
@@ -767,9 +728,6 @@ class TestGatewayStreamErrorPaths:
         assert cb._failure_count == 1
 
     async def test_stream_setup_failure_closes_provider_span(self) -> None:
-        # Setup failure (provider.stream() raising) with an observer attached
-        # and ``step_id`` set must fire ``on_provider_call_end`` with the
-        # error type and ``on_provider_error``, so the trace closes cleanly.
         from unittest.mock import MagicMock
 
         class SetupFailProvider(BaseProvider):
@@ -800,8 +758,6 @@ class TestGatewayStreamErrorPaths:
         observer.on_provider_error.assert_called_once_with("setup_fail", "ProviderError")
 
     async def test_stream_rate_limit_closes_provider_span(self) -> None:
-        # RateLimitError during stream setup with an observer must close the
-        # provider span with ``error="RateLimitError"``.
         from unittest.mock import MagicMock
 
         from agentloom.exceptions import RateLimitError
@@ -833,10 +789,7 @@ class TestGatewayStreamErrorPaths:
         assert observer.on_provider_call_end.call_args.kwargs["error"] == "RateLimitError"
 
     async def test_stream_circuit_open_after_start_closes_span(self) -> None:
-        # Same path as in ``complete()``: breaker allows then trips during
-        # ``stream()`` — cover the matching CircuitOpenError branch on the
-        # streaming side, including the observer end-hook with the right
-        # ``stream=True`` flag.
+        # As with ``complete()``: the breaker admits the call, then trips inside ``stream()``.
         from unittest.mock import MagicMock
 
         from agentloom.exceptions import CircuitOpenError
@@ -869,9 +822,6 @@ class TestGatewayStreamErrorPaths:
         assert observer.on_provider_call_end.call_args.kwargs["stream"] is True
 
     async def test_stream_iterator_failure_fires_provider_error_hook(self) -> None:
-        # When the wrapped iterator raises mid-stream and an observer is
-        # attached, the ``on_provider_error`` hook must fire so dangling
-        # provider spans are cleaned up.
         from unittest.mock import MagicMock
 
         gateway = ProviderGateway()
@@ -889,5 +839,5 @@ class TestGatewayStreamErrorPaths:
                 pass
 
         observer.on_provider_error.assert_called_once()
-        # End hook fires from the finally block too.
+        # The end hook fires from the iterator's ``finally``.
         observer.on_provider_call_end.assert_called_once()

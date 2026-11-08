@@ -55,8 +55,8 @@ class RateLimiter:
 
         Raises:
             ValueError: If *token_count* exceeds *max_tokens_per_minute* — the
-                bucket could never fill this request, so we fail fast rather
-                than looping forever.
+                bucket could never fill this request, so it fails fast instead
+                of looping forever.
         """
         if token_count > self.max_tpm:
             raise ValueError(

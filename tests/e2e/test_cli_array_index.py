@@ -1,9 +1,4 @@
-"""CLI functional test for array index support in state paths.
-
-Validates that the CLI can parse and validate a workflow using array
-index syntax without errors.  Marked ``e2e`` so it is excluded from
-normal ``pytest`` runs.
-"""
+"""CLI functional test for array index support in state paths."""
 
 from __future__ import annotations
 
@@ -17,7 +12,6 @@ EXAMPLE = "examples/27_array_index.yaml"
 
 
 def test_validate_array_index_workflow() -> None:
-    """``agentloom validate`` should succeed for a workflow with array state."""
     result = subprocess.run(
         ["agentloom", "validate", EXAMPLE],
         capture_output=True,

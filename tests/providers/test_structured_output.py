@@ -1,23 +1,4 @@
-"""Tests for structured output (#117) across providers.
-
-Covers the seven scenarios called out in the issue:
-
-* ``test_response_schema_pydantic_coerces_to_model_instance`` — the LLM
-  step writes a Pydantic instance (not a string) to state.
-* ``test_response_schema_json_schema_native_openai`` — OpenAI receives the
-  ``response_format={"type": "json_schema", ...}`` shape with strict mode.
-* ``test_response_schema_json_schema_native_google`` — Google receives
-  ``responseSchema`` + ``responseMimeType`` under ``generationConfig``.
-* ``test_response_schema_anthropic_prefill_fallback`` — Anthropic gets the
-  system-prompt augmentation plus the ``{"role": "assistant",
-  "content": "{"}`` prefill turn.
-* ``test_response_schema_validation_failure_triggers_retry`` — bad JSON
-  triggers an in-step retry with the validator output appended.
-* ``test_response_schema_validation_failure_after_max_retries_fails_step``
-  — exhausting the retry budget surfaces a non-retryable step failure.
-* ``test_additionalproperties_true_rejected_for_openai_json_schema``
-  — parse-time refusal so the workflow doesn't 400 against OpenAI.
-"""
+"""Structured output across providers: translation, parsing, validation and retries."""
 
 from __future__ import annotations
 
@@ -67,9 +48,7 @@ class _Classification(BaseModel):
     rationale: str
 
 
-# Shared JSON fixtures for the per-provider wire-format tests. Kept at module
-# level so the test bodies stay under the 100-char line limit (the JSON-encoded
-# rationales here can run to ~80 chars on their own).
+# At module level so the test bodies stay within the 100-char line limit.
 _GOOD_JSON = '{"label": "complaint", "confidence": 0.9, "rationale": "ok"}'
 _BAD_JSON_LABEL = '{"label": "not-a-real-label", "confidence": 2.0, "rationale": "x"}'
 _FIXED_JSON = '{"label": "complaint", "confidence": 0.5, "rationale": "fixed"}'
@@ -142,21 +121,17 @@ class TestResponseSchemaModel:
             ResponseSchema(type="json_schema")
 
     def test_json_object_mode_accepts_neither_field(self) -> None:
-        # The bare ``json_object`` mode is the only one that needs nothing
-        # else — used for "any JSON object" responses.
         rs = ResponseSchema(type="json_object")
         assert rs.type == "json_object"
 
     def test_yaml_alias_schema_is_honored(self) -> None:
-        # YAML authors write ``schema:`` (not ``schema_:``); the Pydantic
-        # alias has to round-trip cleanly through ``model_validate``.
+        # YAML authors write ``schema:``, not ``schema_:``.
         inline = {"type": "object", "properties": {"x": {"type": "string"}}}
         rs = ResponseSchema.model_validate({"type": "json_schema", "schema": inline})
         assert rs.schema_ == inline
 
     def test_additionalproperties_true_rejected_for_openai_json_schema(self) -> None:
-        # OpenAI strict ``json_schema`` mode 400s when ``additionalProperties: true`` is
-        # set — refuse it at parse time so the same workflow loads cleanly across providers.
+        # OpenAI strict mode 400s on it; refusing it at parse time keeps workflows portable.
         with pytest.raises(ValidationError, match="additionalProperties: true"):
             ResponseSchema(
                 type="json_schema",
@@ -182,10 +157,7 @@ class TestSchemaTranslators:
         assert translate_for_openai(rs, "step") == {"type": "json_object"}
 
     def test_google_translation_drops_pydantic_titles(self) -> None:
-        # Gemini's ``responseSchema`` parser 400s on ``title`` / ``examples`` /
-        # ``default`` (Pydantic noise) and on ``additionalProperties`` (which
-        # ``_normalize_schema_for_strict`` adds for OpenAI). The translator
-        # drops all four so portable schemas don't need per-provider edits.
+        # Gemini 400s on ``title``, ``examples``, ``default`` and ``additionalProperties``.
         rs = ResponseSchema(
             type="json_schema",
             schema_={
@@ -201,20 +173,17 @@ class TestSchemaTranslators:
         assert "title" not in schema
         assert "title" not in schema["properties"]["x"]
         assert "default" not in schema["properties"]["x"]
-        # ``additionalProperties: false`` lands transitively from the strict
-        # normalizer; Gemini's schema dialect doesn't accept it.
+        # The strict normalizer adds ``additionalProperties: false``; Gemini's dialect rejects it.
         assert "additionalProperties" not in schema
         assert "additionalProperties" not in schema["properties"]["x"]
 
     def test_ollama_json_object_returns_literal_json(self) -> None:
-        # Free-form mode → just the string ``"json"`` (Ollama's documented
-        # value), not a schema dict.
+        # ``"json"`` is Ollama's documented value for free-form JSON.
         rs = ResponseSchema(type="json_object")
         assert translate_for_ollama(rs, "step") == "json"
 
     def test_ollama_strict_returns_schema_dict(self) -> None:
-        # Ollama 0.5+ accepts a full JSON Schema under the same ``format``
-        # key for schema-enforced mode.
+        # Ollama 0.5+ takes a full JSON Schema under the same ``format`` key.
         rs = ResponseSchema(
             type="json_schema",
             schema_={"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
@@ -243,17 +212,14 @@ class TestExtractParsed:
         assert extract_parsed('```json\n{"a": 1}\n```') == {"a": 1}
 
     def test_anthropic_prefill_continuation_parses(self) -> None:
-        # The prefilled ``"{"`` is reattached by the adapter; ``extract_parsed``
-        # also defends against the un-prefixed case so a misbehaving provider
-        # doesn't break the parse.
+        # The adapter reattaches the prefilled ``{``; the parser copes when one does not.
         assert extract_parsed('"label": "complaint", "confidence": 0.9}') == {
             "label": "complaint",
             "confidence": 0.9,
         }
 
     def test_prose_around_json_parses(self) -> None:
-        # The first balanced ``{...}`` span wins so a model that prefixes the
-        # JSON with a half-sentence still parses.
+        # The first balanced ``{...}`` span wins.
         assert extract_parsed('Here it is:\n{"a": 1}\nThanks.') == {"a": 1}
 
     def test_empty_content_raises_decode_error(self) -> None:
@@ -270,7 +236,7 @@ class TestValidateParsed:
 
     @pytest.mark.parametrize("parsed", [None, [1, 2], "text", 3])
     def test_json_object_mode_refuses_what_is_no_object(self, parsed: Any) -> None:
-        """A reply of ``null`` is no reply: it is asked for again, as a schema's mismatch (#120)."""
+        """A reply of ``null`` is no reply: it is asked for again, as a schema's mismatch."""
         rs = ResponseSchema(type="json_object")
         with pytest.raises(TypeError, match="expects an object"):
             validate_parsed(parsed, rs, "step")
@@ -307,8 +273,6 @@ class TestValidateParsed:
             validate_parsed({"x": "not-an-int"}, rs, "step")
 
     def test_json_schema_valid_input_passes_through(self) -> None:
-        # The happy path returns the parsed value verbatim after
-        # ``jsonschema.validate`` — covers the success return branch.
         rs = ResponseSchema(
             type="json_schema",
             schema_={
@@ -328,8 +292,7 @@ class TestLoadPydanticModel:
         assert cls is _Classification
 
     def test_load_colon_form(self) -> None:
-        # ``module:ClassName`` is accepted alongside the dotted form so YAML
-        # stays clear when the model lives in a nested module.
+        # ``module:ClassName`` keeps YAML clear when the model lives in a nested module.
         cls = load_pydantic_model("tests.providers.test_structured_output:_Classification")
         assert cls is _Classification
 
@@ -371,11 +334,7 @@ class TestFormatValidationFeedback:
         assert "Respond again" in msg
 
     def test_long_errors_truncate(self) -> None:
-        # A verbose error string (>800 chars) must be trimmed with the
-        # ``… (truncated)`` marker so the retry prompt stays bounded.
-        # Non-Pydantic errors take the ``str(error)`` path and skip the
-        # bullet formatter, so they're the cleanest way to trigger the
-        # length-cap branch deterministically.
+        # A non-Pydantic error skips the bullet formatter: the simplest way to hit the cap.
         long_msg = "detail " * 200
         msg = format_validation_feedback(ValueError(long_msg), "step")
         assert "(truncated)" in msg
@@ -386,8 +345,7 @@ class TestProviderPropagation:
 
     @respx.mock
     async def test_response_schema_json_schema_native_openai(self) -> None:
-        # OpenAI receives ``response_format={"type": "json_schema", ...}``
-        # with the strict bit set, so the API enforces the shape server-side.
+        # The strict bit makes the API enforce the shape server-side.
         captured: dict[str, Any] = {}
 
         def _handler(request: httpx.Request) -> httpx.Response:
@@ -426,8 +384,7 @@ class TestProviderPropagation:
         assert rf["type"] == "json_schema"
         assert rf["json_schema"]["strict"] is True
         assert rf["json_schema"]["name"] == "_Classification"
-        # ``additionalProperties: false`` lands transitively so portable
-        # schemas don't have to set it themselves.
+        # Added by the translator, so portable schemas need not set it.
         assert rf["json_schema"]["schema"]["additionalProperties"] is False
         await provider.close()
 
@@ -517,8 +474,7 @@ class TestProviderPropagation:
             agentloom_step_id="classify",
         )
         msgs = captured["payload"]["messages"]
-        # Last message is the prefilled assistant turn so the model continues
-        # the JSON object from the opening brace.
+        # The prefilled assistant turn makes the model continue the object from ``{``.
         assert msgs[-1] == {"role": "assistant", "content": "{"}
         # The system prompt gained the JSON-only instruction.
         assert "JSON" in captured["payload"]["system"]
@@ -564,7 +520,6 @@ class TestProviderPropagation:
             agentloom_step_id="classify",
         )
         fmt = captured["payload"]["format"]
-        # Ollama 0.5+: schema dict goes under ``format`` for strict mode.
         assert isinstance(fmt, dict)
         assert fmt["type"] == "object"
         await provider.close()
@@ -600,16 +555,11 @@ class TestEndToEndIntegration:
         gw.register(MockProvider(responses_file=recording, workflow_name=wf.name), priority=0)
         status, final = await _run(wf, gw)
         assert status == WorkflowStatus.SUCCESS
-        # Pydantic instance (not the raw string) lands in state — that's the
-        # whole point of ``type: pydantic`` over ``type: json_object``.
         assert isinstance(final["classification"], _Classification)
         assert final["classification"].label == "complaint"
 
     async def test_response_schema_validation_failure_triggers_retry(self, tmp_path: Any) -> None:
-        # The mock returns invalid JSON on the first hit; the in-step retry
-        # appends the validation feedback and re-asks. We can't easily make
-        # MockProvider return different content per turn without using the
-        # list-of-turns recording feature, so we use that for the retry case.
+        # A list of turns gives the mock a bad answer first, then the fixed one.
         recording = tmp_path / "rec.json"
         recording.write_text(
             json.dumps(
@@ -659,8 +609,7 @@ class TestEndToEndIntegration:
     async def test_response_schema_validation_failure_after_max_retries_fails_step(
         self, tmp_path: Any
     ) -> None:
-        # Recording returns invalid JSON every turn; after exhausting retries
-        # the step must fail.
+        # A single entry serves the same bad JSON to every retry.
         recording = tmp_path / "rec.json"
         recording.write_text(
             json.dumps(
@@ -692,9 +641,7 @@ class TestEndToEndIntegration:
     async def test_mock_fallback_returns_empty_json_when_schema_requested(
         self, tmp_path: Any
     ) -> None:
-        # No recording entry — MockProvider's fallback must shape itself like
-        # JSON so the validation layer sees a parseable empty object instead
-        # of the literal ``"Mock response"`` string.
+        # With a schema and no entry, the mock answers ``{}``, not its ``"Mock response"``.
         recording = tmp_path / "rec.json"
         recording.write_text(json.dumps({"_version": 2}))
         wf = _workflow_with_schema(
@@ -706,13 +653,9 @@ class TestEndToEndIntegration:
         gw.register(MockProvider(responses_file=recording, workflow_name=wf.name), priority=0)
         status, final = await _run(wf, gw)
         assert status == WorkflowStatus.SUCCESS
-        # ``json_object`` mode accepts ``{}`` — the parsed value is the empty dict.
         assert final["classification"] == {}
 
     async def test_state_holds_parsed_value_not_raw_string(self, tmp_path: Any) -> None:
-        # The whole point of structured output is that ``state[output]``
-        # holds the parsed dict / Pydantic instance, not the JSON string the
-        # model emitted.
         recording = tmp_path / "rec.json"
         recording.write_text(
             json.dumps(
@@ -745,14 +688,12 @@ class TestProviderResponseParsedField:
     """The provider response shape carries the parsed value through the gateway."""
 
     def test_parsed_defaults_to_none(self) -> None:
-        # Free-form steps must leave ``parsed`` untouched so the field is a
-        # reliable signal for structured-vs-unstructured at the consumer side.
+        # Free-form steps leave it ``None``, so consumers can tell structured output apart.
         r = ProviderResponse(content="hello", model="x", provider="y")
         assert r.parsed is None
 
     def test_parsed_accepts_arbitrary_value(self) -> None:
-        # The field is typed as ``Any`` so it can carry a dict, a Pydantic
-        # instance, or even a list — depending on what the schema declared.
+        # Typed ``Any``: a dict, a Pydantic instance or a list, as the schema declares.
         r = ProviderResponse(content="{}", model="x", provider="y", parsed={"a": 1})
         assert r.parsed == {"a": 1}
 
@@ -761,10 +702,7 @@ class TestStreamingStructuredOutput:
     """Streaming-mode structured output parses end-to-end after the stream closes."""
 
     async def test_stream_parses_accumulated_content(self, tmp_path: Any) -> None:
-        # Streaming reuses the MockProvider's ``stream`` fallback (which just
-        # wraps ``complete``), so the structured-output flow here is:
-        # MockProvider returns JSON content → SR accumulates it → step
-        # parses + validates after the stream closes.
+        # The mock's ``stream`` wraps ``complete``; the step parses once the stream closes.
         recording = tmp_path / "rec.json"
         recording.write_text(
             json.dumps(
@@ -792,14 +730,11 @@ class TestStreamingStructuredOutput:
         gw.register(MockProvider(responses_file=recording, workflow_name=wf.name), priority=0)
         status, final = await _run(wf, gw)
         assert status == WorkflowStatus.SUCCESS
-        # Streaming with ``response_schema`` still lands the parsed value in
-        # state — there's no end-user-visible difference vs the non-stream path.
         assert isinstance(final["classification"], _Classification)
         assert final["classification"].label == "complaint"
 
     async def test_stream_invalid_json_fails_step(self, tmp_path: Any) -> None:
-        # No mid-stream retry; an unparseable accumulated content surfaces as
-        # a step failure straight away.
+        # No mid-stream retry: unparseable content fails the step at once.
         recording = tmp_path / "rec.json"
         recording.write_text(
             json.dumps(
@@ -830,8 +765,7 @@ class TestStructuredHelperEdgeCases:
     """Coverage for the defensive branches in :mod:`_structured`."""
 
     def test_schema_dict_for_pydantic_without_model_raises(self) -> None:
-        # ``schema_dict_for`` re-validates the Pydantic-model invariant so
-        # direct callers (not just YAML-loaded workflows) get a clean error.
+        # Direct callers, not only YAML-loaded workflows, get a clean error.
         from agentloom.core.models import ResponseSchemaConfigError
 
         rs = ResponseSchema.model_construct(type="pydantic", model=None)
@@ -846,9 +780,7 @@ class TestStructuredHelperEdgeCases:
             schema_dict_for(rs, "step")
 
     def test_normalize_schema_walks_lists_and_nested_objects(self) -> None:
-        # The recursive walker covers nested objects inside arrays, ensuring
-        # ``additionalProperties: false`` propagates to every nested ``"type":
-        # "object"`` shape so a portable schema stays strict at every level.
+        # Objects nested in arrays get ``additionalProperties: false`` too: strict at every level.
         rs = ResponseSchema(
             type="json_schema",
             schema_={
@@ -877,7 +809,7 @@ class TestStructuredHelperEdgeCases:
         assert schema["type"] == "object"
 
     def test_translate_for_google_inlines_local_refs(self) -> None:
-        """Gemini's dialect has no ``$defs`` or ``$ref``: a nested model is inlined (#120)."""
+        """Gemini's dialect has no ``$defs`` or ``$ref``: a nested model is inlined."""
         item = {
             "type": "object",
             "description": "An item.",
@@ -1028,23 +960,19 @@ class TestStructuredHelperEdgeCases:
         }
 
     def test_translate_for_google_json_object_returns_no_schema(self) -> None:
-        # ``json_object`` mode → just the mime type, no ``responseSchema``.
         rs = ResponseSchema(type="json_object")
         mime, schema = translate_for_google(rs, "step")
         assert mime == "application/json"
         assert schema is None
 
     def test_format_validation_feedback_non_pydantic_error(self) -> None:
-        # A plain ``ValueError`` (e.g. from the dict-shape fallback when
-        # ``jsonschema`` is unavailable) renders the raw ``str(error)``.
+        # A non-Pydantic error, such as a non-object reply's ``TypeError``, renders as its text.
         msg = format_validation_feedback(ValueError("not a dict"), "step")
         assert "not a dict" in msg
         assert "step" in msg
 
     def test_load_pydantic_model_with_empty_string_raises(self) -> None:
-        # The Pydantic ``validate_parsed`` call passes
-        # ``response_schema.model or ""`` so an empty path must error cleanly
-        # instead of importing the wrong module.
+        # ``validate_parsed`` passes ``model or ""``, so an empty path must fail with a clean error.
         from agentloom.core.models import ResponseSchemaConfigError
 
         with pytest.raises(ResponseSchemaConfigError):
@@ -1059,26 +987,18 @@ class _MixedRequired(BaseModel):
 
 
 class TestExtractParsedBalancedScanner:
-    """Audit fix HIGH 2: the depth scanner replaces a greedy regex.
-
-    Pre-fix ``r"\\{.*\\}"`` (DOTALL) matched from the first ``{`` to the LAST
-    ``}``. The scenarios below all broke until the scanner landed.
-    """
+    """The depth scanner finds the first balanced JSON object, where a greedy ``{.*}`` fails."""
 
     def test_multiple_json_objects_returns_first(self) -> None:
-        # Two complete JSON objects in one response — the greedy regex
-        # used to fuse them into a malformed range.
+        # A greedy regex would fuse the two objects into one malformed span.
         assert extract_parsed('Here: {"a": 1} and: {"b": 2}') == {"a": 1}
 
     def test_prose_with_stray_brace_after_object(self) -> None:
-        # A trailing ``}`` in the prose used to be captured as the close
-        # of the JSON, producing a parse error.
+        # A greedy regex would take the ``}`` in the prose as the close of the JSON.
         assert extract_parsed('{"x": 1} (note the }) here') == {"x": 1}
 
     def test_string_with_braces_does_not_unbalance(self) -> None:
-        # A string literal containing ``}`` (e.g. ``"rationale": "use }
-        # carefully"``) must not trip the depth counter — the scanner
-        # tracks string state.
+        # The scanner tracks string state, so a ``}`` inside a string leaves the depth alone.
         assert extract_parsed('{"a": "use } carefully", "b": 2}') == {
             "a": "use } carefully",
             "b": 2,
@@ -1092,9 +1012,7 @@ class TestExtractParsedBalancedScanner:
         }
 
     def test_anthropic_prefill_with_trailing_prose(self) -> None:
-        # Anthropic returns ``"label":"x"} Hope that helps!`` after the
-        # reattached ``{``. The audit flagged this case as silently failing
-        # with the greedy regex; the scanner now wins.
+        # What Anthropic returns after the reattached ``{``: the object's tail, then prose.
         text = '"label": "x", "confidence": 0.1, "rationale": "y"} Hope!'
         assert extract_parsed(text) == {
             "label": "x",
@@ -1104,13 +1022,10 @@ class TestExtractParsedBalancedScanner:
 
 
 class TestOpenAIStrictRequired:
-    """Audit fix HIGH 4: OpenAI strict mode requires every property in `required`."""
+    """OpenAI strict mode requires every property in ``required``."""
 
     def test_pydantic_schema_with_optional_field_gets_full_required(self) -> None:
-        # A Pydantic model with an Optional[X] = None field generates a
-        # schema where ``required`` only lists non-optional keys. OpenAI
-        # strict mode 400s on that shape; the translator force-adds the
-        # missing keys.
+        # Pydantic leaves an optional field out of ``required``; OpenAI strict mode 400s on that.
         rs = ResponseSchema(
             type="pydantic",
             model="tests.providers.test_structured_output._MixedRequired",
@@ -1120,8 +1035,7 @@ class TestOpenAIStrictRequired:
         assert set(required) == {"mandatory", "optional"}
 
     def test_non_strict_mode_preserves_original_required(self) -> None:
-        # ``strict: false`` means the user opted out of the strict-mode
-        # rules — leave their schema's ``required`` alone.
+        # ``strict: false`` opts out of the strict rules: ``required`` stays as written.
         rs = ResponseSchema(
             type="json_schema",
             schema_={
@@ -1136,8 +1050,7 @@ class TestOpenAIStrictRequired:
         assert out["json_schema"]["strict"] is False
 
     def test_nested_object_required_propagates(self) -> None:
-        # The walker should descend into nested ``"type": "object"`` schemas
-        # so a Pydantic model with a nested BaseModel field also conforms.
+        # The walker descends into nested objects, as a nested BaseModel field produces.
         rs = ResponseSchema(
             type="json_schema",
             schema_={
@@ -1160,14 +1073,10 @@ class TestOpenAIStrictRequired:
 
 
 class TestDeepCopyIsolation:
-    """Audit fix MEDIUM 5: schema mutation must not leak into class cache."""
+    """Schema translation does not leak its changes into Pydantic's class cache."""
 
     def test_pydantic_schema_cache_unaffected_by_translator(self) -> None:
-        # ``cls.model_json_schema()`` returns a dict that Pydantic
-        # internally caches on the class. If the translator mutated it
-        # (adding ``additionalProperties: false`` transitively), every
-        # later call to ``model_json_schema`` would see the decoration.
-        # Deep-copy at the entry point prevents the leak.
+        # ``model_json_schema()`` is cached on the class: a mutation would reach every later call.
         before = _Classification.model_json_schema()
         before_props = before.get("additionalProperties")
         rs = ResponseSchema(
@@ -1179,8 +1088,7 @@ class TestDeepCopyIsolation:
         assert after.get("additionalProperties") == before_props
 
     def test_inline_schema_not_mutated(self) -> None:
-        # Same contract for inline schemas — the workflow author's dict
-        # is the source of truth and must not pick up runtime decorations.
+        # The author's inline dict must not pick up runtime decorations either.
         author_schema: dict[str, Any] = {
             "type": "object",
             "properties": {"x": {"type": "string"}},
@@ -1192,7 +1100,7 @@ class TestDeepCopyIsolation:
 
 
 class TestToolsAndResponseSchemaAreExclusive:
-    """Audit fix MEDIUM 9: parse-time refusal of the conflicting combo."""
+    """``tools`` and ``response_schema`` on one ``llm_call`` step are refused at parse time."""
 
     def test_both_tools_and_response_schema_rejected(self) -> None:
         from agentloom.core.models import ToolDefinition
@@ -1343,7 +1251,6 @@ class TestProviderStreamingPropagation:
         )
         async for _ in sr:
             pass
-        # ``json_object`` mode → literal ``"json"``.
         assert captured["payload"]["format"] == "json"
         await provider.close()
 
@@ -1352,45 +1259,30 @@ class TestExtractParsedEdges:
     """Balanced-brace scanner branches not covered elsewhere."""
 
     def test_scan_ignores_escaped_quote_inside_string(self) -> None:
-        # An escaped quote must not close string-mode — the ``}`` that
-        # follows inside the string is still ignored. Prose prefix forces
-        # the scanner to run (the top-level ``json.loads`` fails first).
+        # The ``}`` after ``\"`` is still in the string; the prose prefix forces the scanner path.
         assert extract_parsed(r'note: {"key": "he said \" then }", "n": 1}') == {
             "key": 'he said " then }',
             "n": 1,
         }
 
     def test_scan_handles_backslash_before_regular_char(self) -> None:
-        # ``\n`` (literal backslash-n) inside a JSON string — escape flag
-        # must be set on ``\`` and reset on ``n``. Prose prefix forces
-        # the scanner path.
+        # A literal backslash-n: the escape flag is set on ``\`` and cleared on ``n``.
         assert extract_parsed(r'note: {"k": "a\nb"}') == {"k": "a\nb"}
 
     def test_stray_close_and_prefill_candidate_fallthrough(self) -> None:
-        # Two branches covered by one input:
-        # - The ``}`` in prose (before any ``{``) is skipped at depth zero.
-        # - The prefill candidate ``{`` + text produces a span that fails
-        #   ``json.loads`` (unbalanced prose), so the scanner falls through
-        #   to the original text and finds the real object further down.
+        # With the prefilled ``{`` the first span is ``{some prose }``, which does not parse;
+        # the plain scan then skips the ``}`` at depth zero and finds the real object.
         assert extract_parsed('some prose } and then {"good": 1}') == {"good": 1}
 
     def test_code_fence_with_malformed_json_falls_through(self) -> None:
-        # Copilot #117: a fence whose inner JSON is malformed used to
-        # raise instead of falling back to the balanced-brace scanner.
-        # The scanner then runs and finds the real object further down
-        # in the text.
+        # A fence with malformed JSON falls through to the scanner instead of raising there.
         text = '```json\n{"bad": nope}\n```\nreal: {"good": 1}'
-        # The scanner returns the first balanced span (``{"bad": nope}``),
-        # which json.loads also fails on, so the final raise still fires
-        # — but the fence-except was covered on the way through.
+        # The scanner's first balanced span is the same ``{"bad": nope}``, so it still raises.
         with pytest.raises(json.JSONDecodeError):
             extract_parsed(text)
 
     def test_code_fence_with_nested_object_matches_outer_span(self) -> None:
-        # The fence regex backtracks over ``.*?}`` until the trailing
-        # ```` ``` ```` matches, so nested JSON inside a fence resolves
-        # correctly on the fence-JSON path itself (no scanner fallback
-        # needed).
+        # The lazy fence regex backtracks to the closing fence, so the nested object parses there.
         assert extract_parsed('```json {"a": {"b": 1}} ```') == {"a": {"b": 1}}
 
 
@@ -1398,7 +1290,6 @@ class TestStructuredHelpersMisc:
     """Remaining single-line branches in :mod:`_structured`."""
 
     def test_schema_name_explicit_wins(self) -> None:
-        # Explicit ``name`` takes precedence over the pydantic-derived one.
         from agentloom.steps._structured import schema_name_for
 
         rs = ResponseSchema(type="json_object", name="ExplicitName")
@@ -1414,7 +1305,6 @@ class TestStructuredHelpersMisc:
         assert out["json_schema"]["description"] == "Free-form doc"
 
     def test_anthropic_prefix_json_object_mode_has_no_schema(self) -> None:
-        # json_object mode → the prompt has no rendered schema block.
         from agentloom.steps._structured import anthropic_system_prefix
 
         rs = ResponseSchema(type="json_object")
@@ -1423,8 +1313,6 @@ class TestStructuredHelpersMisc:
         assert "```json" not in prefix
 
     def test_ollama_translation_pydantic_returns_schema(self) -> None:
-        # ``translate_for_ollama`` with pydantic mode should return the
-        # generated schema dict, not the literal ``"json"``.
         rs = ResponseSchema(
             type="pydantic", model="tests.providers.test_structured_output._Classification"
         )
@@ -1437,9 +1325,6 @@ class TestStreamingValidationErrorPaths:
     """Streaming end-of-stream validation surfaces failures uniformly."""
 
     async def test_stream_response_schema_config_error_fails_step(self, tmp_path: Any) -> None:
-        # A ``ResponseSchemaConfigError`` (e.g. unresolvable dotted path)
-        # during streaming end-of-stream validation must surface as
-        # ``StepStatus.FAILED`` with the config error message.
         recording = tmp_path / "rec.json"
         recording.write_text(
             json.dumps(
@@ -1458,8 +1343,7 @@ class TestStreamingValidationErrorPaths:
         wf = _workflow_with_schema(
             schema=ResponseSchema(
                 type="pydantic",
-                # Path resolves but the target is not a Pydantic subclass —
-                # ``ResponseSchemaConfigError`` fires during validation.
+                # Importable, but not a Pydantic class: validation raises ResponseSchemaConfigError.
                 model="collections:OrderedDict",
             ),
             responses_file=str(recording),
@@ -1475,9 +1359,7 @@ class TestCLISysPathPrepend:
     """CLI prepends CWD so dotted-path Pydantic models resolve from the repo root."""
 
     def test_cli_run_inserts_cwd_at_index_zero(self, tmp_path: Any, monkeypatch: Any) -> None:
-        # Drive the CLI with a minimal mock workflow; after ``run`` returns,
-        # the tmp cwd must be at ``sys.path[0]`` so a workflow that ships
-        # a schema module next to the YAML can be imported.
+        # A schema module shipped next to the YAML must import: the cwd leads ``sys.path``.
         import sys
 
         from typer.testing import CliRunner
@@ -1492,7 +1374,6 @@ class TestCLISysPathPrepend:
             "  - {id: s, type: llm_call, prompt: hi}\n"
         )
         monkeypatch.chdir(tmp_path)
-        # Baseline: tmp cwd is not yet on sys.path.
         target = str(tmp_path.resolve())
         if target in sys.path:
             sys.path.remove(target)
@@ -1500,13 +1381,12 @@ class TestCLISysPathPrepend:
         result = runner.invoke(app, ["run", str(wf), "--lite"])
         assert result.exit_code == 0
         assert sys.path[0] == target
-        # Idempotency: a second invocation must not stack a duplicate.
         runner.invoke(app, ["run", str(wf), "--lite"])
         assert sys.path.count(target) == 1
 
 
 class TestResponseSchemaCompanionFieldRefusal:
-    """Audit fix LOW: companion fields must match the mode."""
+    """Companion fields must match the mode."""
 
     def test_json_schema_mode_rejects_stale_model(self) -> None:
         with pytest.raises(ValidationError, match="must not set 'model'"):

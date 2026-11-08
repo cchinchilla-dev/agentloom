@@ -1,8 +1,4 @@
-"""Structural checks for the protocols module.
-
-Exists so a reader can confirm at a glance which collaborators the engine
-expects, and so renames on the concrete implementations surface here.
-"""
+"""Structural checks that the engine's concrete collaborators satisfy its protocols."""
 
 from __future__ import annotations
 
@@ -23,11 +19,8 @@ from agentloom.tools.registry import ToolRegistry
 class TestProtocolConformance:
     """Concrete implementations structurally satisfy the Protocols.
 
-    ``runtime_checkable`` lets us use ``isinstance`` as a structural
-    smoke test — it verifies that the required attributes exist and that
-    callables are callable. Parameter and return-type signatures are
-    **not** validated at runtime, so a failure here means an attribute
-    or method was removed or renamed, not that signatures drifted.
+    ``isinstance`` on a ``runtime_checkable`` Protocol checks that the members exist, not their
+    signatures: a failure here means a member was removed or renamed.
     """
 
     def test_state_manager_conforms(self) -> None:
@@ -48,15 +41,12 @@ class TestStreamCallback:
         def cb(step_id: str, chunk: str) -> None:
             return None
 
-        # runtime_checkable Protocols only check attribute presence for
-        # non-Callable structural types — Callable-Protocols rely on
-        # ``__call__``, which any function has.
+        # The Protocol's only member is ``__call__``, which any function has.
         assert isinstance(cb, StreamCallbackProtocol)
 
 
 class TestCheckpointerProtocolAllowsNone:
-    """Checkpointer is optional; the Protocol still enforces shape for
-    concrete implementations."""
+    """The checkpointer is optional, but a concrete one must still fit the Protocol."""
 
     def test_file_checkpointer_conforms(self, tmp_path) -> None:
         from agentloom.checkpointing.file import FileCheckpointer

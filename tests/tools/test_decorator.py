@@ -6,8 +6,6 @@ from agentloom.tools.decorator import tool
 
 
 class TestToolDecorator:
-    """Test the @tool decorator for creating tools from functions."""
-
     def test_creates_tool_with_name(self) -> None:
         @tool(name="my_tool", description="A test tool")
         async def my_func(x: str) -> str:
@@ -98,7 +96,6 @@ class TestSchemaGeneration:
             return name
 
         schema = func.parameters_schema
-        # 'name' should be required, 'timeout' should not be
         assert "required" in schema
         assert "name" in schema["required"]
         assert "timeout" not in schema["required"]
@@ -143,9 +140,7 @@ class TestSchemaGeneration:
 
 
 class TestSyncFunctionWrapping:
-    """F45: a sync ``@tool`` function is auto-wrapped onto a worker
-    thread. Pre-0.5.0 it raised ``TypeError: object ... can't be used in
-    'await' expression`` the first time the tool ran."""
+    """A sync ``@tool`` function is wrapped to run on a worker thread."""
 
     async def test_sync_function_wrapped(self) -> None:
         @tool(name="sync_t")
@@ -163,8 +158,7 @@ class TestSyncFunctionWrapping:
         assert await async_fn.execute(x="hi") == "async hi"
 
     async def test_sync_function_schema_generated_from_original(self) -> None:
-        # The schema must come from the original signature, not the
-        # ``**kwargs``-only async wrapper.
+        # The schema comes from the original signature, not the ``**kwargs``-only async wrapper.
         @tool(name="sync_schema")
         def sync_fn(name: str, count: int = 3) -> str:
             return name
@@ -176,9 +170,7 @@ class TestSyncFunctionWrapping:
 
 
 class TestGenericTypeSchema:
-    """F46: generic type hints (``list[int]``, ``Optional[T]``,
-    ``dict[str, V]``) must produce structurally correct JSON Schema.
-    Pre-0.5.0 they all degraded to ``{"type": "string"}``."""
+    """Generic type hints such as ``list[int]`` produce structurally correct JSON Schema."""
 
     def test_list_int_hint(self) -> None:
         @tool(name="t")
@@ -201,9 +193,7 @@ class TestGenericTypeSchema:
         async def t(name: str | None = None) -> str:
             return ""
 
-        # Optional[str] → anyOf [string, null] so the schema accepts an
-        # explicit null too (Python's signature allows it). ``required``
-        # still conveys whether the parameter may be omitted entirely.
+        # anyOf includes null since the signature accepts None; ``required`` covers omission.
         prop = t.parameters_schema["properties"]["name"]
         assert "anyOf" in prop
         assert {"type": "string"} in prop["anyOf"]
@@ -240,9 +230,7 @@ class TestGenericTypeSchema:
         assert {"type": "string"} in prop["anyOf"]
 
     def test_optional_multi_type_hint_includes_null(self) -> None:
-        # ``Optional[int | str]`` (= ``int | str | None``) must list
-        # ``null`` alongside ``int`` and ``string`` so the schema accepts
-        # every value the Python signature allows.
+        # ``null`` joins the union so the schema accepts every value the signature allows.
         @tool(name="t")
         async def t(val: int | str | None = None) -> str:
             return ""
@@ -255,8 +243,7 @@ class TestGenericTypeSchema:
 
 
 class TestPythonToJsonSchemaBranches:
-    """Direct coverage of ``_python_to_json_schema`` edge branches that
-    a normal ``@tool`` signature rarely exercises."""
+    """Edge branches of ``_python_to_json_schema`` that ``@tool`` signatures rarely reach."""
 
     def test_any_hint_is_unconstrained(self) -> None:
         from typing import Any
@@ -301,8 +288,7 @@ class TestPythonToJsonSchemaBranches:
         assert t.parameters_schema["properties"]["x"] == {"type": "string"}
 
     def test_var_keyword_parameter_is_skipped(self) -> None:
-        # ``**kwargs`` is part of the signature but not a real input the
-        # model can fill — the schema must omit it.
+        # ``**kwargs`` is in the signature but is not an input the model can fill.
         @tool(name="vkw")
         async def t(name: str, **kwargs: object) -> str:
             return name
@@ -312,7 +298,6 @@ class TestPythonToJsonSchemaBranches:
         assert "name" in schema["properties"]
 
     def test_var_positional_parameter_is_skipped(self) -> None:
-        # Same contract for ``*args``: it never lands in the JSON Schema.
         @tool(name="vpos")
         async def t(name: str, *args: object) -> str:
             return name
@@ -322,16 +307,11 @@ class TestPythonToJsonSchemaBranches:
         assert "name" in schema["properties"]
 
     def test_unresolvable_forward_reference_falls_back_to_string(self) -> None:
-        # ``get_type_hints`` raises NameError when an annotation cannot be
-        # resolved (forward reference to a name that never gets defined).
-        # The decorator must catch that and fall back to per-param schema
-        # — pre-0.5.0 this surfaced raw at import time.
+        # ``get_type_hints`` raises NameError here; every parameter then falls back to string.
         from agentloom.tools.decorator import _generate_schema
 
         def fn(x: "DefinitelyNotARealName") -> str:  # type: ignore[name-defined]  # noqa: F821, UP037
             return ""
 
         schema = _generate_schema(fn)
-        # Without resolvable hints the parameter still appears, defaulted
-        # to the safe string shape.
         assert schema["properties"]["x"] == {"type": "string"}

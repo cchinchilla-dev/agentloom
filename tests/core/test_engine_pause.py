@@ -1,4 +1,4 @@
-"""Tests for the workflow pause mechanism (Issue #40)."""
+"""Tests for the workflow pause mechanism."""
 
 from __future__ import annotations
 
@@ -59,26 +59,14 @@ def _three_step_workflow() -> WorkflowDefinition:
     )
 
 
-class PausingStep(BaseStep):
-    """Step executor that raises PauseRequestedError."""
-
-    async def execute(self, context: StepContext) -> StepResult:
-        raise PauseRequestedError(context.step_definition.id)
-
-
 class PausingOnSecondCallStep(BaseStep):
-    """LLM-call step that pauses on a specific step_id.
-
-    First call runs the real LLM executor; when the step_id matches
-    ``pause_on``, it raises ``PauseRequestedError`` instead.
-    """
+    """LLM-call step that pauses on step ``pause_on`` and runs the real executor on the rest."""
 
     pause_on: str = ""
 
     async def execute(self, context: StepContext) -> StepResult:
         if context.step_definition.id == self.__class__.pause_on:
             raise PauseRequestedError(context.step_definition.id)
-        # Delegate to the real LLM executor
         from agentloom.steps.llm_call import LLMCallStep
 
         return await LLMCallStep().execute(context)
@@ -170,7 +158,6 @@ class TestEnginePause:
         assert "step_c" not in loaded.completed_steps
 
     async def test_pause_step_result_is_paused(self) -> None:
-        """The paused step's result has StepStatus.PAUSED."""
         engine = WorkflowEngine(
             workflow=_three_step_workflow(),
             provider_gateway=_mock_gateway(),
@@ -182,7 +169,6 @@ class TestEnginePause:
         assert result.step_results["step_b"].status == StepStatus.PAUSED
 
     async def test_pause_state_has_completed_outputs(self) -> None:
-        """State includes outputs from steps completed before the pause."""
         engine = WorkflowEngine(
             workflow=_three_step_workflow(),
             provider_gateway=_mock_gateway(),
@@ -219,7 +205,6 @@ class TestResumeFromPaused:
         """Resume from a paused checkpoint runs remaining steps to success."""
         checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
 
-        # First run — pauses at step_b
         engine = WorkflowEngine(
             workflow=_three_step_workflow(),
             provider_gateway=_mock_gateway(),
@@ -230,7 +215,7 @@ class TestResumeFromPaused:
         first_result = await engine.run()
         assert first_result.status == WorkflowStatus.PAUSED
 
-        # Resume with default registry — step_b and step_c should execute normally
+        # from_checkpoint uses the default registry: step_b runs this time.
         resume_provider = MockProvider()
         resume_gw = ProviderGateway()
         resume_gw.register(resume_provider, priority=0)
@@ -260,7 +245,6 @@ class TestResumeFromPaused:
         )
         await engine.run()
 
-        # Resume
         resume_provider = MockProvider()
         resume_gw = ProviderGateway()
         resume_gw.register(resume_provider, priority=0)
@@ -289,7 +273,6 @@ class TestResumeFromPaused:
         )
         await engine.run()
 
-        # Resume
         checkpoint_data = await checkpointer.load("update-test")
         resumed = await WorkflowEngine.from_checkpoint(
             checkpoint_data=checkpoint_data,
@@ -347,7 +330,6 @@ class TestResumeFromPaused:
         result = await resumed.run()
 
         assert result.status == WorkflowStatus.SUCCESS
-        # step_b and step_c should run
         assert len(provider.calls) == 2
         assert result.step_results["step_b"].status == StepStatus.SUCCESS
         assert result.step_results["step_c"].status == StepStatus.SUCCESS
@@ -400,7 +382,6 @@ class TestPauseWithRouter:
 
         checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
 
-        # Build a checkpoint where classify + route are done, paused before billing.
         checkpoint_data = CheckpointData(
             workflow_name="router-pause",
             run_id="router-pause-run",

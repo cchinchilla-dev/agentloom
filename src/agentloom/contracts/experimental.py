@@ -2,7 +2,7 @@
 
 The OpenTelemetry span, attribute and metric names follow the GenAI semantic
 conventions, which are still in development, so a minor release may rename
-them when the conventions change. The inter-agent event models (#135) and
+them when the conventions change. The inter-agent event models and
 their JSON Schema (``SCHEMA_PATH``, ``SCHEMA_URI``) may change while they
 settle. Importing this module emits a ``FutureWarning`` once per process; the
 runtime uses the same names through ``agentloom.observability.schema`` and

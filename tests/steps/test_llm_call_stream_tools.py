@@ -41,7 +41,7 @@ class _Clock(BaseTool):
 
 
 class _Scripted(BaseProvider):
-    """Answers ``complete()`` from a script of turns and counts ``stream()`` calls."""
+    """A provider that answers ``complete()`` from a script and counts ``stream()`` calls."""
 
     name = "scripted"
 

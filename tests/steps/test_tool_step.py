@@ -31,10 +31,7 @@ class TestResolveArgs:
         assert result == {"url": "https://api.test.com"}
 
     def test_missing_state_reference_raises_clear_error(self) -> None:
-        # F56: a ``state.X`` reference to a key that does not exist now
-        # raises a non-retryable StepError naming the missing key —
-        # pre-0.5.0 it resolved to ``None`` and the tool surfaced an
-        # opaque downstream ``TypeError``.
+        # The step fails naming the key rather than handing the tool ``None``.
         from agentloom.exceptions import StepError
 
         with pytest.raises(StepError) as excinfo:
@@ -174,7 +171,7 @@ class TestToolStep:
 
 
 class TestToolArgsTemplating:
-    """Regression: tool_args with `{state.x}` placeholders must be rendered."""
+    """``tool_args`` with ``{state.x}`` placeholders are rendered."""
 
     async def test_tool_args_templated_like_llm_call(self) -> None:
         from agentloom.core.models import (
@@ -235,7 +232,6 @@ class TestToolArgsTemplating:
             on_stream_chunk=None,
         )
         await ToolStep().execute(ctx)
-        # Template rendered, state.-prefix resolved, literal passed through.
         assert captured == {
             "path": "/data/input.txt",
             "direct": "/data/input.txt",
@@ -244,25 +240,20 @@ class TestToolArgsTemplating:
 
 
 class TestPlaceholderTriggerNarrowed:
-    """Regression: ``_resolve_args`` only expands real placeholders.
+    """``_resolve_args`` expands only real placeholders; raw JSON, HTML and code pass through.
 
-    The previous heuristic — any ``{`` in the value — fired ``format_map``
-    on raw JSON / HTML / code snippets that workflow authors routinely
-    pass through ``tool_args.content`` and ``tool_args.body``. Failures
-    surfaced as ``Max string recursion exceeded`` (nested braces) or
-    ``Invalid format specifier`` (colon in JSON). The regex now requires
-    a real ``{state.…}`` / ``{state[…]}`` / ``{<name>[}:!]`` shape so
-    raw payloads pass through unchanged.
+    Only a ``{state.…}``, ``{state[…]}`` or ``{<name>[}:!]`` shape reaches ``format_map``, which
+    would raise on the nested braces or colons of a raw payload.
     """
 
     def test_literal_json_content_passes_through_unchanged(self) -> None:
-        # F9 reproducer: ``content: |`` block carrying inline JSON.
+        # A ``content: |`` block carrying inline JSON.
         json_content = '{\n  "k": [1, 2, 3],\n  "nested": {"v": true}\n}'
         result = ToolStep._resolve_args({"content": json_content}, {}, "s")
         assert result == {"content": json_content}
 
     def test_literal_json_body_passes_through_unchanged(self) -> None:
-        # F57 reproducer: ``body:`` carrying inline JSON with a colon.
+        # The colon must not read as a format spec.
         body = '{"k": [1,2,3], "nested": {"v": true}}'
         result = ToolStep._resolve_args({"body": body}, {}, "s")
         assert result == {"body": body}
@@ -282,8 +273,6 @@ class TestPlaceholderTriggerNarrowed:
         assert result == {"greet": "hello Alice"}
 
     def test_state_subscript_placeholder_still_renders(self) -> None:
-        # ``{state[items][0]}`` — the regex matches the ``{state[`` shape
-        # so subscript-form placeholders still trigger expansion.
         result = ToolStep._resolve_args(
             {"first": "got {state[items][0]}"}, {"items": ["A", "B"]}, "s"
         )
@@ -302,37 +291,28 @@ class TestPlaceholderTriggerNarrowed:
         assert result == {"r": "value='x'"}
 
     def test_template_false_escape_hatch_disables_expansion(self) -> None:
-        # Even a string that looks like a placeholder is returned
-        # untouched when the caller flags it ``template: false``.
         result = ToolStep._resolve_args(
             {"content": {"value": "{state.foo}", "template": False}}, {"foo": "expanded"}, "s"
         )
         assert result == {"content": "{state.foo}"}
 
     def test_template_false_with_non_string_value_passes_through(self) -> None:
-        # The escape hatch carries any payload, not just strings.
         result = ToolStep._resolve_args({"data": {"value": [1, 2, 3], "template": False}}, {}, "s")
         assert result == {"data": [1, 2, 3]}
 
     def test_dict_without_template_false_passes_through_unchanged(self) -> None:
-        # A plain dict argument (no ``template: false`` marker) is not
-        # the escape hatch — it falls through to the existing
-        # "non-string value" path and reaches the tool verbatim.
+        # Without the ``template: false`` marker a dict takes the non-string path, not the hatch.
         payload = {"value": "x", "extra": 1}
         result = ToolStep._resolve_args({"body": payload}, {}, "s")
         assert result == {"body": payload}
 
     def test_js_object_literal_with_space_after_colon_passes_through(self) -> None:
-        # ``{foo: true}`` shape (JS object literal): identifier-then-``:``
-        # is normally a placeholder shape, but the negative lookahead in
-        # the regex refuses ``:`` followed by whitespace so this stays
-        # literal instead of triggering format_map (which would raise).
+        # The regex refuses a ``:`` followed by whitespace, so ``format_map`` never sees this.
         result = ToolStep._resolve_args({"body": "{foo: true, bar: false}"}, {}, "s")
         assert result == {"body": "{foo: true, bar: false}"}
 
     def test_css_rule_with_spaces_passes_through(self) -> None:
-        # ``.x { color: red; }`` shape: the inner ``:`` has whitespace
-        # after it, so the regex does not match.
+        # The inner ``:`` is followed by whitespace, so the regex does not match.
         css = ".x { color: red; padding: 0; }"
         result = ToolStep._resolve_args({"style": css}, {}, "s")
         assert result == {"style": css}

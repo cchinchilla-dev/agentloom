@@ -7,7 +7,6 @@ import pytest
 from agentloom.core.parser import WorkflowParser
 from agentloom.exceptions import ValidationError
 
-# defined here for now, will move to conftest later
 SIMPLE_YAML = """
 name: yaml-test
 version: "1.0"
@@ -152,19 +151,16 @@ steps:
         assert dag.predecessors("b") == {"a"}
 
     def test_build_dag_cycle_raises_error(self) -> None:
-        """Cycle YAML should fail at the reference validation or DAG validation stage."""
+        """A cycle fails at the reference or the DAG validation stage."""
         with pytest.raises(ValidationError):
             WorkflowParser.from_yaml(INVALID_YAML_CYCLE)
 
 
 class TestParseTimeInvariants:
-    """#055 regression — parse-time validation of step ids and concurrency.
+    """Parse-time checks on step ids, ``max_concurrent_steps`` and shared ``output:`` keys.
 
-    Three flavours of footgun became hard errors in 0.5.0: duplicate step
-    ids (used to shadow silently), ``max_concurrent_steps <= 0`` (used to
-    deadlock or surface a cryptic ``total_tokens must be >= 0``), and
-    parallel-eligible steps sharing an ``output:`` key (used to drop most
-    writers under last-writer-wins).
+    A duplicate id would shadow the other step, and parallel steps sharing an ``output:`` key
+    would lose writes to last-writer-wins.
     """
 
     def test_rejects_duplicate_step_ids(self) -> None:
@@ -178,8 +174,7 @@ steps:
         with pytest.raises(ValidationError) as exc_info:
             WorkflowParser.from_yaml(yaml_str)
         msg = str(exc_info.value)
-        # Error must name the offending id and the indices so the workflow
-        # author can find both copies in the source.
+        # The id and both indices let the author find the two copies.
         assert "a" in msg
         assert "[0, 1]" in msg
 
@@ -255,12 +250,8 @@ steps:
     def test_warns_on_partial_chain_owners(self) -> None:
         """Three owners with a partial dependency chain still collide.
 
-        Topology: ``a → b`` (b depends on a, sequential overwrite is
-        intentional) plus ``c`` independent of both. ``b`` and ``c`` can
-        still run concurrently and clobber each other under last-writer-
-        wins, so the warning must name them — even though ``b`` has ``a``
-        in its ancestry. Pre-fix the per-owner ancestry filter dropped
-        ``b`` outright and missed the (b, c) collision.
+        ``b`` depends on ``a`` but can run alongside ``c``, so the warning names ``b`` and ``c``
+        even though ``b`` has ``a`` in its ancestry.
         """
         import warnings
 
@@ -276,16 +267,14 @@ steps:
             warnings.simplefilter("always")
             WorkflowParser.from_yaml(yaml_str)
             messages = [str(w.message) for w in caught if "shared" in str(w.message)]
-        # The collision set must include both ``b`` and ``c`` (the
-        # concurrent pair), not just ``a`` and ``c``.
         assert any("'b'" in m and "'c'" in m for m in messages)
 
 
 class TestStrictExtraKeys:
-    """F33: ``StepDefinition`` and ``WorkflowConfig`` reject unknown
-    keys at parse time (``extra="forbid"``) so a typo fails at
-    ``agentloom validate`` with the offending field named, instead of
-    being silently dropped and surfacing a cryptic run-time error."""
+    """``StepDefinition`` and ``WorkflowConfig`` reject unknown keys at parse time.
+
+    A typo fails ``agentloom validate`` with the field named instead of being dropped silently.
+    """
 
     def test_step_definition_rejects_unknown_key(self) -> None:
         from pydantic import ValidationError as PydanticValidationError
@@ -304,8 +293,7 @@ class TestStrictExtraKeys:
         from agentloom.core.models import WorkflowConfig
 
         with pytest.raises(PydanticValidationError, match="responses"):
-            # ``responses:`` is the half-supported field — only
-            # ``responses_file:`` is wired through.
+            # Mock responses come from ``responses_file:``; an inline ``responses:`` is refused.
             WorkflowConfig.model_validate({"provider": "mock", "responses": ["a", "b"]})
 
     def test_workflow_yaml_with_typo_rejected_at_parse(self) -> None:
@@ -325,8 +313,6 @@ steps:
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             f.write(yaml)
             f.flush()
-            # ``WorkflowParser.from_yaml`` wraps Pydantic / parse failures
-            # in our own ``ValidationError``; asserting that specifically
-            # so a regression to a generic ``Exception`` still surfaces.
+            # from_yaml wraps Pydantic and parse failures in agentloom's own ``ValidationError``.
             with pytest.raises(ValidationError):
                 WorkflowParser.from_yaml(f.name)

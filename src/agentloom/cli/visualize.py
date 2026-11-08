@@ -16,8 +16,7 @@ class VisualizeFormat(StrEnum):
     """Supported ``--format`` values.
 
     Typed as an enum so Typer renders the choices in ``--help`` and
-    rejects anything else with a clear error — pre-0.5.0 ``--format dot``
-    (or any unknown value) silently degraded to ASCII output.
+    rejects anything else with a clear error.
     """
 
     ascii = "ascii"
@@ -69,11 +68,9 @@ def _print_ascii(workflow: object, dag: object) -> None:
 
     for i, layer in enumerate(layers):
         if i > 0:
-            # Draw arrows from previous layer
             typer.echo(f"  {'  |':^50}")
             typer.echo(f"  {'  v':^50}")
 
-        # Draw steps in this layer
         boxes = []
         for step_id in layer:
             stype = step_types.get(step_id, StepType.LLM_CALL)
@@ -84,7 +81,6 @@ def _print_ascii(workflow: object, dag: object) -> None:
         if len(boxes) == 1:
             typer.echo(f"  {boxes[0]:^50}")
         else:
-            # Parallel steps side by side
             line = "  " + "   ".join(boxes)
             typer.echo(line)
 

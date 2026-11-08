@@ -35,25 +35,22 @@ class _RunScope:
     run_id: str = ""
     workflow_span: Any | None = None
     step_spans: dict[str, Any] = field(default_factory=dict)
-    # Keyed by (step_id, attempt). One step can produce multiple
-    # provider spans when the gateway falls back across providers.
+    # Keyed by (step_id, attempt): a gateway fallback opens several provider spans per step.
     provider_spans: dict[tuple[str, int], Any] = field(default_factory=dict)
 
 
-# The run whose task is calling. Each child engine runs in its own task (or
-# inline, between its start and end hooks), so the hooks of a run always find
-# its own scope and start and end every span in the same context.
+# The calling task's run: each child engine runs in its own task (or inline between its hooks),
+# so a run's hooks find its scope and open and close every span in the same context.
 _CURRENT_RUN: ContextVar[_RunScope | None] = ContextVar("agentloom_observer_run", default=None)
 
 
 class WorkflowObserver:
-    """Observes workflow execution, emitting OTel spans and Prometheus metrics.
+    """Workflow observer that emits OTel spans and Prometheus metrics.
 
     Both *tracing* and *metrics* are optional — pass ``None`` to disable either.
 
-    Note: Hook signatures may gain new keyword arguments with defaults in
-    future versions.  Subclasses that override hooks should accept ``**kwargs``
-    for forward compatibility.
+    Hook signatures may gain keyword arguments with defaults; subclasses that
+    override hooks should accept ``**kwargs``.
     """
 
     def __init__(
@@ -96,9 +93,9 @@ class WorkflowObserver:
     def tracing(self) -> Any | None:
         """Public read-only handle to the underlying tracing manager.
 
-        Used by the engine to wire ``WorkflowResult.attach_tracing`` so
-        ``result.annotate(...)`` can auto-emit quality spans (#59) without
-        reaching into private observer state.
+        Used by ``WorkflowEngine._attach_quality_emitter`` so
+        ``result.annotate(...)`` can auto-emit quality spans without reaching
+        into private observer state.
         """
         return self._tracing
 
@@ -168,10 +165,10 @@ class WorkflowObserver:
     def attach_step_event(self, step_id: str, event_name: str, attributes: dict[str, Any]) -> None:
         """Attach an event with arbitrary attributes to a live step span.
 
-        Used by the opt-in prompt-capture path in ``llm_call`` so the full
-        rendered prompt rides on the span as an OTel event rather than a
-        fat attribute (event payloads aren't subject to attribute-size
-        limits and stay easy to filter out at the collector).
+        Used by ``llm_call`` (opt-in prompt capture, conversation turns) so the
+        payload rides on the span as an OTel event rather than a fat attribute
+        (event payloads aren't subject to attribute-size limits and stay easy
+        to filter out at the collector).
         """
         span = self._step_spans.get(step_id)
         if span is None:
@@ -224,19 +221,15 @@ class WorkflowObserver:
             if model:
                 span.set_attribute(SpanAttr.GEN_AI_REQUEST_MODEL, model)
             if provider:
-                # AgentLoom provider names (``google``) translate to the
-                # OTel registry value (``gcp.gemini``).
+                # AgentLoom names (``google``) map to OTel registry values (``gcp.gemini``).
                 span.set_attribute(SpanAttr.GEN_AI_PROVIDER_NAME, to_genai_provider_name(provider))
-                # ``gen_ai.operation.name`` is required on inference spans;
-                # AgentLoom ``llm_call`` always corresponds to ``chat``.
+                # Required on inference spans; an ``llm_call`` is always ``chat``.
                 if step_type == "llm_call":
                     span.set_attribute(
                         SpanAttr.GEN_AI_OPERATION_NAME, GenAIOperationName.CHAT.value
                     )
             if finish_reason:
-                # Spec mandates an array of strings (allows multi-reason
-                # responses). Wrap a single reason rather than emitting a
-                # bare string.
+                # The spec mandates an array of strings.
                 span.set_attribute(SpanAttr.GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason])
             if attachment_count > 0:
                 span.set_attribute(SpanAttr.STEP_ATTACHMENTS, attachment_count)
@@ -276,25 +269,22 @@ class WorkflowObserver:
     ) -> None:
         """Open a child span around a provider HTTP call.
 
-        Creates a ``provider:<name>`` span nested under the current step so
-        the trace tree reflects the ``workflow > step > provider`` hierarchy.
-        ``attempt`` distinguishes fallback retries: a workflow that hits
+        Creates a ``{operation} {model}`` span (e.g. ``chat gpt-4o-mini``)
+        nested under the current step so the trace tree reflects the
+        ``workflow > step > provider`` hierarchy. ``attempt`` distinguishes
+        fallback attempts: a workflow that hits
         provider A and falls back to provider B emits two spans for the
         same ``step_id``. Must be balanced by ``on_provider_call_end``.
         """
         if not self._tracing:
             return
-        # Provider spans ARE the GenAI inference spans — name and attributes
-        # follow the canonical OTel convention so Jaeger / Grafana GenAI
-        # dashboards correlate them out of the box.
+        # Provider spans are the GenAI inference spans, named and tagged per the OTel conventions.
         operation = GenAIOperationName.CHAT.value
         attrs: dict[str, Any] = {
             SpanAttr.GEN_AI_OPERATION_NAME: operation,
             SpanAttr.GEN_AI_PROVIDER_NAME: to_genai_provider_name(provider),
             SpanAttr.GEN_AI_REQUEST_MODEL: model,
-            # Provider span IS the GenAI inference span — use the canonical
-            # ``gen_ai.request.stream`` here. Step-level orchestration spans
-            # keep ``step.stream`` since that's an AgentLoom concept.
+            # ``step.stream`` stays on the AgentLoom step span.
             SpanAttr.GEN_AI_REQUEST_STREAM: stream,
             SpanAttr.PROVIDER_ATTEMPT: attempt,
         }
@@ -341,9 +331,7 @@ class WorkflowObserver:
             span.set_attribute(SpanAttr.GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason])
         if error:
             span.set_attribute(SpanAttr.STEP_ERROR, error)
-            # ``error.type`` is the OTel general-conventions key, conditionally
-            # required on errored spans. Emitted alongside ``step.error`` so
-            # OTel-aware consumers (Jaeger error filters, Tempo) light up.
+            # The OTel general-conventions key for errored spans, beside ``step.error``.
             span.set_attribute(SpanAttr.ERROR_TYPE, error)
             span.set_attribute(SpanAttr.PROVIDER_ATTEMPT_OUTCOME, "error")
         else:
@@ -456,7 +444,7 @@ class WorkflowObserver:
         output_valid: bool | None = None,
         **kwargs: Any,
     ) -> None:
-        """Record the turn of an ``agent`` step (#120): attributes on its span, and the metrics.
+        """Record the turn of an ``agent`` step: attributes on its span, and the metrics.
 
         ``output_valid`` is ``None`` for an agent without an ``output_schema``.
         """
@@ -484,9 +472,7 @@ class WorkflowObserver:
     ) -> None:
         if self._metrics:
             self._metrics.record_provider_error(provider, error_type)
-        # If there's a dangling provider span for this step, close it with
-        # the error recorded so traces don't leak open spans. Iterates all
-        # attempts because the gateway may have failed mid-fallback.
+        # Close the step's dangling provider spans (any fallback attempt) so traces leak none.
         if step_id is not None:
             stale = [k for k in self._provider_spans if k[0] == step_id]
             for key in stale:
@@ -566,7 +552,7 @@ class WorkflowObserver:
     def on_mock_fault(
         self, workflow_name: str, step_id: str, fault_type: str, **kwargs: Any
     ) -> None:
-        """A fault declared in a mock recording failed a call (#123)."""
+        """Record a call failed by a fault declared in a mock recording."""
         if self._metrics:
             self._metrics.record_mock_fault(workflow_name, fault_type)
         span = self._step_spans.get(step_id)

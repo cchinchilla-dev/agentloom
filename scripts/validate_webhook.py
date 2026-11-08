@@ -9,6 +9,7 @@ from pathlib import Path
 from agentloom.checkpointing.file import FileCheckpointer
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import (
+    SandboxConfig,
     StepDefinition,
     StepType,
     WebhookConfig,
@@ -46,7 +47,12 @@ def _wf(webhook_url: str | None = None) -> WorkflowDefinition:
         notify = WebhookConfig(url=webhook_url, timeout=5.0)
     return WorkflowDefinition(
         name="webhook-validation",
-        config=WorkflowConfig(provider="fake", model="fake"),
+        # The capture server listens on loopback, which webhooks refuse by default.
+        config=WorkflowConfig(
+            provider="fake",
+            model="fake",
+            sandbox=SandboxConfig(allow_internal_webhook_targets=True),
+        ),
         state={"input": "hello"},
         steps=[
             StepDefinition(

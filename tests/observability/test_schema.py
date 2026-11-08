@@ -1,9 +1,4 @@
-"""Regression tests for the centralized OTel schema module.
-
-These pin the public string values so downstream consumers (AgentAnvil,
-Grafana dashboards) can depend on them. A rename here should be a
-deliberate, reviewed change — not an accidental edit to a comment.
-"""
+"""Pin the public OTel schema strings that downstream consumers and dashboards depend on."""
 
 from __future__ import annotations
 
@@ -21,8 +16,7 @@ from agentloom.observability.schema import (
 
 
 class TestSpanAttrContract:
-    """GenAI semantic convention keys must be exactly the canonical
-    ``gen_ai.*`` names from the OTel registry — no deprecated aliases."""
+    """GenAI keys are the canonical ``gen_ai.*`` registry names, with no deprecated aliases."""
 
     def test_gen_ai_attribute_keys(self) -> None:
         assert SpanAttr.GEN_AI_OPERATION_NAME == "gen_ai.operation.name"
@@ -76,7 +70,6 @@ class TestGenAIEnums:
         assert GenAIOperationName.EXECUTE_TOOL == "execute_tool"
 
     def test_provider_name_translation(self) -> None:
-        # AgentLoom internal names map to OTel canonical names.
         assert to_genai_provider_name("google") == "gcp.gemini"
         assert to_genai_provider_name("openai") == "openai"
         assert to_genai_provider_name("anthropic") == "anthropic"
@@ -86,8 +79,7 @@ class TestGenAIEnums:
 
 class TestMetricNameCentralization:
     def test_metric_names_prefixed_with_agentloom_or_gen_ai(self) -> None:
-        # AgentLoom-specific metrics use the ``agentloom_`` prefix; GenAI
-        # client metrics use the canonical OTel registry name (``gen_ai.client.*``).
+        # GenAI client metrics keep their OTel registry names; the rest use ``agentloom_``.
         for attr_name, value in vars(MetricName).items():
             if attr_name.isupper() and isinstance(value, str):
                 assert value.startswith("agentloom_") or value.startswith("gen_ai.client."), (
@@ -95,10 +87,7 @@ class TestMetricNameCentralization:
                 )
 
     def test_metric_names_match_emissions(self) -> None:
-        """``MetricName`` constants must mirror exactly what ``metrics.py``
-        emits — drift breaks the Grafana dashboard silently. The scan
-        accepts both AgentLoom-prefixed names (``agentloom_*``) and the
-        canonical OTel GenAI names (``gen_ai.client.*``)."""
+        """Every name ``metrics.py`` emits is in ``MetricName``, or dashboards drift silently."""
         import re
         from pathlib import Path
 
@@ -196,20 +185,17 @@ class TestObserverEmitsRunIdAndGenAI:
             prompt_tokens=10,
             completion_tokens=15,
         )
-        # Span was started with the canonical OTel inference name.
         name, kwargs = tracing.start_span.call_args
         assert name[0] == "chat gpt-4o-mini"
         attrs = kwargs["attributes"]
         assert attrs[SpanAttr.GEN_AI_OPERATION_NAME] == "chat"
         assert attrs[SpanAttr.GEN_AI_PROVIDER_NAME] == "openai"
         assert attrs[SpanAttr.GEN_AI_REQUEST_MODEL] == "gpt-4o-mini"
-        # End closed it.
         tracing.end_span.assert_called_once_with(span)
 
 
 class TestPromptAttributesOnLLMStepSpan:
-    """``llm_call`` step spans must carry the prompt-metadata attributes
-    promised by #125: hash, length_chars, template_id, template_vars."""
+    """``llm_call`` step spans carry the prompt hash, length, template id and template vars."""
 
     def test_prompt_hash_present_on_llm_step_span(self) -> None:
         tracing = MagicMock()
@@ -249,9 +235,7 @@ class TestPromptAttributesOnLLMStepSpan:
 
 
 class TestCapturePromptsFlag:
-    """``observability.capture_prompts`` is off by default; when on, the
-    full rendered prompt rides on the span as an OTel event (not an
-    attribute, to avoid blowing the attribute size budget)."""
+    """``capture_prompts`` sends the prompt as a span event: attributes have a size cap."""
 
     def test_capture_prompts_flag_off_by_default(self) -> None:
         from agentloom.core.models import WorkflowConfig
@@ -260,11 +244,7 @@ class TestCapturePromptsFlag:
         assert cfg.capture_prompts is False
 
     def test_capture_prompts_flag_on_emits_span_event(self) -> None:
-        # When the flag is enabled, ``llm_call`` calls
-        # ``observer.attach_step_event`` with the rendered prompt — verified
-        # at the observer hook level here; the engine wiring is covered by
-        # the integration smoke and the prompt-flag flows through
-        # ``StepContext.capture_prompts``.
+        # Verified at the observer hook here; tests/steps/test_llm_call.py covers the step wiring.
         tracing = MagicMock()
         span = MagicMock()
         tracing.start_span.return_value = span
@@ -282,19 +262,10 @@ class TestCapturePromptsFlag:
 
 
 class TestSchemaModuleIsSingleSourceOfTruth:
-    """Linter-style guard: span / metric attribute literals only live in
-    ``contracts/_semconv.py`` (re-exported by ``observability/schema.py``) so
-    external consumers can rely on a stable contract instead of grepping for
-    ad-hoc strings."""
+    """Attribute literals live only in ``contracts/_semconv.py``: one contract for consumers."""
 
     def test_no_string_literal_span_attrs_outside_schema_module(self) -> None:
-        # Linter-style guard. Targets the high-signal namespaces only —
-        # ``gen_ai.*`` (OTel GenAI conventions) and the AgentLoom
-        # attribute prefixes that ``schema.py`` declares — so that a new
-        # call site reaching for an ad-hoc attribute string fails CI
-        # instead of silently fragmenting the contract. Logger names
-        # (``agentloom.engine`` etc.) are pure package paths and don't
-        # match the attribute regexes by design.
+        # Scans ``gen_ai.*`` and the AgentLoom attribute prefixes; logger names never match.
         import re
         from pathlib import Path
 
@@ -307,10 +278,7 @@ class TestSchemaModuleIsSingleSourceOfTruth:
         ]
         offenders: list[tuple[str, int, str]] = []
         for path in src_root.rglob("*.py"):
-            # ``contracts/_semconv.py`` declares the contract; ``metrics.py``
-            # passes attribute keys as raw strings (OTel SDK requires str keys,
-            # not constants) into histogram observations — its names mirror the
-            # canonical ``gen_ai.*`` registry entries which _semconv.py owns.
+            # _semconv.py owns the names; metrics.py repeats the gen_ai.* keys as raw strings.
             if path.name in ("_semconv.py", "metrics.py"):
                 continue
             text = path.read_text()
@@ -325,10 +293,7 @@ class TestSchemaModuleIsSingleSourceOfTruth:
 
 
 class TestGenAIProviderNameTranslation:
-    """Every concrete provider's internal name must translate to a
-    ``GenAIProviderName`` value via ``to_genai_provider_name`` so the
-    canonical OTel attribute lights up Grafana / Jaeger GenAI dashboards
-    without per-site relabel rules."""
+    """Each provider name maps to a ``GenAIProviderName``, so dashboards need no relabelling."""
 
     def test_registered_providers_translate_to_canonical_names(self) -> None:
         from agentloom.providers.anthropic import AnthropicProvider
