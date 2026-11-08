@@ -7,6 +7,7 @@ import signal
 import sys
 import tempfile
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -122,9 +123,23 @@ class TestShellCommandTool:
             killed.append(sig)
             real_killpg(pid, sig)
 
+        # Cancel once the shell runs: a fixed delay can end before a slow runner spawns it.
+        started = anyio.Event()
+        real_open_process = anyio.open_process
+
+        async def open_process(*args: Any, **kwargs: Any) -> Any:
+            process = await real_open_process(*args, **kwargs)
+            started.set()
+            return process
+
         monkeypatch.setattr("agentloom.tools.builtins.os.killpg", spy)
-        with anyio.move_on_after(0.2):
-            await ShellCommandTool().execute(command="sleep 30 & sleep 30", timeout=60)
+        monkeypatch.setattr("agentloom.tools.builtins.anyio.open_process", open_process)
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(
+                partial(ShellCommandTool().execute, command="sleep 30 & sleep 30", timeout=60)
+            )
+            await started.wait()
+            tg.cancel_scope.cancel()
         assert killed == [signal.SIGKILL]
 
 
