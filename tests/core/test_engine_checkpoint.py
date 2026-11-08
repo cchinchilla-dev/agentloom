@@ -68,7 +68,6 @@ class TestEngineCheckpoint:
         assert result.status == WorkflowStatus.SUCCESS
         assert engine.run_id  # auto-generated
 
-        # Verify checkpoint was saved
         loaded = await checkpointer.load(engine.run_id)
         assert loaded.status == "success"
         assert "step_a" in loaded.completed_steps
@@ -101,7 +100,6 @@ class TestEngineCheckpoint:
         result = await engine.run()
         assert result.status == WorkflowStatus.SUCCESS
 
-        # No files should be created
         checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
         runs = await checkpointer.list_runs()
         assert runs == []
@@ -127,7 +125,6 @@ class TestEngineResumeFromCheckpoint:
     async def test_resume_skips_completed_steps(self, tmp_path: Path) -> None:
         checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
 
-        # Run first, then checkpoint
         engine = WorkflowEngine(
             workflow=_two_step_workflow(),
             provider_gateway=_mock_gateway(),
@@ -137,7 +134,6 @@ class TestEngineResumeFromCheckpoint:
         first_result = await engine.run()
         assert first_result.status == WorkflowStatus.SUCCESS
 
-        # Load checkpoint and resume — all steps already completed, should be a no-op
         checkpoint_data = await checkpointer.load("resume-test")
 
         provider = MockProvider()
@@ -152,7 +148,6 @@ class TestEngineResumeFromCheckpoint:
         result = await resumed.run()
 
         assert result.status == WorkflowStatus.SUCCESS
-        # Provider should NOT have been called — all steps were already done
         assert len(provider.calls) == 0
 
     async def test_resume_continues_from_midpoint(self, tmp_path: Path) -> None:
@@ -160,7 +155,6 @@ class TestEngineResumeFromCheckpoint:
         checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
         workflow = _two_step_workflow()
 
-        # Manually create a checkpoint where only step_a is done
         checkpoint_data = CheckpointData(
             workflow_name="checkpoint-test",
             run_id="partial-run",
@@ -199,7 +193,6 @@ class TestEngineResumeFromCheckpoint:
         result = await resumed.run()
 
         assert result.status == WorkflowStatus.SUCCESS
-        # Only step_b should have been executed
         assert len(provider.calls) == 1
         assert "step_b" in result.step_results
         assert result.step_results["step_b"].status == StepStatus.SUCCESS
@@ -209,7 +202,7 @@ class TestCheckpointErrorHandling:
     """Test that checkpoint save failures are handled gracefully."""
 
     async def test_save_checkpoint_io_error_is_swallowed(self, tmp_path: Path) -> None:
-        """Engine should continue even if checkpoint save raises an I/O error."""
+        """A checkpoint save failing with an I/O error does not fail the run."""
 
         class FailingCheckpointer(BaseCheckpointer):
             async def save(self, data: CheckpointData) -> None:
@@ -230,11 +223,9 @@ class TestCheckpointErrorHandling:
             checkpointer=FailingCheckpointer(),
         )
         result = await engine.run()
-        # Should still succeed even though checkpoint save failed
         assert result.status == WorkflowStatus.SUCCESS
 
     async def test_checkpoint_saved_on_budget_exceeded(self, tmp_path: Path) -> None:
-        """Engine should save checkpoint when budget is exceeded."""
         checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
 
         # MockProvider costs $0.001 per call — budget is $0.0001 so it overruns.
@@ -257,16 +248,13 @@ class TestCheckpointErrorHandling:
             checkpointer=checkpointer,
         )
         result = await engine.run()
-        # Budget check is post-hoc so the step succeeds but the workflow
-        # reports budget_exceeded. However, BudgetExceededError is raised
-        # inside a task group and may be wrapped — accept either status.
+        # The step succeeds; the charge after it is what breaks the budget.
         assert result.status in (WorkflowStatus.BUDGET_EXCEEDED, WorkflowStatus.FAILED)
 
         loaded = await checkpointer.load(engine.run_id)
         assert loaded.status in ("budget_exceeded", "failed")
 
     async def test_checkpoint_saved_on_failure(self, tmp_path: Path) -> None:
-        """Engine should save checkpoint with 'failed' status on exception."""
         checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
 
         class ErrorProvider(MockProvider):
@@ -292,7 +280,7 @@ class TestResumeWithRouter:
     """Test that resuming a workflow with routers restores branch activation."""
 
     async def test_resume_restores_router_activation(self, tmp_path: Path) -> None:
-        """When a completed router is skipped on resume, its target must still activate."""
+        """A completed router skipped on resume still activates its target."""
         workflow = WorkflowDefinition(
             name="router-resume",
             config=WorkflowConfig(provider="mock", model="mock-model"),
@@ -332,8 +320,6 @@ class TestResumeWithRouter:
 
         checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
 
-        # Build a checkpoint where classify + route are done, billing/general pending.
-        # The router chose "billing".
         checkpoint_data = CheckpointData(
             workflow_name="router-resume",
             run_id="router-run",
@@ -379,21 +365,17 @@ class TestResumeWithRouter:
         result = await resumed.run()
 
         assert result.status == WorkflowStatus.SUCCESS
-        # Only billing should have run, general should be skipped
         assert result.step_results["billing"].status == StepStatus.SUCCESS
         assert result.step_results["general"].status == StepStatus.SKIPPED
-        # Provider called once (for billing only)
         assert len(provider.calls) == 1
 
 
 class TestCheckpointStateRedaction:
-    """Checkpoint files must NOT carry plaintext for redacted keys.
+    """Checkpoint files carry no plaintext for redacted keys.
 
-    Approval-gate workflows always checkpoint on pause, so any state key
-    flagged via ``state_schema: {key: {redact: true}}`` or
-    ``AGENTLOOM_REDACT_STATE_KEYS`` has to be masked before the JSON
-    lands on disk — both the runtime snapshot and the literal ``state:``
-    block carried inside ``workflow_definition``.
+    Approval gates checkpoint on every pause, so keys flagged via ``state_schema`` or
+    ``AGENTLOOM_REDACT_STATE_KEYS`` are masked before the JSON lands on disk: in the runtime
+    snapshot and in the ``state:`` block inside ``workflow_definition``.
     """
 
     async def test_state_keys_are_redacted_in_persisted_file(self, tmp_path: Path) -> None:
@@ -575,9 +557,10 @@ class TestCheckpointStateRedaction:
 
 
 class TestCheckpointSchemaStrictness:
-    """F74: a checkpoint written by a newer AgentLoom — a future
-    ``schema_version`` or an unknown step-status enum — is refused at
-    resume time with a clear migration hint, not silently mis-resumed."""
+    """A checkpoint from a newer runtime is refused at resume with a migration hint.
+
+    A future ``schema_version`` or an unknown step status fails loudly instead of mis-resuming.
+    """
 
     async def test_future_schema_version_rejected(self, tmp_path: Path) -> None:
         from agentloom.checkpointing.base import CURRENT_CHECKPOINT_SCHEMA_VERSION
@@ -620,7 +603,6 @@ class TestCheckpointSchemaStrictness:
             )
 
     async def test_current_schema_version_resumes(self, tmp_path: Path) -> None:
-        # Regression net: the default schema_version still resumes.
         checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
         workflow = _two_step_workflow()
         checkpoint_data = CheckpointData(

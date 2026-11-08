@@ -38,9 +38,7 @@ from agentloom.steps.base import BaseStep, StepContext
 
 logger = logging.getLogger("agentloom.steps")
 
-# Captures the variable path inside a ``{path[!conv][:spec]}`` template
-# placeholder, including ``state.items[0].name``-style indexed paths so the
-# emitted ``agentloom.prompt.template_vars`` reflects the full reference.
+# Variable path of a {path[!conv][:spec]} placeholder, indexed ones (state.items[0].name) too
 _TEMPLATE_VAR_RE = re.compile(r"\{([\w][\w.\[\]]*?)(?:[!:][^}]*)?\}")
 
 
@@ -58,7 +56,7 @@ class _Tally:
 
     async def complete(self, **kwargs: Any) -> ProviderResponse:
         response: ProviderResponse = await self._inner.complete(**kwargs)
-        # Kept now: the tool loop rewrites its last response's usage and cost with its totals
+        # Counted per call: the tool loop overwrites its last response's usage and cost with totals
         self._cost_usd += response.cost_usd
         self._usage += response.usage
         return response
@@ -102,7 +100,7 @@ def _build_prompt_metadata(
 
 
 class LLMCallStep(BaseStep):
-    """Executes an LLM call with prompt template rendering from state."""
+    """Step that calls an LLM with a prompt rendered from state."""
 
     @staticmethod
     async def _run_tool_loop(
@@ -118,7 +116,7 @@ class LLMCallStep(BaseStep):
 
         Cost and tokens accumulate across iterations. ``max_tool_iterations``
         bounds the loop; collapses to a single call when ``tools`` is empty.
-        With an ``output_schema`` (an agent step's turn with tools, #120) the
+        With an ``output_schema`` (an agent step's turn with tools) the
         loop ends on the first output-tool call with valid arguments, which
         become ``parsed``, once the other calls of its response have run; if
         one of them failed, the model is asked again.
@@ -139,6 +137,7 @@ class LLMCallStep(BaseStep):
         )
         from agentloom.steps._tools import (
             INVALID_ARGUMENTS,
+            DeclaredTools,
             build_assistant_message_with_tool_calls,
             build_tool_result_messages,
             dispatch_tool_calls,
@@ -150,8 +149,7 @@ class LLMCallStep(BaseStep):
         accumulated_cost = 0.0
 
         def _with_totals(response: ProviderResponse) -> ProviderResponse:
-            # Replace the response usage with the accumulated totals so
-            # the caller sees the full conversation cost.
+            # The caller sees the whole loop's usage and cost, not the last call's
             response.usage = TokenUsage(
                 prompt_tokens=accumulated_prompt,
                 completion_tokens=accumulated_completion,
@@ -172,9 +170,7 @@ class LLMCallStep(BaseStep):
             provider_kwargs = {**provider_kwargs, "agentloom_tools": [*step.tools, reply_tool]}
             if provider_kwargs.get("agentloom_tool_choice") == "auto":
                 provider_kwargs["agentloom_tool_choice"] = "required"
-        # ``max_tool_iterations`` is validated >= 1 on the model so the
-        # loop runs at least once; ``response`` is therefore guaranteed
-        # to be assigned when we exit.
+        # max_tool_iterations >= 1 is validated on the model, so the loop always assigns response
         response: ProviderResponse | None = None
         for _ in range(step.max_tool_iterations):
             response = await gateway.complete(
@@ -236,7 +232,7 @@ class LLMCallStep(BaseStep):
                     )
                 results = await dispatch_tool_calls(
                     pending,
-                    context.tool_registry,
+                    DeclaredTools(context.tool_registry, step.tools),
                     observer=context.observer,
                     step_id=step.id,
                 )
@@ -266,9 +262,7 @@ class LLMCallStep(BaseStep):
             )
             messages.extend(build_tool_result_messages(response.provider, results))
 
-        # Loop exhausted; surface the last response with the cap noted as
-        # finish_reason so callers can detect it. ``response`` is set
-        # because ``max_tool_iterations`` is validated >= 1.
+        # Cap reached: surface the last response, the cap as its finish_reason
         assert response is not None
         if output_schema is not None:
             raise StepError(
@@ -277,13 +271,7 @@ class LLMCallStep(BaseStep):
                 is_retryable=False,
             )
         _with_totals(response)
-        # ``tool_choice: required`` that hits the iteration cap with an
-        # empty final message means the model never produced an answer —
-        # it looped picking tools until the budget ran out. Pre-0.5.0
-        # this surfaced as a bare ``success`` with empty output and no
-        # signal. Tag it with a distinct ``finish_reason`` and a one-line
-        # warning so callers and dashboards can tell it apart from a
-        # normal cap hit (the model answered but kept calling tools).
+        # Empty at the cap with tool_choice required: never answered, unlike a normal cap hit
         if step.tool_choice == "required" and not (response.content or "").strip():
             logger.warning(
                 "Step %r: tool_choice='required' hit the %d-iteration cap with an "
@@ -298,11 +286,11 @@ class LLMCallStep(BaseStep):
         return response
 
     def _output_schema(self, step: StepDefinition) -> ResponseSchema | None:
-        """The schema of a reply that comes through the output tool; an agent step's (#120)."""
+        """The schema of a reply through the output tool; only agent steps have one."""
         return None
 
     def _apply_memory(self, conversation: Conversation) -> None:
-        """Set the budget and trim policy of this turn; an agent step applies its own (#120)."""
+        """Set the budget and trim policy of this turn; an agent step applies its own."""
 
     def _accept(self, step: StepDefinition, response: ProviderResponse) -> None:
         """Raise ``StepError`` on a reply the step must not keep; nothing is written then.
@@ -338,8 +326,8 @@ class LLMCallStep(BaseStep):
     ) -> None:
         """Persist the model's final text answer into the conversation.
 
-        Only the semantic answer is stored — NOT the tool calls made during
-        the tool loop, and NOT the intermediate ``tool_result`` turns. Two
+        Only the semantic answer is stored — not the tool calls made during
+        the tool loop, and not the intermediate ``tool_result`` turns. Two
         reasons:
 
         * **Replay safety.** An assistant turn carrying ``tool_calls`` is
@@ -412,15 +400,14 @@ class LLMCallStep(BaseStep):
     def _make_summarizer(
         context: StepContext, step: StepDefinition, model: str
     ) -> Callable[[list[Message]], Awaitable[str]]:
-        """Build the async summariser the ``summarize_oldest`` trim policy uses.
+        """Build the async summarizer the ``summarize_oldest`` trim policy uses.
 
         Returns a callable that renders the folded turns into a compact
-        transcript and asks the gateway for a summary — the extra LLM call
-        the issue calls for (#119). The call is deliberately cheap
-        (``max_tokens=256``, temperature 0.3) and reuses the step's own
-        model. When the gateway is missing or the call raises, the trim
-        layer catches it and falls back to a deterministic concatenation
-        so the budget contract still holds.
+        transcript and asks the gateway for a summary in one extra LLM call.
+        The call is deliberately cheap (``max_tokens=256``, temperature 0.3)
+        and reuses the step's own model. When the gateway is missing or the
+        call raises, the trim layer falls back to a deterministic
+        concatenation so the budget contract still holds.
         """
 
         async def _summarize(folded: list[Message]) -> str:
@@ -569,7 +556,7 @@ class LLMCallStep(BaseStep):
         tally = _Tally(context.provider_gateway)
         result = await self._execute(context.model_copy(update={"provider_gateway": tally}))
         # Every call the step made, failed or not, its summaries and re-asks included: a
-        # gateway of its own (``GatewayProtocol``) tells the engine nothing of them (#120)
+        # gateway of its own (``GatewayProtocol``) tells the engine nothing of them
         result.cost_usd, result.token_usage = tally.spent()
         return result
 
@@ -577,9 +564,7 @@ class LLMCallStep(BaseStep):
         step = context.step_definition
         start = time.monotonic()
 
-        # A conversation-backed llm_call may omit ``prompt`` — the trailing
-        # user turn already lives in the loaded messages. Free-form calls
-        # still require it.
+        # A conversation-backed call may omit prompt: its user turn is already in the history
         if not step.prompt and not step.conversation:
             raise StepError(step.id, "LLM call step requires a 'prompt' field", is_retryable=False)
 
@@ -599,11 +584,7 @@ class LLMCallStep(BaseStep):
             # The same template fails the same way on every attempt
             raise StepError(step.id, f"Prompt template error: {e}", is_retryable=False) from e
 
-        # Opt-in full-prompt capture as a span event so trusted environments
-        # can debug from Jaeger without re-running. Off by default — see
-        # ``WorkflowConfig.capture_prompts``. When a redaction policy is in
-        # effect the captured copy is re-rendered against the redacted state
-        # so secret values never reach the trace backend.
+        # Opt-in (capture_prompts); re-rendered on redacted state so secrets never reach traces
         if context.capture_prompts and context.observer is not None:
             attach = getattr(context.observer, "attach_step_event", None)
             if callable(attach):
@@ -672,12 +653,7 @@ class LLMCallStep(BaseStep):
 
         messages: list[dict[str, Any]] = []
         if conversation is not None:
-            # System-turn handling: a single-agent conversation gets the
-            # system prompt inserted once at the head. A multi-agent
-            # conversation (``speaker`` set) re-asserts the current
-            # speaker's system prompt on THIS turn via a transient system
-            # message that is NOT persisted — otherwise agent B would
-            # inherit agent A's instructions from the shared history.
+            # A speaker's prompt stays out of the history, or agent B would inherit agent A's
             transient_system: dict[str, Any] | None = None
             if rendered_system:
                 if step.speaker:
@@ -690,12 +666,7 @@ class LLMCallStep(BaseStep):
                 answered = Message(role="user", content=rendered_prompt)
                 conversation.messages.append(answered)
             else:
-                # No prompt this turn — the conversation must already end on
-                # a turn the provider can answer (a ``user`` message, or a
-                # ``tool`` result awaiting synthesis). Ending on ``system``
-                # or ``assistant`` means the model would be asked to continue
-                # after its own turn, which most providers reject. Surface a
-                # clear StepError rather than shipping a malformed request.
+                # No prompt: providers reject a reply that continues the model's own turn
                 last_answerable = next(
                     (m for m in reversed(conversation.messages) if m.role != "system"),
                     None,
@@ -730,18 +701,10 @@ class LLMCallStep(BaseStep):
                 )
             messages = to_provider_messages(conversation)
             if transient_system is not None:
-                # Re-assert the speaker's instruction at the head so the
-                # model reads it as the operative system message for this
-                # turn, ahead of the shared history + any summary prefix.
+                # The speaker's instruction leads, ahead of the shared history and any summary
                 messages.insert(0, transient_system)
-            # Content blocks live only for THIS turn — they're not part of
-            # the persisted conversation (base64 payloads would balloon the
-            # checkpoint). Hoist them onto the user turn we just appended so
-            # per-provider ``_format_messages`` picks up the
-            # ``list[ContentBlock]`` shape via ``build_multimodal_content``.
-            # Guarded on ``appended_user_turn`` so we never overwrite a
-            # trailing assistant / tool message (which would drop its text
-            # and attach blocks to a non-user role).
+            # Blocks are not persisted (base64 would bloat checkpoints) and go only on the user
+            # turn appended here, never over a trailing assistant or tool message
             if content_blocks and appended_user_turn and messages:
                 messages[-1]["content"] = build_multimodal_content(rendered_prompt, content_blocks)
         else:
@@ -775,9 +738,7 @@ class LLMCallStep(BaseStep):
             from agentloom.core.models import ToolChoiceByName
 
             provider_kwargs["agentloom_tools"] = step.tools
-            # Normalize the typed-union ``tool_choice`` to the dict form
-            # the provider translators expect — keeps the wire layer
-            # provider-shape-agnostic.
+            # Typed tool_choice to the dict form the provider translators expect
             choice: Any = step.tool_choice
             if isinstance(choice, ToolChoiceByName):
                 choice = {"name": choice.name}
@@ -787,13 +748,9 @@ class LLMCallStep(BaseStep):
             provider_kwargs["agentloom_response_schema"] = step.response_schema
             provider_kwargs["agentloom_step_id"] = step.id
 
-        # A typed reply next to tools comes through the output tool: agent steps (#120).
+        # A typed reply next to tools comes through the output tool (agent steps only).
         output_schema = self._output_schema(step) if step.tools else None
 
-        # Tool-call loop: re-prompt with tool results until the model
-        # stops requesting tools or we exhaust ``max_tool_iterations``.
-        # Costs and tokens accumulate across iterations; only the final
-        # response's content is exposed to the caller.
         try:
             response = await self._run_tool_loop(
                 context=context,
@@ -917,12 +874,7 @@ class LLMCallStep(BaseStep):
                 error_classification=classify_failure(e, step.retry.retryable_status_codes),
             )
 
-        # TTFT measures wall-clock time from just before the first stream
-        # iteration to the first yielded chunk.  This *includes* HTTP
-        # connection setup (the provider iterator is lazy), so it reflects
-        # end-to-end latency to first token from the consumer's perspective.
-        # Rate-limiter wait is excluded (happens before gateway.stream()
-        # returns).
+        # TTFT includes HTTP connect (the provider iterator is lazy), not the rate-limiter wait
         ttft_ms: float | None = None
         stream_start = time.monotonic()
         first_chunk = True
@@ -948,8 +900,7 @@ class LLMCallStep(BaseStep):
                 error_classification=classify_failure(e, step.retry.retryable_status_codes),
             )
         finally:
-            # Ensure the underlying httpx stream is closed even on partial
-            # consumption (e.g. MAX_ACCUMULATED_BYTES exceeded).
+            # Close the httpx stream even on partial consumption (MAX_ACCUMULATED_BYTES exceeded)
             if sr._iterator is not None:
                 aclose = getattr(sr._iterator, "aclose", None)
                 if aclose:

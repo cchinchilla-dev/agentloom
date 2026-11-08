@@ -8,8 +8,7 @@ metadata:
     app.kubernetes.io/part-of: agentloom
     app.kubernetes.io/managed-by: argocd
 spec:
-  # NOTE: For production, create a dedicated ArgoCD project with scoped
-  # source repos, destination namespaces, and allowed resource kinds.
+  # For production, use a dedicated AppProject scoped to source repos, namespaces and kinds.
   project: default
   source:
     repoURL: https://github.com/cchinchilla-dev/agentloom

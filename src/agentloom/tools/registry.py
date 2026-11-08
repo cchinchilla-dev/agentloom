@@ -27,20 +27,15 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
-        # Records or replays the results of tool-loop calls (#164); ``None`` runs them live.
+        # Records or replays the results of tool-loop calls; ``None`` runs them live.
         self.tape: ToolTape | None = None
 
     def register(self, tool: BaseTool, *, replace: bool = False) -> None:
         """Register a tool instance.
 
-        Args:
-            tool: The tool to register.
-            replace: When ``False`` (default), registering a name that is
-                already taken logs a warning before overwriting — silent
-                clobbering is how a custom tool subclassed under a
-                builtin's name (e.g. ``http_request``) used to displace
-                the builtin with zero feedback. Pass ``replace=True`` to
-                override deliberately and silence the warning.
+        A name already taken is overwritten with a warning, so a custom tool
+        under a builtin's name (e.g. ``http_request``) cannot displace it
+        silently. ``replace=True`` overrides deliberately, without the warning.
         """
         if not tool.name:
             raise ValueError("Tool must have a 'name' attribute")
@@ -57,15 +52,11 @@ class ToolRegistry:
         """Get a tool by name.
 
         Raises:
-            ToolNotFoundError: If tool is not registered. Subclass of
-                ``KeyError`` so pre-0.5.0 ``except KeyError`` call sites
-                keep working; the change is purely additive — the
-                resilience layer now sees a non-retryable marker on the
-                exception and skips retries.
+            ToolNotFoundError: If the tool is not registered. A non-retryable
+                ``KeyError`` subclass, so ``except KeyError`` call sites catch it.
         """
         if name not in self._tools:
-            # Lazy import keeps ``tools/registry.py`` free of an import
-            # edge into ``exceptions.py`` at module load.
+            # Lazy, so this module has no import edge into ``exceptions`` at load time.
             from agentloom.exceptions import ToolNotFoundError
 
             raise ToolNotFoundError(name, list(self._tools.keys()))
@@ -83,14 +74,7 @@ class ToolRegistry:
         ]
 
     def to_provider_format(self, provider: str) -> list[dict[str, Any]]:
-        """Convert tools to the function-calling format of a provider.
-
-        Args:
-            provider: Provider name ('openai', 'anthropic', 'google').
-
-        Returns:
-            List of tool definitions in provider-specific format.
-        """
+        """Convert tools to a provider's function-calling format: Anthropic's, else OpenAI's."""
         if provider in ("openai", "google"):
             return [
                 {

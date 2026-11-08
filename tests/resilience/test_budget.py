@@ -65,9 +65,7 @@ class TestBudgetEnforcer:
 
 
 class TestAsyncBudgetPrimitives:
-    """``estimate`` and ``charge`` are the engine-wired primitives. The
-    ``anyio.Lock`` is what closes the parallel-layer race that the
-    pre-0.5.0 bare-float counter could not detect."""
+    """The engine-wired ``estimate`` and ``charge``, whose lock closes the parallel-layer race."""
 
     async def test_estimate_within_budget(self) -> None:
         be = BudgetEnforcer(limit_usd=1.0)
@@ -88,16 +86,11 @@ class TestAsyncBudgetPrimitives:
         await be.charge(0.6)
         with pytest.raises(BudgetExceededError):
             await be.charge(0.5)
-        # Even on overrun, the charge is recorded so observability sees
-        # how far the overshoot went.
+        # The overrun is still recorded, so observability sees how far it overshot.
         assert be.spent == pytest.approx(1.1)
 
     async def test_charge_atomic_under_50_parallel_writers(self) -> None:
-        """50 coroutines each charging $0.01 against a $0.10 budget must
-        produce exactly 10 successful charges, with all others raising
-        ``BudgetExceededError``. Pre-lock, two coroutines that both read
-        ``_spent = 0.09`` and added ``0.01`` would both succeed, leaving
-        the counter at ``0.11`` and the limit silently unenforced."""
+        """50 coroutines charging $0.01 against $0.10: exactly 10 succeed, the rest raise."""
         be = BudgetEnforcer(limit_usd=0.10)
         successes = 0
         failures = 0
@@ -114,11 +107,7 @@ class TestAsyncBudgetPrimitives:
             for _ in range(50):
                 tg.start_soon(attempt)
 
-        # Exactly 10 charges fit within $0.10 (charge raises on strict
-        # ``>``, so the 10th brings spent to exactly $0.10 and does not
-        # raise). The 11th onwards each still increment spent inside
-        # the lock before raising — so no drops, no double-counts: the
-        # final spent is precisely ``50 * 0.01 == 0.50``.
+        # Strict ``>`` lets the 10th charge land on $0.10; the other 40 still count before raising.
         assert successes == 10
         assert failures == 40
         assert be.spent == pytest.approx(0.50)

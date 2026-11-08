@@ -10,7 +10,6 @@ from agentloom.providers.recorder import RecordingProvider
 
 
 async def test_records_then_replays(tmp_path):
-    # Source provider: a mock with a known response
     src_file = tmp_path / "src.json"
     src_file.write_text(
         json.dumps(
@@ -41,7 +40,6 @@ async def test_records_then_replays(tmp_path):
     assert data["s1"]["usage"]["total_tokens"] == 7
     assert "latency_ms" in data["s1"]
 
-    # Replay via a fresh MockProvider from the recorded file
     replay = MockProvider(responses_file=recording_path)
     r2 = await replay.complete(messages=messages, model="gpt-4o-mini", step_id="s1")
     assert r2.content == "captured"
@@ -64,8 +62,6 @@ async def test_close_flushes_and_closes_wrapped(tmp_path):
     recording_path = tmp_path / "out.json"
     recorder = RecordingProvider(source, recording_path)
     await recorder.close()
-    # File exists after close. Only the version envelope is present since no
-    # completions were recorded.
     assert recording_path.exists()
     data = json.loads(recording_path.read_text())
     assert data.get("_version") == 2
@@ -92,8 +88,7 @@ async def test_observer_notified_on_capture(tmp_path):
 
 
 async def test_multiple_recorders_same_path_do_not_clobber(tmp_path):
-    """Regression: two RecordingProviders on the same path must accumulate,
-    not overwrite each other's entries on close()."""
+    """Two RecordingProviders on one path accumulate, not overwrite each other, on ``close()``."""
     path = tmp_path / "shared.json"
 
     rec_a = RecordingProvider(MockProvider(default_response="a"), path)
@@ -102,7 +97,7 @@ async def test_multiple_recorders_same_path_do_not_clobber(tmp_path):
     await rec_a.complete(messages=[{"role": "user", "content": "m1"}], model="m", step_id="from_a")
     await rec_b.complete(messages=[{"role": "user", "content": "m2"}], model="m", step_id="from_b")
 
-    # close() in reverse order — the one with the emptier history must not wipe
+    # ``rec_a`` closes last and never saw ``from_b``: its flush must merge, not overwrite.
     await rec_b.close()
     await rec_a.close()
 
@@ -151,8 +146,7 @@ async def test_flush_recovers_from_corrupted_file(tmp_path):
 
 
 async def test_stream_recording_produces_replayable_entry(tmp_path):
-    """Streamed completions must be captured under the same key format as
-    ``complete()`` so that the resulting file is fully replayable."""
+    """A streamed completion is recorded under the same key as ``complete()``, so it replays."""
 
     from collections.abc import AsyncIterator
 
@@ -201,7 +195,6 @@ async def test_stream_recording_produces_replayable_entry(tmp_path):
     assert data["s_stream"]["usage"]["total_tokens"] == 4
     assert data["s_stream"]["finish_reason"] == "stop"
 
-    # Replayable via MockProvider.
     replay = MockProvider(responses_file=tmp_path / "r.json")
     r = await replay.complete(
         messages=[{"role": "user", "content": "hi"}],
@@ -219,8 +212,7 @@ async def test_supports_model_delegates_to_wrapped(tmp_path):
 
 
 async def test_concurrent_recording_persists_all_entries(tmp_path):
-    """N parallel complete() calls on one RecordingProvider must all appear
-    in the output file — no last-writer-wins, no dict-iteration races."""
+    """Parallel ``complete()`` calls all reach the file: no last writer wins, no iteration race."""
 
     import anyio
 
@@ -245,8 +237,7 @@ async def test_concurrent_recording_persists_all_entries(tmp_path):
 
 
 async def test_concurrent_recording_does_not_raise_dict_iteration_error(tmp_path):
-    """Merging recorded entries during flush must not iterate a dict that is
-    being mutated by another coroutine."""
+    """The flush merge never iterates a dict another coroutine is mutating."""
 
     import anyio
 
@@ -274,8 +265,7 @@ async def test_concurrent_recording_does_not_raise_dict_iteration_error(tmp_path
 
 
 async def test_stream_with_none_iterator_returns_no_chunks(tmp_path):
-    """If the wrapped provider's StreamResponse has a ``None`` iterator,
-    the recorder's tap returns early without crashing."""
+    """A wrapped stream with a ``None`` iterator yields no chunks instead of crashing."""
     from agentloom.providers.base import BaseProvider, StreamResponse
     from agentloom.providers.recorder import RecordingProvider
 
@@ -287,7 +277,6 @@ async def test_stream_with_none_iterator_returns_no_chunks(tmp_path):
 
         async def stream(self, messages, model, **kwargs):  # type: ignore[no-untyped-def]
             sr = StreamResponse(model=model, provider=self.name)
-            # _iterator stays None — the recorder must handle it gracefully.
             return sr
 
         def supports_model(self, model: str) -> bool:
@@ -304,7 +293,7 @@ async def test_stream_with_none_iterator_returns_no_chunks(tmp_path):
 
 
 def test_a_recording_is_merged_with_the_shared_lock_held(tmp_path) -> None:
-    # Every writer of a recording (the recorders, the tool tape) merges under one lock (#164).
+    # Every writer of a recording (the recorders, the tool tape) merges under one lock.
     from agentloom.providers.recorder import _FILE_LOCK, merge_into_recording
 
     held: list[bool] = []
@@ -326,7 +315,7 @@ async def _attempt(recorder: RecordingProvider, failed: Attempt | None = None) -
 
 
 async def test_a_retry_drops_the_turns_of_the_failed_attempt(tmp_path) -> None:
-    # The engine signals each attempt (#164): a retry forgets what the failed attempt recorded.
+    # The engine signals each attempt: a retry forgets what the failed attempt recorded.
     path = tmp_path / "rec.json"
     recorder = RecordingProvider(MockProvider(default_response="ok"), path)
     first = await _attempt(recorder)

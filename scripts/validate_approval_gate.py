@@ -9,8 +9,8 @@ Exercises the full flow programmatically:
 
 Can be run standalone:
     uv run python scripts/validate_approval_gate.py
-Or inside Docker:
-    docker run --rm agentloom:dev python scripts/validate_approval_gate.py
+Or inside the dev image, which does not ship ``scripts/``:
+    docker run --rm -v "$PWD/scripts:/s:ro" agentloom:dev python /s/validate_approval_gate.py
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""``ReplayCut`` on its own: which calls go live, and the tools that follow them (#165)."""
+"""``ReplayCut`` on its own: which calls go live, and the tools that follow them."""
 
 from __future__ import annotations
 

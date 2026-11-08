@@ -9,8 +9,6 @@ from agentloom.steps.router import evaluate_expression
 
 
 class TestExpressionEvaluation:
-    """Test basic expression evaluation against a namespace."""
-
     def test_simple_equality(self) -> None:
         result = evaluate_expression("x == 1", {"x": 1})
         assert result is True
@@ -56,8 +54,6 @@ class TestExpressionEvaluation:
 
 
 class TestAttributeAccess:
-    """Test attribute-style access for state proxy objects."""
-
     def test_attribute_access(self) -> None:
         class StateProxy:
             def __init__(self) -> None:
@@ -81,8 +77,6 @@ class TestAttributeAccess:
 
 
 class TestSafeBuiltins:
-    """Test that allowed builtin functions work in expressions."""
-
     def test_len(self) -> None:
         result = evaluate_expression("len(items) > 0", {"items": [1, 2, 3]})
         assert result is True
@@ -117,8 +111,6 @@ class TestSafeBuiltins:
 
 
 class TestSafeEvalRestrictions:
-    """Test that unsafe operations are rejected."""
-
     def test_import_not_allowed(self) -> None:
         with pytest.raises(SecurityError, match="not allowed"):
             evaluate_expression("__import__('os')", {})
@@ -148,7 +140,6 @@ class TestSafeEvalRestrictions:
             evaluate_expression("if True: pass", {})
 
     def test_dunder_builtins_reference_blocked(self) -> None:
-        # Any reference to a dunder identifier is rejected at validation
-        # time, even before evaluation would hit the empty __builtins__.
+        # Dunder names are rejected at validation, before evaluation reaches the empty __builtins__.
         with pytest.raises(SecurityError):
             evaluate_expression("__builtins__", {})

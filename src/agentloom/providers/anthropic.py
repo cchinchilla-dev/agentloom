@@ -41,8 +41,7 @@ _ANTHROPIC_EXTRA_PAYLOAD_KEYS = frozenset(
         "tool_choice",
         # Raw passthrough for advanced callers (full Anthropic shape).
         "thinking",
-        # Provider-uniform high-level config from ``llm_call``; we translate
-        # it here to the wire-format ``thinking`` payload.
+        # Provider-uniform config from ``llm_call``, translated to the ``thinking`` payload.
         "thinking_config",
     }
 )
@@ -54,9 +53,8 @@ def _translate_thinking_config(extras: dict[str, Any]) -> bool:
     Mutates ``extras`` in place and returns whether the caller wants the
     chain-of-thought trace exposed via ``ProviderResponse.reasoning_content``.
     Defaults to ``True`` so callers that don't pass a ``ThinkingConfig`` keep
-    receiving thinking blocks when the provider returns them. If the caller
-    already provided a raw ``thinking`` dict, it wins — we don't clobber the
-    explicit override.
+    receiving thinking blocks when the provider returns them. A raw
+    ``thinking`` dict the caller already provided wins over the config.
     """
     cfg = extras.pop("thinking_config", None)
     capture = True if cfg is None else bool(getattr(cfg, "capture_reasoning", True))
@@ -83,8 +81,7 @@ class AnthropicProvider(BaseProvider):
         base_url: str = "https://api.anthropic.com/v1",
         **kwargs: Any,
     ) -> None:
-        # Normalize base_url: SDK-style URLs (without /v1) need the suffix
-        # for our direct httpx calls (e.g. ANTHROPIC_BASE_URL from Claude Desktop).
+        # ANTHROPIC_BASE_URL-style URLs omit /v1 (the SDK appends /v1/messages), so add it here.
         if base_url and not base_url.rstrip("/").endswith("/v1"):
             base_url = base_url.rstrip("/") + "/v1"
         super().__init__(api_key=api_key, base_url=base_url, **kwargs)
@@ -127,10 +124,7 @@ class AnthropicProvider(BaseProvider):
             else:
                 parts: list[dict[str, Any]] = []
                 for block in content:
-                    # Tool-calling messages build pure-dict wire-format
-                    # blocks (``tool_use``, ``tool_result``); pass those
-                    # through verbatim. Multimodal Pydantic blocks below need
-                    # translation to Anthropic's specific keys.
+                    # Tool-loop blocks are already wire-format dicts: pass them through.
                     if isinstance(block, dict):
                         parts.append(block)
                         continue
@@ -195,13 +189,7 @@ class AnthropicProvider(BaseProvider):
         )
         capture_reasoning = _translate_thinking_config(extras)
         if agentloom_tools and agentloom_tool_choice != "none":
-            # Anthropic has no native ``tool_choice="none"`` mode — the
-            # translator returns ``None`` in that case so the field is
-            # omitted, but keeping ``tools`` in the payload still lets the
-            # model invoke them. To honor the user's "do not call tools
-            # this turn" intent, drop ``tools`` from the wire entirely
-            # when choice is ``"none"`` (regression test in
-            # ``test_tool_calling.TestAnthropicNoneSuppressesTools``).
+            # "none" leaves ``tools`` off the request, so the model cannot call them.
             from agentloom.steps._tools import (
                 translate_tool_choice_for_anthropic,
                 translate_tools_for_anthropic,
@@ -213,8 +201,7 @@ class AnthropicProvider(BaseProvider):
                 extras["tool_choice"] = mapped_choice
         system_prompt, filtered_messages = self._format_messages(messages)
 
-        # Anthropic has no native ``response_format``; prefill the assistant
-        # turn with ``"{"`` so the model continues the JSON from there.
+        # No native ``response_format``: prefill ``"{"`` so the model continues the JSON.
         if agentloom_response_schema is not None:
             from agentloom.steps._structured import anthropic_system_prefix
 
@@ -251,8 +238,7 @@ class AnthropicProvider(BaseProvider):
             if block_type == "text":
                 content += block.get("text", "")
             elif block_type == "thinking":
-                # Extended-thinking trace. Captured whenever present; callers
-                # that don't want it simply ignore ``reasoning_content``.
+                # Extended-thinking trace, returned only when ``capture_reasoning`` is on.
                 reasoning_parts.append(block.get("thinking", "") or block.get("text", ""))
 
         # Reattach the prefilled ``"{"`` — Anthropic only echoes the continuation.
@@ -260,13 +246,7 @@ class AnthropicProvider(BaseProvider):
             content = "{" + content
 
         usage_data = data.get("usage", {})
-        # Anthropic rolls extended-thinking tokens into ``output_tokens``
-        # rather than exposing a separate field — the official SDK's
-        # ``Usage`` model has no ``thinking_tokens``/``reasoning_tokens``
-        # entry, and the docs state explicitly that thinking tokens are
-        # billed within ``output_tokens``. Cost is therefore correct
-        # already; ``TokenUsage.reasoning_tokens`` stays 0 as a documented
-        # limitation (same shape as Ollama).
+        # Thinking bills inside ``output_tokens`` with no separate count: reasoning_tokens stays 0.
         input_tokens = usage_data.get("input_tokens", 0)
         output_tokens = usage_data.get("output_tokens", 0)
         usage = TokenUsage(
@@ -305,15 +285,13 @@ class AnthropicProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
-        # Mirror ``complete``: forward the tool surface to streaming requests
-        # too, otherwise ``--stream`` + ``tools=`` crashes on extras validation.
+        # As in complete(): pop the agentloom_* kwargs, or validation rejects them.
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
         agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs("anthropic", "stream", kwargs, _ANTHROPIC_EXTRA_PAYLOAD_KEYS)
-        # Stream does not yet capture ``thinking`` deltas (separate work);
-        # the return value is intentionally discarded here.
+        # stream() ignores thinking deltas, so the capture flag goes unused.
         _translate_thinking_config(extras)
         if agentloom_tools and agentloom_tool_choice != "none":
             from agentloom.steps._tools import (
@@ -392,8 +370,7 @@ class AnthropicProvider(BaseProvider):
                         sr.finish_reason = delta.get("stop_reason")
                         usage = data.get("usage", {})
                         completion_tokens = usage.get("output_tokens", 0)
-                        # Set usage immediately so the gateway wrapper sees
-                        # populated values before StopAsyncIteration propagates.
+                        # Set now: the gateway wrapper reads usage as soon as the iterator ends.
                         sr.usage = TokenUsage(
                             prompt_tokens=prompt_tokens,
                             completion_tokens=completion_tokens,
@@ -411,8 +388,7 @@ class AnthropicProvider(BaseProvider):
         dimensions: int | None = None,
         **kwargs: Any,
     ) -> EmbeddingResponse:
-        # Anthropic ships no first-party embeddings endpoint; the gateway
-        # catches ``NotImplementedError`` and falls back to the next candidate.
+        # No first-party embeddings API: the gateway skips to the next candidate on this error.
         raise NotImplementedError(
             "Anthropic does not offer a native embeddings API. Use OpenAI "
             "'text-embedding-3-*', Google 'gemini-embedding-001', a local "

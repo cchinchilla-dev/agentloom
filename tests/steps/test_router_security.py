@@ -1,9 +1,4 @@
-"""Regression tests for router expression sandbox.
-
-Covers the CVE-equivalent bypass described in GHSA-c37m-mv4j-972v — arbitrary
-code execution through attribute-call chains over `__class__` /
-`__subclasses__()` / `__call__` and through the `type` builtin.
-"""
+"""Tests for the router expression sandbox, including the GHSA-c37m-mv4j-972v payloads."""
 
 from __future__ import annotations
 
@@ -48,14 +43,13 @@ class TestRejectsDunderAttributeAccess:
             evaluate_expression("x.__class__.__mro__", {"x": 0})
 
     def test_rejects_single_underscore_prefix(self) -> None:
-        # Private-by-convention attributes are also reachable into internals;
-        # block them wholesale rather than trying to enumerate risky ones.
+        # Private-by-convention names reach internals too: block them all, not a risky few.
         with pytest.raises(SecurityError):
             evaluate_expression("x._private", {"x": object()})
 
 
 class TestRejectsTypeBuiltin:
-    """`type` must be removed from the safe-builtins set."""
+    """`type` is not among the safe builtins."""
 
     def test_rejects_bare_type_call(self) -> None:
         with pytest.raises(SecurityError):
@@ -76,11 +70,10 @@ class TestRejectsNonDunderBlocklist:
 
 
 class TestRejectsClassInstantiationViaAttributeCall:
-    """Attribute calls may not be used to reach the object graph."""
+    """Attribute calls cannot reach the object graph."""
 
     def test_rejects_call_via_subscript_of_class_chain(self) -> None:
-        # Pattern: ().__class__.__bases__[0].__subclasses__()[N].__call__(...)
-        # blocked by the dunder-prefix rejection on `__class__`.
+        # The dunder rejection on `__class__` stops the chain at its first link.
         with pytest.raises(SecurityError):
             evaluate_expression(
                 "().__class__.__bases__[0].__subclasses__()",
@@ -88,8 +81,7 @@ class TestRejectsClassInstantiationViaAttributeCall:
             )
 
     def test_rejects_call_on_literal_receiver(self) -> None:
-        # Call receivers must be a Name/Attribute/Subscript chain — never a
-        # bare literal — so a `(1).bit_length()` style call is out.
+        # A call receiver must be a Name, Attribute or Subscript chain, never a literal.
         with pytest.raises(SecurityError):
             evaluate_expression("(1).bit_length()", {})
 
@@ -104,7 +96,7 @@ class TestRejectsClassInstantiationViaAttributeCall:
 
 
 class TestAcceptsDocumentedGrammar:
-    """Positive cases that must keep working after the sandbox tightening."""
+    """Positive cases the sandbox accepts."""
 
     def test_state_attribute_equality(self) -> None:
         class State:
@@ -154,15 +146,10 @@ class TestAcceptsDocumentedGrammar:
 
 
 class TestGHSAcm37mMv4j972vPayloads:
-    """Explicit regression for GHSA-c37m-mv4j-972v.
-
-    Verbatim payloads from the advisory. They MUST raise SecurityError on
-    parse — never reach the eval stage.
-    """
+    """Verbatim payloads from GHSA-c37m-mv4j-972v, each refused at parse time, before eval."""
 
     def test_payload_1_type_call_via_type_builtin(self) -> None:
-        # `type` removed from safe-builtins + `__call__` / `__base__` dunder
-        # rejection close this chain at parse time.
+        # The missing `type` builtin and the dunder rejection each close this chain at parse time.
         expr = 'type.__call__(type(()).__base__.__subclasses__()[0], ["sh", "-c", "whoami"])'
         with pytest.raises(SecurityError):
             evaluate_expression(expr, {})
@@ -174,8 +161,7 @@ class TestGHSAcm37mMv4j972vPayloads:
             evaluate_expression(expr, {})
 
     def test_payload_3_catch_warnings_module_builtins_chain(self) -> None:
-        # `__class__` / `__mro__` / `__getitem__` / `__call__` / `__builtins__`
-        # — every step on the chain is rejected by the dunder filter.
+        # The dunder filter rejects every link of this chain.
         expr = (
             "''.__class__.__mro__.__getitem__(1).__subclasses__().__getitem__(0)"
             ".__call__()._module.__builtins__.__getitem__('__import__')"
@@ -186,11 +172,10 @@ class TestGHSAcm37mMv4j972vPayloads:
 
 
 class TestRouterStepPropagatesSecurityError:
-    """`RouterStep.execute()` must surface SecurityError unchanged.
+    """`RouterStep.execute()` surfaces SecurityError unchanged.
 
-    Wrapping it in a generic `StepError` would hide that the input itself
-    was an attack — the caller (engine, observer, audit log) needs to see
-    the exact exception type.
+    A generic `StepError` would hide from the engine, observer and audit log that the input
+    itself was an attack.
     """
 
     async def test_propagates_security_error_from_condition(self) -> None:
@@ -211,12 +196,9 @@ class TestRouterStepPropagatesSecurityError:
 
 
 class TestRejectsSubscriptDunderBypass:
-    """``state['__class__']`` and ``state['_secret']`` must be blocked.
+    """``state['__class__']`` and ``state['_secret']`` are blocked like their attribute forms.
 
-    Previously the validator only inspected ``ast.Attribute`` nodes,
-    leaving string-constant subscripts as an end-run around the dunder
-    gate. The fix applies ``_reject_attribute`` to ``ast.Subscript``
-    slices too when the slice is an ``ast.Constant`` of type ``str``.
+    A string-constant subscript goes through ``_reject_attribute`` as an attribute name does.
     """
 
     @pytest.mark.parametrize(
@@ -259,18 +241,10 @@ class TestRejectsSubscriptDunderBypass:
 
 
 class TestDotAccessDictDoesNotLeakInternals:
-    """``state['_data']`` must not return the wrapper's raw underlying dict.
-
-    Runtime half of the router subscript bypass: previously
-    ``DotAccessDict.__getattr__("_data")`` fell back to
-    ``object.__getattribute__`` and exposed the wrapper's own attribute.
-    """
+    """``state['_data']`` never returns the wrapper's own underlying dict."""
 
     def test_subscript_underscored_missing_renders_empty(self) -> None:
-        # Missing subscripts now return the ``_MissingDotAccess`` sentinel
-        # so chained access (``state['_data'].foo``) keeps rendering empty
-        # instead of raising on the next segment. The sentinel renders as
-        # ``""`` under ``str`` — the call ``format_map`` actually makes.
+        # The ``_MissingDotAccess`` sentinel renders empty and keeps chained access from raising.
         from agentloom.core.templates import DotAccessDict
 
         d = DotAccessDict({"user": "alice"})
@@ -294,10 +268,7 @@ class TestDotAccessDictDoesNotLeakInternals:
             _ = d["__class__"]
 
     def test_user_supplied_underscored_key_still_readable(self) -> None:
-        # If the workflow author genuinely puts an underscored key into
-        # state, ``DotAccessDict`` returns it like any other key. This is
-        # by design: privacy is the AST validator's job (it refuses
-        # ``state._secret`` / ``state['_secret']`` in router predicates).
+        # By design: the router's AST validator, not ``DotAccessDict``, keeps ``_`` keys private.
         from agentloom.core.templates import DotAccessDict
 
         d = DotAccessDict({"_intentionally_private": "user-data"})
@@ -306,13 +277,10 @@ class TestDotAccessDictDoesNotLeakInternals:
 
 
 class TestRejectsSubscriptIndirection:
-    """Subscript slices must be literal int or str — variables and
-    arithmetic / conditional / call expressions are refused outright.
+    """Subscript slices must be literal ints or strings, never variables or expressions.
 
-    Without this gate, an attacker who controls a state value can use it
-    as the subscript key (``creds[lookup]``) to reach a dunder / private
-    attribute the AST validator would otherwise block on the constant
-    form (``creds['_secret']``).
+    Otherwise a state value used as the key (``creds[lookup]``) would reach a private
+    attribute the validator blocks in its constant form (``creds['_secret']``).
     """
 
     @pytest.mark.parametrize(
@@ -350,9 +318,7 @@ class TestRejectsSubscriptIndirection:
         assert evaluate_expression(expr, ns) == want
 
     def test_constant_of_invalid_type_refused(self) -> None:
-        # Constants of other primitive types (None, bool, float, bytes)
-        # are not sensible keys and would be a sign of indirection abuse
-        # if accepted.
+        # Other constant types (None, bool, float, bytes) make no sensible key: a sign of abuse.
         for expr in (
             "x[None]",
             "x[True]",
@@ -362,8 +328,6 @@ class TestRejectsSubscriptIndirection:
                 evaluate_expression(expr, {"x": {0: "v"}})
 
     def test_slice_bounds_must_be_int_constants(self) -> None:
-        # ``items[0:2]`` is fine; ``items[lookup:2]`` is not. Slices with
-        # non-integer-constant bounds are refused at validation.
         from agentloom.core.templates import DotAccessDict
 
         ns = {
@@ -375,17 +339,16 @@ class TestRejectsSubscriptIndirection:
         except SecurityError:
             pytest.fail("constant-bound slice was wrongly refused")
         except Exception:
-            pass  # runtime may not support DotAccessList slicing
+            pass  # DotAccessList takes no slice; only the validator's verdict counts here
         with pytest.raises(SecurityError):
             evaluate_expression("state['items'][lookup:2]", ns)
 
 
 class TestRouterNamespaceDoesNotFlattenStateKeys:
-    """Top-level state keys are NOT exposed as bare names in router predicates.
+    """Top-level state keys are not bare names in router predicates.
 
-    Pre-fix the engine did ``namespace.update(state_snapshot)`` so a state
-    key named ``len`` would shadow the builtin, and arbitrary keys
-    (``creds``, ``lookup``) became reachable without the ``state.`` prefix.
+    A state key named ``len`` would shadow the builtin, and any key (``creds``, ``lookup``)
+    would be reachable without the ``state.`` prefix.
     """
 
     async def test_state_key_does_not_shadow_safe_builtin(self) -> None:
@@ -488,14 +451,9 @@ class TestSliceUnaryNegativeStep:
 
 
 class TestRouterProxyRuntimeEdges:
-    """Exercise the proxy paths the validator-driven tests don't cover —
-    numeric subscripts on _DictProxy, len/iter on _ListProxy, and the
-    ``steps.<id>`` proxy that the engine populates with prior step
-    results.
-    """
+    """Proxy paths the validator-driven tests do not reach: numeric keys, len, iter, ``steps``."""
 
     async def test_list_proxy_len_via_router_predicate(self) -> None:
-        # ``len(state.items)`` hits ``_ListProxy.__len__``.
         step = RouterStep()
         ctx = StepContext(
             step_definition=StepDefinition(
@@ -510,7 +468,6 @@ class TestRouterProxyRuntimeEdges:
         assert result.output == "ok"
 
     async def test_list_proxy_iter_via_router_predicate(self) -> None:
-        # ``'a' in state.items`` triggers ``_ListProxy.__iter__``.
         step = RouterStep()
         ctx = StepContext(
             step_definition=StepDefinition(
@@ -525,8 +482,6 @@ class TestRouterProxyRuntimeEdges:
         assert result.output == "ok"
 
     async def test_dict_proxy_len_via_router_predicate(self) -> None:
-        # ``len(state.user)`` hits ``_DictProxy.__len__`` when the state
-        # value is a dict, not a list.
         step = RouterStep()
         ctx = StepContext(
             step_definition=StepDefinition(
@@ -543,7 +498,6 @@ class TestRouterProxyRuntimeEdges:
         assert result.output == "ok"
 
     async def test_dict_proxy_in_operator_via_router_predicate(self) -> None:
-        # ``'name' in state.user`` hits ``_DictProxy.__contains__``.
         step = RouterStep()
         ctx = StepContext(
             step_definition=StepDefinition(
@@ -558,35 +512,27 @@ class TestRouterProxyRuntimeEdges:
         assert result.output == "ok"
 
     def test_dict_proxy_iter_unit_level(self) -> None:
-        # ``__iter__`` is the mapping protocol's third leg. The router
-        # grammar doesn't naturally produce a ``for k in state.user``
-        # form, so cover it directly via the module-level helper.
+        # Router expressions cannot loop, so only a Python caller reaches ``__iter__``.
         from agentloom.steps.router import _DictProxy
 
         proxy = _DictProxy({"name": "alice", "role": "admin"})
         assert sorted(iter(proxy)) == ["name", "role"]
 
     def test_dict_proxy_numeric_subscript_falls_through(self) -> None:
-        # Non-string subscripts on a dict-shaped state fall through to
-        # ``self._data[key]`` — defensive branch that the validator
-        # rejects but the runtime still handles cleanly.
+        # A non-string key, such as an int constant the validator allows, indexes the dict directly.
         from agentloom.steps.router import _DictProxy
 
         proxy = _DictProxy({1: "numeric-key-value"})
         assert proxy[1] == "numeric-key-value"
 
     def test_state_proxy_numeric_subscript_falls_through(self) -> None:
-        # Same defensive fall-through on ``_StateProxy``. The grammar
-        # only emits string-constant subscripts on ``state``, but the
-        # runtime branch exists for completeness.
+        # ``state`` itself indexes the snapshot directly for a non-string key.
         from agentloom.steps.router import _build_state_proxy
 
         proxy = _build_state_proxy({1: "numeric"})
         assert proxy[1] == "numeric"
 
     async def test_list_proxy_returns_nested_listproxy(self) -> None:
-        # ``state.items[0][1]`` exercises the
-        # ``isinstance(value, list): return _ListProxy(value)`` branch.
         step = RouterStep()
         ctx = StepContext(
             step_definition=StepDefinition(
@@ -603,9 +549,7 @@ class TestRouterProxyRuntimeEdges:
         assert result.output == "ok"
 
     async def test_steps_proxy_returns_prior_step_field(self) -> None:
-        # ``steps.<id>.<field>`` is the engine's way of letting a router
-        # condition look at a previous step's output. The ``_StepsProxy``
-        # in router.py covers this surface.
+        # ``steps.<id>.<field>`` lets a router condition read a previous step's output.
         step = RouterStep()
         ctx = StepContext(
             step_definition=StepDefinition(
@@ -622,9 +566,7 @@ class TestRouterProxyRuntimeEdges:
         assert result.output == "ok"
 
     async def test_steps_proxy_returns_scalar_when_step_data_not_dict(self) -> None:
-        # The ``_StepsProxy._StepsProxy.__getattr__`` returns the value
-        # verbatim when ``step_data`` isn't a dict (engine-internal edge
-        # — a stub representation rather than a full result block).
+        # ``_StepsProxy`` returns a ``steps`` entry that is not a dict as is, unwrapped.
         step = RouterStep()
         ctx = StepContext(
             step_definition=StepDefinition(
@@ -640,7 +582,7 @@ class TestRouterProxyRuntimeEdges:
 
 
 class TestRouterProxyUnitLevel:
-    """Direct unit-level coverage of the now module-level proxy classes."""
+    """Unit coverage of the module-level proxy classes."""
 
     def test_dict_proxy_attribute_access(self) -> None:
         from agentloom.steps.router import _DictProxy
@@ -649,8 +591,6 @@ class TestRouterProxyUnitLevel:
         assert p.name == "alice"
 
     def test_dict_proxy_missing_key_returns_none_wrapped(self) -> None:
-        # ``self._data.get(name)`` returns ``None`` for missing — the
-        # proxy passes it through ``_wrap`` which leaves scalars alone.
         from agentloom.steps.router import _DictProxy
 
         assert _DictProxy({"a": 1}).missing is None
@@ -671,13 +611,10 @@ class TestRouterProxyUnitLevel:
 
 
 class TestRouterChainedSafeCalls:
-    """#053 regression — chained method calls on safe receivers must work.
+    """Chained method calls on safe receivers are accepted.
 
-    Until 0.5.0 the validator refused any attribute call whose receiver was
-    itself a call, so ``state.x.strip().lower()`` failed AST validation and
-    broke 7 official example YAMLs. The recursive ``_safe_receiver`` check
-    accepts chains as long as every link is an attribute on a safe base
-    (Name/Attribute/Subscript) and clears the dunder/blocklist filter.
+    ``_safe_receiver`` accepts a chain when every link is an attribute on a Name, Attribute or
+    Subscript base and clears the dunder and blocklist filter.
     """
 
     @pytest.mark.parametrize(
@@ -691,9 +628,7 @@ class TestRouterChainedSafeCalls:
         ],
     )
     def test_accepts_chained_safe_calls(self, expr: str, expected: object) -> None:
-        # Concrete expected values double as a sanity check on the eval
-        # semantics (str.strip / str.lower / list-subscript-then-method),
-        # not just the parse-time validator relaxation.
+        # Concrete values check the evaluation too, not just that validation passes.
         class State:
             x = "  Hello, World  "
             severity = "Critical"
@@ -727,15 +662,12 @@ class TestRouterChainedSafeCalls:
         ],
     )
     def test_still_rejects_calls_on_literals(self, expr: str) -> None:
-        # Widening the receiver to allow Call(...) still excludes literal
-        # receivers, so the bottom of every safe chain must be a name,
-        # attribute, or subscript — never a constant.
+        # The base of every chain must be a name, attribute or subscript, never a constant.
         with pytest.raises(SecurityError):
             evaluate_expression(expr, {})
 
     def test_still_rejects_dunder_after_safe_chain(self) -> None:
-        # The dunder filter runs against every Attribute.attr in the walk,
-        # so chained calls can't sneak a ``__class__`` through.
+        # The dunder filter checks every attribute, so a chain cannot slip ``__class__`` in.
         class State:
             x = "hello"
 

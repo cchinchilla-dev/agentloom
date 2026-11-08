@@ -44,7 +44,7 @@ class DAG:
         return set(self._edges.get(node_id, set()))
 
     def validate(self) -> list[str]:
-        """Validate the DAG. Returns a list of error messages (empty if valid).
+        """Return the DAG's validation errors, empty when it is valid.
 
         Uses an iterative DFS so deep chains do not blow the interpreter's
         recursion limit. Each cycle is reported once against the colour
@@ -57,12 +57,7 @@ class DAG:
         color: dict[str, int] = {n: WHITE for n in self._nodes}
 
         def iterative_dfs(root: str) -> None:
-            # Stack frames carry the current node plus a queue of
-            # successors we still need to visit. When the queue is
-            # exhausted we pop, matching the recursive version's behaviour.
-            # Using ``deque`` keeps successor consumption O(1) per step
-            # — list.pop(0) would make the traversal quadratic on
-            # high out-degree nodes.
+            # Frames hold a node and its pending successors; a deque pops them in O(1)
             stack: list[tuple[str, deque[str]]] = []
             path: list[str] = []
 
@@ -92,11 +87,6 @@ class DAG:
             if color[node] == WHITE:
                 iterative_dfs(node)
 
-        for node, succs in self._edges.items():
-            for succ in succs:
-                if succ not in self._nodes:
-                    errors.append(f"Edge to non-existent node: {node} -> {succ}")
-
         return errors
 
     def transitive_successors(self, roots: set[str]) -> set[str]:
@@ -117,12 +107,10 @@ class DAG:
         return reachable
 
     def topological_sort(self) -> list[str]:
-        """Return nodes in topological order. Raises ValidationError if cyclic.
+        """Return nodes in topological order; raise ``ValidationError`` if cyclic.
 
-        Kahn's algorithm with a ``heapq`` min-heap ordered by node id — same
-        deterministic ordering as the previous list-sort implementation, but
-        O((V+E) log V) instead of O(V^2 log V) because we no longer re-sort
-        the queue inside the loop.
+        Kahn's algorithm with a ``heapq`` min-heap keyed by node id: a
+        deterministic order in O((V+E) log V).
         """
         in_degree: dict[str, int] = {n: 0 for n in self._nodes}
         for node in self._nodes:

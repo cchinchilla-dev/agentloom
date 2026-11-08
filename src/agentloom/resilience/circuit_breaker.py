@@ -46,11 +46,9 @@ class CircuitBreaker:
         self.reset_timeout = reset_timeout
         self.half_open_max_calls = half_open_max_calls
         self.on_state_change = on_state_change
-        # NOTE: hardcoded to 1 test call in half-open, might be too conservative
 
         self._state = CircuitState.CLOSED
         self._failure_count = 0
-        self._success_count = 0
         self._last_failure_time: float = 0.0
         self._half_open_calls = 0
 
@@ -62,9 +60,10 @@ class CircuitBreaker:
     def _maybe_transition_to_half_open(self) -> CircuitState:
         """Transition OPEN -> HALF_OPEN if the reset timeout has elapsed.
 
-        Returns the state after any transition. Called from the admission
-        helpers (``call``/``allow_request``) before deciding whether a new
-        request may proceed; reading ``self.state`` is side-effect-free.
+        Returns the state after any transition. The admission helpers
+        (``call``/``allow_request``) and the gateway call it before deciding
+        whether a new request may proceed; reading ``self.state`` is
+        side-effect-free.
         """
         if self._state == CircuitState.OPEN:
             if time.monotonic() - self._last_failure_time >= self.reset_timeout:
@@ -95,13 +94,10 @@ class CircuitBreaker:
 
         Args:
             coro_factory: A zero-argument callable that returns a coroutine.
-            exclude: Exception types that propagate but do NOT count as a
+            exclude: Exception types that propagate but do not count as a
                 failure for this breaker. Use for expected, non-fault
                 conditions like rate-limit responses — a throttled provider
                 is healthy, just overused, and must not trip the breaker.
-
-        Returns:
-            The result of the coroutine.
 
         Raises:
             CircuitOpenError: If the circuit is open.
@@ -121,8 +117,7 @@ class CircuitBreaker:
             self._on_success()
             return result
         except exclude:
-            # Excluded exceptions: propagate without charging the breaker.
-            # Release any half-open slot we just claimed.
+            # Excluded: propagate uncharged, and free the half-open slot this call took.
             if current_state == CircuitState.HALF_OPEN and self._half_open_calls > 0:
                 self._half_open_calls -= 1
             raise
@@ -134,10 +129,7 @@ class CircuitBreaker:
         """Record a successful call."""
         if self._state == CircuitState.HALF_OPEN:
             self._set_state(CircuitState.CLOSED)
-            self._failure_count = 0
-            self._success_count = 0
         self._failure_count = 0
-        self._success_count += 1
 
     def _on_failure(self) -> None:
         """Record a failed call."""
@@ -148,18 +140,15 @@ class CircuitBreaker:
             self._set_state(CircuitState.OPEN)
 
     def allow_request(self) -> None:
-        """Pre-check for streaming: raises CircuitOpenError if a request should not proceed.
+        """Pre-check for streaming: raise ``CircuitOpenError`` if a request should not proceed.
 
         Unlike ``call()``, this does not wrap a coroutine — it only validates
         that the circuit allows a new request through.  Pair with
         ``record_success()`` / ``record_failure()`` after the work completes.
 
-        NOTE: Under concurrent streaming (parallel DAG steps), multiple
-        coroutines may pass ``allow_request()`` before any calls
-        ``record_success()``.  In the HALF_OPEN state this can exceed
-        ``half_open_max_calls``.  This is acceptable under cooperative
-        (single-threaded) concurrency but would require a lock if
-        moved to a threaded executor.
+        The check and the increment share no ``await``, so concurrent tasks
+        (parallel DAG steps) cannot exceed ``half_open_max_calls`` in the
+        HALF_OPEN state; a threaded executor would need a lock.
         """
         current_state = self._maybe_transition_to_half_open()
         if current_state == CircuitState.OPEN:
@@ -181,5 +170,4 @@ class CircuitBreaker:
         """Manually reset the circuit breaker to closed state."""
         self._set_state(CircuitState.CLOSED)
         self._failure_count = 0
-        self._success_count = 0
         self._half_open_calls = 0

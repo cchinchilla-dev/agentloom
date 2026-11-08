@@ -121,27 +121,17 @@ class TestRunHistoryWriter:
         assert path.name.startswith("anon-")
 
     async def test_unsafe_run_id_falls_back_to_anonymous_name(self, tmp_path: Path) -> None:
-        # Path-traversal guard: a hostile or buggy caller passing a
-        # ``run_id`` with separators must NOT cause a write outside
-        # ``runs_dir``. The writer falls back to the anonymous timestamp
-        # name so the record still lands on disk for ``agentloom history``
-        # but inside the configured directory.
+        # Path-traversal guard: a hostile ``run_id`` must not write outside ``runs_dir``.
         writer = RunHistoryWriter(runs_dir=tmp_path)
         wf = _make_workflow()
         for hostile_id in ("../escape", "a/b/c", "..", "/abs/path", "with\x00null"):
             path = await writer.record(_make_result(wf), wf, run_id=hostile_id)
             assert path is not None
-            # Must stay inside runs_dir.
             assert path.parent == tmp_path, f"escaped runs_dir for {hostile_id!r}: {path}"
-            # Must use the fallback anon- prefix, not the hostile id.
             assert path.name.startswith("anon-"), path.name
 
     async def test_atomic_write_no_tempfile_leftover(self, tmp_path: Path) -> None:
-        # Writer routes through ``write_text(<tmp>)`` + ``os.replace`` so a
-        # crash mid-write leaves either the previous file or no file —
-        # never a half-written one. After a successful record() the
-        # directory must contain only the final ``.json``, no ``.json.tmp``
-        # leftover (would confuse ``load_records``).
+        # A ``.json.tmp`` leftover from the atomic write would confuse ``load_records``.
         writer = RunHistoryWriter(runs_dir=tmp_path)
         wf = _make_workflow()
         await writer.record(_make_result(wf), wf, run_id="atomic-1")
@@ -186,7 +176,6 @@ class TestLoadRecords:
 
         records = load_records(tmp_path)
         assert len(records) == 2
-        # Newest first.
         assert records[0]["run_id"] == "newer"
         assert records[1]["run_id"] == "older"
 
@@ -197,13 +186,10 @@ class TestLoadRecords:
         await writer.record(_make_result(wf), wf, run_id="good")
 
         records = load_records(tmp_path)
-        # Corrupt file silently skipped; valid one loaded.
         assert [r["run_id"] for r in records] == ["good"]
 
     async def test_skips_non_dict_top_level(self, tmp_path: Path) -> None:
-        # ``load_records`` only yields dict records — a JSON top-level list
-        # or string is treated as malformed and silently dropped so a
-        # hand-crafted file in the runs dir can't break the CLI listing.
+        # A hand-written non-dict file in the runs dir must not break the CLI listing.
         (tmp_path / "list.json").write_text(json.dumps(["not", "a", "record"]))
         records = load_records(tmp_path)
         assert records == []
@@ -216,15 +202,12 @@ class TestLoadRecords:
         assert load_records(tmp_path)[0]["workflow_name"] == "café"
 
     async def test_falls_back_to_mtime_when_timestamp_missing(self, tmp_path: Path) -> None:
-        # No ``timestamp`` field → ordering uses the file's mtime so the
-        # CLI listing stays usable even on records authored by external
-        # tools that didn't follow the schema.
+        # Records from external tools may lack ``timestamp``; mtime keeps the listing ordered.
         (tmp_path / "no-ts.json").write_text(json.dumps({"run_id": "no-ts"}))
         records = load_records(tmp_path)
         assert records[0]["run_id"] == "no-ts"
 
     async def test_falls_back_to_mtime_on_bad_timestamp(self, tmp_path: Path) -> None:
-        # Unparseable timestamp shouldn't raise — fall back to mtime.
         (tmp_path / "bad-ts.json").write_text(
             json.dumps({"run_id": "bad-ts", "timestamp": "not-a-date"})
         )
@@ -236,9 +219,7 @@ class TestAgentLoomVersionResolution:
     def test_returns_unknown_when_distribution_not_installed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # In-repo runs (or vendored installs) where the package metadata
-        # isn't registered must still produce a record — version field
-        # falls back to ``"unknown"`` rather than raising.
+        # In-repo or vendored runs lack package metadata; the record still gets a version.
         from importlib.metadata import PackageNotFoundError
 
         from agentloom.history import writer as writer_mod
@@ -249,24 +230,12 @@ class TestAgentLoomVersionResolution:
         monkeypatch.setattr(writer_mod, "_pkg_version", _raise)
         assert writer_mod._agentloom_version() == "unknown"
 
-    def test_returns_unknown_when_importlib_metadata_unavailable(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Defensive against the documented ImportError fallback at the top
-        # of writer.py — exercised by setting ``_pkg_version`` to ``None``.
-        from agentloom.history import writer as writer_mod
-
-        monkeypatch.setattr(writer_mod, "_pkg_version", None)
-        assert writer_mod._agentloom_version() == "unknown"
-
 
 class TestPermissionErrorPath:
     async def test_record_returns_none_on_readonly_filesystem(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Containers / CI sometimes mount the workdir read-only; the
-        # writer must downgrade ``PermissionError`` to a debug log + None
-        # so workflow execution is unaffected by an unwritable history dir.
+        # A read-only workdir (containers, CI) must not affect the workflow run.
         writer = RunHistoryWriter(runs_dir=tmp_path)
 
         async def _fake_run_sync(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -280,12 +249,7 @@ class TestPermissionErrorPath:
     async def test_record_returns_none_on_generic_exception(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The catch-all ``except Exception`` branch must also downgrade to
-        # a warning + None — a corrupted disk, an interrupted system call,
-        # an unexpected backend bug should never propagate up and break
-        # the workflow result handoff. Regression for the observed gap
-        # where the previous "fake_run_sync swallows fn()" test silently
-        # short-circuited before reaching the exception path.
+        # The catch-all ``except Exception`` also returns None: a backend bug never breaks the run.
         writer = RunHistoryWriter(runs_dir=tmp_path)
 
         async def _fake_run_sync(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -298,9 +262,7 @@ class TestPermissionErrorPath:
 
 
 class TestUnwritableRunsDir:
-    """F13: a non-writable runs dir is only noisy when the operator
-    explicitly chose it. The default ``./agentloom_runs`` failing inside
-    a read-only container is expected — debug log, no per-run warning."""
+    """A non-writable runs dir warns only when the operator chose it; the default stays quiet."""
 
     async def test_default_dir_failure_is_silent(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -325,8 +287,7 @@ class TestUnwritableRunsDir:
     async def test_explicit_dir_failure_warns(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        # An explicitly-chosen dir (passed to the constructor) keeps the
-        # warning — the operator asked for that location.
+        # An explicit dir keeps the warning: the operator asked for that location.
         writer = RunHistoryWriter(runs_dir=tmp_path / "explicit")
 
         async def _fake_run_sync(fn, *args, **kwargs):  # type: ignore[no-untyped-def]

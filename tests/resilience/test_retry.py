@@ -8,8 +8,6 @@ from agentloom.resilience.retry import RetryPolicy, retry_with_policy
 
 
 class TestSuccessOnFirstTry:
-    """Test that successful calls return immediately without retries."""
-
     async def test_returns_result_immediately(self) -> None:
         call_count = 0
 
@@ -39,8 +37,6 @@ class TestSuccessOnFirstTry:
 
 
 class TestSuccessOnRetry:
-    """Test that intermittent failures are retried successfully."""
-
     async def test_succeeds_on_second_attempt(self) -> None:
         call_count = 0
 
@@ -92,8 +88,6 @@ class TestSuccessOnRetry:
 
 
 class TestAllRetriesFail:
-    """Test behavior when all retries are exhausted."""
-
     async def test_raises_last_exception(self) -> None:
         call_count = 0
 
@@ -136,8 +130,6 @@ class TestAllRetriesFail:
 
 
 class TestRetryPolicyConfig:
-    """Test RetryPolicy configuration and defaults."""
-
     def test_default_policy(self) -> None:
         policy = RetryPolicy()
         assert policy.max_retries == 3
@@ -165,10 +157,7 @@ class TestRetryPolicyConfig:
 
 
 class TestRetryWithPolicyNonRetryable:
-    """``retry_with_policy`` must short-circuit on exceptions whose status
-    code is not in ``policy.retryable_status_codes``. The break path at
-    ``retry.py:89-94`` is what enforces this — without it, a permanent
-    4xx would burn the full retry budget."""
+    """A status outside ``retryable_status_codes`` stops retrying, so a 4xx burns no budget."""
 
     async def test_non_retryable_status_breaks_immediately(self) -> None:
         from agentloom.exceptions import ProviderError
@@ -189,7 +178,6 @@ class TestRetryWithPolicyNonRetryable:
         )
 
     async def test_retryable_status_consumes_budget(self) -> None:
-        # Counterpart — a 429 must keep retrying until the budget runs out.
         from agentloom.exceptions import RateLimitError
         from agentloom.resilience.retry import RetryPolicy, retry_with_policy
 
@@ -206,11 +194,7 @@ class TestRetryWithPolicyNonRetryable:
         assert len(attempts) == 3, "max_retries=2 means 3 total attempts"
 
     def test_is_retryable_extracts_status_from_httpx_response(self) -> None:
-        # ``httpx.HTTPStatusError`` does not expose ``status_code`` directly
-        # — the status lives on ``exc.response.status_code``. The helper
-        # must dig into the response so a permanent 404 from an attachment
-        # download (or any direct httpx call site) bails out instead of
-        # being treated as a transient status-less failure.
+        # ``httpx.HTTPStatusError`` keeps the status on ``exc.response``, not on the exception.
         from types import SimpleNamespace
 
         from agentloom.resilience.retry import is_retryable_exception
@@ -220,18 +204,12 @@ class TestRetryWithPolicyNonRetryable:
                 super().__init__(f"HTTP {status}")
                 self.response = SimpleNamespace(status_code=status)
 
-        # 404 is not in the default retryable list — must NOT retry.
         assert is_retryable_exception(FakeHTTPStatusError(404), [429, 500, 502, 503, 504]) is False
-        # 503 IS in the list — must retry.
         assert is_retryable_exception(FakeHTTPStatusError(503), [429, 500, 502, 503, 504]) is True
 
 
 class TestPermanentMarkerClassification:
-    """Exceptions carrying ``is_retryable = False`` must short-circuit
-    the retry loop. Pre-0.5.0 a sandbox violation, a tool-not-found, an
-    attachment shape refusal, or a template typo each burned the full
-    retry budget (4× × 10 s = 40 s of useless backoff) before surfacing
-    the same error the first attempt returned."""
+    """An exception with ``is_retryable = False`` stops the retry loop at the first attempt."""
 
     def test_sandbox_violation_marked_non_retryable(self) -> None:
         from agentloom.exceptions import SandboxViolationError
@@ -248,7 +226,7 @@ class TestPermanentMarkerClassification:
         exc = ToolNotFoundError("missing_tool", ["a", "b"])
         assert exc.is_retryable is False
         assert is_retryable_exception(exc, [429, 500]) is False
-        # KeyError compatibility: pre-0.5.0 call sites use ``except KeyError``.
+        # KeyError compatibility: call sites using ``except KeyError`` keep working.
         assert isinstance(exc, KeyError)
 
     def test_attachment_resolution_marked_non_retryable(self) -> None:
@@ -258,7 +236,7 @@ class TestPermanentMarkerClassification:
         exc = AttachmentResolutionError("file.png", "size limit")
         assert exc.is_retryable is False
         assert is_retryable_exception(exc, [429, 500]) is False
-        # ValueError compatibility: pre-0.5.0 ``except ValueError`` clauses keep working.
+        # ValueError compatibility: ``except ValueError`` clauses keep working.
         assert isinstance(exc, ValueError)
 
     def test_template_error_marked_non_retryable(self) -> None:
@@ -278,10 +256,7 @@ class TestPermanentMarkerClassification:
         assert is_retryable_exception(exc, [429, 500]) is False
 
     def test_pydantic_validation_error_marked_non_retryable(self) -> None:
-        """Pydantic's ``ValidationError`` is outside the AgentLoom class
-        hierarchy and has no place to hang ``is_retryable``. The
-        resilience layer special-cases it so provider-side schema
-        rejections from Pydantic models bail out fast."""
+        """Pydantic's ``ValidationError`` cannot carry ``is_retryable``, so it is special-cased."""
         from pydantic import BaseModel
         from pydantic import ValidationError as PydanticValidationError
 
@@ -304,9 +279,7 @@ class TestPermanentMarkerClassification:
         assert is_retryable_exception(exc, [429, 500]) is False
 
     def test_marker_walks_cause_chain(self) -> None:
-        """The ``StepError`` wrapper added by the engine for step-id
-        context must not erase the underlying classification. The
-        retry layer walks ``__cause__`` for an explicit marker."""
+        """The retry layer walks ``__cause__``, past the engine's ``StepError`` wrapper."""
         from agentloom.exceptions import SandboxViolationError, StepError
         from agentloom.resilience.retry import is_retryable_exception
 
@@ -320,9 +293,7 @@ class TestPermanentMarkerClassification:
             assert is_retryable_exception(wrapped, [429, 500]) is False
 
     def test_marker_walks_context_chain(self) -> None:
-        """Implicit chaining via ``__context__`` (raise inside ``except``
-        without ``from``) is also honoured — a ``TemplateError`` that
-        leaks during cleanup must still mark the wrapper permanent."""
+        """Implicit chaining through ``__context__`` is walked as well."""
         from agentloom.core.templates import TemplateError
         from agentloom.exceptions import StepError
         from agentloom.resilience.retry import is_retryable_exception
@@ -336,9 +307,7 @@ class TestPermanentMarkerClassification:
             assert is_retryable_exception(wrapped, [429, 500]) is False
 
     def test_status_less_exception_still_transient_when_no_marker(self) -> None:
-        """Regression net: a status-less generic exception without a
-        marker (network error, generic provider hiccup) must still be
-        treated as transient — pre-0.5.0 default behaviour."""
+        """A status-less exception without a marker (a network error) is still transient."""
         from agentloom.resilience.retry import is_retryable_exception
 
         assert is_retryable_exception(RuntimeError("transient"), [429, 500]) is True

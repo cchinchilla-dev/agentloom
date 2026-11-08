@@ -1,4 +1,4 @@
-"""Re-recording replayed calls copies the recorded turns as they were (#178)."""
+"""Re-recording replayed calls copies the recorded turns as they were."""
 
 from __future__ import annotations
 

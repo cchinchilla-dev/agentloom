@@ -56,7 +56,7 @@ Use the dropdown selectors at the top of the dashboard to filter:
 
 ### Row 1 — Overview
 
-Seven stat panels showing high-level aggregates:
+Eight panels showing high-level aggregates:
 
 | Panel | Type | What it shows |
 |-------|------|---------------|
@@ -64,6 +64,7 @@ Seven stat panels showing high-level aggregates:
 | **Success Rate** | gauge | Percentage of successful runs (green >= 95%, orange >= 80%, red < 80%) |
 | **Failed** | stat | Count of failed workflow runs |
 | **Total Tokens** | stat | Sum of all tokens consumed (input + output) |
+| **Reasoning Tokens** | stat | Reasoning tokens reported by the providers, billed at the output rate |
 | **Est. Cost** | stat | Estimated total cost in USD |
 | **Providers** | stat | Number of distinct providers that have handled requests |
 | **Step Types** | stat | Number of distinct step types executed |
@@ -86,7 +87,7 @@ Seven stat panels showing high-level aggregates:
 
 | Panel | Type | What it shows |
 |-------|------|---------------|
-| **Tokens** | timeseries | Cumulative input vs output token count per provider/model |
+| **Tokens (input · output · reasoning)** | timeseries | Cumulative token count per provider/model, by token type |
 | **Tokens by Provider** | bar gauge | Horizontal bars showing total tokens per provider/model |
 | **Token Split** | pie chart | Ratio of prompt tokens to completion tokens |
 
@@ -127,7 +128,7 @@ Seven stat panels showing high-level aggregates:
 | Panel | Type | What it shows |
 |-------|------|---------------|
 | **Cumulative Cost** | timeseries | Running total cost in USD |
-| **Token Cost** | timeseries | Estimated cost based on cumulative token volume per provider/model |
+| **Cost per workflow** | timeseries | Cumulative cost of each workflow |
 | **Budget Remaining** | timeseries | Remaining budget per workflow (green line) |
 | **Avg Cost/Run** | stat | Mean cost per workflow execution |
 | **Avg Tokens/Run** | stat | Mean token consumption per workflow execution |
@@ -138,14 +139,46 @@ Seven stat panels showing high-level aggregates:
 
 | Panel | Type | What it shows |
 |-------|------|---------------|
-| **Attachments** | timeseries | Attachment count by type (image, pdf, audio) |
+| **Attachments Processed** | timeseries | Attachments by step type over time |
+| **Total Attachments** | stat | All attachments sent to providers |
+| **Attachments by Step Type** | pie chart | Share of attachments per step type |
 
-### Row 10 — Streaming
+### Row 10 — Human-in-the-Loop (collapsed)
 
 | Panel | Type | What it shows |
 |-------|------|---------------|
-| **Stream Responses** | timeseries | Cumulative streaming response count |
-| **Time to First Token (p50/p95/p99)** | timeseries | TTFT latency percentiles |
+| **Approval Decisions** | timeseries | Approval gate decisions over time, by outcome |
+| **Total Gates** | stat | Approval gates decided |
+| **By Decision** | pie chart | Share of approved and rejected gates |
+| **Webhook Deliveries** | timeseries | Webhook delivery attempts by status |
+| **Webhook Success Rate** | gauge | Successful deliveries over all attempts |
+| **Webhook Latency p50 / p95** | timeseries | Webhook delivery latency percentiles |
+
+### Row 11 — Mock & Replay (collapsed)
+
+| Panel | Type | What it shows |
+|-------|------|---------------|
+| **Mock Replays** | stat | Mock provider lookups, by how the response was matched |
+| **Replay Hit Ratio** | stat | Share of lookups that found a recorded response |
+| **Recording Captures by Provider** | timeseries | Real provider responses captured by the recorder |
+| **Captured Real-Provider Latency (p50 / p95)** | timeseries | Latency of the captured calls — what a replay simulates |
+
+### Row 12 — Streaming (collapsed)
+
+| Panel | Type | What it shows |
+|-------|------|---------------|
+| **Streamed Responses** | stat | Streamed responses per provider |
+| **Time to First Token** | stat | Average time to first token per provider |
+| **Avg TTFT by Provider** | bar gauge | The same average, compared across providers |
+| **Total Streamed** | stat | All streamed responses |
+| **Streaming Ratio** | stat | Share of LLM calls that stream |
+| **Stream vs Batch Duration** | bar gauge | Average step duration, streamed against batch |
+
+### Row 13 — Traces
+
+| Panel | Type | What it shows |
+|-------|------|---------------|
+| **Recent Traces** | table | Latest workflow traces from Jaeger; a trace ID opens its span tree |
 
 ---
 
@@ -159,7 +192,7 @@ All metrics are prefixed with `agentloom_`.
 |--------|------|--------|-------------|
 | `workflow_runs_total` | counter | workflow, status | Workflow execution count |
 | `workflow_duration_seconds` | histogram | workflow | End-to-end workflow latency |
-| `cost_usd_total` | counter | — | Estimated USD cost |
+| `cost_usd_total` | counter | workflow, provider | Estimated USD cost (`provider` is `total`) |
 | `budget_remaining_usd` | gauge | workflow | Remaining budget per workflow |
 
 ### Step metrics
@@ -381,13 +414,13 @@ When a parent workflow launches a subworkflow step:
 | Parent budget | Child budget | Behaviour |
 |---------------|--------------|-----------|
 | Set (`$0.10`) | None | Child engine inherits the parent's enforcer. Child charges count against the parent's `_spent`, so the parent's gate trips at the right step. The child's own `total_cost_usd` is what its steps charged, not the parent's total. A child that breaks the parent's budget gives its step a `failed` result with its steps' tokens and `cost_usd: 0`, as they charged it already. |
-| Set (`$0.10`) | Set (`$0.05`) | Child uses a fresh enforcer scoped to its own limit. Pre-0.5.0 behaviour preserved. The parent's per-step accounting still adds the rolled-up subworkflow cost to the parent counter, whether the child succeeds, fails, pauses at an approval gate or breaks its own budget; a breach fails the step without a retry, and a pause that breaks the parent's budget still pauses. |
+| Set (`$0.10`) | Set (`$0.05`) | Child uses a fresh enforcer scoped to its own limit. The parent's per-step accounting still adds the rolled-up subworkflow cost to the parent counter, whether the child succeeds, fails, pauses at an approval gate or breaks its own budget; a breach fails the step without a retry, and a pause that breaks the parent's budget still pauses. |
 | None | Set (`$0.05`) | Child enforces its own budget; parent has no limit to enforce. |
 | None | None | No enforcement at either level. |
 
 ### Pause-over-budget precedence
 
-When an `approval_gate` and a budget-blowing LLM step land in the same layer, **pause wins**. Pre-0.5.0 budget short-circuited the pause: the LLM step completed (spending the money), the pause was dropped, and the workflow ended `budget_exceeded` with no resumable checkpoint at the gate. The reversed precedence preserves both options — the human can `--approve` or `--reject`, and the workflow re-evaluates budget on resume. A workflow that resumes with budget already exhausted will then surface `BudgetExceededError` on the next dispatch (the user explicitly chose to look at the pause first).
+When an `approval_gate` and a budget-blowing LLM step land in the same layer, **pause wins**. Letting the budget win would complete the LLM step (spending the money), drop the pause and end the workflow `budget_exceeded` with no resumable checkpoint at the gate. Pausing first keeps both options — the human can `--approve` or `--reject`, and the workflow re-evaluates budget on resume. A workflow that resumes with budget already exhausted will then surface `BudgetExceededError` on the next dispatch (the user explicitly chose to look at the pause first).
 
 The workflow's `timeout` gives way to a pause the same way: the steps it cut short are marked `timeout` and run again on resume. Only a pause of the current run counts: a resumed run that breaks its budget or its timeout before it reaches the gate it had paused at ends `budget_exceeded` or `timeout`, not `paused` at that gate again.
 

@@ -1,4 +1,4 @@
-"""Tool results in a recording: capture them, serve them back, or check them (#164).
+"""Tool results in a recording: capture them, serve them back, or check them.
 
 ``agentloom run --record rec.json --record-tools`` stores the tool calls of
 each step under ``_tools``, in call order::
@@ -66,13 +66,13 @@ def _digest(text: str) -> str:
 
 
 class ToolRecorder:
-    """Writes the tool calls of this run under ``_tools`` in a recording file.
+    """Recorder of this run's tool calls, under ``_tools`` in a recording file.
 
     The first capture of a step in a run replaces what an earlier run left
     under it; the other steps survive, as with the LLM entries. A retry
     drops the calls of the attempt that failed, a subworkflow's included,
     so the recording holds the calls of the attempt that finished. With
-    ``serve_from``, a cut replay (#178) serves or checks the calls from its
+    ``serve_from``, a cut replay serves or checks the calls from its
     source recording as that replayer says, and records them all.
     """
 
@@ -123,7 +123,7 @@ class ToolRecorder:
 
 
 class ToolReplayer:
-    """Serves (``replay``) or checks (``verify``) tool results from a recording.
+    """Replayer that serves (``replay``) or checks (``verify``) tool results from a recording.
 
     A call matches the next recorded call of its step with the same tool
     name and canonical arguments, so a tool called twice gets its two
@@ -146,7 +146,7 @@ class ToolReplayer:
         self._recorded: dict[str, list[dict[str, Any]]] = recording.get("_tools", {})
         self.mode = mode
         self.strict = strict
-        # A step that the cut of a replay runs live (#165) runs its tools live too.
+        # A step that the cut of a replay runs live runs its tools live too.
         self._live = live or (lambda _step_id: False)
         self._cursor: dict[str, int] = {}
         # Each step's cursor before an attempt first moved it: a retry goes back there.

@@ -1,4 +1,4 @@
-"""The inter-agent event log of a run (#135).
+"""The inter-agent event log of a run.
 
 While a log is active (``recording_events``), the engine, the tool calls and
 the state manager write into it. For each step attempt: a ``task_sent`` from
@@ -149,7 +149,7 @@ def called_agent(tool: str, number: int, agent: str, message: str) -> Iterator[N
 
 
 def log_reply(output: Any) -> None:
-    """The agent called as a tool that is running answered ``output``."""
+    """Log that the running agent called as a tool answered ``output``."""
     if (log := _ACTIVE.get()) is not None and (path := _CALLED.get()) is not None:
         log.finish_step(path, output)
 
@@ -239,7 +239,7 @@ class EventLog:
         return order_events(e for step in self._steps.values() for e in step.events)
 
     def start_step(self, path: StepPath, agent: str, depends_on: Iterable[str]) -> None:
-        """An attempt of the step at ``path`` starts after the steps it ``depends_on``."""
+        """Log that an attempt of the step at ``path`` starts after the steps it ``depends_on``."""
         for logged in [p for p in self._steps if p[: len(path)] == path]:
             del self._steps[logged]  # a retry: the failed attempt and its subworkflow steps
         step = self._steps[path] = _Step(agent, ".".join(path))
@@ -281,7 +281,10 @@ class EventLog:
     def start_called(
         self, caller: StepPath, tool: str, number: int, agent: str, message: str, index: int
     ) -> bool:
-        """``agent`` starts as the ``number``-th call of ``tool``, ``index`` in its round."""
+        """Log ``agent`` starting as the ``number``-th call of ``tool``, ``index`` in its round.
+
+        Return ``False``, logging nothing, when the caller has no step in the log.
+        """
         source = self._steps.get(caller)
         if source is None:
             return False
@@ -317,7 +320,10 @@ class EventLog:
     def tool_round(
         self, path: StepPath, calls: list[tuple[str, Any]], results: list[tuple[Any, bool]]
     ) -> None:
-        """The step at ``path`` called tools at once: ``(name, arguments)`` and ``(result, ok)``."""
+        """Log a round of tool calls by the step at ``path``.
+
+        ``calls`` holds ``(name, arguments)`` pairs and ``results`` the matching ``(result, ok)``.
+        """
         step = self._steps.get(path)
         if step is None:
             return
@@ -353,13 +359,13 @@ class EventLog:
         step.tail = returns
 
     def write(self, path: StepPath, key: str, value: Any) -> None:
-        """The step at ``path`` wrote ``value`` to the state ``key``."""
+        """Log that the step at ``path`` wrote ``value`` to the state ``key``."""
         step = self._steps.get(path)
         if step is not None and step.call is None:  # a called agent's state is its own
             step.writes[key] = payload_hash(value)
 
     def finish_step(self, path: StepPath, output: Any) -> None:
-        """The attempt of the step at ``path`` succeeded with ``output``."""
+        """Log that the attempt of the step at ``path`` succeeded with ``output``."""
         step = self._steps.get(path)
         if step is None:
             return

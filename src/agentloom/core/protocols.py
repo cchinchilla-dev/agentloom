@@ -1,10 +1,10 @@
 """Structural types for engine-level collaborators.
 
-These Protocols replace the ``Any`` seams in :class:`StepContext` and keep
-the concrete implementations (``StateManager``, ``ProviderGateway``,
-``ToolRegistry``, ``WorkflowObserver``, ``BaseCheckpointer``) decoupled
-from step executors. Import sites use ``if TYPE_CHECKING`` so we avoid
-runtime cycles — the Protocols themselves only describe shape.
+These Protocols describe the ``Any`` seams in :class:`StepContext` (each field
+names its protocol) and keep the concrete implementations (``StateManager``,
+``ProviderGateway``, ``ToolRegistry``, ``WorkflowObserver``, ``BaseCheckpointer``)
+decoupled from step executors. They only describe shape and import nothing at
+runtime, so importing them causes no cycle.
 
 Only the methods that ``core/`` and ``steps/`` actually call on these
 collaborators are included. A concrete implementation can add more; a
@@ -70,10 +70,9 @@ class ToolRegistryProtocol(Protocol):
 class ObserverProtocol(Protocol):
     """Workflow observer surface consumed by the engine.
 
-    Every method is optional in practice — :class:`NoopObserver` implements
-    all of them as no-ops and the engine relies on duck-typing. The
-    protocol documents the contract so observer authors can add kwargs
-    defensively.
+    The engine calls these methods directly, so an observer implements all of
+    them (:class:`NoopObserver` does, as no-ops). The protocol documents the
+    contract so observer authors can accept extra kwargs defensively.
     """
 
     def on_workflow_start(self, workflow_name: str, **kwargs: Any) -> None: ...
@@ -102,9 +101,7 @@ class ObserverProtocol(Protocol):
         **kwargs: Any,
     ) -> None: ...
 
-    # Provider-level hooks called by engine + gateway. Listed here so an
-    # ``isinstance(obs, ObserverProtocol)`` check fails for observers that
-    # would crash mid-run on a missing method.
+    # Provider hooks too, so ``isinstance`` rejects an observer that would crash mid-run
 
     def on_tokens(
         self,

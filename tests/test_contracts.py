@@ -1,4 +1,4 @@
-"""Public contracts (#159): light import, stable re-exports, WorkflowHandle and its adapter."""
+"""Public contracts: light import, stable re-exports, WorkflowHandle and its adapter."""
 
 from __future__ import annotations
 

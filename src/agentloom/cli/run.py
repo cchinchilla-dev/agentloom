@@ -29,8 +29,8 @@ if TYPE_CHECKING:
 def _parse_state_value(raw: str) -> Any:
     """Decode a CLI ``--state`` value, parsing JSON-shaped inputs.
 
-    ``--state items=[1,2,3]`` and ``--state user={"name":"x"}`` now yield
-    a real list / dict instead of the string literal. The heuristic only
+    ``--state items=[1,2,3]`` and ``--state user={"name":"x"}`` yield a
+    real list / dict, not the string literal. The heuristic only
     runs ``json.loads`` on plausibly-JSON inputs — a value that opens
     with ``[``, ``{`` or ``"``, the bare tokens ``true`` / ``false`` /
     ``null``, or a number — so common string values (``msg=hello``, a
@@ -129,7 +129,7 @@ async def _run_async(
     live_from: str | None = None,
     force_live: list[str] | None = None,
 ) -> None:
-    """Async implementation of the run command."""
+    """Async implementation of ``run``, shared with ``replay``."""
     from agentloom.core.engine import WorkflowEngine
     from agentloom.providers.gateway import ProviderGateway
 
@@ -158,7 +158,7 @@ async def _run_async(
     state_manager = StateManager(initial_state=_initial_state(workflow, state_args))
 
     gateway = ProviderGateway()
-    # Setup observability (unless --lite) — done early so providers can hook into it
+    # Early, so providers can hook into the observer
     observer = _setup_observer(lite)
 
     cut = None
@@ -178,9 +178,7 @@ async def _run_async(
                 strict=mock_strict,
             )
         except ValueError as e:
-            # A malformed / wrong-version recording file is a startup
-            # error — surface it cleanly instead of letting the workflow
-            # run green against a fixture that never loaded.
+            # A malformed recording fails at startup, not as a green run against an empty fixture.
             typer.echo(f"Error: {e}", err=True)
             raise typer.Exit(1) from e
         if live:
@@ -188,7 +186,7 @@ async def _run_async(
             if record is not None:
                 from agentloom.providers.recorder import RecordingProvider
 
-                # Outermost, so a step's replayed and live turns land in one list, in order (#178).
+                # Outermost, so a step's replayed and live turns land in one list, in order.
                 gateway.wrap_providers(lambda p: RecordingProvider(p, record, observer=observer))
         else:
             gateway.register(mock, priority=0)
@@ -244,15 +242,12 @@ async def _run_async(
     )
 
     typer.echo(f"Running workflow: {workflow.name}")
-    # ``engine.run_id`` is always populated now (used for trace correlation),
-    # but the user-facing "Run ID" echo stays gated on checkpoint mode — that's
-    # the only context where the id is useful to the operator (resume from
-    # checkpoint).
+    # Shown only with checkpoints: the run id matters to the operator only for ``resume``.
     if checkpointer is not None:
         typer.echo(f"Run ID: {engine.run_id}")
     from agentloom.core.inter_agent import EventLog, recording_events
 
-    events = EventLog() if record is not None else None  # #135
+    events = EventLog() if record is not None else None
     with recording_events(events) if events is not None else nullcontext():
         result = await engine.run()
     if record is not None and events is not None:
@@ -284,8 +279,6 @@ def _setup_observer(lite: bool) -> WorkflowObserver | None:
     """Create the observability observer unless running in lite mode."""
     if lite:
         return None
-
-    import os
 
     from agentloom.compat import is_available, try_import
     from agentloom.observability.observer import WorkflowObserver
@@ -320,7 +313,7 @@ def _setup_mock(
     observer: WorkflowObserver | None,
     workflow_name: str,
 ) -> None:
-    """Register ``provider: mock`` from the workflow's own ``config:`` (#76)."""
+    """Register ``provider: mock`` from the workflow's own ``config:``."""
     from agentloom.providers.mock import MockProvider
 
     gateway.register(
@@ -352,7 +345,7 @@ def _setup_cut(
     live_from: str | None,
     force_live: list[str],
 ) -> ReplayCut:
-    """Serve the recording through the workflow's own providers, live from the cut on (#165)."""
+    """Serve the recording through the workflow's own providers, live from the cut on."""
     from agentloom.providers.replay_or_live import ReplayCut, ReplayOrLiveProvider, cut_steps
 
     try:
@@ -366,7 +359,7 @@ def _setup_cut(
 
 
 def _setup_generic_openai(gateway: ProviderGateway, config: WorkflowConfig) -> None:
-    """Register ``provider: generic_openai`` from the workflow's own ``config:`` (#48)."""
+    """Register ``provider: generic_openai`` from the workflow's own ``config:``."""
     if config.provider != "generic_openai":
         return
     from agentloom.providers.generic_openai import GenericOpenAIProvider
@@ -428,7 +421,7 @@ def _tool_registry(workflow: WorkflowDefinition) -> ToolRegistry:
 
 
 def _record_events(path: Path, events: EventLog) -> None:
-    """Keep the run's inter-agent events in its recording (#135)."""
+    """Keep the run's inter-agent events in its recording."""
     from agentloom.core.inter_agent import EVENTS_KEY, dump_events
     from agentloom.providers.recorder import merge_into_recording
 
@@ -437,7 +430,7 @@ def _record_events(path: Path, events: EventLog) -> None:
 
 
 def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
-    """Setup providers from config-driven discovery."""
+    """Set up providers from config-driven discovery."""
     # The endpoint is the only route: a discovered provider would take mapped models or fallbacks
     if default_provider == "generic_openai":
         return
@@ -519,9 +512,7 @@ def _print_result(result: object, *, run_id: str | None = None) -> None:
     final_state = r.final_state
     typer.echo(f"\nFinal State Keys: {list(final_state.keys())}")
 
-    # Render pending approvals after the result table so concurrent gates
-    # don't interleave on stdout. Each PAUSED step produces one block; the
-    # run_id is what the operator types into `agentloom resume`.
+    # Approvals render after the table, so concurrent gates do not interleave on stdout.
     paused_steps = [
         step_id for step_id, sr in r.step_results.items() if sr.status == StepStatus.PAUSED
     ]
@@ -529,11 +520,7 @@ def _print_result(result: object, *, run_id: str | None = None) -> None:
         typer.echo("")
         run_label = run_id or "<run_id>"
         for step_id in paused_steps:
-            # The hint must use only flags ``agentloom resume`` actually
-            # accepts: it resolves the paused step from the checkpoint,
-            # so there is no ``--step`` option. Pre-0.5.0 the hint
-            # printed ``--step <id>`` verbatim and a user who copied it
-            # hit ``Error: No such option: --step``.
+            # ``resume`` reads the paused step from the checkpoint: it has no ``--step`` option.
             typer.echo(f"[APPROVAL REQUIRED] Step '{step_id}' is waiting for a decision.")
             typer.echo(f"  Approve: agentloom resume {run_label} --approve")
             typer.echo(f"  Reject:  agentloom resume {run_label} --reject")

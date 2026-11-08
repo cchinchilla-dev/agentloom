@@ -55,7 +55,7 @@ class ProviderEntry:
 
 
 class _Failures:
-    """Why each candidate failed, so the final error keeps a status they all share (#182)."""
+    """Why each candidate failed, so the final error keeps a status they all share."""
 
     def __init__(self) -> None:
         self._messages: list[str] = []
@@ -73,8 +73,7 @@ class _Failures:
         error = ProviderError(
             "gateway", f"{summary}: " + "; ".join(self._messages), status_code=status
         )
-        # Chained only with a shared status: a permanent marker on the last failure
-        # must not stop the retries another candidate's transient failure asks for.
+        # Chain only on a shared status: a permanent last failure must not block another's retries.
         raise error from (self._last if status is not None else None)
 
 
@@ -85,10 +84,7 @@ class ProviderGateway:
     and fallbacks are configured, tries the next provider automatically.
     """
 
-    # Cap for the per-model candidate cache. Workflows that template the
-    # model name (``{state.tier}-gpt-{state.version}``) or run multi-tenant
-    # produce unbounded model strings; without an LRU bound the cache grows
-    # forever. Override with ``AGENTLOOM_CANDIDATE_CACHE_MAX`` if needed.
+    # LRU cap for the candidate cache: templated or multi-tenant model names are unbounded.
     _DEFAULT_CANDIDATE_CACHE_MAX = 1024
 
     def __init__(self, candidate_cache_max: int | None = None) -> None:
@@ -103,7 +99,6 @@ class ProviderGateway:
     def set_observer(self, observer: Any) -> None:
         """Attach an observer to receive circuit breaker state changes."""
         self._observer = observer
-        # Wire existing circuit breakers to the observer
         for entry in self._providers:
             self._wire_circuit_callback(entry)
 
@@ -178,8 +173,8 @@ class ProviderGateway:
         """Route a completion request to the appropriate provider with fallback.
 
         ``step_id`` may be passed via kwargs so the observer can scope the
-        per-attempt provider spans to the originating step. Pulled out of
-        kwargs before forwarding so it never reaches the provider HTTP call.
+        per-attempt provider spans to the originating step. Only providers
+        that set ``accepts_step_id`` receive it.
         """
         step_id: str | None = kwargs.pop("step_id", None)
         candidates = self._get_candidates(model)
@@ -193,8 +188,7 @@ class ProviderGateway:
         failures = _Failures()
 
         for attempt_idx, entry in enumerate(candidates):
-            # Fast-fail when the circuit is open: do NOT consume the rate
-            # limiter budget for traffic that will never reach the provider.
+            # Check the circuit first, so an open one costs no rate-limiter budget.
             if entry.circuit_breaker._maybe_transition_to_half_open() == CircuitState.OPEN:
                 msg = f"Provider '{entry.provider.name}' circuit is open"
                 failures.add(msg)
@@ -220,7 +214,6 @@ class ProviderGateway:
 
             try:
                 if entry.rate_limiter:
-                    # Estimate prompt tokens from message content
                     estimated_tokens = sum(
                         estimate_content_tokens(m.get("content", "")) for m in messages
                     )
@@ -228,10 +221,7 @@ class ProviderGateway:
 
                 async def _call(e: ProviderEntry = entry) -> ProviderResponse:
                     call_kwargs = dict(kwargs)
-                    # Re-attach step_id only for providers that consume
-                    # it — the mock and recording providers key their
-                    # fixtures by step id. HTTP adapters reject the
-                    # unknown parameter, so it stays popped for them.
+                    # Only the providers that key responses by step id get it back.
                     if step_id is not None and getattr(e.provider, "accepts_step_id", False):
                         call_kwargs["step_id"] = step_id
                     return await e.provider.complete(
@@ -244,7 +234,6 @@ class ProviderGateway:
 
                 response = await entry.circuit_breaker.call(_call, exclude=(RateLimitError,))
 
-                # Consume response tokens from rate limiter budget
                 if entry.rate_limiter and response.usage.completion_tokens:
                     resp_tokens = response.usage.completion_tokens
                     await entry.rate_limiter.consume_response_tokens(resp_tokens)
@@ -329,14 +318,11 @@ class ProviderGateway:
     ) -> StreamResponse:
         """Route a streaming request with fallback and resilience.
 
-        NOTE: Mid-stream fallback is not supported.  Once a provider starts
-        streaming successfully, the gateway commits to that provider.  If the
-        connection drops mid-stream the error propagates to the caller and the
-        engine's retry logic will re-attempt the entire step (potentially
-        routing to a different provider if the circuit breaker has tripped).
+        Mid-stream fallback is not supported: once a provider starts
+        streaming, the gateway commits to it. A connection that drops
+        mid-stream raises to the caller, and the engine's retry re-runs the
+        whole step (on another provider if the circuit breaker has tripped).
         """
-        # ``step_id`` is consumed locally by per-attempt observability hooks
-        # and must not reach the provider HTTP call.
         step_id = kwargs.pop("step_id", None)
         candidates = self._get_candidates(model)
 
@@ -382,8 +368,7 @@ class ProviderGateway:
                     await entry.rate_limiter.acquire(token_count=estimated_tokens)
 
                 stream_kwargs = dict(kwargs)
-                # Re-attach step_id only for providers that consume it
-                # (mock / recorder key their fixtures by step id).
+                # Only the providers that key responses by step id get it back.
                 if step_id is not None and getattr(entry.provider, "accepts_step_id", False):
                     stream_kwargs["step_id"] = step_id
                 inner_sr = await entry.provider.stream(
@@ -394,7 +379,6 @@ class ProviderGateway:
                     **stream_kwargs,
                 )
 
-                # Wrap with resilience feedback
                 outer_sr = StreamResponse(model=inner_sr.model, provider=inner_sr.provider)
 
                 async def _wrapped_iter(
@@ -417,9 +401,7 @@ class ProviderGateway:
                         async for chunk in raw_iter:
                             yield chunk
                     except GeneratorExit:
-                        # Caller aborted via aclose() — not a provider fault.
-                        # The connection was established and producing chunks,
-                        # so record a success to release the HALF_OPEN slot.
+                        # Caller's aclose(): no provider fault; success frees the half-open slot.
                         _entry.circuit_breaker.record_success()
                         raise
                     except cancelled_exc:
@@ -441,7 +423,7 @@ class ProviderGateway:
                                 _inner.usage.completion_tokens
                             )
                     finally:
-                        # Paid however the stream ends once its usage came, a failure after it too
+                        # Billed however the stream ends: usage that came before a failure counts.
                         record_spend(
                             _inner.cost_usd,
                             _entry.provider.name,
@@ -499,10 +481,7 @@ class ProviderGateway:
                 continue
 
             except RateLimitError as e:
-                # Throttled, not faulty. Do NOT record a breaker failure; the
-                # provider is healthy. Release the half-open slot we claimed
-                # via ``allow_request()`` so the breaker doesn't get stuck
-                # one-test-call short forever, then try the next candidate.
+                # Throttled, not faulty: release allow_request()'s half-open slot without a failure.
                 cb = entry.circuit_breaker
                 if cb.state == CircuitState.HALF_OPEN and cb._half_open_calls > 0:
                     cb._half_open_calls -= 1
@@ -524,9 +503,7 @@ class ProviderGateway:
                 continue
 
             except Exception as e:
-                # Setup failures (rate limiter, provider.stream()) must feed
-                # back to the circuit breaker — allow_request() already
-                # incremented the half-open counter.
+                # Setup failures feed the breaker: allow_request() already took a half-open slot.
                 entry.circuit_breaker.record_failure()
                 if attempt_started and self._observer:
                     end_hook = getattr(self._observer, "on_provider_call_end", None)
@@ -614,13 +591,7 @@ class ProviderGateway:
                     result = await e.provider.embed(
                         inputs=inputs, model=model, dimensions=dimensions, **ck
                     )
-                    # Providers must return one vector per input in order.
-                    # A mismatch means a partial response / bug / schema
-                    # drift — treating it as a ``ProviderError`` inside the
-                    # CB-wrapped call makes the breaker count it as a
-                    # failure and the fallback chain retry on the next
-                    # candidate rather than silently writing misaligned
-                    # vectors to state.
+                    # Raised in the breaker: a count mismatch is a failure, not misaligned state.
                     if len(result.embeddings) != len(inputs):
                         raise ProviderError(
                             e.provider.name,
@@ -661,9 +632,7 @@ class ProviderGateway:
                 return response
 
             except NotImplementedError as e:
-                # Skip cleanly — provider opted out (Anthropic). No CB /
-                # retry-budget impact and no ``on_provider_error`` — a
-                # missing capability isn't a failure.
+                # A missing capability, not a fault: no breaker hit, no ``on_provider_error``.
                 msg = f"Provider '{entry.provider.name}' has no embeddings: {e}"
                 failures.add(msg)  # a skip, like an open circuit: no status of its own
                 logger.debug(msg)
@@ -686,10 +655,7 @@ class ProviderGateway:
                 logger.warning(msg)
                 continue
             except RateLimitError as e:
-                # Throttled, not faulty — same treatment as ``stream``:
-                # do not record a breaker failure, do not fire
-                # ``on_provider_error`` (a healthy provider being throttled
-                # is not a fault). Try the next candidate.
+                # Throttled, not faulty: no breaker failure, no ``on_provider_error``.
                 msg = f"Provider '{entry.provider.name}' rate-limited: {e}"
                 failures.add(msg, e)
                 logger.warning(msg)
@@ -735,10 +701,8 @@ class ProviderGateway:
     def _get_candidates(self, model: str) -> list[ProviderEntry]:
         """Get provider candidates for a model, sorted by priority.
 
-        Cached lookup: explicit ``_model_mapping`` registrations bypass the
-        cache; everything else hits the LRU-capped ``_candidate_cache``. On
-        cache hit we move the entry to the MRU end; on miss we insert and
-        evict the LRU entry if we've exceeded ``_candidate_cache_max``.
+        Explicit ``_model_mapping`` registrations bypass the cache; any other
+        model goes through the LRU-capped ``_candidate_cache``.
         """
         if model in self._model_mapping:
             return self._model_mapping[model]
@@ -756,7 +720,7 @@ class ProviderGateway:
         return result
 
     async def begin_attempt(self, step_id: str, failed: Attempt | None) -> None:
-        """Pass the engine's attempt signal to the providers that record (#164)."""
+        """Pass the engine's attempt signal to the providers that record."""
         for entry in self._providers:
             begin = getattr(entry.provider, "begin_attempt", None)
             if begin is not None:

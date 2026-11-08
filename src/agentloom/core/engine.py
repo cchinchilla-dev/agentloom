@@ -71,9 +71,8 @@ _FAILED = (StepStatus.FAILED, StepStatus.TIMEOUT)
 def _extract_pause_error(exc: BaseException) -> PauseRequestedError | None:
     """Unwrap a ``PauseRequestedError`` from an ``ExceptionGroup``.
 
-    anyio task groups always wrap step exceptions in an ``ExceptionGroup``,
-    so we need to inspect the group to find pause requests.  Returns
-    ``None`` if *exc* does not contain a ``PauseRequestedError``.
+    anyio task groups wrap step exceptions in an ``ExceptionGroup``. Return ``None`` when
+    *exc* contains no ``PauseRequestedError``.
     """
     if isinstance(exc, PauseRequestedError):
         return exc
@@ -88,12 +87,9 @@ def _extract_pause_error(exc: BaseException) -> PauseRequestedError | None:
 def _closest_failed_ancestor(target: str, failed: set[str], dag: DAG) -> str | None:
     """Find the closest ancestor of *target* present in *failed*.
 
-    BFS backward through the DAG's predecessor edges. Returns the first
-    failed step encountered, or ``None`` if no failed ancestor is reachable
-    (defensive: the caller only invokes this when *target* is a transitive
-    successor of *failed*, so a hit is expected). Used by the cascade-skip
-    block to attribute each SKIPPED dependent to the nearest failure it
-    can name, instead of a generic "upstream failure" without context.
+    Breadth-first backward through predecessor edges, so each cascade-skipped dependent
+    names its nearest failure. Return ``None`` when none is reachable (defensive: the
+    caller only asks about transitive successors of *failed*).
     """
     visited: set[str] = {target}
     queue: deque[str] = deque([target])
@@ -111,9 +107,8 @@ def _closest_failed_ancestor(target: str, failed: set[str], dag: DAG) -> str | N
 def _extract_budget_error(exc: BaseException) -> BudgetExceededError | None:
     """Unwrap a ``BudgetExceededError`` from an ``ExceptionGroup``.
 
-    Mirrors ``_extract_pause_error``; used so pre-dispatch budget gates
-    raised inside a task group surface as ``WorkflowStatus.BUDGET_EXCEEDED``
-    rather than a generic ``FAILED``.
+    Mirrors ``_extract_pause_error``, so a breach raised inside a task group ends the
+    run ``WorkflowStatus.BUDGET_EXCEEDED`` rather than a generic ``FAILED``.
     """
     if isinstance(exc, BudgetExceededError):
         return exc
@@ -129,7 +124,7 @@ def _spend_of(result: StepResult) -> Spend:
     """What the running attempt spent: the calls the gateway saw, or ``result``'s when more.
 
     A step can report calls the gateway never saw: those of a gateway of its own, or of
-    a subworkflow with a budget of its own. Cost and tokens are compared apart (#120).
+    a subworkflow with a budget of its own. Cost and tokens are compared separately.
     """
     seen = attempt_spend()
     reported = result.token_usage.total_tokens
@@ -147,10 +142,10 @@ def _spend_of(result: StepResult) -> Spend:
 
 
 class WorkflowEngine:
-    """Executes a workflow by traversing its DAG and running steps.
+    """Workflow executor that traverses the DAG and runs its steps.
 
-    Uses layer-based parallel execution: steps in the same DAG layer
-    (no dependencies between them) execute concurrently via anyio task groups.
+    Steps in the same DAG layer (no dependencies between them) run concurrently in an
+    anyio task group.
     """
 
     def __init__(
@@ -173,13 +168,7 @@ class WorkflowEngine:
         self.step_registry = step_registry or create_default_registry()
         self.observer = observer
         self._stream_callback = on_stream_chunk
-        # ``budget_enforcer`` is the shared-budget hook: a parent engine
-        # passes its own enforcer when launching a subworkflow so child
-        # charges land in the same counter. When unset (the ordinary
-        # top-level case) we build a fresh enforcer scoped to this
-        # workflow's ``budget_usd``. ``None`` limit ⇒ unlimited; the
-        # enforcer is still created so call sites don't need ``if budget
-        # is None`` branching.
+        # A subworkflow shares its parent's enforcer; an unlimited run gets one too (no None checks)
         self._budget = budget_enforcer or BudgetEnforcer(workflow.config.budget_usd)
         # What this run charged, its subworkflows that share its budget included, and
         # what it had charged before a resume: a shared enforcer counts its parent's too
@@ -190,18 +179,12 @@ class WorkflowEngine:
         self._cut: dict[str, StepResult] = {}
 
         self._checkpointer = checkpointer
-        # Always generate a run_id so ``workflow.run_id`` propagates through
-        # the span tree on every workflow execution, not only checkpointed
-        # ones — external trace consumers (AgentAnvil, Jaeger search) rely on
-        # it to correlate a Jaeger trace with a workflow run.
+        # Always set, checkpointed or not: trace consumers match traces to runs by its value
         self.run_id = run_id or uuid.uuid4().hex[:12]
         self._completed_steps: set[str] = set()
         self._checkpoint_created_at = datetime.now(UTC).isoformat()
 
-        # Build the redaction policy once at startup — combines the
-        # workflow-level ``state_schema:`` declarations with the
-        # ``AGENTLOOM_REDACT_STATE_KEYS`` env var so a deployment-wide
-        # baseline (env) can coexist with per-workflow overrides (YAML).
+        # The env var is a deployment-wide baseline; ``state_schema`` adds the workflow's own keys
         self._redaction_policy = RedactionPolicy(workflow.redaction_patterns()).merge(
             RedactionPolicy.from_env()
         )
@@ -218,8 +201,7 @@ class WorkflowEngine:
         Silent on failure so a broken history directory cannot prevent a
         workflow from returning its result to the caller.
         """
-        # Lazy import to keep the engine's import graph minimal and avoid
-        # paying the cost for callers that never look at run history.
+        # Deferred so that importing the engine stays light
         from agentloom.history.writer import RunHistoryWriter
 
         try:
@@ -231,22 +213,17 @@ class WorkflowEngine:
     def _attach_quality_emitter(self, result: WorkflowResult, workflow_name: str) -> None:
         """Wire a quality-span emitter onto *result* if a tracer is available.
 
-        Builds a closure capturing the live tracing manager + run_id +
-        workflow name so subsequent ``result.annotate(...)`` calls publish
-        a ``quality:<target>`` OTel span without the caller threading any
-        infrastructure through. Keeps ``core/results.py`` free of any
-        ``observability/`` import (per ``AGENTS.md`` layering rule) — the
-        engine is the only module that knits the two together.
+        The closure captures the tracing manager, run id and workflow name, so
+        ``result.annotate(...)`` publishes a ``quality:<target>`` OTel span with no
+        infrastructure from the caller, and ``core/results.py`` imports nothing from
+        ``observability/``.
         """
         if self.observer is None:
             return
         tracing_ctx = getattr(self.observer, "tracing", None)
         if tracing_ctx is None:
             return
-        # Lazy import: ``agentloom.observability.quality`` carries no
-        # opentelemetry dependency itself (only schema constants), so the
-        # import is always safe; deferring it keeps the engine import
-        # graph minimal for callers that never annotate.
+        # Deferred, though dependency-free: a run without a tracer never imports it
         from agentloom.observability.quality import emit_quality_annotation
 
         def _emitter(annotation: Any) -> None:
@@ -260,24 +237,13 @@ class WorkflowEngine:
         result.attach_quality_emitter(_emitter)
 
     async def _finalize_result(self, result: WorkflowResult, workflow_name: str) -> None:
-        """Common post-construction wiring for every terminal ``WorkflowResult``.
+        """Wire every terminal ``WorkflowResult``, whatever the outcome.
 
-        Centralises four concerns that previously only ran on the success
-        path:
-          * stamp ``run_id`` so trace-correlation works across all outcomes
-            (failure / budget_exceeded / paused traces are otherwise
-            orphaned)
-          * attach the quality-span emitter so ``result.annotate(...)``
-            keeps working on non-success terminations too
-          * write the per-run history record so ``agentloom history``
-            shows every execution, not only successful ones
-          * apply the redaction policy to ``final_state`` and
-            ``step_results`` so callers that dump the result (``agentloom
-            run --json``, programmatic ``result.model_dump_json()``) see
-            sentinels for flagged keys — the in-memory state stays
-            plaintext for step composition, but the moment the result
-            crosses the process boundary the same persistence-gate the
-            checkpoint enjoys applies here too.
+        Stamp ``run_id`` for trace correlation, attach the quality-span emitter so
+        ``result.annotate(...)`` works, write the run history record, and redact
+        ``final_state`` and ``step_results``. In-memory state stays plaintext for step
+        composition; a result that leaves the process (``agentloom run --json``,
+        ``result.model_dump_json()``) carries sentinels, as the checkpoint does.
         """
         result.run_id = self.run_id
         if self._redaction_policy:
@@ -310,25 +276,11 @@ class WorkflowEngine:
             if result.status == StepStatus.SUCCESS
         )
 
-        # Apply the redaction policy on the way to disk. The in-memory
-        # ``self.state`` stays plaintext so a subsequent step that
-        # interpolates ``{state.api_key}`` keeps working; only the
-        # serialized snapshot carries the sentinel. Redaction is applied
-        # uniformly to every surface that lands in the checkpoint JSON:
-        # the runtime snapshot, the literal ``state:`` seed inside the
-        # workflow definition, the step result outputs (an LLM call may
-        # return a flagged key in structured output), and any other
-        # workflow-definition field whose key name matches the policy
-        # (e.g. a step-level ``notify.headers.api_key``).
-        #
-        # ``state_schema`` is intentionally lifted out before the walk:
-        # its leaves are the policy *metadata* itself (``redact: true``),
-        # not user state. Redacting them would rewrite the bool flag into
-        # a sentinel string that breaks ``WorkflowDefinition.model_validate``
-        # on resume.
+        # Redact everything written to disk; in-memory state stays plaintext for later templates
         persisted_state = redact_state(state_snapshot, self._redaction_policy)
         workflow_dump = self.workflow.model_dump()
         if self._redaction_policy:
+            # Redacting the ``redact: true`` flags themselves would break validation on resume
             preserved_schema = workflow_dump.pop("state_schema", None)
             workflow_dump = redact_state(workflow_dump, self._redaction_policy)
             if preserved_schema is not None:
@@ -387,9 +339,7 @@ class WorkflowEngine:
                 parent's passes it; by default, one that goes on from what the run
                 had spent.
         """
-        # A checkpoint written by a newer AgentLoom can carry structures
-        # this runtime does not understand. Refuse it up front with an
-        # upgrade hint instead of silently mis-resuming.
+        # Refuse a checkpoint from a newer runtime up front rather than mis-resume it
         if checkpoint_data.schema_version > CURRENT_CHECKPOINT_SCHEMA_VERSION:
             raise CheckpointSchemaError(
                 f"Checkpoint for run '{checkpoint_data.run_id}' has "
@@ -400,11 +350,7 @@ class WorkflowEngine:
 
         workflow = WorkflowDefinition.model_validate(checkpoint_data.workflow_definition)
 
-        # Detect redacted state keys carried in the checkpoint. Sentinels were
-        # written by ``_save_checkpoint`` on the way to disk, so on the way
-        # back any downstream step that references such a key will receive
-        # the sentinel literal — not the original plaintext. Surface a single
-        # warning that lists the affected keys so the operator notices.
+        # Redacted keys come back as sentinel literals: warn once so the operator re-injects them
         redacted_keys = [k for k, v in checkpoint_data.state.items() if is_redacted(v)]
         if redacted_keys:
             logger.warning(
@@ -416,18 +362,14 @@ class WorkflowEngine:
                 redacted_keys,
             )
 
-        # Restore state manager with completed step results via the public API
-        # so internal state, snapshots, and locking remain consistent.
+        # Through the public API, so snapshots and locking stay consistent
         state_manager = StateManager(initial_state=checkpoint_data.state)
         restored_cost = 0.0
         for step_id, result_data in checkpoint_data.step_results.items():
             try:
                 result = StepResult.model_validate(result_data)
             except PydanticValidationError as e:
-                # A step result with a status (or other field) outside
-                # this runtime's enums is the signature of a checkpoint
-                # written by a newer AgentLoom. Surface it as a clear
-                # schema error rather than a raw Pydantic dump.
+                # An enum value this runtime lacks marks a checkpoint from a newer AgentLoom
                 raise CheckpointSchemaError(
                     f"Checkpoint for run '{checkpoint_data.run_id}' has a step "
                     f"result ({step_id!r}) this runtime cannot parse — likely an "
@@ -466,11 +408,7 @@ class WorkflowEngine:
         return self._spent_before + self._charged
 
     async def run(self) -> WorkflowResult:
-        """Execute the workflow end-to-end.
-
-        Returns:
-            WorkflowResult with all step results and final state.
-        """
+        """Execute the workflow end-to-end and return its result."""
         runs = _RUNS.set((*_RUNS.get(), self))
         try:
             return await self._run()
@@ -502,11 +440,7 @@ class WorkflowEngine:
         )
 
         try:
-            # Track which steps are skipped (not activated by router OR
-            # cascaded behind a failed upstream). ``skip_reasons`` carries the
-            # explanatory message for steps cascaded behind a failure so the
-            # operator can audit the chain — success-cascade entries stay
-            # silent because "branch not activated" is normal flow control.
+            # ``skip_reasons`` explains failure cascades; a branch not taken is normal, so silent
             skipped_steps: set[str] = set()
             skip_reasons: dict[str, str] = {}
             activated_targets: set[str] | None = None
@@ -514,14 +448,12 @@ class WorkflowEngine:
             for layer_idx, layer in enumerate(layers):
                 logger.debug("Executing layer %d: %s", layer_idx, layer)
 
-                # Filter layer: skip steps not activated by a router
                 active_steps = []
                 for step_id in layer:
                     # Skip steps already completed in a previous run (resume)
                     if step_id in self._completed_steps:
                         logger.debug("Skipping already-completed step: %s", step_id)
-                        # If this was a router, restore its activation so
-                        # downstream branch filtering works correctly.
+                        # A completed router restores its activation for downstream filtering
                         step_def = self.workflow.get_step(step_id)
                         if step_def and step_def.type == StepType.ROUTER:
                             step_res = await self.state.get_step_result(step_id)
@@ -548,7 +480,6 @@ class WorkflowEngine:
                     if activated_targets is not None:
                         step_def = self.workflow.get_step(step_id)
                         if step_def and step_def.depends_on:
-                            # Check if any dependency was a router
                             has_router_dep = False
                             for dep_id in step_def.depends_on:
                                 dep_step = self.workflow.get_step(dep_id)
@@ -589,34 +520,21 @@ class WorkflowEngine:
                             await self.state.set_step_result(step_id, cut)
                     raise WorkflowTimeoutError(message)
 
-                # After the layer finishes, check whether any step paused.
-                # Pauses are NOT re-raised inside _execute_step so siblings
-                # can complete their in-flight provider calls without being
-                # cancelled. We halt the outer layer loop here instead.
+                # Pauses surface after the layer so siblings finish in-flight provider calls
                 paused_step_id: str | None = None
                 for step_id in active_steps:
                     step_result = await self.state.get_step_result(step_id)
                     if step_result and step_result.status == StepStatus.SUCCESS:
                         self._completed_steps.add(step_id)
                     elif step_result and step_result.status == StepStatus.PAUSED:
-                        # ``error`` carries the qualified ``parent.child`` path
-                        # when the pause came from inside a subworkflow; fall
-                        # back to the local id for ordinary approval gates.
+                        # A subworkflow's pause puts its ``parent.child`` path in ``error``
                         qualified = step_result.error or step_id
                         paused_step_id = paused_step_id or qualified
 
                 if paused_step_id is not None:
                     raise PauseRequestedError(paused_step_id)
 
-                # Cascade-skip dependents of any step that ended FAILED or TIMEOUT in this
-                # layer. Applies uniformly to routers (AST error, no-match-no-
-                # default, evaluator exception) and regular steps that exhausted
-                # retries — both leave downstream branches unable to make
-                # meaningful progress, and letting them run wastes tokens and
-                # can fire side-effect tools / webhooks against partial state.
-                # Opt out per-workflow via ``config.on_step_failure: continue``
-                # for best-effort fan-outs that explicitly want today's
-                # swallow-and-continue behaviour.
+                # A failed step's dependents would burn tokens, firing side effects on partial state
                 if self.workflow.config.on_step_failure == "skip_downstream":
                     failed_in_layer: set[str] = set()
                     for step_id in active_steps:
@@ -631,11 +549,7 @@ class WorkflowEngine:
                             if descendant in skipped_steps:
                                 continue
                             skipped_steps.add(descendant)
-                            # Attribute the skip to the closest known failed
-                            # ancestor (BFS backward). Transitive descendants
-                            # may sit several hops below the failure; naming
-                            # the nearest is the most actionable for the
-                            # operator.
+                            # Name the nearest failure: a descendant can sit several hops below it
                             upstream = _closest_failed_ancestor(descendant, failed_in_layer, dag)
                             skip_reasons.setdefault(
                                 descendant,
@@ -653,12 +567,7 @@ class WorkflowEngine:
 
                 if activated_targets_for_next:
                     activated_targets = activated_targets_for_next
-                    # Skip non-activated direct children of any router that
-                    # just fired, then propagate the skip forward through the
-                    # DAG's transitive closure. Any descendant of a skipped
-                    # branch is unreachable, including join-nodes whose other
-                    # predecessor is on an activated branch — they would
-                    # otherwise execute with one upstream output missing.
+                    # Skip the whole subtree of a branch not taken, joins too: they'd miss an input
                     non_activated_children: set[str] = set()
                     for step_id in active_steps:
                         step_def = self.workflow.get_step(step_id)
@@ -668,7 +577,6 @@ class WorkflowEngine:
                                     non_activated_children.add(child)
                     skipped_steps.update(dag.transitive_successors(non_activated_children))
                 else:
-                    # Reset activation for non-router layers
                     if activated_targets is not None:
                         activated_targets = None
 
@@ -712,28 +620,8 @@ class WorkflowEngine:
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
 
-            # Pause outranks budget in conflict resolution. Pre-0.5.0 a
-            # workflow whose approval gate fired in the same layer as a
-            # budget-blowing LLM step silently ended ``budget_exceeded``
-            # — the user lost both the money (the LLM call had already
-            # completed) AND the approval opportunity, with no resumable
-            # checkpoint at the gate. Surfacing the pause first
-            # preserves both options: the human can ``--approve`` /
-            # ``--reject``, and the workflow re-evaluates budget on
-            # resume (an exhausted budget will then surface
-            # ``BudgetExceededError`` on the next dispatch, which is the
-            # user's explicit choice — they asked to look at the pause
-            # before the budget).
-            #
-            # Two sources to inspect: (1) ``_extract_pause_error`` walks
-            # the ExceptionGroup for an unhandled pause, (2) state
-            # manager carries PAUSED step results from gates whose
-            # ``PauseRequestedError`` was swallowed by ``_execute_step``
-            # so siblings could complete — when a sibling then raises
-            # ``BudgetExceededError`` and cancels the task group, the
-            # raised exception is the budget error but the state still
-            # has the pause recorded. Check the state too so the pause
-            # still wins even in that race.
+            # Pause outranks budget: the human decides first, and the resume re-checks the budget.
+            # Check state too: the group may raise a sibling's breach while a pause sits in state
             pause_err = _extract_pause_error(e)
             if pause_err is None:
                 step_results_for_pause = await self.state.all_step_results()
@@ -834,8 +722,7 @@ class WorkflowEngine:
             return result
 
         except BaseException:
-            # Cancelled from outside (a parent step's timeout, a failing sibling): close this
-            # run's workflow span and hand the observer back to the parent before re-raising.
+            # Cancelled from outside: close this run's span so the observer returns to the parent
             if self.observer:
                 with anyio.CancelScope(shield=True):
                     total_tokens, total_cost = self._totals(await self.state.all_step_results())
@@ -849,7 +736,7 @@ class WorkflowEngine:
             raise
 
     def _totals(self, step_results: dict[str, StepResult]) -> tuple[int, float]:
-        """The run's tokens and cost, however it ends: what its steps report (#120).
+        """The run's tokens and cost, however it ends: what its steps report.
 
         The cost is no less than what this run charged: a subworkflow that shares its
         enforcer reports ``cost_usd=0`` (its steps charged it already), and a step cut
@@ -868,7 +755,7 @@ class WorkflowEngine:
             await self._execute_step(step_id)
 
     async def _begin_attempt(self, step_id: str, failed: Attempt | None) -> None:
-        """Tell the recorders and the tool tape that a step starts an attempt (#164).
+        """Tell the recorders and the tool tape that a step starts an attempt.
 
         On a retry, ``failed`` is the attempt it replaces: they forget what
         it did, the steps of a subworkflow run inside it included, so a
@@ -888,14 +775,7 @@ class WorkflowEngine:
         if step_def is None:
             raise WorkflowError(f"Step '{step_id}' not found in workflow")
 
-        # Pre-dispatch budget gate: if a prior layer already exhausted
-        # the budget, refuse to start this step. ``remaining`` is the
-        # headroom left (``max(0, limit - spent)``); a zero reading
-        # means earlier charges landed exactly on — or past — the limit,
-        # so dispatching another step would only burn its cost before
-        # ``charge`` raised anyway. A breach within a layer is caught by
-        # ``charge`` itself; this gate stops the next layer from
-        # starting once the budget is spent.
+        # Refuse to start once the budget is spent; ``charge`` raises a breach inside a layer
         if self._budget.has_limit() and self._budget.remaining == 0.0:
             assert self._budget.limit_usd is not None
             raise BudgetExceededError(self._budget.limit_usd, self._budget.spent)
@@ -989,7 +869,7 @@ class WorkflowEngine:
         """Charge what a failed attempt spent and keep the failed attempts' total on ``result``.
 
         Its calls were paid however it ended: a provider error after paid calls, its
-        timeout, a structured reply never valid (#120).
+        timeout, a structured reply never valid.
         """
         spend = _spend_of(result)
         failed.absorb(spend)
@@ -1003,7 +883,7 @@ class WorkflowEngine:
             raise
 
     async def _charge_cut(self, step_id: str, failed: Spend) -> StepResult:
-        """Charge what a step cut short spent, its answered calls paid all the same (#120).
+        """Charge what a step cut short spent, its answered calls paid all the same.
 
         The budget of a step cut by a breach is broken already, so its charge raises
         nothing. The workflow's timeout leaves its result: timed out, with what it spent;
@@ -1090,14 +970,7 @@ class WorkflowEngine:
                         log.finish_step(running_steps(), result.output)
                     self._emit_tokens(spend)  # before a charge that may break the budget
 
-                    # ``BudgetEnforcer.charge`` is the single source of
-                    # truth for spend — its ``anyio.Lock`` makes the
-                    # increment safe across parallel-layer task groups
-                    # (the old bare-float counter could double-bill under
-                    # concurrent completions) and raises
-                    # ``BudgetExceededError`` from inside the critical
-                    # section so the engine's terminal classifier picks
-                    # up the overrun on the way out.
+                    # The enforcer's lock serializes parallel charges; the breach raises from it
                     await self._charge(spend.cost_usd)
                     if self.observer and self._budget.has_limit():
                         hook = getattr(self.observer, "on_budget_remaining", None)
@@ -1145,15 +1018,7 @@ class WorkflowEngine:
                     )
                     return
 
-                # Soft-failure path: ``executor.execute`` returned a
-                # non-success result without raising. ``result.error`` is a
-                # string with no ``status_code`` to inspect, so the
-                # retryable-status-codes filter is intentionally skipped —
-                # treat the returned failure as transient and retry. On
-                # the last attempt the result still flows through to
-                # ``last_result`` below; stamp ``error_classification``
-                # so a step that exhausts retries surfaces ``transient``
-                # to observability (the executor wouldn't have set it).
+                # A returned failure has no status code to filter: retry it, stamped transient
                 if result.error_classification is None:
                     result.error_classification = "transient"
                 await self._charge_failure(step_id, result, failed)
@@ -1188,8 +1053,7 @@ class WorkflowEngine:
                     error=f"Step timed out after {step_def.timeout}s",
                 )
                 await self._charge_failure(step_id, last_result, failed)
-                # Timeouts are transient by definition — always retry until
-                # the budget is exhausted, no status-code filter applies.
+                # Timeouts are transient: retry while attempts remain, no status-code filter
                 if attempt < max_retries:
                     backoff = compute_backoff(
                         step_def.retry.backoff_base,
@@ -1203,8 +1067,7 @@ class WorkflowEngine:
 
             except BudgetExceededError as breach:
                 if executing:
-                    # Broken inside the step, by a subworkflow sharing the budget: its result
-                    # reports what the attempts spent, their tokens in the run's (#120)
+                    # A subworkflow sharing the budget broke it: record what the attempts spent
                     spend = attempt_spend()
                     failed.absorb(spend)
                     self._emit_tokens(spend)
@@ -1221,16 +1084,8 @@ class WorkflowEngine:
                 raise
 
             except PauseRequestedError as pause_err:
-                # Record the pause and return normally instead of re-raising.
-                # Re-raising would cancel sibling tasks that are already
-                # mid-flight against their providers, leading to double-billing
-                # on resume. The engine's post-layer pass detects PAUSED results
-                # and halts further layers without cancelling in-flight work.
-                # ``pause_err.step_id`` may be a qualified path (``sub.gate``)
-                # when the pause originated inside a subworkflow — stash it on
-                # the result so the post-layer pass can re-emit the full path
-                # to the parent's checkpoint hint instead of just the local
-                # subworkflow step id.
+                # Return, not raise: cancelling in-flight siblings would double-bill them on resume.
+                # A subworkflow's gate keeps its qualified path (``sub.gate``) for the parent.
                 qualified_path = (
                     pause_err.step_id
                     if pause_err.step_id and pause_err.step_id != step_id
@@ -1262,12 +1117,7 @@ class WorkflowEngine:
                 return
 
             except Exception as e:
-                # Bail out on permanent failures (4xx that's not 429,
-                # sandbox violation, attachment-not-found, tool-not-found,
-                # template typo, Pydantic validation, …) before consuming
-                # the retry budget. ``is_retryable_exception`` walks the
-                # cause chain for an explicit ``is_retryable = False``
-                # marker first, then falls back to the status-code rule.
+                # A permanent failure (non-429 4xx, sandbox, validation…) skips the retries left
                 retryable = is_retryable_exception(e, step_def.retry.retryable_status_codes)
                 last_result = StepResult(
                     step_id=step_id,

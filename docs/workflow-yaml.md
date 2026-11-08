@@ -12,7 +12,6 @@ description: "What this workflow does"      # optional
 config:
   provider: openai                          # default provider
   model: gpt-4o-mini                        # default model
-  max_retries: 3                            # retry attempts per step
   budget_usd: 0.50                          # spending limit (null = unlimited)
   timeout: 300.0                            # workflow timeout in seconds (null = unlimited)
   max_concurrent_steps: 10                  # parallel step limit
@@ -37,13 +36,13 @@ steps:                                      # at least one step required
 | `model` | `string` | `gpt-4o-mini` | Default model for all LLM steps |
 | `base_url` | `string` | `null` | Endpoint of `provider: generic_openai` (required there, refused with any other provider). See [Providers](providers.md#generic-openai-compatible-endpoint) |
 | `api_key_env` | `string` | `null` | Name of the environment variable holding the key for `provider: generic_openai`; without it, requests carry no `Authorization` header |
-| `max_retries` | `int` | `3` | Retry attempts on failure |
+| `max_retries` | `int` | `3` | Accepted, not read yet: set retries per step with `retry.max_retries` |
 | `budget_usd` | `float` | `null` | Maximum spend in USD |
 | `timeout` | `float` | `null` | Workflow timeout in seconds; `0` sets no limit. Past it the run ends `timeout`: the steps it cut short are marked `timeout`, the later ones do not run, and a checkpointed run resumes with the full timeout again. An approval gate that pauses in the layer it cuts wins: the run ends `paused`, and resuming it runs the cut steps again |
 | `max_concurrent_steps` | `int` | `10` | Max parallel steps per layer. Bounded `1 ≤ N ≤ 1024` at parse time — values outside that range raise a Pydantic error instead of deadlocking the limiter or surfacing a cryptic `total_tokens must be >= 0`. |
 | `stream` | `bool` | `false` | Enable streaming by default |
 | `sandbox` | `object` | disabled | Security sandbox config |
-| `on_step_failure` | `string` | `skip_downstream` | Behaviour when a step (or router) ends in FAILED or TIMEOUT. `skip_downstream` (default) marks every transitive dependent as SKIPPED with an `error` field naming the closest failed ancestor; `continue` keeps the pre-0.5.0 best-effort behaviour where dependents still run against partial state. |
+| `on_step_failure` | `string` | `skip_downstream` | Behaviour when a step (or router) ends in FAILED or TIMEOUT. `skip_downstream` (default) marks every transitive dependent as SKIPPED with an `error` field naming the closest failed ancestor; `continue` is best-effort: dependents still run against partial state. |
 | `strict_outputs` | `bool` | `false` | Promote the parallel-output collision warning to a parse error. Two parallel-eligible steps writing the same `output:` key normally trigger a `UserWarning` listing both step ids; set `strict_outputs: true` to refuse the workflow at parse time. Sequential overwrite via `depends_on` is exempt — it's an intentional pattern. |
 | `responses_file` | `string` | `null` | Mock provider recording path (when `provider: mock`) |
 | `latency_model` | `string` | `constant` | Mock latency mode: `constant` / `normal` / `replay` |
@@ -89,6 +88,9 @@ On `agentloom resume <run_id>`:
 
 Checkpoint files are stored as JSON in `.agentloom/checkpoints/` by default
 (configurable via `--checkpoint-dir`).
+
+!!! warning "Checkpoints are code"
+    `agentloom resume` and the callback server run the workflow definition stored in the checkpoint, not the YAML file. Whoever can write to the checkpoint directory decides what a resumed run executes, so keep it writable only by the user that runs AgentLoom.
 
 ## State
 
@@ -248,12 +250,12 @@ The model can pick tools at runtime. Declare them on the step; the engine dispat
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `tools` | `list[ToolDefinition]` | `[]` | Tool declarations the model can pick. `parameters` is JSON Schema. Names resolve against the registered `ToolRegistry`; an unknown name is reported back as a tool failure rather than aborting the loop. |
-| `tool_choice` | `string \| dict` | `"auto"` | `"auto"` lets the model decide; `"required"` forces a call; `"none"` disables tools for this turn; `{"name": "..."}` pins to a specific tool. Anthropic has no native `"none"` mode, so when `"none"` is set the adapter drops `tools` from the wire entirely — same observable behavior as the other providers. Ollama ignores `tool_choice` at the wire level (model-side support decides whether a call fires). |
+| `tool_choice` | `string \| dict` | `"auto"` | `"auto"` lets the model decide; `"required"` forces a call; `"none"` disables tools for this turn; `{"name": "..."}` pins to a specific tool. With Anthropic, `"none"` drops `tools` from the request entirely — same observable behavior as the other providers. Ollama ignores `tool_choice` at the wire level (model-side support decides whether a call fires). |
 | `max_tool_iterations` | `int` | `5` | Cap on call→result→re-prompt loops. When hit, `finish_reason` becomes `"max_tool_iterations"` so callers can detect runaway behavior. |
 
-The dispatched tool runs through the existing sandbox (#105), so `http_request`, `shell_command`, `file_read`, `file_write` honor the workflow's `sandbox:` config. Multiple tool calls in one response are dispatched concurrently (anyio task group); results preserve order in the conversation. Cost and tokens accumulate across iterations on the surfaced `StepResult`.
+The dispatched tool runs through the sandbox, so `http_request`, `shell_command`, `file_read`, `file_write` honor the workflow's `sandbox:` config. Multiple tool calls in one response are dispatched concurrently (anyio task group); results preserve order in the conversation. Cost and tokens accumulate across iterations on the surfaced `StepResult`.
 
-The legacy `tool` step (static DAG node, author chooses the tool) keeps working unchanged — `tools=` on `llm_call` is the new dynamic, model-driven path.
+The `tool` step is the static alternative: a DAG node where the author picks the tool, while `tools=` on `llm_call` lets the model pick.
 
 **Structured output:**
 
@@ -402,7 +404,7 @@ tool_args:
     template: false
 ```
 
-Workflows written before 0.5.0 that relied on `{` triggering template expansion on raw JSON / HTML strings would have failed at runtime (`Max string recursion exceeded` or `Invalid format specifier`) — the narrowed grammar removes that footgun.
+Without the narrowed grammar, raw JSON or HTML strings would fail at runtime (`Max string recursion exceeded` or `Invalid format specifier`).
 
 !!! warning "Mixed content with embedded placeholders"
     A string that *mixes* a real placeholder with raw braces — e.g. `'{"user": "{state.user}"}'` — still hits the underlying Python `str.format_map` parser, which interprets the outer `{` as a format field and raises `Invalid format specifier`. Two supported workarounds: (1) compose the JSON in two steps and use `template: false` on the literal half, or (2) escape every literal brace as `{{` / `}}`. AgentLoom cannot disambiguate "intended placeholder" from "intended literal brace" inside the same string. Compact CSS / JS-object shapes like `{color:red}` (no whitespace after `:`) are also inherently ambiguous with `{name:spec}` placeholders — use `template: false` or escape the braces.
@@ -502,8 +504,6 @@ Pauses the workflow until a human approves or rejects. The run is checkpointed a
   type: approval_gate
   depends_on: [draft]
   output: decision                 # "approved" | "rejected"
-  timeout_seconds: 3600            # optional, enforced by the callback server
-  on_timeout: reject               # optional: approve | reject
   notify:                          # optional webhook sent when the gate pauses
     url: "https://hooks.example.com/agentloom"
     headers: {X-Source: agentloom}  # optional, sent as-is
@@ -513,8 +513,8 @@ Pauses the workflow until a human approves or rejects. The run is checkpointed a
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `timeout_seconds` | `int` | `null` | Seconds before `on_timeout` applies. Enforced by `agentloom callback-server`, not by the engine |
-| `on_timeout` | `approve \| reject` | `null` | Automatic decision when the timeout expires |
+| `timeout_seconds` | `int` | `null` | Accepted, not enforced yet: a paused run waits for a decision |
+| `on_timeout` | `approve \| reject` | `null` | Accepted, not enforced yet |
 | `notify` | `WebhookConfig` | `null` | POST sent before pausing so Slack, CI, or a dashboard can act on the pending approval |
 
 `body_template` is rendered with the workflow state plus `run_id`, `step_id`, and `workflow_name`, after the workflow's redaction policy is applied; literal braces in a JSON body must be written as `{{` / `}}`. Without a template the webhook sends a default JSON payload.
@@ -808,7 +808,7 @@ config:
 | `readable_paths` | `list[str]` | `[]` | Read-only paths |
 | `writable_paths` | `list[str]` | `[]` | Write-allowed paths |
 | `allow_network` | `bool` | `true` | Allow HTTP/network calls |
-| `allowed_domains` | `list[str]` | `[]` | Domain whitelist |
+| `allowed_domains` | `list[str]` | `[]` | Domain whitelist. When empty, `http_request` still refuses internal hosts ([Tool network access](providers.md#tool-network-access)) |
 | `allowed_schemes` | `list[str]` | `["http", "https"]` | URL scheme whitelist (rejects `file://`, `gopher://`, etc.) |
 | `max_write_bytes` | `int \| null` | `null` (unlimited) | Maximum file write size |
 | `danger_opt_in` | `list[str]` | `[]` | Per-binary opt-in for meta-executables (`bash`, `python`, `env`, `xargs`, ...). Empty by default — meta-executables defeat the command allowlist by re-launching arbitrary binaries. Add only the names you actually need. |

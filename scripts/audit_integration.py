@@ -10,6 +10,7 @@ Phases:
   2. Docker Compose — observability stack up + health checks + down
   3. Kustomize     — kind cluster + dev overlay + job runs + cleanup
   4. Terraform     — full stack (kind + observability + agentloom) + verify + destroy
+  5. Helm          — direct chart install into kind + render checks
 
 Run:
     python scripts/audit_integration.py           # all phases
@@ -168,25 +169,24 @@ def phase_docker() -> None:
         _save_phase("Docker")
         return
 
-    # Build with observability
-    _step("Building Docker image with observability extras")
+    _step("Building the production-lite image")
     rc, out, err = _run(
         [
             "docker",
             "build",
-            "--build-arg",
-            "BUILD_OBSERVABILITY=true",
+            "--target",
+            "production-lite",
             "-t",
-            "agentloom:audit-int-obs",
+            "agentloom:audit-int-lite",
             ".",
         ],
         cwd=ROOT,
         timeout=300,
     )
     if rc == 0:
-        _pass("Docker build (observability) succeeded")
+        _pass("Docker build (production-lite) succeeded")
     else:
-        _fail("Docker build (observability) failed", err[-500:])
+        _fail("Docker build (production-lite) failed", err[-500:])
 
     # Smoke test: --help
     _step("Running --help")

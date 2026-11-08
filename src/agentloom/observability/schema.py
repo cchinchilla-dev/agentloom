@@ -1,13 +1,14 @@
 """Single source of truth for OTel span, attribute, and metric names.
 
 Downstream trace consumers (AgentAnvil, Grafana dashboards, Jaeger plugins)
-parse these strings. Every span name, span attribute, and metric name used
-anywhere in the engine lives here — no raw string literals for telemetry
-keys allowed outside this module.
+parse these strings. Span names and span attributes come from here;
+``metrics.py`` spells its metric names and labels as literals, and
+``test_metric_names_match_emissions`` checks that every metric name it emits
+is declared in ``MetricName``.
 
 Attribute naming follows the OpenTelemetry **GenAI semantic conventions**
 where applicable (``gen_ai.*``); AgentLoom-specific fields use the
-``workflow.*``, ``step.*``, ``tool.*``, or ``agentloom.*`` prefixes.
+``workflow.*``, ``step.*``, ``tool.*``, ``agent.*`` or ``agentloom.*`` prefixes.
 
 The names are defined in ``agentloom.contracts._semconv`` and published as
 ``agentloom.contracts.experimental`` (which warns: the GenAI conventions are
@@ -23,9 +24,7 @@ from agentloom.contracts._semconv import MetricName as MetricName
 from agentloom.contracts._semconv import SpanAttr as SpanAttr
 from agentloom.contracts._semconv import SpanName as SpanName
 
-# Map AgentLoom provider class names (``Provider.name``) to the canonical
-# OTel ``gen_ai.provider.name`` value. Provider classes keep their short
-# names internally; the observer / gateway translate at telemetry time.
+# Providers keep short names (``Provider.name``); telemetry maps them to ``gen_ai.provider.name``.
 _PROVIDER_NAME_TO_GENAI: dict[str, str] = {
     "openai": GenAIProviderName.OPENAI.value,
     "anthropic": GenAIProviderName.ANTHROPIC.value,

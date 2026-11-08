@@ -10,7 +10,7 @@ from typing import Any
 
 
 class JSONFormatter(logging.Formatter):
-    """Formats log records as JSON lines."""
+    """Formatter that writes log records as JSON lines."""
 
     def format(self, record: logging.LogRecord) -> str:
         log_entry: dict[str, Any] = {
@@ -20,7 +20,6 @@ class JSONFormatter(logging.Formatter):
             "message": record.getMessage(),
         }
 
-        # Add extra fields
         if hasattr(record, "workflow_id"):
             log_entry["workflow_id"] = getattr(record, "workflow_id")
         if hasattr(record, "step_id"):
@@ -60,14 +59,11 @@ def setup_logging(
         level: Log level (DEBUG, INFO, WARNING, ERROR).
         format: Output format ('json' or 'text').
         logger_name: Root logger name to configure.
-
-    Returns:
-        Configured logger instance.
     """
     logger = logging.getLogger(logger_name)
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
 
-    # Remove existing handlers
+    # Repeated calls must not stack handlers.
     logger.handlers.clear()
 
     handler = logging.StreamHandler(sys.stderr)

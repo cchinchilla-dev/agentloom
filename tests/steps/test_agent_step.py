@@ -1,4 +1,4 @@
-"""The ``agent`` step and ``Agent.invoke`` (#120)."""
+"""The ``agent`` step and ``Agent.invoke``."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class Ticket(BaseModel):
 
 
 class _Scripted(BaseProvider):
-    """Answers each call with the next turn of a script, or raises it; keeps what each sent."""
+    """A provider that answers or raises with the next scripted turn and keeps what each sent."""
 
     name = "scripted"
     accepts_step_id = True
@@ -429,7 +429,7 @@ class TestAgentStep:
         ("pattern", "fails"), [("désolé", True), ('say "no"', True), ("ticket", False)]
     )
     async def test_a_typed_reply_is_checked_on_its_values(self, pattern: str, fails: bool) -> None:
-        """Not on its JSON, whose escapes hid non-ASCII text and quotes, nor its field names."""
+        """Not on its JSON, whose escapes hide non-ASCII text and quotes, nor its field names."""
         agent = {
             **SUPPORT,
             "output_schema": {"type": "pydantic", "model": f"{__name__}.Ticket"},
@@ -703,7 +703,7 @@ class TestAgentStep:
 
 
 class _Watcher:
-    """Keeps what the engine and the agent step report to an observer."""
+    """An observer that keeps what the engine and the agent step report."""
 
     def __init__(self) -> None:
         self.turns: list[dict[str, Any]] = []

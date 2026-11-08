@@ -218,7 +218,6 @@ class TestSandboxRestrictions:
         assert isinstance(blocks[0], ImageBlock)
 
     async def test_fetch_provider_validates_private_ip(self) -> None:
-        """URL passthrough still blocks private IP URLs."""
         att = Attachment(
             type="image",
             source="https://192.168.1.1/image.jpg",
@@ -228,7 +227,6 @@ class TestSandboxRestrictions:
             await resolve_attachments([att])
 
     async def test_fetch_provider_allows_public_url(self) -> None:
-        """URL passthrough allows public URLs."""
         att = Attachment(
             type="image",
             source="https://example.com/image.jpg",
@@ -256,6 +254,15 @@ class TestSandboxRestrictions:
         att = Attachment(type="image", source=str(path))
         blocks = await resolve_attachments([att], sandbox=sandbox)
         assert isinstance(blocks[0], ImageBlock)
+
+    async def test_file_path_blocked_when_sandbox_lists_no_paths(self, tmp_path) -> None:
+        path = tmp_path / "image.png"
+        path.write_bytes(_TINY_PNG)
+
+        sandbox = SandboxConfig(enabled=True)
+        att = Attachment(type="image", source=str(path))
+        with pytest.raises(PermissionError, match="lists no readable_paths or allowed_paths"):
+            await resolve_attachments([att], sandbox=sandbox)
 
 
 class TestSSRFProtection:
@@ -302,7 +309,6 @@ class TestSizeLimit:
     async def test_oversized_file_rejected(self) -> None:
         from agentloom.providers.multimodal import MAX_ATTACHMENT_BYTES
 
-        # Create a file just over the limit
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"\x00" * (MAX_ATTACHMENT_BYTES + 1))
             f.flush()
@@ -326,13 +332,10 @@ class TestEmptySource:
 
 
 class TestAttachmentResolutionErrorWrapping:
-    """Deterministic shape/policy refusals (unsupported type, size
-    limit, empty source) get wrapped in ``AttachmentResolutionError``
-    so the resilience layer sees a non-retryable marker.
-    ``AttachmentResolutionError`` subclasses ``ValueError`` so pre-0.5.0
-    ``except ValueError`` clauses keep working. ``PermissionError``
-    (sandbox blocks) and ``httpx.HTTPError`` (network failures) are
-    intentionally NOT wrapped so the existing rules continue to apply."""
+    """Deterministic refusals raise the non-retryable ``AttachmentResolutionError``.
+
+    It subclasses ``ValueError``; ``PermissionError`` and ``httpx.HTTPError`` stay unwrapped.
+    """
 
     async def test_size_limit_raises_attachment_resolution_error(self) -> None:
         import tempfile
@@ -347,9 +350,7 @@ class TestAttachmentResolutionErrorWrapping:
         att = Attachment(type="image", source=path)
         with pytest.raises(AttachmentResolutionError) as excinfo:
             await resolve_attachments([att])
-        # Non-retryable contract: the resilience layer must skip retries.
         assert excinfo.value.is_retryable is False
-        # Backwards compat: still a ValueError.
         assert isinstance(excinfo.value, ValueError)
 
     async def test_empty_source_raises_attachment_resolution_error(self) -> None:
@@ -363,11 +364,7 @@ class TestAttachmentResolutionErrorWrapping:
         assert excinfo.value.source == "<unknown>"
 
     async def test_missing_local_file_wrapped(self) -> None:
-        """A local attachment path that does not exist raises
-        ``FileNotFoundError`` from ``read_bytes()``. It is a permanent
-        failure — the file will not appear on a retry — so it must be
-        wrapped in ``AttachmentResolutionError`` to carry the
-        non-retryable marker."""
+        """A missing local file will not appear on a retry, so it is wrapped as non-retryable."""
         from agentloom.exceptions import AttachmentResolutionError
 
         att = Attachment(type="image", source="/nonexistent/path/does-not-exist.png")
@@ -376,10 +373,7 @@ class TestAttachmentResolutionErrorWrapping:
         assert excinfo.value.is_retryable is False
 
     async def test_permission_error_not_wrapped(self) -> None:
-        """Sandbox blocks raise ``PermissionError`` directly — they're
-        already terminal at the call site, no need for the wrapper. The
-        existing ``pytest.raises(PermissionError)`` tests around sandbox
-        rejection continue to work without changes."""
+        """A sandbox block raises a bare ``PermissionError``: it is terminal at the call site."""
         from agentloom.core.models import SandboxConfig
 
         sandbox = SandboxConfig(allow_network=False)
@@ -390,10 +384,10 @@ class TestAttachmentResolutionErrorWrapping:
     async def test_already_classified_error_propagates_without_rewrap(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An ``AttachmentResolutionError`` raised inside ``_resolve_single``
-        is propagated as-is — the dedicated ``except`` arm stops the
-        generic ``ValueError`` handler from re-wrapping it into a
-        double-prefixed ``Attachment 'X': Attachment 'X': ...`` message."""
+        """An ``AttachmentResolutionError`` from ``_resolve_single`` propagates as-is.
+
+        Re-wrapping it would double the ``Attachment 'X':`` prefix of the message.
+        """
         from agentloom.exceptions import AttachmentResolutionError
         from agentloom.providers import multimodal
 
@@ -406,7 +400,6 @@ class TestAttachmentResolutionErrorWrapping:
         att = Attachment(type="image", source="doc.png")
         with pytest.raises(AttachmentResolutionError) as excinfo:
             await resolve_attachments([att])
-        # Same object surfaces — not re-wrapped.
         assert excinfo.value is original
 
 
@@ -469,9 +462,7 @@ class TestOpenAIAudioFormats:
 
 
 class TestDataURLAttachments:
-    """F71: ``data:`` URLs inline their payload — the resolver decodes
-    them instead of treating the whole string as a filesystem path and
-    surfacing a misleading FileNotFoundError."""
+    """``data:`` URLs carry their payload inline: decoded, never read as a filesystem path."""
 
     # 1x1 transparent PNG.
     _PNG_B64 = (
@@ -507,8 +498,7 @@ class TestDataURLAttachments:
     async def test_data_url_unaffected_by_sandbox(self) -> None:
         from agentloom.core.models import SandboxConfig
 
-        # A strict sandbox with a domain allowlist must NOT block a
-        # data: URL — it makes no network call and opens no file.
+        # A data: URL makes no network call and opens no file, so no sandbox rule applies.
         sandbox = SandboxConfig(enabled=True, allowed_domains=["api.openai.com"])
         att = Attachment(type="image", source=f"data:image/png;base64,{self._PNG_B64}")
         blocks = await resolve_attachments([att], sandbox=sandbox)
@@ -520,8 +510,7 @@ class TestDataURLAttachments:
         att = Attachment(type="image", source="data:text/plain;charset=utf-8,Hello")
         blocks = await resolve_attachments([att])
         assert len(blocks) == 1
-        # The ``;charset=`` parameter is parsed and skipped — the payload
-        # after the comma decodes to the literal text.
+        # ``;charset=`` is skipped; the payload after the comma is the literal text.
         assert _b64.b64decode(blocks[0].data) == b"Hello"
 
     async def test_data_url_without_base64_marker(self) -> None:
@@ -533,33 +522,23 @@ class TestDataURLAttachments:
         assert _b64.b64decode(blocks[0].data) == b"Hello World"
 
     async def test_data_url_scheme_is_case_insensitive(self) -> None:
-        # RFC 3986 §3.1: URI schemes are case-insensitive. ``DATA:`` (or
-        # mixed-case ``Data:``) must be recognised — pre-fix the
-        # ``startswith`` check rejected anything but lowercase ``data:``
-        # and fell through to file-path handling.
+        # RFC 3986 §3.1: URI schemes are case-insensitive.
         att = Attachment(type="image", source=f"DATA:image/png;base64,{self._PNG_B64}")
         blocks = await resolve_attachments([att])
         assert len(blocks) == 1
         assert blocks[0].data == self._PNG_B64
 
     async def test_data_url_non_base64_preserves_binary_bytes(self) -> None:
-        # Non-base64 data: URLs can carry binary bytes through ``%xx``
-        # escapes. Decoding via ``unquote(...).encode("utf-8")`` would
-        # corrupt anything that isn't valid UTF-8; ``unquote_to_bytes``
-        # preserves the raw sequence. A single 0x80 byte is the canonical
-        # not-a-UTF-8-start regression case.
+        # 0x80 cannot start a UTF-8 sequence: a text round trip would corrupt these bytes.
         import base64 as _b64
 
         att = Attachment(type="image", source="data:application/octet-stream,%80%81%FF")
         blocks = await resolve_attachments([att])
-        # Round-trips exactly to the three raw bytes 0x80 0x81 0xFF.
         assert _b64.b64decode(blocks[0].data) == b"\x80\x81\xff"
 
 
 class TestSymlinkRejectionMessage:
-    """F70: a symlink inside readable_paths pointing OUT of it must
-    produce an error naming BOTH the symlink path and the resolved
-    target — pre-0.5.0 only one was named, misdirecting the operator."""
+    """A symlink out of ``readable_paths`` is refused naming the link and its resolved target."""
 
     async def test_symlink_error_names_resolved_target(self, tmp_path) -> None:
         import os
@@ -578,6 +557,5 @@ class TestSymlinkRejectionMessage:
         with pytest.raises(PermissionError) as excinfo:
             await resolve_attachments([att], sandbox=sandbox)
         msg = str(excinfo.value)
-        # Both the symlink path AND the resolved target appear.
         assert str(link) in msg
         assert "resolves to" in msg

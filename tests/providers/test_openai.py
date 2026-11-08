@@ -52,9 +52,7 @@ class TestOpenAIProvider:
 
     @respx.mock
     async def test_api_error_raises(self) -> None:
-        # 500 — generic server error stays a plain ProviderError with the
-        # status code encoded in the message. 429 gets its own dedicated
-        # test below that asserts RateLimitError.
+        # A 500 is a plain ProviderError; only a 429 becomes a RateLimitError.
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(500, text="server error")
         )
@@ -180,10 +178,10 @@ class TestOpenAIProvider:
 
 
 class TestBaseURLNormalization:
-    """``_normalize_base_url`` must append ``/v1`` only when the URL
-    points at a bare host. Pre-0.5.0 the suffix was appended whenever the
-    URL did not literally end in ``/v1``, mangling alternative API
-    versions and any deeper-path enterprise gateway URL."""
+    """``_normalize_base_url`` appends ``/v1`` to a bare host only.
+
+    Any non-root path counts as configured: other API versions and gateway paths stay as given.
+    """
 
     def test_appends_v1_for_bare_host(self) -> None:
         p = OpenAIProvider(api_key="k", base_url="https://api.openai.com")
@@ -198,25 +196,20 @@ class TestBaseURLNormalization:
         assert p.base_url == "https://api.openai.com/v1"
 
     def test_preserves_existing_v1_with_trailing_slash(self) -> None:
-        # ``/v1/`` is the same as ``/v1`` — the rstrip pass normalises
-        # the slash, but the path stays ``/v1`` so the suffix-append
-        # path is skipped.
+        # The trailing slash is stripped first, so the path is still ``/v1``.
         p = OpenAIProvider(api_key="k", base_url="https://api.openai.com/v1/")
         assert p.base_url == "https://api.openai.com/v1"
 
     def test_preserves_alternative_version(self) -> None:
-        # ``/v2`` is non-root; do NOT append ``/v1`` on top.
         p = OpenAIProvider(api_key="k", base_url="https://gw.example.com/v2")
         assert p.base_url == "https://gw.example.com/v2"
 
     def test_preserves_deep_path(self) -> None:
-        # Enterprise gateway: ``/api/v1/foo`` is the real endpoint; do
-        # NOT append ``/v1`` on top.
+        # An enterprise gateway: ``/api/v1/foo`` is the real endpoint.
         p = OpenAIProvider(api_key="k", base_url="https://gw.example.com/api/v1/foo")
         assert p.base_url == "https://gw.example.com/api/v1/foo"
 
     def test_preserves_deep_path_without_version(self) -> None:
-        # Any non-root path counts as "already configured".
         p = OpenAIProvider(api_key="k", base_url="https://gw.example.com/chat")
         assert p.base_url == "https://gw.example.com/chat"
 
@@ -334,8 +327,7 @@ class TestOpenAIKwargsAllowlist:
 
 
 class TestReasoningTokens:
-    """o-series models report reasoning tokens under completion_tokens_details.
-    They must flow through TokenUsage and be billed at the output rate."""
+    """o-series reasoning tokens come under ``completion_tokens_details``, billed as output."""
 
     @respx.mock
     async def test_openai_o3_response_populates_reasoning_tokens(self) -> None:

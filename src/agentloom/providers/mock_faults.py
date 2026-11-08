@@ -1,4 +1,4 @@
-"""Deterministic faults in a mock recording (#123).
+"""Deterministic faults in a mock recording.
 
 An entry, or one turn of a step's list, can declare ``"fault": {...}``
 instead of an answer::

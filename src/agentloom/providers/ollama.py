@@ -31,9 +31,7 @@ from agentloom.providers.multimodal import (
 
 logger = logging.getLogger("agentloom.providers.ollama")
 
-# Inline ``<think>...</think>`` tags emitted by reasoning models on Ollama
-# < 0.9 or when ``think`` is not requested at all. Capture group keeps the
-# trace; substitution removes the wrapper from the visible answer.
+# Inline tags from reasoning models on Ollama < 0.9, or when ``think`` is not requested.
 _THINK_TAG_RE = re.compile(r"<think>(.*?)</think>\s*", re.DOTALL)
 
 
@@ -59,11 +57,10 @@ def _pop_thinking_config(extras: dict[str, Any]) -> tuple[bool | str | None, boo
       key, or ``None`` if reasoning was not requested. Levels override the
       bool form (GPT-OSS via Ollama accepts ``"low"|"medium"|"high"``).
     - ``capture_reasoning`` — whether to surface the trace via
-      ``ProviderResponse.reasoning_content``. Defaults to ``True`` for
-      callers that don't pass a ``ThinkingConfig`` so existing workflows
-      keep their previous behaviour. When set to ``False``, inline
-      ``<think>...</think>`` tags still get stripped from the visible
-      ``content`` (kept clean) but the trace itself is dropped.
+      ``ProviderResponse.reasoning_content``; ``True`` for callers that
+      pass no ``ThinkingConfig``. When ``False``, ``complete()`` still
+      strips inline ``<think>...</think>`` tags from the visible
+      ``content`` but drops the trace itself.
     """
     cfg = extras.pop("thinking_config", None)
     capture = True if cfg is None else bool(getattr(cfg, "capture_reasoning", True))
@@ -126,10 +123,7 @@ class OllamaProvider(BaseProvider):
         """
         formatted: list[dict[str, Any]] = []
         for msg in messages:
-            # Tool-loop messages (assistant with ``tool_calls``, role=``tool``
-            # with ``tool_call_id``) ship in OpenAI-compatible wire shape —
-            # pass them through verbatim so iteration 2+ keeps the call
-            # context intact.
+            # Tool-loop messages already use the OpenAI-compatible wire shape: pass them through.
             if "tool_calls" in msg or msg.get("role") == "tool":
                 formatted.append(msg)
                 continue
@@ -188,10 +182,7 @@ class OllamaProvider(BaseProvider):
             from agentloom.steps._tools import translate_tools_for_ollama
 
             extras["tools"] = translate_tools_for_ollama(agentloom_tools)
-            # Ollama doesn't expose tool_choice; only model-side support
-            # decides whether the call is honored. Surface the silent drop
-            # via debug log so users debugging "why doesn't my tool fire"
-            # have a hint.
+            # Ollama has no tool_choice: log the ignored value as a debugging hint.
             if agentloom_tool_choice not in (None, "auto"):
                 logger.debug(
                     "Ollama ignores tool_choice=%r; only model-side support matters.",
@@ -226,19 +217,13 @@ class OllamaProvider(BaseProvider):
         data = response.json()
         message = data.get("message", {})
         content = message.get("content", "")
-        # Ollama 0.9+ separates the trace into ``message.thinking`` when
-        # ``think`` was requested. Older models / un-flagged calls leak
-        # the trace inline as ``<think>...</think>``. Strip the tags from
-        # ``content`` regardless (the visible answer must always be clean);
-        # surface the captured trace only when the caller opted in via
-        # ``ThinkingConfig.capture_reasoning``.
+        # The trace comes in ``message.thinking`` (0.9+ with ``think``) or inline <think> tags,
+        # stripped here even when not captured; stream() leaves them in the text (#214).
         thinking_field: str | None = message.get("thinking") or None
         content, inline_trace = _split_inline_think_tags(content)
         reasoning_content = (thinking_field or inline_trace) if capture_reasoning else None
 
-        # Ollama does not split eval_count between thinking and visible
-        # tokens, so ``reasoning_tokens`` stays 0 — the docs flag this as
-        # a known limitation. Cost is 0 anyway for local models.
+        # eval_count does not split out thinking, so ``reasoning_tokens`` stays 0.
         prompt_tokens = data.get("prompt_eval_count", 0)
         completion_tokens = data.get("eval_count", 0)
         usage = TokenUsage(
@@ -272,10 +257,7 @@ class OllamaProvider(BaseProvider):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> StreamResponse:
-        # Mirror ``complete``: pop the tool-loop kwargs so ``--stream`` workflows
-        # with ``tools=`` set don't crash on extras validation. Ollama still
-        # ignores ``tool_choice`` at the wire level (logged below) — only
-        # model-side support decides whether the call is honored.
+        # As in complete(): pop the agentloom_* kwargs, or validation rejects them.
         agentloom_tools = kwargs.pop("agentloom_tools", None)
         agentloom_tool_choice = kwargs.pop("agentloom_tool_choice", None)
         agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
@@ -348,9 +330,6 @@ class OllamaProvider(BaseProvider):
                     message = data.get("message", {})
                     thinking_chunk = message.get("thinking")
                     if thinking_chunk and capture_reasoning:
-                        # Buffer only when the caller opted in. When opted
-                        # out we still drain the field implicitly via the
-                        # parent loop without storing it.
                         thinking_buffer.append(thinking_chunk)
                     text = message.get("content", "")
                     if text:
@@ -367,11 +346,7 @@ class OllamaProvider(BaseProvider):
         **kwargs: Any,
     ) -> EmbeddingResponse:
         kwargs.pop("agentloom_step_id", None)
-        # Ollama's ``/api/embed`` (0.1.29+) takes a list input. Older
-        # ``/api/embeddings`` (singular) is single-input only; we do NOT
-        # fall back to it. Older servers surface as a clear HTTP error
-        # from ``raise_for_status`` rather than silently returning one
-        # vector for a many-input batch.
+        # /api/embed (0.1.29+) takes a list; an older server fails loudly, no single-input fallback.
         payload: dict[str, Any] = {"model": model, "input": inputs}
         try:
             response = await self._client.post("/api/embed", json=payload)
@@ -391,9 +366,8 @@ class OllamaProvider(BaseProvider):
         )
 
     def supports_model(self, model: str) -> bool:
-        # Ollama accepts any model name — it downloads on demand if not present.
-        # Side effect: Ollama matches all models in gateway candidate lookup,
-        # so priority must be set higher (numerically) than cloud providers.
+        # Any name is accepted (a model Ollama lacks fails at request time), so it matches every
+        # model in candidate lookup: give it a higher priority number than the cloud providers.
         return True
 
     async def close(self) -> None:

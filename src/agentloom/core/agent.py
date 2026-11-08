@@ -1,4 +1,4 @@
-"""Agents: loading their definitions from YAML, and running one from Python (#120)."""
+"""Agents: loading their definitions from YAML, and running one from Python."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ class AgentResult(BaseModel):
 
 
 class Agent:
-    """Runs an agent from Python, outside a workflow::
+    """An agent to run from Python, outside a workflow::
 
         agent = Agent.from_yaml("agents/support.yaml", gateway=gateway, tool_registry=registry)
         result = await agent.invoke("My bill seems wrong")
@@ -117,8 +117,10 @@ def resolve_agent(value: object) -> object:
 
 
 def _load_nested(raw: dict[str, Any], chain: tuple[Path, ...]) -> None:
-    """Load the agent files *raw* uses as tools, inline agents' included, with the chain of
-    files that led to them, so a cycle stops."""
+    """Load the agent files *raw* uses as tools, inline agents' included.
+
+    *chain* holds the files that led here, so a cycle stops.
+    """
     for tool in raw.get("tools") or []:
         nested = tool.get("agent") if isinstance(tool, dict) else None
         if isinstance(nested, str):

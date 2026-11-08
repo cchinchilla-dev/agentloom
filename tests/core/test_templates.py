@@ -45,20 +45,13 @@ class TestDotAccessDict:
         assert "1" in f"{d}"
 
     def test_private_attr_renders_empty_non_strict(self) -> None:
-        # Previously private attrs delegated to ``object.__getattribute__``,
-        # which let ``d['_data']`` reach the wrapper's underlying dict via
-        # ``__getitem__`` → ``__getattr__``. Every dynamic lookup now goes
-        # through the same data-only path: a missing key returns the
-        # ``_MissingDotAccess`` sentinel (so further chained accesses keep
-        # bottoming out) which renders as ``""`` under ``str``/``format``.
+        # Private names take the same data-only path as any key: missing, they render ``""``.
         d = DotAccessDict({"a": 1})
         assert str(d._nonexistent) == ""
         assert format(d._nonexistent) == ""
 
     def test_int_key_renders_empty(self) -> None:
-        # Int subscript on a dict renders the sentinel (empty under
-        # ``str``/``format``) so a chained ``{state[0].foo}`` also
-        # bottoms out gracefully.
+        # The sentinel, so a chained ``{state[0].foo}`` also renders empty.
         d = DotAccessDict({"a": 1})
         assert str(d[0]) == ""
 
@@ -78,8 +71,7 @@ class TestDotAccessList:
         assert lst[2] == "z"
 
     def test_out_of_range_renders_empty(self) -> None:
-        # Out-of-range list index renders the sentinel, so
-        # ``{state.lst[99].foo}`` keeps bottoming out gracefully.
+        # The sentinel, so a chained ``{state.lst[99].foo}`` also renders empty.
         lst = DotAccessList(["x"])
         assert str(lst[5]) == ""
 
@@ -115,17 +107,13 @@ class TestStrictMode:
 
     def test_lenient_mode_preserves_placeholder(self) -> None:
         tv = build_template_vars({"name": "Alice"})
-        # Missing key stays as literal placeholder.
         assert "{missing}".format_map(SafeFormatDict(tv)) == "{missing}"
 
 
 class TestFormatSpec:
     def test_format_spec_applied_to_nested_dict(self) -> None:
         d = DotAccessDict({"total": 1234.5678})
-        # The dict itself is not a number — but `format` on the raw dict
-        # would raise. Verify the spec is at least respected for list/dict
-        # wrappers by delegating to ``format(self._data, spec)``.
-        # Using a numeric leaf exercises the real code path.
+        # A scalar leaf comes back unwrapped, so the spec applies to the float itself.
         assert f"{d.total:.2f}" == "1234.57"
 
     def test_format_spec_applied_to_list_element(self) -> None:
@@ -153,8 +141,7 @@ class TestStrictRaiseBranches:
 
 
 class TestFormatSpecOnContainers:
-    """``__format__`` honours ``format_spec`` on dict/list wrappers when the
-    underlying value supports the spec."""
+    """The dict and list wrappers pass a format spec on to their value when it takes one."""
 
     def test_dict_format_spec_with_data_supporting_spec(self) -> None:
         d = DotAccessDict({"x": 1234.5678})
@@ -165,10 +152,7 @@ class TestFormatSpecOnContainers:
         assert format(lst, "") == repr([1, 2, 3])
 
     def test_dict_format_spec_non_empty_forwards_to_data(self) -> None:
-        # A non-empty spec hits the explicit ``return format(self.__data, ...)``
-        # path. ``dict`` itself doesn't accept format specs, so cover the
-        # branch by replacing the name-mangled storage slot with a string-like
-        # value that DOES accept the spec.
+        # ``dict`` takes no format spec: a string as storage reaches the forwarding branch.
         d = DotAccessDict({"x": "hi"})
         object.__setattr__(d, "_DotAccessDict__data", "hi")
         assert format(d, ">5") == "   hi"
@@ -180,13 +164,10 @@ class TestFormatSpecOnContainers:
 
 
 class TestInternalAttributesNotReachableViaTemplate:
-    """The wrapper's private storage must not surface through ``str.format_map``.
+    """The wrapper's private storage does not surface through ``str.format_map``.
 
-    Pre-fix, a template containing ``{state._data}`` rendered the entire
-    underlying state dict because ``_data`` was a plain instance attribute
-    that ``__getattr__`` never blocked. Name-mangling (``__data`` →
-    ``_DotAccessDict__data``) makes that storage unreachable via the
-    short attribute name that format syntax supports.
+    Name-mangling (``__data`` → ``_DotAccessDict__data``) puts it out of reach of the short
+    attribute names that format syntax supports.
     """
 
     def test_state_dot_underscore_data_renders_empty(self) -> None:
@@ -201,8 +182,7 @@ class TestInternalAttributesNotReachableViaTemplate:
         assert rendered == ""
 
     def test_list_wrapper_short_attribute_not_reachable(self) -> None:
-        # The DotAccessList wrapper's storage is name-mangled too — the
-        # short ``_data`` attribute is no longer reachable via ``getattr``.
+        # The DotAccessList storage is name-mangled too: there is no short ``_data`` attribute.
         from agentloom.core.templates import DotAccessList
 
         lst = DotAccessList([1, 2, 3])
@@ -210,8 +190,6 @@ class TestInternalAttributesNotReachableViaTemplate:
         assert not hasattr(lst, "_strict")
 
     def test_list_wrapper_blocks_mangled_storage_name(self) -> None:
-        # Symmetric guard: ``__getattribute__`` on DotAccessList also
-        # refuses ``_DotAccessList__data`` / ``__dict__``.
         from agentloom.core.templates import DotAccessList
 
         lst = DotAccessList([1, 2, 3])
@@ -250,13 +228,10 @@ class TestInternalAttributesNotReachableViaTemplate:
 
 
 class TestMissingDeepKeyChain:
-    """Non-strict ``{state.x.y.z}`` with a missing intermediate renders
-    as the empty string instead of raising ``AttributeError``.
+    """Non-strict ``{state.x.y.z}`` with a missing intermediate renders as the empty string.
 
-    Pre-fix, ``DotAccessDict.__getattr__`` returned plain ``""`` on a
-    missing key; the format machinery then tried ``"".y`` and surfaced
-    ``AttributeError: 'str' object has no attribute 'y'`` — confusing,
-    and worse, retried 4× by ``is_retryable_exception``'s default.
+    A missing key returns a chainable sentinel, so the format machinery raises no
+    ``AttributeError``, which the engine would retry as a transient error.
     """
 
     def test_missing_first_segment_renders_empty(self) -> None:
@@ -264,8 +239,7 @@ class TestMissingDeepKeyChain:
         assert "{state.x.y.z}".format_map(SafeFormatDict(tv)) == ""
 
     def test_missing_first_segment_with_format_spec_renders_empty(self) -> None:
-        # ``{state.missing.deep:.20}`` must not blow up on the format
-        # spec either — the sentinel renders to ``""`` regardless.
+        # The sentinel renders ``""`` whatever the format spec.
         tv = build_template_vars({"x": 1})
         assert "{state.missing.deep:.20}".format_map(SafeFormatDict(tv)) == ""
 
@@ -280,49 +254,35 @@ class TestMissingDeepKeyChain:
             "{state.x.y.z}".format_map(SafeFormatDict(tv, strict=True))
 
     def test_missing_intermediate_strict_raises_at_first_missing_segment(self) -> None:
-        # F40: strict mode must surface the first missing segment along
-        # the chain, not the leaf. ``state.x`` and ``state.x.y`` exist;
-        # ``state.x.y.z`` is missing — the error must name ``z``, not
-        # bubble up some deeper or earlier name.
+        # ``state.x`` and ``state.x.y`` exist: the error names the first missing segment, ``z``.
         tv = build_template_vars({"x": {"y": {}}}, strict=True)
         with pytest.raises(TemplateError, match="state.z"):
             "{state.x.y.z}".format_map(SafeFormatDict(tv, strict=True))
 
     def test_missing_list_index_chain_renders_empty(self) -> None:
-        # Symmetric to the dict miss path: ``{state.lst[99].foo}`` keeps
-        # bottoming out instead of raising ``AttributeError`` on the
-        # ``.foo`` follow-up. Out-of-range index returns the sentinel.
+        # As with a missing key, the out-of-range index returns the sentinel and ``.foo`` chains on.
         tv = build_template_vars({"lst": [1, 2, 3]})
         assert "{state.lst[99].foo}".format_map(SafeFormatDict(tv)) == ""
 
     def test_dict_int_key_chain_renders_empty(self) -> None:
-        # Int subscript on a dict (e.g. ``{state[0].foo}``) hits the
-        # sibling sentinel path on ``DotAccessDict.__getitem__``.
+        # An int subscript on a dict returns the sentinel from ``DotAccessDict.__getitem__``.
         tv = build_template_vars({"x": 1})
         assert "{state[0].foo}".format_map(SafeFormatDict(tv)) == ""
 
     def test_sentinel_is_falsy(self) -> None:
-        # ``__bool__`` returns False so workflows can keep using truthy
-        # checks (``{state.flag and 'yes' or 'no'}`` patterns) without
-        # surprises when the underlying key is missing.
+        # Falsy, so a truthy check on a missing key behaves as on an empty value.
         from agentloom.core.templates import _MISSING
 
         assert bool(_MISSING) is False
 
     def test_sentinel_blocks_dunder_attribute_access(self) -> None:
-        # ``{state.missing.__class__}`` previously rendered the sentinel's
-        # class name (regression of the security hardening from PR1).
-        # ``__getattribute__`` returning self for every attribute keeps
-        # the chain bottoming out at the empty string.
+        # ``__getattribute__`` returns the sentinel for every name, dunders included.
         tv = build_template_vars({"name": "alice"})
         assert "{state.missing.__class__}".format_map(SafeFormatDict(tv)) == ""
         assert "{state.missing.__dict__}".format_map(SafeFormatDict(tv)) == ""
 
     def test_sentinel_bottoms_out_on_repr_conversion(self) -> None:
-        # ``str.format_map`` applies ``!r`` BEFORE calling ``__format__``,
-        # so the sentinel's ``__repr__`` must also render empty. Without
-        # the override, ``{state.missing!r}`` would emit something like
-        # ``<_MissingDotAccess object at 0x…>``.
+        # ``!r`` runs before ``__format__``, so the sentinel's ``__repr__`` must render empty too.
         tv = build_template_vars({"name": "alice"})
         assert "{state.missing!r}".format_map(SafeFormatDict(tv)) == ""
         assert "{state.missing.deep!r}".format_map(SafeFormatDict(tv)) == ""
@@ -331,13 +291,10 @@ class TestMissingDeepKeyChain:
 
 
 class TestFormatSpecOnNonScalar:
-    """``__format__`` falls back to ``str(...)`` when the underlying
-    value rejects the format spec (raises ``TypeError``)."""
+    """A value that rejects the format spec with ``TypeError`` renders as ``str(value)``."""
 
     def test_format_spec_on_dict_value_falls_back_to_str(self) -> None:
-        # ``{state.user:.20}`` where ``state.user`` is a dict: pre-fix
-        # raised ``TypeError: unsupported format string passed to
-        # dict.__format__``. Now falls back to ``str(dict)``.
+        # A dict rejects ``.20``: the wrapper falls back to ``str(dict)`` instead of raising.
         tv = build_template_vars({"user": {"name": "alice"}})
         rendered = "{state.user:.20}".format_map(SafeFormatDict(tv))
         assert rendered == str({"name": "alice"})
@@ -348,15 +305,13 @@ class TestFormatSpecOnNonScalar:
         assert rendered == str([1, 2, 3])
 
     def test_format_spec_on_scalar_leaf_still_works(self) -> None:
-        # The fallback is only triggered on TypeError; numeric leaves
-        # still get the precise float formatting.
+        # The fallback runs only on TypeError: a numeric leaf keeps its precise formatting.
         tv = build_template_vars({"n": 1234.5678})
         assert "{state.n:.2f}".format_map(SafeFormatDict(tv)) == "1234.57"
 
 
 class TestUnicodeAndEscapedBraces:
-    """Encoding / escaping corner cases pinned so behaviour does not
-    silently regress."""
+    """Encoding and escaping corner cases."""
 
     def test_unicode_nfc_state_key_renders(self) -> None:
         import unicodedata
@@ -367,10 +322,7 @@ class TestUnicodeAndEscapedBraces:
         assert rendered == "bonjour"
 
     def test_unicode_nfc_vs_nfd_key_mismatch_renders_empty(self) -> None:
-        # F77: state dict lookup is byte-exact. A workflow that stores
-        # the key in NFD form but references it in NFC form (or vice
-        # versa) silently renders empty. Pin this behaviour and the doc
-        # callout that recommends normalising on input.
+        # Lookup is byte-exact: an NFD key read in NFC renders empty; the docs advise normalizing.
         import unicodedata
 
         nfd = unicodedata.normalize("NFD", "café")
@@ -382,9 +334,6 @@ class TestUnicodeAndEscapedBraces:
         assert rendered == ""
 
     def test_escaped_braces_render_as_literal(self) -> None:
-        # ``{{`` / ``}}`` are the standard Python escape for a literal
-        # brace — neither path through the template engine should
-        # expand them. Pin so the placeholder regex / sentinel rewrite
-        # in #058/#059 does not regress the escape.
+        # ``{{`` / ``}}`` escape a literal brace: no path through the template engine expands them.
         tv = build_template_vars({"x": 1})
         assert "{{state.x}}".format_map(SafeFormatDict(tv)) == "{state.x}"

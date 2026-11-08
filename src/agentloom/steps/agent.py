@@ -1,4 +1,4 @@
-"""Agent step executor: one turn of an agent, run as an ``llm_call`` (#120)."""
+"""Agent step executor: one turn of an agent, run as an ``llm_call``."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ _CAP_REASONS = ("max_tool_iterations", "max_tool_iterations_no_answer")
 
 
 class AgentStep(LLMCallStep):
-    """Runs a turn of the step's agent: an ``llm_call`` with the agent's settings.
+    """Step that runs a turn of its agent: an ``llm_call`` with the agent's settings.
 
     The turn sees only the agent's tools, counts its model calls (``iterations``)
     and fails when it breaks a constraint or, under ``on_max_iterations: error``,
@@ -138,15 +138,14 @@ class AgentStep(LLMCallStep):
             self._observe(context, StepStatus.FAILED.value, gateway)
             raise
         except BaseException:
-            # Cut short, by a timeout or with its layer: its calls ran all the same (#120)
+            # Cut short, by a timeout or with its layer: its calls ran all the same
             cut = anyio.current_time() >= deadline
             self._observe(context, "timeout" if cut else "cancelled", gateway)
             raise
         finally:
             self.iterations = gateway.calls
 
-        # What the turn cost, failed or not: the agents it called as tools and its summaries
-        # included, as the provider charged them.
+        # The turn's cost, failed or not, with its agent tools and summaries, as charged.
         result.cost_usd = gateway.spent
         result.token_usage = gateway.usage
         result.usage_by_model = gateway.usage_by_model()
@@ -192,8 +191,7 @@ class AgentStep(LLMCallStep):
         if agent.output_schema is not None:
             self.output_valid = response.parsed is not None
         assert self._gateway is not None  # set by execute, which calls this
-        # An agent called as a tool in the last call may have broken the cap, its error going
-        # back to the model as the tool's
+        # An agent tool in the last call may have broken the cap, its error sent as a tool result
         self._gateway.check_spend()
         if response.finish_reason in _CAP_REASONS:
             cap = agent.loop_policy.max_iterations
@@ -309,7 +307,7 @@ def _check_tools(agent: AgentDefinition, base: Any, callers: tuple[int, ...] = (
 
     The agents it calls are checked before its first model call too, their output schema
     included: one of them that cannot run would only fail once the model calls it, every
-    time it does (#120).
+    time it does.
     """
     if id(agent) in callers:  # built in Python: a file's cycle fails when it loads
         raise LookupError(f"agent {agent.name!r} calls itself through the agents it calls")
@@ -418,8 +416,7 @@ class _AgentAsTool(BaseTool):
                 caller=self._context,
             )
         except (RecordingMismatchError, StepError) as e:
-            # A stale replay fails at once, as anywhere else, and so does a turn that cannot
-            # run (a system prompt that is no template): every call of it would fail the same way
+            # A stale replay, or a turn that cannot run, fails at once: every call would fail alike
             raise FailsStep(e) from e
         if result.status != StepStatus.SUCCESS:
             if result.error_classification == "transient":

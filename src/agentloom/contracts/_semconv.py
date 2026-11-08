@@ -17,17 +17,13 @@ class SpanName:
     e.g. ``SpanName.STEP.format(step_id="classify")``.
     """
 
-    # AgentLoom orchestration spans — not part of GenAI conventions (these
-    # cover workflow-level dispatch and step-level orchestration, not the
-    # inference call itself).
+    # AgentLoom orchestration spans, outside the GenAI conventions.
     WORKFLOW = "workflow:{workflow_name}"
     STEP = "step:{step_id}"
     AGENT = "agent:{agent_name}"
     QUALITY = "quality:{target}"
 
-    # GenAI inference / tool spans follow the canonical OTel template
-    # ``{gen_ai.operation.name} {model}`` so Jaeger / Grafana GenAI dashboards
-    # auto-correlate them by operation + model.
+    # The OTel ``{gen_ai.operation.name} {model}`` template lets GenAI dashboards correlate spans.
     GEN_AI_INFERENCE = "{operation_name} {model}"  # e.g. "chat gpt-4o-mini"
     GEN_AI_TOOL_CALL = "execute_tool {tool_name}"
 
@@ -39,9 +35,8 @@ class SpanAttr:
 
     * ``workflow.*`` / ``step.*`` — AgentLoom orchestration metadata.
     * ``gen_ai.*`` — OpenTelemetry GenAI semantic conventions
-      (registry-canonical names; the registry is currently flagged
-      "experimental / development" — names are not yet "stable" per
-      OTel maturity tags but are widely adopted).
+      (registry names; the registry is at development maturity, so names
+      may change).
     * ``tool.*`` — Tool-call details surfaced by tool_step and agent loops.
     * ``agent.*`` — An agent step's turn: its model calls, tool calls, cost and
       whether its reply validated.
@@ -66,16 +61,12 @@ class SpanAttr:
     STEP_COST_USD = "step.cost_usd"
     STEP_ERROR = "step.error"
 
-    # OTel general semantic conventions (not GenAI-specific). ``error.type`` is
-    # conditionally required on any span representing a failed operation —
-    # set on inference (provider) spans alongside ``step.error`` so OTel-aware
-    # consumers can filter on the standard attribute.
+    # ``error.type`` (OTel general conventions) goes on failed provider spans beside ``step.error``.
     ERROR_TYPE = "error.type"
     STEP_STREAM = "step.stream"
     STEP_ATTACHMENTS = "step.attachments"
 
-    # GenAI semantic conventions — aligned with the OTel registry as of
-    # the May 2026 spec.
+    # GenAI semantic conventions, aligned with the OTel registry of the May 2026 spec.
     GEN_AI_OPERATION_NAME = "gen_ai.operation.name"
     GEN_AI_PROVIDER_NAME = "gen_ai.provider.name"
     GEN_AI_REQUEST_MODEL = "gen_ai.request.model"
@@ -88,13 +79,7 @@ class SpanAttr:
     GEN_AI_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens"
     GEN_AI_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
     GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = "gen_ai.usage.reasoning.output_tokens"
-    # ``gen_ai.token.type`` is the histogram attribute that splits the
-    # ``gen_ai.client.token.usage`` metric into input / output / reasoning
-    # buckets. ``input`` and ``output`` are the OTel registry's well-known
-    # values; ``reasoning`` is an AgentLoom extension that keeps
-    # chain-of-thought spend separately attributable on dashboards
-    # (the spec leaves room for custom values; reasoning isn't enumerated
-    # but isn't excluded either).
+    # Splits ``gen_ai.client.token.usage`` by type; ``reasoning`` is an AgentLoom custom value.
     GEN_AI_TOKEN_TYPE = "gen_ai.token.type"
 
     # Provider call attempts (gateway-level; one span per fallback attempt)
@@ -114,27 +99,17 @@ class SpanAttr:
     PROMPT_LENGTH_CHARS = "agentloom.prompt.length_chars"
     PROMPT_TEMPLATE_ID = "agentloom.prompt.template_id"
     PROMPT_TEMPLATE_VARS = "agentloom.prompt.template_vars"
-    # Span event name emitted when ``WorkflowConfig.capture_prompts`` is on.
-    # Carries the rendered prompt as event payload (not an attribute, to
-    # stay clear of attribute-size limits and easy to filter in OTLP).
+    # With ``capture_prompts``: an event, not an attribute, to stay clear of attribute-size limits.
     PROMPT_CAPTURED_EVENT = "agentloom.prompt.captured"
 
-    # Conversation primitive (#119). Turn / token counts ride on the
-    # per-``llm_call`` step span so a Jaeger view of a chat workflow shows
-    # both the message count and the estimated token spend at a glance.
-    # ``trimmed_messages`` records how many turns the trim policy removed
-    # or folded into the summary this turn — a value >0 correlates with a
-    # ``conversation_trims_total`` counter emission.
+    # Conversation, on the ``llm_call`` step span; ``trimmed_messages``: turns trimmed this call.
     CONVERSATION_TURN_COUNT = "agentloom.conversation.turn_count"
     CONVERSATION_TOKEN_COUNT = "agentloom.conversation.token_count"
     CONVERSATION_TRIMMED_MESSAGES = "agentloom.conversation.trimmed_messages"
     CONVERSATION_EVENT = "agentloom.conversation.turn"
 
-    # Agent step (#120), on its step span. ``gen_ai.agent.name`` is the GenAI
-    # registry's; ``agent.*`` count the turn: its model calls, the tool calls
-    # its model made (its reply through ``final_result`` aside), what it spent
-    # (the agents it called included) and, with an ``output_schema``, whether
-    # it ended on a reply that validates.
+    # Agent step span. ``agent.tool_calls`` excludes the ``final_result`` reply, ``agent.cost_usd``
+    # includes the agents it called, ``agent.output_valid`` needs an ``output_schema``.
     GEN_AI_AGENT_NAME = "gen_ai.agent.name"
     AGENT_ITERATIONS = "agent.iterations"
     AGENT_TOOL_CALLS = "agent.tool_calls"
@@ -152,14 +127,11 @@ class SpanAttr:
     RECORDING_MODEL = "agentloom.recording.model"
     RECORDING_LATENCY_S = "agentloom.recording.latency_s"
 
-    # Quality annotations (see issue #59)
+    # Quality annotations
     QUALITY_SCORE = "agentloom.quality.score"
     QUALITY_SOURCE = "agentloom.quality.source"
     QUALITY_TARGET = "agentloom.quality.target"
-    # Prefix for arbitrary quality.metadata.* attributes — annotations carry
-    # free-form metadata that we flatten under this namespace so each key
-    # becomes a first-class span attribute (queryable in Jaeger without
-    # JSON parsing).
+    # Annotation metadata keys flatten under this prefix, queryable without JSON parsing.
     QUALITY_METADATA_PREFIX = "agentloom.quality.metadata."
 
 
@@ -167,9 +139,9 @@ class MetricName:
     """Prometheus / OTel metric names.
 
     Names mirror exactly what ``observability/metrics.py`` emits to OTel
-    and what ``deploy/grafana/dashboards/agentloom.json`` queries. A
-    ``test_metric_names_match_emissions`` regression test pins this so
-    drift becomes a CI failure, not a silent dashboard breakage.
+    and what ``deploy/grafana/dashboards/agentloom.json`` queries;
+    ``test_metric_names_match_emissions`` pins this so drift becomes a CI
+    failure, not a silent dashboard breakage.
     """
 
     # Workflow
@@ -182,8 +154,7 @@ class MetricName:
     STEP_DURATION_SECONDS = "agentloom_step_duration_seconds"
     ATTACHMENTS_TOTAL = "agentloom_attachments_total"
 
-    # Provider gateway — counters / errors keep AgentLoom names; latency
-    # is now the canonical OTel ``gen_ai.client.operation.duration``.
+    # Provider gateway; its latency is the OTel ``gen_ai.client.operation.duration`` below.
     PROVIDER_CALLS_TOTAL = "agentloom_provider_calls_total"
     PROVIDER_ERRORS_TOTAL = "agentloom_provider_errors_total"
 
@@ -195,26 +166,19 @@ class MetricName:
     # Streaming response counter (no OTel equivalent — AgentLoom-specific).
     STREAM_RESPONSES_TOTAL = "agentloom_stream_responses_total"
 
-    # Tool calls dispatched by the model. Counter tagged by tool name +
-    # status (success / failure); histogram captures execution latency
-    # per tool.
+    # Tool calls the model dispatches, by tool name and status (success / failure).
     TOOL_CALLS_TOTAL = "agentloom_tool_calls_total"
     TOOL_CALL_DURATION_SECONDS = "agentloom_tool_call_duration_seconds"
 
-    # Embedding calls. Counter tagged by provider + model; histogram
-    # captures the requested output dimensionality so dashboards can
-    # spot workflows over-paying for large vectors.
+    # Embedding calls; the dimensions histogram spots workflows over-paying for large vectors.
     EMBEDDING_CALLS_TOTAL = "agentloom_embedding_calls_total"
     EMBEDDING_DIMENSIONS = "agentloom_embedding_dimensions"
 
-    # Conversation primitive (#119). ``conversation_trims_total`` fires
-    # whenever a trim policy drops or summarises at least one turn;
-    # ``conversation_message_count`` records the visible-turn count after
-    # each ``llm_call`` so dashboards can plot conversation growth.
+    # A trim counts when a policy drops or summarizes a turn; message count is per ``llm_call``.
     CONVERSATION_TRIMS_TOTAL = "agentloom_conversation_trims_total"
     CONVERSATION_MESSAGE_COUNT = "agentloom_conversation_message_count"
 
-    # Agent step (#120): turns by agent and status, and model calls per turn.
+    # Agent step: turns by agent and status, and model calls per turn.
     AGENT_INVOCATIONS_TOTAL = "agentloom_agent_invocations_total"
     AGENT_ITERATIONS = "agentloom_agent_iterations"
 
@@ -235,10 +199,9 @@ class MetricName:
 class GenAIOperationName(StrEnum):
     """Standard values for the ``gen_ai.operation.name`` attribute.
 
-    ``chat`` covers ordinary conversational completions (the default for
-    AgentLoom ``llm_call`` steps). The other values are listed for
-    forward-compat with future steps (embeddings, agent loops, tool
-    execution) so call sites don't have to invent strings.
+    AgentLoom emits ``chat`` on inference spans and ``invoke_agent`` on
+    agent-step spans; the other values are listed so call sites don't have
+    to invent strings.
     """
 
     CHAT = "chat"

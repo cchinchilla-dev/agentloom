@@ -16,8 +16,15 @@ repos:
         types_or: [python, pyi]
         files: ^(src|tests)/  # same paths CI checks
       - id: version-linearity
-        name: version linearity (pyproject.toml, CHANGELOG.md, __version__)
+        name: version linearity (pyproject.toml, CHANGELOG.md, __version__, Chart appVersion)
         entry: uv run python scripts/check_version_linearity.py
         language: system
-        files: ^(pyproject\.toml|CHANGELOG\.md|src/[^/]+/__init__\.py)$
+        files: ^(pyproject\.toml|CHANGELOG\.md|src/[^/]+/__init__\.py|deploy/helm/agentloom/Chart\.yaml)$
         pass_filenames: false
+      - id: no-history-comments
+        name: no history in comments (SKIP=no-history-comments to bypass)
+        language: pygrep
+        entry: '#(?!.*\bnoqa\b).*(\b[Pp]re-\d+\.\d+|\b[Pp]ost-\d+\.\d+|\b[Pp]re-fix\b|\b[Rr]egression for #|\b(HIGH|MEDIUM|LOW)-\d+\b|\bF\d{1,3}\b)'
+        types: [python]
+        files: ^(src|tests)/
+        exclude: ^tests/scripts/test_history_hook\.py$

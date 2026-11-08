@@ -161,7 +161,7 @@ class TestAnthropicProvider:
         await provider.close()
 
     def test_every_system_turn_reaches_the_system_prompt(self) -> None:
-        """A speaker's prompt and a conversation summary are both system turns (#120)."""
+        """A speaker's prompt and a conversation summary are both system turns."""
         system, messages = AnthropicProvider._format_messages(
             [
                 {"role": "system", "content": "You are Bob."},
@@ -252,11 +252,7 @@ class TestAnthropicProvider:
 class TestAnthropicReasoning:
     @respx.mock
     async def test_thinking_response_does_not_split_reasoning_tokens(self) -> None:
-        # Anthropic rolls extended-thinking tokens into ``output_tokens``
-        # rather than exposing a separate field, so ``reasoning_tokens``
-        # must stay 0 (documented limitation, same as Ollama). Cost is
-        # still correct because the rate is applied to ``output_tokens``
-        # which already includes the thinking volume.
+        # Thinking tokens sit inside ``output_tokens``: ``reasoning_tokens`` stays 0 (documented).
         body = {
             "content": [
                 {"type": "thinking", "thinking": "Let me think step by step..."},
@@ -282,8 +278,6 @@ class TestAnthropicReasoning:
 
     @respx.mock
     async def test_capture_reasoning_writes_thinking_blocks(self) -> None:
-        # Multiple thinking blocks must be concatenated into reasoning_content
-        # in document order — each block's `thinking` field carries the trace.
         body = {
             "content": [
                 {"type": "thinking", "thinking": "First, recall the formula. "},
@@ -307,8 +301,6 @@ class TestAnthropicReasoning:
 
     @respx.mock
     async def test_thinking_config_translated_to_payload(self) -> None:
-        # ``ThinkingConfig`` must be translated by the adapter into
-        # Anthropic's wire-format ``thinking`` payload.
         from agentloom.core.models import ThinkingConfig
 
         route = respx.post("https://api.anthropic.com/v1/messages").mock(
@@ -330,9 +322,7 @@ class TestAnthropicReasoning:
 
     @respx.mock
     async def test_raw_thinking_kwarg_still_passes_through(self) -> None:
-        # Power users that already build the wire-format ``thinking`` dict
-        # themselves must keep working — ``thinking`` stays on the
-        # allowlist as a passthrough and wins over ``thinking_config``.
+        # For callers that build the wire-format dict: ``thinking`` stays on the allowlist.
         route = respx.post("https://api.anthropic.com/v1/messages").mock(
             return_value=httpx.Response(200, json=MOCK_RESPONSE)
         )
@@ -351,13 +341,8 @@ class TestAnthropicReasoning:
 
     @respx.mock
     async def test_stream_translates_thinking_config_to_payload(self) -> None:
-        # The stream path must exercise the same ``_translate_thinking_config``
-        # helper as ``complete``: ``ThinkingConfig`` arriving via
-        # ``thinking_config`` is rewritten to the wire-format ``thinking``
-        # payload before the request leaves the adapter.
         from agentloom.core.models import ThinkingConfig
 
-        # Minimal SSE payload — message_start + message_delta with usage.
         sse = (
             'data: {"type":"message_start","message":{"model":"claude-opus-4",'
             '"usage":{"input_tokens":3}}}\n\n'
@@ -381,14 +366,10 @@ class TestAnthropicReasoning:
             "type": "enabled",
             "budget_tokens": 1024,
         }
-        # ``thinking_config`` must not survive into the wire payload.
         assert "thinking_config" not in sent_payload
         await provider.close()
 
     def test_translate_thinking_config_respects_existing_thinking(self) -> None:
-        # When the caller already provided a raw ``thinking`` dict alongside
-        # ``thinking_config``, the raw form wins — the helper must not
-        # clobber it.
         from agentloom.core.models import ThinkingConfig
         from agentloom.providers.anthropic import _translate_thinking_config
 
@@ -402,10 +383,6 @@ class TestAnthropicReasoning:
 
     @respx.mock
     async def test_capture_reasoning_false_suppresses_trace(self) -> None:
-        # When the caller opts out via ``capture_reasoning=False`` the
-        # adapter must drop the ``type="thinking"`` blocks rather than
-        # surface them on ``ProviderResponse.reasoning_content``. The
-        # visible answer is unaffected.
         from agentloom.core.models import ThinkingConfig
 
         body = {

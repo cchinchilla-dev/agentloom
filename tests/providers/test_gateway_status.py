@@ -1,4 +1,4 @@
-"""When every provider fails, the gateway's error keeps the status they share (#182)."""
+"""When every provider fails, the gateway's error keeps the status they share."""
 
 from __future__ import annotations
 

@@ -59,9 +59,7 @@ class TestGetSet:
         assert await sm.get("a") == 1
 
     def test_sync_get_set(self) -> None:
-        # Internal-only sync accessors. See StateManager.{_get,_set}_sync_unsafe
-        # docstring — these bypass the async lock and must not be used from
-        # concurrent code paths.
+        # The sync accessors bypass the async lock: never call them from concurrent code.
         sm = StateManager(initial_state={"key": "val"})
         assert sm._get_sync_unsafe("key") == "val"
         sm._set_sync_unsafe("key", "new_val")
@@ -72,9 +70,7 @@ class TestGetSet:
         assert sm.state["x"] == 42
 
     def test_public_sync_aliases_removed(self) -> None:
-        # The unsafe sync accessors are intentionally underscored. Public
-        # `get_sync` / `set_sync` aliases were dropped in 0.5.0 to avoid
-        # advertising a lock-bypass API surface.
+        # No public `get_sync` / `set_sync`: they would advertise a lock-bypass API.
         sm = StateManager()
         assert not hasattr(sm, "get_sync")
         assert not hasattr(sm, "set_sync")
@@ -154,12 +150,11 @@ class TestStepResults:
             output="the output",
         )
         await sm.set_step_result("s1", result)
-        # Step output should be accessible via the state
         step_data = await sm.get("steps.s1.output")
         assert step_data == "the output"
 
     async def test_failed_step_output_stays_off_the_state(self) -> None:
-        """#185: only a successful result is mirrored under ``steps.<id>``."""
+        """Only a successful result is mirrored under ``steps.<id>``."""
         sm = StateManager()
         result = StepResult(step_id="sub", status=StepStatus.FAILED, output={"partial": 1})
         await sm.set_step_result("sub", result)
@@ -236,8 +231,7 @@ class TestArrayIndexPaths:
             await sm.set("items[5]", "x")
 
     async def test_set_nested_list_expansion_error_is_clear(self) -> None:
-        """Out-of-range list writes must point the user at the fact that lists
-        are not auto-expanded — the previous message only said "out of range"."""
+        """An out-of-range list write says that lists are not auto-expanded."""
         sm = StateManager(initial_state={"items": []})
         with pytest.raises(IndexError, match="not auto-expanded"):
             await sm.set("items[0].name", "x")
@@ -267,11 +261,7 @@ class TestArrayIndexPaths:
             await sm.set("items[0].name", "x")
 
     async def test_set_string_key_on_list_raises_state_write_error(self) -> None:
-        # 0.5.0 reclassified this error: writing a dotted string segment onto
-        # a list intermediate is the same shape of "wrong-type intermediate"
-        # as the scalar-overwrite refusal, so it raises ``StateWriteError``
-        # uniformly. Pre-0.5.0 callers that caught only ``TypeError`` would
-        # have missed this case.
+        # Like the scalar-overwrite refusal, a string segment onto a list raises StateWriteError.
         from agentloom.exceptions import StateWriteError
 
         sm = StateManager(initial_state={"data": [1, 2]})
@@ -295,7 +285,6 @@ class TestCheckpoint:
         checkpoint_path = tmp_path / "checkpoint.json"
         await sm.save_checkpoint(checkpoint_path)
 
-        # Verify file exists and is valid JSON
         assert checkpoint_path.exists()
         data = json.loads(checkpoint_path.read_text())
         assert "state" in data
@@ -352,12 +341,10 @@ class TestCheckpoint:
 
 
 class TestAtomicUpdate:
-    """#056 regression — ``StateManager.update`` is atomic across read/modify/write.
+    """``StateManager.update`` is atomic across read, modify and write.
 
-    The legacy ``get`` then ``set`` pattern drops the lock between the two
-    awaits and collapses parallel writers to 1. The new ``update(key, fn)``
-    primitive holds the lock for the full callback invocation; under 50
-    parallel writers it must produce final 50, not final 1.
+    It holds the lock through the callback, so 50 parallel writers end at 50; ``get`` then ``set``
+    drops the lock between the two awaits.
     """
 
     async def test_update_is_atomic_under_50_parallel_writers(self) -> None:
@@ -386,13 +373,9 @@ class TestAtomicUpdate:
         assert await sm.get("new_key") == 7
 
     async def test_get_then_set_remains_racy(self) -> None:
-        """Regression net: we must NOT accidentally over-lock ``get`` + ``set``.
+        """``get`` then ``set`` stays racy; callers that need atomicity use ``update``.
 
-        The contract is documented as racy — anyone needing atomicity must
-        switch to ``update``. If this assertion ever starts failing (i.e.
-        ``get`` + ``set`` becomes atomic), revisit the lock granularity:
-        an unintentional widening makes every read serialise with the
-        write queue and tanks throughput in busy workflows.
+        A failure here means the lock widened, serializing every read with the write queue.
         """
         import anyio
 
@@ -410,13 +393,9 @@ class TestAtomicUpdate:
 
 
 class TestDottedScalarOverwriteRefused:
-    """#056/F52 regression — dotted write must not silently replace a scalar.
+    """A dotted write refuses to replace a scalar parent, raising ``StateWriteError``.
 
-    Pre-0.5.0, writing ``user.name`` when ``state.user`` was a string
-    replaced the string with a fresh dict and lost the original value
-    with no warning. Now ``_set_nested`` raises ``StateWriteError`` so
-    the workflow author either picks a different output key or
-    explicitly overwrites ``user`` at the parent path first.
+    The workflow author picks another output key or overwrites the parent path first.
     """
 
     async def test_refuses_overwrite_of_scalar_parent(self) -> None:
@@ -427,7 +406,6 @@ class TestDottedScalarOverwriteRefused:
             await sm.set("user.name", "bob")
         msg = str(exc_info.value)
         assert "user" in msg and "str" in msg
-        # The original scalar must survive the refusal.
         assert await sm.get("user") == "alice"
 
     async def test_auto_creates_intermediate_when_missing(self) -> None:
@@ -447,17 +425,13 @@ class TestDottedScalarOverwriteRefused:
         sm = StateManager(initial_state={"user": {"profile": "guest"}})
         with pytest.raises(StateWriteError) as exc_info:
             await sm.set("user.profile.name", "bob")
-        # The message should point at ``user.profile`` (the scalar that
-        # would be overwritten), not just ``user``.
+        # ``user.profile`` is the scalar that would be overwritten, not ``user``.
         assert "user.profile" in str(exc_info.value)
 
     async def test_refuses_traversal_through_list_intermediate(self) -> None:
-        """Symmetric to the scalar refusal — a list intermediate with a
-        string next-segment is the same "wrong-type intermediate" footgun.
+        """A string segment through a list raises ``StateWriteError``, as a scalar parent does.
 
-        Pre-fix this leaked a generic ``TypeError("Cannot set key 'name' on
-        list ...")``; now ``StateWriteError`` is raised so callers that
-        catch the dedicated exception class don't miss the case.
+        Callers that catch the dedicated exception class see this case too.
         """
         from agentloom.exceptions import StateWriteError
 
@@ -466,16 +440,14 @@ class TestDottedScalarOverwriteRefused:
             await sm.set("users.name", "bob")
         msg = str(exc_info.value)
         assert "users" in msg and "list" in msg
-        # Original list survives the refusal.
         assert await sm.get("users") == [{"id": 1}]
 
     async def test_refuses_string_segment_through_mid_loop_list(self) -> None:
-        """Three-segment path through a list intermediate trips the loop-body
-        refusal (line 246 — the ``not isinstance(current, dict)`` branch
-        inside the ``for part in parts[:-1]`` loop). The two-segment case
-        ``users.name`` exits the loop with ``current`` still the root dict
-        and trips the final-segment refusal instead; this test pins the
-        in-loop branch so both code paths are exercised."""
+        """A three-segment path through a list trips the in-loop refusal of ``_set_nested``.
+
+        ``users.name`` meets the list only at its last segment, the final-segment refusal;
+        ``users.profile.name`` meets it inside the loop over the parent segments.
+        """
         from agentloom.exceptions import StateWriteError
 
         sm = StateManager(initial_state={"users": [{"id": 1}]})

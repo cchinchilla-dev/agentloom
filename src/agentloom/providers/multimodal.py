@@ -115,11 +115,7 @@ def _is_url(source: str) -> bool:
     return source.lower().startswith(("http://", "https://"))
 
 
-# RFC 2397 data: URL — ``data:[<media>][;<param>=<value>]*[;base64],<payload>``.
-# ``media`` and the parameter list are both optional (``data:,Hello`` is
-# valid). ``re.DOTALL`` lets a payload contain newlines; ``re.IGNORECASE``
-# matches the scheme + ``;base64`` marker case-insensitively (URI schemes
-# are case-insensitive per RFC 3986).
+# RFC 2397 data: URL; DOTALL for multi-line payloads, IGNORECASE as URI schemes ignore case
 _DATA_URL_RE = re.compile(
     r"^data:(?P<media>[\w.+/-]*)(?P<params>(?:;[\w-]+=[^;,]*)*)"
     r"(?P<base64>;base64)?,(?P<payload>.*)$",
@@ -132,7 +128,7 @@ def _is_data_url(source: str) -> bool:
 
     The scheme check is case-insensitive (RFC 3986 §3.1 — URI schemes
     are case-insensitive), so ``DATA:image/png;base64,...`` is also
-    recognised.
+    recognized.
     """
     return source[:5].lower() == "data:"
 
@@ -141,10 +137,7 @@ def _decode_data_url(attachment: Attachment, source: str) -> tuple[bytes, str]:
     """Decode a ``data:`` URL into ``(raw_bytes, media_type)``.
 
     ``data:`` URLs inline binary content directly in the workflow — a
-    standard idiom for composing an image in-process. Pre-0.5.0 the
-    resolver treated the whole ``data:image/png;base64,…`` string as a
-    filesystem path and surfaced a misleading ``FileNotFoundError``
-    naming the base64 blob as a filename (F71).
+    standard idiom for composing an image in-process.
 
     Raises:
         AttachmentResolutionError: malformed URL, invalid base64, or a
@@ -168,21 +161,18 @@ def _decode_data_url(attachment: Attachment, source: str) -> tuple[bytes, str]:
             # ``binascii.Error`` (a ValueError subclass) for bad base64.
             raise AttachmentResolutionError(source[:60], f"invalid base64 payload: {e}") from e
     else:
-        # Non-base64 data: URL — the payload is percent-encoded bytes.
-        # ``unquote_to_bytes`` preserves the raw byte sequence;
-        # ``unquote(...).encode("utf-8")`` would corrupt any non-UTF-8
-        # payload (e.g. binary smuggled through ``%xx`` escapes).
+        # Percent-encoded payload; unquote_to_bytes keeps non-UTF-8 bytes intact
         raw = unquote_to_bytes(payload)
     _check_size(raw, source[:60])
     return raw, media
 
 
 def _is_base64(source: str) -> bool:
-    """Heuristic: raw base64 strings are long and decode successfully.
+    """Return True if *source* looks like raw base64: long and decodable.
 
     Excludes URLs and obvious file paths (starting with ``/``, ``~``, ``.``,
-    or containing ``\\``).  Note: ``/`` is a valid base64 character so we
-    only check for it at position 0 (absolute path indicator).
+    or containing ``\\``). ``/`` is a valid base64 character, so only a
+    leading one counts as a path.
     """
     if _is_url(source):
         return False
@@ -294,14 +284,19 @@ def _validate_provider_url(url: str, sandbox: SandboxConfig) -> None:
 def _validate_file_sandbox(file_path: str, sandbox: SandboxConfig) -> None:
     """Raise if the file path is outside the sandbox allowed directories.
 
-    Uses the resolved (symlink-followed) path for the check AND for the
+    Uses the resolved (symlink-followed) path for the check and for the
     subsequent read to prevent TOCTOU symlink races.
     """
     if not sandbox.enabled:
         return
     allowed = sandbox.readable_paths or sandbox.allowed_paths
+    # As for the file tools: an enabled sandbox with no paths reads nothing
     if not allowed:
-        return
+        msg = (
+            f"Attachment path '{file_path}' cannot be read: the sandbox is enabled "
+            f"and lists no readable_paths or allowed_paths"
+        )
+        raise PermissionError(msg)
     resolved = Path(file_path).resolve()
     for allowed_dir in allowed:
         try:
@@ -309,11 +304,7 @@ def _validate_file_sandbox(file_path: str, sandbox: SandboxConfig) -> None:
             return
         except ValueError:
             continue
-    # Name the resolved target separately from the path the workflow
-    # gave: when a symlink inside ``readable_paths`` points OUT of it,
-    # the original path looks allowed and only the resolved target is
-    # not — pre-0.5.0 the message named just one of them, sending the
-    # operator to look in the wrong place (F70).
+    # Name both paths: a symlink inside readable_paths may point outside it
     if str(resolved) != file_path:
         msg = (
             f"Attachment path '{file_path}' resolves to '{resolved}', which is "
@@ -344,7 +335,6 @@ async def _validate_redirect_target(response: httpx.Response) -> None:
         parsed = urlparse(location)
         hostname = parsed.hostname
         if hostname:
-            # Resolve and validate — reuse the same function as initial URL check
             await _resolve_and_validate_host(hostname)
 
 
@@ -398,7 +388,7 @@ def _make_url_block(
     url: str,
     media_type: str,
 ) -> ContentBlock:
-    """Create a URL-passthrough block.  Only images support this today."""
+    """Create a URL-passthrough block; only images support it."""
     if attachment_type == "image":
         return ImageURLBlock(url=url, media_type=media_type)
     msg = f"URL passthrough (fetch: provider) is only supported for images, not {attachment_type!r}"
@@ -417,10 +407,7 @@ async def _resolve_single(
     media_type = attachment.media_type or detect_media_type(source, attachment.type)
 
     if _is_data_url(source):
-        # ``data:`` URLs inline their payload — no network call, no file
-        # open, so they are unconditionally allowed even under a strict
-        # sandbox (the attacker model is the workflow author). The media
-        # type comes from the URL itself.
+        # No network or file access, so every sandbox allows it (the workflow author is trusted)
         raw_bytes, resolved_media = _decode_data_url(attachment, source)
         encoded = base64.b64encode(raw_bytes).decode("ascii")
         return _make_block(attachment.type, encoded, resolved_media)
@@ -479,21 +466,8 @@ async def resolve_attachments(
             # Already a permanent classification — propagate as-is.
             raise
         except (ValueError, FileNotFoundError, IsADirectoryError) as exc:
-            # Deterministic resolution failure that never recovers:
-            # ``ValueError`` (unsupported type, size limit, empty
-            # source, unsupported URL passthrough) or a local file that
-            # is missing / a directory. Wrap so the resilience layer
-            # sees ``is_retryable = False`` — pre-0.5.0 these spent
-            # 10–127 s on retries that never succeed.
-            #
-            # ``PermissionError`` and ``httpx.HTTPError`` are
-            # intentionally NOT wrapped: a sandbox ``PermissionError``
-            # is already terminal at the call site (and existing tests
-            # assert the raw type), and ``httpx`` network errors go
-            # through the status-code rule so genuine 5xx transients
-            # keep retrying. ``FileNotFoundError`` / ``IsADirectoryError``
-            # are subclasses of ``OSError`` but NOT of ``PermissionError``,
-            # so naming them explicitly keeps the sandbox path untouched.
+            # Deterministic failures, wrapped as non-retryable; PermissionError (terminal at the
+            # call site) and httpx errors (a 5xx retries) stay raw, so OSError is not caught whole
             raise AttachmentResolutionError(att.source or "<unknown>", str(exc)) from exc
         blocks.append(block)
     return blocks
@@ -505,9 +479,8 @@ def build_multimodal_content(
 ) -> str | list[ContentBlock]:
     """Build message content from text and resolved attachment blocks.
 
-    Returns a plain string when *blocks* is empty (backward compatible).
-    Otherwise returns a list starting with a :class:`TextBlock` followed
-    by the attachment blocks.
+    Returns a plain string when *blocks* is empty; otherwise a list
+    starting with a :class:`TextBlock` followed by the attachment blocks.
     """
     if not blocks:
         return text
@@ -517,9 +490,8 @@ def build_multimodal_content(
 def estimate_content_tokens(content: object) -> int:
     """Estimate token count for message content (str or list of blocks).
 
-    Used by the gateway rate-limiter.  Rough heuristic: ~4 chars per text
-    token; ~85 tokens per image; ~200 tokens per document page (rough);
-    ~100 tokens per audio clip (rough).
+    Used by the gateway rate-limiter. Rough heuristic: ~4 chars per text
+    token; 85 tokens per image; a flat 200 per document; 100 per audio clip.
     """
     if isinstance(content, str):
         return len(content) // 4

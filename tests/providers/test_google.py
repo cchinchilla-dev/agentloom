@@ -28,6 +28,29 @@ MOCK_RESPONSE = {
 
 class TestGoogleProvider:
     @respx.mock
+    async def test_the_api_key_goes_in_a_header_not_the_url(self) -> None:
+        # httpx logs request URLs at INFO, and they reach error messages
+        route = respx.post(url__regex=r".*/models/.*").mock(
+            side_effect=[
+                httpx.Response(200, json=MOCK_RESPONSE),
+                httpx.Response(200, text='data: {"candidates": []}\n\n'),
+                httpx.Response(200, json={"embeddings": [{"values": [0.1]}]}),
+            ]
+        )
+        provider = GoogleProvider(api_key="secret-key")
+        messages = [{"role": "user", "content": "hi"}]
+        await provider.complete(messages=messages, model="gemini-2.5-flash")
+        sr = await provider.stream(messages=messages, model="gemini-2.5-flash")
+        async for _ in sr:
+            pass
+        await provider.embed(["hi"], model="text-embedding-004")
+        await provider.close()
+        assert route.call_count == 3
+        for call in route.calls:
+            assert call.request.headers["x-goog-api-key"] == "secret-key"
+            assert "secret-key" not in str(call.request.url)
+
+    @respx.mock
     async def test_successful_completion(self) -> None:
         respx.post(url__regex=r".*/models/gemini.*").mock(
             return_value=httpx.Response(200, json=MOCK_RESPONSE)
@@ -44,11 +67,7 @@ class TestGoogleProvider:
 
     @respx.mock
     async def test_google_missing_thoughts_token_count_defaults_to_zero(self) -> None:
-        # The base mock response does not include ``thoughtsTokenCount``.
-        # The adapter must default the field to 0 (rather than raising or
-        # propagating ``None``) — Gemini omits the field on non-thinking
-        # models and intermittently on ``gemini-3-flash-preview`` even
-        # when thinking is enabled.
+        # Gemini omits ``thoughtsTokenCount`` on non-thinking models, and at times with thinking on.
         respx.post(url__regex=r".*/models/gemini.*").mock(
             return_value=httpx.Response(200, json=MOCK_RESPONSE)
         )
@@ -64,9 +83,7 @@ class TestGoogleProvider:
 
     @respx.mock
     async def test_google_thoughts_token_count_populates_reasoning_tokens(self) -> None:
-        # When Gemini surfaces ``thoughtsTokenCount`` (Gemini 2.5+ thinking
-        # models), it must land in ``TokenUsage.reasoning_tokens`` and feed
-        # cost calculation at the output rate.
+        # Thinking tokens bill at the output rate, so they count as billable completion.
         thinking_response = {
             "candidates": [
                 {
@@ -95,9 +112,6 @@ class TestGoogleProvider:
 
     @respx.mock
     async def test_google_thinking_config_passed_to_payload(self) -> None:
-        # ``thinking_config`` must be translated into Gemini's wire format
-        # under ``generationConfig.thinkingConfig`` with the per-field
-        # rename. Snake_case at the public API → camelCase on the wire.
         from agentloom.core.models import ThinkingConfig
 
         route = respx.post(url__regex=r".*/models/gemini.*").mock(
@@ -120,10 +134,7 @@ class TestGoogleProvider:
 
     @respx.mock
     async def test_google_includes_thoughts_writes_reasoning_content(self) -> None:
-        # When ``includeThoughts=true`` is set, Gemini returns thought
-        # summaries as separate parts marked ``thought=true``. The adapter
-        # must split those into ``reasoning_content`` and keep them out of
-        # the visible ``content``.
+        # With ``includeThoughts`` on, Gemini sends thought summaries as parts marked ``thought``.
         response_with_thoughts = {
             "candidates": [
                 {
@@ -176,7 +187,7 @@ class TestGoogleProvider:
         await provider.close()
 
     def test_every_system_turn_reaches_the_system_instruction(self) -> None:
-        """A speaker's prompt and a conversation summary are both system turns (#120)."""
+        """A speaker's prompt and a conversation summary are both system turns."""
         system, contents = GoogleProvider._format_messages(
             [
                 {"role": "system", "content": "You are Bob."},
@@ -345,14 +356,13 @@ class TestGoogleProvider:
 
     @respx.mock
     async def test_streaming_warns_on_missing_usage_metadata(self, caplog) -> None:  # type: ignore[no-untyped-def]
-        """Stream completing without ``usageMetadata`` must log a warning so
-        zero-cost reports surface instead of being silently swallowed."""
+        """A stream without ``usageMetadata`` warns, so zero-cost reports do not go unnoticed."""
         import logging
 
         sse = (
             'data: {"candidates":[{"content":{"parts":[{"text":"hi"}],"role":"model"}}]}\n\n'
             'data: {"candidates":[{"content":{"parts":[{"text":" there"}],"role":"model"},'
-            '"finishReason":"STOP"}]}\n\n'  # No usageMetadata anywhere.
+            '"finishReason":"STOP"}]}\n\n'
         )
         respx.post(url__regex=r".*/models/gemini.*streamGenerateContent.*").mock(
             return_value=httpx.Response(200, content=sse.encode())
@@ -376,9 +386,7 @@ class TestGoogleProvider:
 
     @respx.mock
     async def test_generation_config_built_from_temperature_max_tokens_extras(self) -> None:
-        """Verify temperature, maxOutputTokens, and allowlisted extras (top_p,
-        seed, response_mime_type) all land in `generationConfig`, and tools
-        plus safety_settings sit at the top level."""
+        """Sampling extras go in ``generationConfig``; tools and safety settings stay top level."""
         captured: dict[str, object] = {}
 
         def _capture(request: httpx.Request) -> httpx.Response:
@@ -403,8 +411,6 @@ class TestGoogleProvider:
         gc = captured["generationConfig"]
         assert gc["temperature"] == 0.7
         assert gc["maxOutputTokens"] == 128
-        # Gemini wire format is camelCase; the adapter translates from the
-        # snake_case public API to the right field names.
         assert gc["topP"] == 0.9
         assert gc["seed"] == 42
         assert gc["responseMimeType"] == "application/json"
@@ -417,10 +423,7 @@ class TestGoogleReasoningStream:
     async def test_stream_thinking_config_routes_to_payload_and_captures_thoughts(
         self,
     ) -> None:
-        # Streaming path mirrors ``complete``: ``thinking_config`` translates
-        # to ``generationConfig.thinkingConfig`` on the wire, ``thought=true``
-        # parts split into ``reasoning_content``, and ``thoughtsTokenCount``
-        # lands on ``StreamResponse.usage.reasoning_tokens``.
+        # The stream mirrors ``complete``: thinking config, thought parts, reasoning tokens.
         from agentloom.core.models import ThinkingConfig
 
         sse = (

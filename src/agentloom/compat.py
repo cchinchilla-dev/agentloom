@@ -42,9 +42,6 @@ def try_import(module_name: str, extra: str = "all") -> ModuleType | MissingDepe
     Args:
         module_name: Fully qualified module name (e.g., "opentelemetry.sdk").
         extra: The pip extra that provides this module (e.g., "observability").
-
-    Returns:
-        The real module if available, or a MissingDependencyProxy.
     """
     try:
         return importlib.import_module(module_name)

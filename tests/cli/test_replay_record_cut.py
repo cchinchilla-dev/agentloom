@@ -1,4 +1,4 @@
-"""``agentloom replay --live-from/--force-live --record`` (#178)."""
+"""``agentloom replay --live-from/--force-live --record`` records the cut run to a new file."""
 
 from __future__ import annotations
 

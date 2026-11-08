@@ -60,11 +60,11 @@ jobs:
           ref: ${{ steps.build.outputs.ref }}
           persist-credentials: false
 
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # v3
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
@@ -90,9 +90,9 @@ jobs:
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: BUILD_OBSERVABILITY=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # No layer cache for a release: a poisoned one would reach the published image
+          cache-from: ${{ steps.build.outputs.release != 'true' && 'type=gha' || '' }}
+          cache-to: ${{ steps.build.outputs.release != 'true' && 'type=gha,mode=max' || '' }}
 
       - name: Smoke test
         if: github.event_name == 'pull_request'

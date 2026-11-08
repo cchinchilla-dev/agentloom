@@ -37,8 +37,7 @@ class WorkflowAdapter:
 
     @property
     def input_schema(self) -> dict[str, Any]:
-        # Workflows declare no typed inputs yet: any object, naming the
-        # ``state:`` keys without their defaults, which may be secrets.
+        # No typed inputs: any object naming the ``state:`` keys, without defaults (may be secrets)
         return {
             "type": "object",
             "properties": {key: {} for key in self.workflow.state},

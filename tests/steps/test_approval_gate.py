@@ -66,14 +66,11 @@ class TestApprovalGateStep:
         result = await ApprovalGateStep().execute(ctx)
 
         assert result.output == "rejected"
-        # No key written to state
         value = await ctx.state_manager.get("my_decision")
         assert value is None
 
     async def test_pause_does_not_write_to_stdio(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # Step body must stay silent — UX is rendered by the CLI after
-        # `engine.run()` returns. Two gates pausing concurrently used to
-        # interleave their prompts on stderr; this regression guards it.
+        # The CLI renders the pause; concurrent gates would interleave their prompts on stderr.
         ctx = _context(step_id="review")
         with pytest.raises(PauseRequestedError, match="review"):
             await ApprovalGateStep().execute(ctx)

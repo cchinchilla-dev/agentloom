@@ -10,7 +10,6 @@ from agentloom.core.results import StepResult, StepStatus
 from agentloom.exceptions import SecurityError, StepError
 from agentloom.steps.base import BaseStep, StepContext
 
-# AST node types allowed in router expressions
 _ALLOWED_NODES = (
     ast.Expression,
     ast.Compare,
@@ -22,7 +21,6 @@ _ALLOWED_NODES = (
     ast.Constant,
     ast.Attribute,
     ast.Subscript,
-    ast.Index,
     ast.Slice,
     ast.And,
     ast.Or,
@@ -62,8 +60,7 @@ _SAFE_BUILTINS = {
 
 _ALLOWED_FUNCTIONS = set(_SAFE_BUILTINS.keys())
 
-# Non-dunder attribute names that also reach into the Python object graph.
-# Dunder attributes (anything starting with "_") are already blocked wholesale.
+# Names without a leading ``_`` that still reach into the object graph; ``_`` names are all blocked.
 _BLOCKED_ATTR_NAMES = frozenset(
     {
         "mro",
@@ -88,7 +85,7 @@ def _reject_attribute(attr: str, expr_str: str) -> None:
 def _safe_receiver(node: ast.AST) -> bool:
     """Whether ``node`` is a safe receiver for an attribute call.
 
-    The base case is the original allow-set: ``Name | Attribute | Subscript``.
+    The base case is ``Name | Attribute | Subscript``.
     The recursive case extends it to another ``ast.Call`` whose ``func`` is
     itself an attribute on a safe receiver — this is what permits chains
     like ``state.x.strip().lower()``. The dunder/blocklist check on each
@@ -192,14 +189,7 @@ def _validate_expression(expr_str: str) -> ast.Expression:
                         expression=expr_str,
                     )
             elif isinstance(node.func, ast.Attribute):
-                # Attribute calls are allowed only if the attribute name passed
-                # the dunder/blocklist check above (ast.walk visits children)
-                # AND the receiver chain bottoms out on a safe base
-                # (Name/Attribute/Subscript). ``_safe_receiver`` recurses
-                # through nested ``ast.Call`` receivers so chains like
-                # ``state.x.strip().lower()`` are accepted — every link is
-                # still gated by ``_reject_attribute``. Calls on literals
-                # (``''.join(...)``, ``(1).bit_length()``) are still refused.
+                # The chain must end on a name, attribute or subscript; ast.walk gates each attr.
                 if not _safe_receiver(node.func.value):
                     raise SecurityError(
                         "Attribute calls require a name/attribute/subscript "
@@ -211,8 +201,7 @@ def _validate_expression(expr_str: str) -> ast.Expression:
                     "Only named function calls and attribute calls are allowed.",
                     expression=expr_str,
                 )
-            # Reject keyword arguments and starred unpacking — router
-            # predicates never need them and they broaden the grammar.
+            # Predicates never need keyword or starred arguments, and they widen the grammar.
             if node.keywords:
                 raise SecurityError(
                     "Keyword arguments are not allowed in router expressions.",
@@ -231,12 +220,8 @@ def _validate_expression(expr_str: str) -> ast.Expression:
 def evaluate_expression(expr_str: str, namespace: dict[str, Any]) -> Any:
     """Safely evaluate a router expression against a namespace.
 
-    Args:
-        expr_str: The expression string (e.g., "state.classification == 'question'").
-        namespace: Variables available in the expression.
-
-    Returns:
-        The result of evaluating the expression.
+    ``expr_str`` (e.g. ``"state.classification == 'question'"``) is validated first;
+    ``namespace`` holds the names it can use besides the safe builtins.
     """
     tree = _validate_expression(expr_str)
     code = compile(tree, "<router_expression>", "eval")
@@ -249,9 +234,8 @@ def evaluate_expression(expr_str: str, namespace: dict[str, Any]) -> Any:
 def _wrap(value: Any) -> Any:
     """Wrap nested containers so router dot / subscript chains keep working.
 
-    Lifted out of ``RouterStep.execute`` so the proxy classes can be
-    constructed and unit-tested directly. The router runtime calls this
-    helper for every value crossing the state boundary.
+    Module-level so tests can build the proxies directly; the router calls
+    it for every value read from state.
     """
     if isinstance(value, dict):
         return _DictProxy(value)
@@ -281,10 +265,7 @@ class _DictProxy:
         return len(self._data)
 
     def __iter__(self) -> Any:
-        # Yield keys (mapping protocol). Reachable via Python-level
-        # consumers iterating a proxy returned from the router
-        # namespace; the router AST grammar itself doesn't emit `for`
-        # loops.
+        # Mapping protocol, for Python callers: router expressions cannot loop.
         return iter(self._data)
 
     def __contains__(self, key: Any) -> bool:
@@ -316,8 +297,7 @@ class _ListProxy:
 def _build_state_proxy(state_snapshot: dict[Any, Any]) -> Any:
     """Build the ``state`` proxy the router namespace exposes.
 
-    Factored out so tests can construct the proxy directly without
-    going through ``RouterStep.execute``.
+    Module-level so tests can build the proxy without ``RouterStep.execute``.
     """
 
     class _StateProxy:
@@ -333,7 +313,7 @@ def _build_state_proxy(state_snapshot: dict[Any, Any]) -> Any:
 
 
 class RouterStep(BaseStep):
-    """Evaluates conditions and returns the target step ID to activate."""
+    """Step that evaluates its conditions and returns the target step ID to activate."""
 
     async def execute(self, context: StepContext) -> StepResult:
         step = context.step_definition
@@ -344,14 +324,7 @@ class RouterStep(BaseStep):
 
         state_snapshot = await context.state_manager.get_state_snapshot()
 
-        # Router predicates address state through ``state.X`` only. Earlier
-        # versions also flattened every top-level state key into the
-        # namespace as a bare name, which let a workflow shadow safe
-        # builtins (``len``, ``str``) by naming a state key the same, and
-        # broadened the validator's attack surface by exposing arbitrary
-        # variables that downstream subscript / indirection probes could
-        # combine. The flat surface is dropped here — all reads now go
-        # through ``state.X``.
+        # Only ``state.X`` and ``steps.X``: bare state keys would shadow ``len``, ``str`` and kin.
         namespace: dict[str, Any] = {}
 
         namespace["state"] = _build_state_proxy(state_snapshot)
@@ -372,7 +345,6 @@ class RouterStep(BaseStep):
 
         namespace["steps"] = _StepsProxy()
 
-        # NOTE: first matching condition wins. no priority system yet
         target: str | None = None
         for condition in step.conditions:
             try:
@@ -381,8 +353,7 @@ class RouterStep(BaseStep):
                     target = condition.target
                     break
             except SecurityError:
-                # Sandbox bypass attempt — propagate unchanged so it surfaces
-                # distinctly from ordinary step evaluation failures.
+                # Unchanged, so a bypass attempt stays distinct from an evaluation error.
                 raise
             except Exception as e:
                 raise StepError(

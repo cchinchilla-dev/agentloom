@@ -78,7 +78,7 @@ class ThinkingConfig(BaseModel):
     provider:
 
     - **OpenAI o-series** — reasoning is implicit in the model name; this
-      config is currently ignored (kept here so the YAML stays uniform).
+      config is ignored (accepted so the YAML stays uniform).
     - **Anthropic** — sends ``thinking: {type: "enabled", budget_tokens}``.
     - **Google Gemini 2.5+** — sends ``generationConfig.thinkingConfig``
       with ``thinkingBudget`` (from ``budget_tokens``), ``thinkingLevel``
@@ -106,7 +106,7 @@ class Conversation(BaseModel):
     """A typed multi-turn conversation stored in workflow state.
 
     Workflows reference a conversation by dotted state path
-    (``conversation: state.chat``) on an ``llm_call`` step. The engine
+    (``conversation: state.chat``) on an ``llm_call`` step. The step
     loads the messages, calls the provider with the full history, and
     appends the assistant reply (plus any tool calls) back into the same
     state key.
@@ -136,10 +136,8 @@ class Conversation(BaseModel):
     def _coerce_message_dicts(cls, value: Any) -> Any:
         """Accept plain-dict messages from YAML/checkpoint payloads.
 
-        Pydantic normally handles this via ``model_validate``, but keeping
-        the coercion explicit lets us survive minor schema drift — a
-        recording made before ``metadata`` existed still round-trips
-        without a manual migration.
+        Keys set to ``None`` (``content`` aside) are dropped, so a payload with
+        ``"tool_calls": null`` or ``"metadata": null`` takes the field defaults.
         """
         if not isinstance(value, list):
             return value
@@ -157,8 +155,7 @@ class Conversation(BaseModel):
     def token_count(self, model: str = "") -> int:
         """Sum of per-message token estimates.
 
-        Delegates to :meth:`Message.token_count`; see there for the
-        heuristic's caveats.
+        See :meth:`Message.token_count` for the heuristic's caveats.
         """
         return sum(m.token_count(model) for m in self.messages)
 
@@ -183,8 +180,7 @@ class ResponseSchema(BaseModel):
 
     type: Literal["pydantic", "json_schema", "json_object"] = "json_object"
     model: str | None = None
-    # ``schema_`` avoids shadowing Pydantic's deprecated ``BaseModel.schema()``;
-    # YAML authors write ``schema:`` via the alias.
+    # ``schema_`` avoids shadowing Pydantic's ``BaseModel.schema()``; YAML uses the alias
     schema_: dict[str, Any] | None = Field(default=None, alias="schema")
     name: str | None = None
     description: str | None = None
@@ -232,7 +228,7 @@ class ResponseSchemaConfigError(ValueError):
     """Workflow-author error in a :class:`ResponseSchema` — never retried."""
 
 
-# The tool through which a step with both ``tools`` and a schema delivers its reply (#120).
+# The tool through which a step with both ``tools`` and a schema delivers its reply.
 OUTPUT_TOOL = "final_result"
 
 
@@ -301,7 +297,7 @@ AgentToolEntry = Annotated[
 
 
 class AgentDefinition(BaseModel):
-    """A reusable agent: system prompt, tools, memory, loop policy and constraints (#120).
+    """A reusable agent: system prompt, tools, memory, loop policy and constraints.
 
     An ``agent`` step runs one turn of it as an ``llm_call`` with the agent's
     settings; :class:`agentloom.core.agent.Agent` runs one from Python.
@@ -374,20 +370,13 @@ class StepDefinition(BaseModel):
     # Subworkflow fields
     workflow_path: str | None = None
     workflow_inline: dict[str, Any] | None = None
-    # Opt-in to fresh-state isolation. With ``isolated_state: false`` (the
-    # default for backwards compatibility), parent state propagates DOWN
-    # into the child and the child's entire final state propagates UP as
-    # the parent's ``output:`` value — handy for trivial helper
-    # subworkflows but leaky for anything resembling encapsulation.
-    # ``isolated_state: true`` seeds the child only from the child's own
-    # ``state:`` block plus the explicit ``input:`` mapping below, and
-    # only the keys listed in ``return_keys`` (default: all top-level
-    # keys the child wrote) surface back through ``output:``.
+    # false: the child inherits parent state and returns all of its own as ``output``;
+    # true: it gets only its ``state:`` plus ``input``, and returns ``return_keys`` (default all).
     isolated_state: bool = False
     input: dict[str, Any] = Field(default_factory=dict)
     return_keys: list[str] | None = None
 
-    # Approval gate fields (timeout enforced by callback server — #42)
+    # Approval gate fields; nothing enforces timeout_seconds / on_timeout yet (#210).
     timeout_seconds: int | None = None
     on_timeout: Literal["approve", "reject"] | None = None
     notify: WebhookConfig | None = None
@@ -408,8 +397,7 @@ class StepDefinition(BaseModel):
     # Reasoning / extended thinking
     thinking: ThinkingConfig | None = None
 
-    # Tool calling — LLM picks tools at runtime. Constrained union so YAML
-    # typos fail fast at parse time instead of silently coercing to AUTO.
+    # Tool calling: a constrained ``tool_choice`` fails a YAML typo at parse time, not as auto
     tools: list[ToolDefinition] = Field(default_factory=list)
     tool_choice: Literal["auto", "required", "none"] | ToolChoiceByName = "auto"
     max_tool_iterations: int = Field(default=5, ge=1)
@@ -417,38 +405,16 @@ class StepDefinition(BaseModel):
     # Constrains the reply to a JSON shape; parsed value lands on state.
     response_schema: ResponseSchema | None = None
 
-    # Embed step fields — ``inputs`` is a dotted state path (e.g.
-    # ``state.documents``) that resolves to a ``list[str]``; ``dimensions``
-    # requests a truncated vector on providers that honour it (OpenAI
-    # ``text-embedding-3-*``, Google ``gemini-embedding-001``). ``ge=1``
-    # rejects ``0`` / negative at parse time so failures don't leak to
-    # provider-specific 400s at runtime.
+    # Embed: ``inputs`` is a state path to a ``list[str]``; ``dimensions`` truncates where supported
     inputs: str | None = None
     dimensions: int | None = Field(default=None, ge=1)
 
-    # Conversation-history primitive. ``conversation`` is a dotted state
-    # path (e.g. ``state.chat``) that resolves to a :class:`Conversation`.
-    # The step loads the messages, appends the rendered ``prompt`` as a
-    # user turn (skipped when ``prompt`` is empty and the conversation
-    # already has a trailing user message), sends the full list to the
-    # provider, and appends the assistant reply (plus any tool calls)
-    # back to the same path before persisting. When set, ``output`` is
-    # still honoured but stores the raw assistant text — the conversation
-    # itself carries the structured turn.
+    # State path to a :class:`Conversation` the reply is appended to; ``output`` gets the raw text
     conversation: str | None = None
-    # Multi-agent speaker name. When set (only meaningful with
-    # ``conversation``), the assistant reply is tagged with
-    # ``Message.name`` (the user turn holds the caller's words and stays
-    # untagged) so a shared conversation can carry several distinct
-    # agents (OpenAI forwards ``name`` natively; the other adapters
-    # prepend ``"[<speaker>] …"`` inline). Also lets the
-    # step's ``system_prompt`` re-assert each turn — without a speaker the
-    # system turn is inserted once, but a multi-agent workflow needs each
-    # agent's own instruction on its turn.
+    # With a conversation: tag replies with ``Message.name``, re-assert ``system_prompt`` each turn
     speaker: str | None = None
 
-    # Agent step (#120): the agent's definition, inline or as a path resolved like
-    # ``workflow_path`` when the step is validated. Its settings replace the llm_call fields.
+    # Inline, or a path resolved like ``workflow_path``; its settings replace the llm_call fields
     agent: AgentDefinition | None = None
 
     @field_validator("agent", mode="before")
@@ -542,45 +508,30 @@ class SandboxConfig(BaseModel):
 class WorkflowConfig(BaseModel):
     """Workflow-level configuration.
 
-    Unknown keys are refused at parse time (``extra="forbid"``). This
-    also rejects the half-supported ``config.responses:`` field — mock
-    responses are configured via ``responses_file`` (a path to a
-    recording), never an inline ``responses:`` list.
+    Unknown keys are refused at parse time (``extra="forbid"``). Mock responses
+    come from ``responses_file`` (a path to a recording), never an inline
+    ``responses:`` list.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     provider: str = "openai"
     model: str = "gpt-4o-mini"
-    # Endpoint of ``provider: generic_openai`` (#48); its key comes from env var ``api_key_env``.
+    # Endpoint of ``provider: generic_openai``; its key comes from env var ``api_key_env``.
     base_url: str | None = None
     api_key_env: str | None = None
     max_retries: int = 3
     budget_usd: float | None = None
     timeout: float | None = Field(default=None, ge=0)  # 0 means no limit, as a step's
-    # ``ge=1`` catches both ``0`` (which makes ``anyio.CapacityLimiter(0)``
-    # block every ``start_soon`` and deadlocks the workflow with no timeout)
-    # and negatives (which used to surface as a cryptic
-    # ``total_tokens must be >= 0`` from the fallback result construction).
-    # ``le=1024`` is a sanity ceiling: workflows needing more concurrency
-    # per layer can either split layers or open an issue — past this point
-    # the layer-loop scheduling overhead dominates and individual provider
-    # rate limits will be the real bottleneck.
+    # ge=1: ``CapacityLimiter(0)`` blocks every start, a deadlock; le=1024 is a sanity ceiling
     max_concurrent_steps: int = Field(default=10, ge=1, le=1024)
     stream: bool = False
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
-    # When a step (or a router) ends in FAILED, ``skip_downstream`` marks every
-    # transitive dependent as SKIPPED so they don't fire side-effect tools,
-    # webhooks, or LLM calls against partial state. ``continue`` preserves the
-    # pre-0.5.0 behaviour (dependents still run) for best-effort fan-outs that
-    # explicitly want to swallow failures.
+    # ``skip_downstream`` keeps dependents of a failed step from acting on partial state
     on_step_failure: Literal["skip_downstream", "continue"] = "skip_downstream"
 
-    # When ``True``, two or more parallel-eligible steps writing the same
-    # ``output:`` key abort at parse time. When ``False`` (default), the parser
-    # only emits a warning — silent last-writer-wins is the pre-0.5.0
-    # behaviour that several workflows already depend on, so opt-in only.
+    # Opt-in: parallel steps sharing an ``output:`` key fail parsing; some rely on last-writer-wins
     strict_outputs: bool = False
 
     # MockProvider configuration (used only when provider == "mock")
@@ -606,7 +557,7 @@ class WorkflowConfig(BaseModel):
 
 
 class StateKeyConfig(BaseModel):
-    """Per-key state metadata, currently used only for redaction.
+    """Per-key state metadata; ``redact`` is its only setting.
 
     YAML usage::
 
@@ -628,11 +579,9 @@ class StateKeyConfig(BaseModel):
 class WorkflowDefinition(BaseModel):
     """Complete workflow definition — the top-level schema for YAML files.
 
-    Unknown top-level keys are refused at parse time (``extra="forbid"``).
-    A common silent failure mode pre-fix was a typo like ``stat_schema:``
-    instead of ``state_schema:`` — Pydantic's default would have dropped
-    the unknown key, leaving the redaction policy empty and shipping
-    every flagged secret to disk in plaintext.
+    Unknown top-level keys are refused at parse time (``extra="forbid"``): a typo
+    such as ``stat_schema:`` would otherwise leave the redaction policy empty and
+    write every flagged secret to disk in plaintext.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -649,13 +598,8 @@ class WorkflowDefinition(BaseModel):
     def _validate_step_ids_unique(self) -> WorkflowDefinition:
         """Refuse duplicate ``id:`` values across the top-level step list.
 
-        Until 0.4.0 the parser accepted two steps with the same ``id``
-        silently; only one would surface in ``final_state.steps`` after
-        execution and the other was lost without warning. A workflow author
-        who renamed a step and forgot to rename a reference could ship a
-        workflow where steps shadow each other — typically caught only when
-        the missing step's output went unused downstream and the run came
-        back with garbled state.
+        Two steps with one ``id`` shadow each other: only one would surface in
+        ``final_state.steps``, the other lost without warning.
         """
         seen: dict[str, int] = {}
         dups: list[tuple[str, list[int]]] = []

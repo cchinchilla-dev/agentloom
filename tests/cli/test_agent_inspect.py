@@ -1,4 +1,4 @@
-"""``agentloom agent inspect`` shows an agent as it loads (#120)."""
+"""``agentloom agent inspect`` shows an agent as it loads."""
 
 from __future__ import annotations
 

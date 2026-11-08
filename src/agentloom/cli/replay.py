@@ -67,19 +67,18 @@ def replay(
         False, "--record-tools", help="With --record, also record tool results."
     ),
 ) -> None:
-    """Replay a workflow using previously recorded LLM responses (no API calls).
+    """Replay a workflow from recorded LLM responses, with no API calls unless cut.
 
     Replay is strict by default: a request that misses the recording, or
     matches a step whose prompt drifted since capture, raises
-    ``RecordingMismatchError``. Pass ``--allow-default-fallback`` to
-    restore the pre-0.5.0 lenient behaviour (placeholder response on a
-    miss). ``--tools replay`` and ``--tools verify`` apply the same
-    strictness to tool calls.
+    ``RecordingMismatchError``. Pass ``--allow-default-fallback`` for the
+    lenient mode (a placeholder response on a miss). ``--tools replay`` and
+    ``--tools verify`` apply the same strictness to tool calls.
 
-    ``--live-from`` and ``--force-live`` cut the replay (#165): those steps run
+    ``--live-from`` and ``--force-live`` cut the replay: those steps run
     live, and so does any other step from its first call that misses the
     recording. Every call is listed with where it came from. ``--record`` saves
-    that run as a new recording (#178); the source recording is never written.
+    that run as a new recording; the source recording is never written.
     """
     if allow_default_fallback and (live_from or force_live):
         typer.echo(

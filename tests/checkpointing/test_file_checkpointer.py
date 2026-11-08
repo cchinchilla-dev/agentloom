@@ -36,8 +36,6 @@ def _make_checkpoint(
 
 
 class TestFileCheckpointerSaveLoad:
-    """Round-trip save/load tests."""
-
     async def test_save_creates_file(self, tmp_path: Path) -> None:
         cp = FileCheckpointer(checkpoint_dir=tmp_path)
         data = _make_checkpoint()
@@ -85,8 +83,6 @@ class TestFileCheckpointerSaveLoad:
 
 
 class TestFileCheckpointerListRuns:
-    """Tests for listing runs."""
-
     async def test_list_runs_empty(self, tmp_path: Path) -> None:
         cp = FileCheckpointer(checkpoint_dir=tmp_path)
         assert await cp.list_runs() == []
@@ -106,8 +102,6 @@ class TestFileCheckpointerListRuns:
 
 
 class TestFileCheckpointerDelete:
-    """Tests for deleting runs."""
-
     async def test_delete_removes_file(self, tmp_path: Path) -> None:
         cp = FileCheckpointer(checkpoint_dir=tmp_path)
         await cp.save(_make_checkpoint())
@@ -145,8 +139,6 @@ class TestFileCheckpointerSecurity:
 
 
 class TestFileCheckpointerCorruption:
-    """Tests for corrupted checkpoint handling."""
-
     async def test_load_corrupted_file_raises_value_error(self, tmp_path: Path) -> None:
         (tmp_path / "bad.json").write_text("not valid json {{{")
         cp = FileCheckpointer(checkpoint_dir=tmp_path)
@@ -154,7 +146,6 @@ class TestFileCheckpointerCorruption:
             await cp.load("bad")
 
     async def test_list_runs_skips_corrupted_files(self, tmp_path: Path) -> None:
-        # Write one valid and one corrupted checkpoint
         cp = FileCheckpointer(checkpoint_dir=tmp_path)
         await cp.save(_make_checkpoint(run_id="good"))
         (tmp_path / "corrupt.json").write_text("broken json")

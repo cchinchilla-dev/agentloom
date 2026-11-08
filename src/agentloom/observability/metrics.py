@@ -36,7 +36,7 @@ _HAS_PROM = is_available(prom)
 
 
 class MetricsManager:
-    """Records workflow/step/provider metrics, pushing them via OTLP.
+    """Metrics recorder for workflows, steps and providers, pushed via OTLP.
 
     Falls back to prometheus_client if OTel metrics SDK is unavailable.
     All methods are silent no-ops if no metrics backend is installed.
@@ -57,13 +57,10 @@ class MetricsManager:
         self._step_histogram: Any = None
         self._provider_counter: Any = None
         self._provider_error_counter: Any = None
-        self._provider_histogram: Any = None
-        self._token_counter: Any = None
         self._workflow_histogram: Any = None
         self._cost_counter: Any = None
         self._attachment_counter: Any = None
         self._stream_counter: Any = None
-        self._ttft_histogram: Any = None
         self._tool_call_counter: Any = None
         self._tool_call_histogram: Any = None
         self._agent_counter: Any = None
@@ -74,11 +71,7 @@ class MetricsManager:
         self._mock_fault_counter: Any = None
         self._recording_capture_counter: Any = None
         self._recording_latency_histogram: Any = None
-        # LRU-bounded gauges. Workflows that template provider/workflow
-        # names (multi-tenant, scoped runs, dynamic env) produce unbounded
-        # keys; without an explicit cap the export callback iterates the
-        # full dict on every OTel scrape (Prometheus default 15 s) and
-        # eventually stalls. Cap defaults to 1024 — override via env.
+        # LRU-capped: templated provider/workflow names make unbounded keys for the gauge callbacks.
         max_keys = int(os.environ.get("AGENTLOOM_METRICS_MAX_KEYS", "1024"))
         self._max_metric_keys = max_keys
         self._circuit_states: OrderedDict[str, int] = OrderedDict()
@@ -127,16 +120,13 @@ class MetricsManager:
             "agentloom_provider_errors_total",
             description="Total provider errors",
         )
-        # Canonical OTel GenAI client metric — replaces the AgentLoom-prefixed
-        # ``agentloom_provider_latency_seconds`` with the spec's name.
+        # Canonical OTel GenAI client metric.
         self._operation_duration_histogram = meter.create_histogram(
             "gen_ai.client.operation.duration",
             description="GenAI operation duration (per OTel GenAI conventions)",
             unit="s",
         )
-        # Canonical OTel GenAI token usage histogram — replaces the
-        # AgentLoom counter ``agentloom_tokens_total``. The OTel spec
-        # mandates a histogram so distributions are queryable.
+        # Canonical OTel GenAI token usage: a histogram, as the spec mandates.
         self._token_histogram = meter.create_histogram(
             "gen_ai.client.token.usage",
             description="GenAI token usage per operation (per OTel GenAI conventions)",
@@ -159,9 +149,7 @@ class MetricsManager:
             "agentloom_stream_responses_total",
             description="Total streamed LLM responses",
         )
-        # Tool calls dispatched by the model. Tagged by tool name +
-        # status so dashboards can split successes from failures and spot
-        # tools that consistently fail or hang.
+        # Tagged by tool name and status, so dashboards spot tools that fail or hang.
         self._tool_call_counter = meter.create_counter(
             "agentloom_tool_calls_total",
             description="Total model-dispatched tool calls",
@@ -171,8 +159,6 @@ class MetricsManager:
             description="Tool-call execution duration",
             unit="s",
         )
-        # Embedding calls tagged by provider + model; dimensions histogram
-        # captures the requested output vector size.
         self._embedding_counter = meter.create_counter(
             "agentloom_embedding_calls_total",
             description="Total embedding API calls",
@@ -181,10 +167,7 @@ class MetricsManager:
             "agentloom_embedding_dimensions",
             description="Requested embedding vector dimensions",
         )
-        # Conversation primitive (#119). Trims counter fires per trim pass
-        # (labeled by policy + conversation state-key). Message-count
-        # histogram fires on every ``llm_call`` that touched a conversation
-        # so dashboards can plot the growth curve independently of trims.
+        # One per trim pass that removed a turn, by policy and conversation state key.
         self._conversation_trims_counter = meter.create_counter(
             "agentloom_conversation_trims_total",
             description="Total conversation trim-policy invocations",
@@ -201,8 +184,7 @@ class MetricsManager:
             "agentloom_conversation_message_count",
             description="Visible message count after each conversation turn",
         )
-        # Canonical OTel GenAI metric — replaces the AgentLoom-prefixed
-        # ``agentloom_time_to_first_token_seconds`` with the spec name.
+        # Canonical OTel GenAI metric.
         self._time_to_first_chunk_histogram = meter.create_histogram(
             "gen_ai.client.operation.time_to_first_chunk",
             description="GenAI streaming time-to-first-chunk (per OTel GenAI conventions)",
@@ -293,9 +275,7 @@ class MetricsManager:
             "Total provider errors",
             ["provider", "error_type"],
         )
-        # GenAI client token-usage histogram — Prometheus fallback name
-        # mirrors the canonical OTel form (``gen_ai.client.token.usage``)
-        # with dots collapsed to underscores per the OTLP→Prom convention.
+        # The OTel name with dots as underscores, per the OTLP→Prometheus convention.
         self._prom_histograms["token_usage"] = prom.Histogram(
             "gen_ai_client_token_usage",
             "GenAI token usage per operation (per OTel GenAI conventions)",
@@ -468,13 +448,10 @@ class MetricsManager:
             return
         stream_str = str(stream).lower()
         if self._backend == "otel":
-            # Counter (AgentLoom-specific) — keeps the per-(provider,model)
-            # call count; OTel's spec doesn't have a direct equivalent.
+            # AgentLoom-specific: the OTel spec has no call counter.
             self._provider_counter.add(
                 1, {"provider": provider, "model": model, "stream": stream_str}
             )
-            # Histogram — canonical OTel GenAI client metric. Attributes
-            # follow the spec: ``gen_ai.operation.name`` + ``gen_ai.provider.name``.
             self._operation_duration_histogram.record(
                 latency_s,
                 {
@@ -519,10 +496,7 @@ class MetricsManager:
         ``gen_ai.token.type``). ``reasoning_tokens`` rides under
         ``gen_ai.token.type="reasoning"`` — an AgentLoom extension to the
         OTel registry's ``input``/``output`` enum so chain-of-thought spend
-        stays attributable on dashboards. Sourced from OpenAI o-series
-        ``completion_tokens_details.reasoning_tokens`` and Gemini 2.5+
-        ``thoughtsTokenCount``; Anthropic / Ollama don't expose a split
-        and stay at ``0``.
+        stays attributable on dashboards.
         """
         if not self._enabled:
             return
@@ -596,10 +570,9 @@ class MetricsManager:
         """Record a conversation turn — visible-message histogram + trim counter.
 
         The counter fires only when the trim policy actually removed a
-        message so steady-state chats don't inflate the ``no_trim`` label
-        every turn. ``conversation_key`` is the state path (stripped of a
-        leading ``state.``) so dashboards can split growth curves by
-        conversation.
+        message, so steady-state chats do not inflate it every turn.
+        ``conversation_key`` is the state path (stripped of a leading
+        ``state.``) so dashboards can split growth curves by conversation.
         """
         if not self._enabled:
             return
@@ -621,7 +594,7 @@ class MetricsManager:
                 ).inc()
 
     def record_agent_turn(self, name: str, status: str, iterations: int) -> None:
-        """Record an agent's turn (#120): its status, and how many model calls it made."""
+        """Record an agent's turn: its status, and how many model calls it made."""
         if not self._enabled:
             return
         if self._backend == "otel":

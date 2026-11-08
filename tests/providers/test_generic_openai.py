@@ -1,4 +1,4 @@
-"""Generic OpenAI-compatible endpoint provider (#48): vLLM, TGI, LM Studio, a gateway."""
+"""Generic OpenAI-compatible endpoint provider: vLLM, TGI, LM Studio, a gateway."""
 
 from __future__ import annotations
 

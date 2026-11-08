@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import platform
 import sys
+from urllib.parse import urlsplit
 
 import typer
 
@@ -45,14 +46,23 @@ def info() -> None:
     for name, env_var in providers.items():
         value = os.environ.get(env_var, "")
         if env_var == "OLLAMA_BASE_URL":
-            status = value or "http://localhost:11434 (default)"
+            status = _without_credentials(value) or "http://localhost:11434 (default)"
         elif value:
-            status = f"configured ({value[:8]}...)"
+            # No part of the key: this output gets pasted into issues and logs
+            status = "configured"
         else:
             status = "not configured"
         typer.echo(f"  {name:12s} {status}")
 
     typer.echo("")
+
+
+def _without_credentials(url: str) -> str:
+    """*url* with any ``user:password@`` replaced by ``***@``."""
+    parts = urlsplit(url)
+    if parts.username is None and parts.password is None:
+        return url
+    return parts._replace(netloc=f"***@{parts.netloc.rpartition('@')[2]}").geturl()
 
 
 def _show_dep(package: str) -> None:

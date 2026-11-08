@@ -1,4 +1,4 @@
-"""The inter-agent event log of a run (#135): event models and their JSON Schema.
+"""The inter-agent event log of a run: event models and their JSON Schema.
 
 Pydantic only, like ``_semconv``: the runtime (``core.inter_agent``) imports
 the models from here without a warning, and ``agentloom.contracts.experimental``

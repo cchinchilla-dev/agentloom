@@ -90,7 +90,6 @@ class TestCallbackServer:
 
         from agentloom.cli.callback_server import _handle_pending
 
-        # Use a mock stream to capture response
         responses: list[tuple[int, dict]] = []
 
         class FakeStream:
@@ -256,8 +255,6 @@ class TestCallbackServer:
                 responses.append((status, body))
 
         await _handle_webhook(FakeStream(), "not valid json {{{", "application/json")  # type: ignore[arg-type]
-        # A malformed JSON body is now rejected with 400 instead of the
-        # pre-0.5.0 silent 200 "received".
         assert responses[0][0] == 400
         assert "invalid JSON" in responses[0][1]["error"]
 
@@ -317,7 +314,7 @@ class TestCallbackServer:
     async def test_decision_generic_openai_key_not_set_500(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A key variable missing on the server answers 500, not a dropped connection (#48)."""
+        """A key variable missing on the server answers 500, not a dropped connection."""
         monkeypatch.delenv("VLLM_API_KEY", raising=False)
         endpoint = WorkflowConfig(
             provider="generic_openai",
@@ -595,26 +592,20 @@ class TestCallbackServerEdgeCases:
 
     @pytest.mark.anyio()
     async def test_client_disconnect_mid_body_does_not_hang(self, tmp_path: Path) -> None:
-        # The client announces a Content-Length but disconnects before
-        # sending the full body. The read loop must break on the empty
-        # chunk and route the (partial) request rather than block forever.
+        # The body stops 25 bytes short of Content-Length; EOF must end the read loop.
         from agentloom.cli.callback_server import _handle_request
 
-        # Content-Length claims 30 bytes; we send only 5 and then EOF.
         headers = b"POST /webhook HTTP/1.1\r\nContent-Length: 30\r\n\r\n"
         stream = self._make_chunk_stream([headers, b"hello"])
         await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
-        # Got *some* response — the partial body was treated as JSON and
-        # rejected with 400 ("invalid JSON"), not silently hung.
+        # The truncated body is still routed and rejected as invalid JSON.
         sent = b"".join(stream._sent)
         assert sent, "handler must respond even on truncated body"
         assert b"400 Bad Request" in sent
 
 
 class TestWebhookBodyValidation:
-    """F73: POST /webhook validates the body — malformed JSON returns
-    400, a non-object body returns 400, a missing Content-Type warns
-    but is still accepted."""
+    """POST /webhook rejects malformed or non-object JSON; a missing Content-Type only warns."""
 
     @staticmethod
     def _capture_stream():
@@ -669,8 +660,6 @@ class TestWebhookBodyValidation:
 
     @pytest.mark.anyio()
     async def test_empty_body_accepted_as_ping(self) -> None:
-        # A bare ping (empty body, no JSON to parse) is a valid keep-alive
-        # signal — the server logs it and returns 200 without complaint.
         from agentloom.cli.callback_server import _handle_webhook
 
         stream = self._capture_stream()
@@ -680,7 +669,6 @@ class TestWebhookBodyValidation:
 
     @pytest.mark.anyio()
     async def test_whitespace_only_body_accepted_as_ping(self) -> None:
-        # Same contract for a body of only whitespace.
         from agentloom.cli.callback_server import _handle_webhook
 
         stream = self._capture_stream()
@@ -689,8 +677,7 @@ class TestWebhookBodyValidation:
 
 
 class TestCallbackPathTraversal:
-    """F73: a path-traversal run_id on POST /approve returns a clean 400
-    instead of a 500 with a stack trace."""
+    """Approve/reject guards: a path-traversal run_id answers 400, a missing token 401."""
 
     @staticmethod
     def _capture_stream():
@@ -727,7 +714,6 @@ class TestCallbackPathTraversal:
         from agentloom.cli.callback_server import _handle_decision
 
         stream = self._capture_stream()
-        # Server configured with a token; request provides none -> 401.
         await _handle_decision(
             stream,
             str(tmp_path),
@@ -746,8 +732,7 @@ class TestCallbackPathTraversal:
         from agentloom.cli.callback_server import _handle_decision
 
         stream = self._capture_stream()
-        # Matching token clears the gate; the 409 (not paused) proves we
-        # got past the auth check rather than being rejected at 401.
+        # The 409 (run not paused) shows the request got past the token check.
         await _handle_decision(
             stream,
             str(tmp_path),
@@ -758,3 +743,93 @@ class TestCallbackPathTraversal:
             expected_token="s3cret",
         )
         assert stream.responses[0][0] == 409
+
+
+class TestCallbackServerLimits:
+    """GET /pending sits behind the token; one request cannot make the server buffer unbounded."""
+
+    @staticmethod
+    def _chunk_stream(chunks: list[bytes]):
+        class FakeStream:
+            def __init__(self) -> None:
+                self.chunks = list(chunks)
+                self.sent = b""
+
+            async def receive(self, n: int) -> bytes:
+                return self.chunks.pop(0) if self.chunks else b""
+
+            async def send(self, data: bytes) -> None:
+                self.sent += data
+
+        return FakeStream()
+
+    @pytest.mark.anyio()
+    @pytest.mark.parametrize(
+        ("header", "status"),
+        [("", b"401 Unauthorized"), ("X-AgentLoom-Token: nope\r\n", b"401 Unauthorized")],
+    )
+    async def test_pending_without_the_token_is_refused(
+        self, tmp_path: Path, header: str, status: bytes
+    ) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        _write_checkpoint(tmp_path, "run-secret")
+        stream = self._chunk_stream([f"GET /pending HTTP/1.1\r\n{header}\r\n".encode()])
+        await _handle_request(stream, str(tmp_path), True, "s3cret")  # type: ignore[arg-type]
+        assert stream.sent.startswith(b"HTTP/1.1 " + status)
+        assert b"run-secret" not in stream.sent
+
+    @pytest.mark.anyio()
+    async def test_pending_with_the_token_lists_runs(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        _write_checkpoint(tmp_path, "run-secret")
+        raw = b"GET /pending HTTP/1.1\r\nX-AgentLoom-Token: s3cret\r\n\r\n"
+        stream = self._chunk_stream([raw])
+        await _handle_request(stream, str(tmp_path), True, "s3cret")  # type: ignore[arg-type]
+        assert stream.sent.startswith(b"HTTP/1.1 200 OK")
+        assert b"run-secret" in stream.sent
+
+    @pytest.mark.anyio()
+    async def test_endless_headers_stop_at_the_cap(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        chunks = [b"GET /pending HTTP/1.1\r\nX-Pad: "] + [b"a" * 8192] * 20
+        stream = self._chunk_stream(chunks)
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        assert stream.sent.startswith(b"HTTP/1.1 431 Request Header Fields Too Large")
+        assert stream.chunks, "the server kept reading past the header cap"
+
+    @pytest.mark.anyio()
+    async def test_a_body_over_the_cap_is_refused_unread(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        headers = b"POST /webhook HTTP/1.1\r\nContent-Length: 2000000\r\n\r\n"
+        stream = self._chunk_stream([headers] + [b"{" * 8192] * 5)
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        assert stream.sent.startswith(b"HTTP/1.1 413 Content Too Large")
+        assert len(stream.chunks) == 5
+
+    @pytest.mark.parametrize(
+        ("host", "token", "warns"),
+        [
+            ("0.0.0.0", None, True),
+            ("callback.internal", None, True),
+            ("0.0.0.0", "s3cret", False),
+            ("127.0.0.1", None, False),
+            ("::1", None, False),
+            ("localhost", None, False),
+        ],
+    )
+    def test_exposure_warning(self, host: str, token: str | None, warns: bool) -> None:
+        from agentloom.cli.callback_server import _exposure_warning
+
+        assert (_exposure_warning(host, token) is not None) is warns
+
+    def test_token_comparison_accepts_any_text(self) -> None:
+        from agentloom.cli.callback_server import _token_matches
+
+        assert _token_matches("s3cret", "s3cret")
+        assert not _token_matches("señal", "s3cret")
+        assert not _token_matches(None, "s3cret")
+        assert _token_matches(None, None)

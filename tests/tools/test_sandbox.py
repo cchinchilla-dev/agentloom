@@ -7,7 +7,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
+import respx
 
 from agentloom.core.models import SandboxConfig
 from agentloom.core.parser import WorkflowParser
@@ -26,15 +28,15 @@ class TestToolSandboxDisabled:
 
     def test_command_allowed(self) -> None:
         sandbox = ToolSandbox(enabled=False)
-        sandbox.validate_command("rm -rf /")  # no error
+        sandbox.validate_command("rm -rf /")
 
     def test_path_allowed(self) -> None:
         sandbox = ToolSandbox(enabled=False)
-        sandbox.validate_path("/etc/passwd")  # no error
+        sandbox.validate_path("/etc/passwd")
 
     def test_network_allowed(self) -> None:
         sandbox = ToolSandbox(enabled=False)
-        sandbox.validate_network("http://evil.com")  # no error
+        sandbox.validate_network("http://evil.com")
 
 
 class TestShellCommandSandbox:
@@ -63,7 +65,7 @@ class TestShellCommandSandbox:
 
     def test_empty_command(self) -> None:
         sandbox = ToolSandbox(enabled=True, allowed_commands=["echo"])
-        sandbox.validate_command("")  # empty is harmless
+        sandbox.validate_command("")
 
     @pytest.mark.parametrize(
         "cmd",
@@ -114,7 +116,6 @@ class TestShellCommandSandbox:
 
     def test_flags_and_bare_identifiers_are_not_validated(self) -> None:
         sandbox = ToolSandbox(enabled=True, allowed_commands=["echo"], allowed_paths=["/tmp"])
-        # Flags and bare identifiers never look like paths and pass through.
         sandbox.validate_command("echo -n hello world")
 
     def test_relative_path_arg_validated(self, tmp_path: Path) -> None:
@@ -124,11 +125,9 @@ class TestShellCommandSandbox:
             allowed_commands=["cat"],
             allowed_paths=[str(tmp_path)],
         )
-        # Inside tmp_path — ok.
         (tmp_path / "ok.txt").write_text("x")
         sandbox.validate_command("cat ./ok.txt", cwd=str(tmp_path))
 
-        # Escape via ../../etc/passwd — blocked even without a leading slash.
         with pytest.raises(SandboxViolationError, match="Path argument"):
             sandbox.validate_command("cat ../../etc/passwd", cwd=str(tmp_path))
 
@@ -195,7 +194,6 @@ class TestFilePathSandbox:
 
     def test_symlink_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a symlink that points outside the allowed dir
             link = Path(tmpdir) / "escape"
             link.symlink_to("/etc")
             sandbox = ToolSandbox(enabled=True, allowed_paths=[tmpdir])
@@ -246,14 +244,11 @@ class TestReadWritePathSeparation:
                 readable_paths=[rdir],
                 writable_paths=[wdir],
             )
-            # allowed_paths: read + write
             sandbox.validate_path(f"{adir}/x", writable=False)
             sandbox.validate_path(f"{adir}/x", writable=True)
-            # readable_paths: read only
             sandbox.validate_path(f"{rdir}/x", writable=False)
             with pytest.raises(SandboxViolationError):
                 sandbox.validate_path(f"{rdir}/x", writable=True)
-            # writable_paths: write only
             sandbox.validate_path(f"{wdir}/x", writable=True)
             with pytest.raises(SandboxViolationError):
                 sandbox.validate_path(f"{wdir}/x", writable=False)
@@ -296,7 +291,6 @@ class TestNetworkSandbox:
         sandbox.validate_network("https://api.openai.com/v1")
 
     def test_network_blocked_overrides_domains(self) -> None:
-        """allow_network=False takes precedence over allowed_domains."""
         sandbox = ToolSandbox(
             enabled=True,
             allow_network=False,
@@ -304,6 +298,25 @@ class TestNetworkSandbox:
         )
         with pytest.raises(SandboxViolationError, match="Network access is blocked"):
             sandbox.validate_network("https://api.openai.com")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+            "http://127.0.0.1:8080/admin",
+            "http://localhost:6379/",
+            "http://10.0.0.5/internal",
+            "http://[::1]/",
+        ],
+    )
+    def test_internal_host_blocked_without_allowed_domains(self, url: str) -> None:
+        sandbox = ToolSandbox(enabled=True, allow_network=True)
+        with pytest.raises(SandboxViolationError, match="internal address"):
+            sandbox.validate_network(url)
+
+    def test_internal_host_listed_in_allowed_domains_passes(self) -> None:
+        sandbox = ToolSandbox(enabled=True, allow_network=True, allowed_domains=["localhost"])
+        sandbox.validate_network("http://localhost:8080/health")
 
     @pytest.mark.parametrize(
         "url",
@@ -350,11 +363,11 @@ class TestWriteSizeLimit:
 
     def test_no_limit(self) -> None:
         sandbox = ToolSandbox(enabled=True, max_write_bytes=None)
-        sandbox.validate_write_size(10_000_000)  # no error
+        sandbox.validate_write_size(10_000_000)
 
     def test_disabled_sandbox_skips_check(self) -> None:
         sandbox = ToolSandbox(enabled=False, max_write_bytes=100)
-        sandbox.validate_write_size(99999)  # no error
+        sandbox.validate_write_size(99999)
 
 
 class TestShellCommandToolIntegration:
@@ -387,7 +400,6 @@ class TestShellCommandToolIntegration:
 class TestFileToolIntegration:
     async def test_sandbox_blocks_read(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Write a file in allowed dir
             allowed_file = Path(tmpdir) / "ok.txt"
             allowed_file.write_text("safe")
 
@@ -444,10 +456,19 @@ class TestHttpToolIntegration:
         with pytest.raises(SandboxViolationError, match="Network access"):
             await tool.execute(url="https://example.com")
 
+    @respx.mock
+    async def test_sandbox_blocks_internal_host_before_any_request(self) -> None:
+        route = respx.get("http://169.254.169.254/latest/meta-data/").mock(
+            return_value=httpx.Response(200, text="role")
+        )
+        tool = HttpRequestTool(sandbox=ToolSandbox(enabled=True, allow_network=True))
+
+        with pytest.raises(SandboxViolationError, match="internal address"):
+            await tool.execute(url="http://169.254.169.254/latest/meta-data/")
+        assert not route.called
+
 
 class TestBlockedOperationHasNoSideEffect:
-    """Verify that blocked operations never actually execute."""
-
     async def test_blocked_write_does_not_create_file(self) -> None:
         with tempfile.TemporaryDirectory() as allowed, tempfile.TemporaryDirectory() as blocked:
             target = Path(blocked) / "should_not_exist.txt"
@@ -577,9 +598,8 @@ class TestLooksLikePath:
 class TestValidatePathSurfacesViolationOnUnresolvable:
     """Null-byte and other ``Path.resolve()`` failures raise ``SandboxViolationError``.
 
-    Previously the raw ``ValueError`` / ``OSError`` leaked through, so
-    callers that caught only ``SandboxViolationError`` missed the case
-    and surfaced it as an internal error instead of a sandbox refusal.
+    Callers that catch only ``SandboxViolationError`` see a sandbox refusal, not a raw
+    ``ValueError`` / ``OSError``.
     """
 
     @pytest.mark.skipif(
@@ -595,19 +615,12 @@ class TestValidatePathSurfacesViolationOnUnresolvable:
             assert "Cannot resolve path" in str(excinfo.value)
 
     def test_disabled_sandbox_does_not_validate_null_byte(self) -> None:
-        # When the sandbox is off the validate call is a no-op; we don't
-        # synthesize a violation for the disabled case.
         sandbox = ToolSandbox(enabled=False)
         sandbox.validate_path("/tmp/x\x00/etc/passwd")
 
     def test_runtime_error_wraps_to_sandbox_violation(self, monkeypatch: Any) -> None:
-        # ``Path.resolve()`` raises ``RuntimeError`` on symlink loops on
-        # Python < 3.13. Python 3.13 rewrote ``pathlib`` and no longer
-        # raises in non-strict mode, so the symlink-loop trigger isn't
-        # portable as a black-box test. Patch the ``Path`` symbol in
-        # ``sandbox`` AFTER constructing the sandbox (so ``__init__``
-        # processes ``allowed_paths`` with the real Path), then exercise
-        # the defensive ``RuntimeError`` branch in ``validate_path``.
+        # Non-strict resolve() raises on a symlink loop only on Python < 3.13, so fake it; patch
+        # after construction so __init__ resolves allowed_paths with the real Path.
 
         with tempfile.TemporaryDirectory() as tmp:
             sandbox = ToolSandbox(enabled=True, allowed_paths=[tmp])
@@ -634,11 +647,10 @@ class TestValidatePathSurfacesViolationOnUnresolvable:
 class TestValidateWebhookUrl:
     """Webhook destination gate.
 
-    Enabled sandbox applies the standard allowlist (schemes, domains).
-    Disabled sandbox applies the default deny-list (loopback, link-local,
-    RFC 1918, non-http(s)) so workflows that omit a sandbox config still
-    can't ship state to internal services. The opt-in flag
-    ``allow_internal_webhook_targets`` exists for in-cluster notifications.
+    Schemes other than http(s) never pass, whatever ``allowed_schemes`` says. An enabled
+    sandbox adds its scheme and domain allowlists. Enabled or not, internal hosts (loopback,
+    link-local, RFC 1918) are refused unless ``allow_internal_webhook_targets`` opts in, for
+    in-cluster notifications.
     """
 
     def test_enabled_sandbox_enforces_allowed_domains(self) -> None:
@@ -789,9 +801,7 @@ class TestValidateWebhookUrl:
 
 
 class TestValidateCommandFlagEmbeddedPath:
-    """``--key=value`` / ``of=path`` style flags carry paths that the
-    original ``_looks_like_path`` skipped entirely.
-    """
+    """Paths inside ``--key=value`` / ``of=path`` flags are checked against the allowlist."""
 
     def test_double_dash_flag_with_path_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -835,7 +845,6 @@ class TestSandboxHelperEdges:
     def test_default_deny_target_allows_public_https(self) -> None:
         from agentloom.tools.sandbox import default_deny_webhook_target
 
-        # Hits the ``return None`` tail when nothing is wrong.
         assert default_deny_webhook_target("https://hooks.example.com/x") is None
 
     def test_host_is_internal_empty_returns_false(self) -> None:
@@ -852,14 +861,11 @@ class TestSandboxHelperEdges:
     def test_host_is_internal_unresolvable_returns_false(self) -> None:
         from agentloom.tools.sandbox import _host_is_internal
 
-        # ``getaddrinfo`` raises for a clearly bogus name; the helper
-        # falls back to ``False`` so the sandbox doesn't over-block.
+        # getaddrinfo fails on this name; returning False keeps the sandbox from over-blocking.
         assert _host_is_internal("nonexistent.invalid.example.test") is False
 
     def test_ip_is_internal_cgnat_via_explicit_deny_list(self) -> None:
-        # 100.64/10 isn't covered by ``ipaddress.is_private`` on Python
-        # 3.12, so the explicit ``_DEFAULT_DENY_NETWORKS`` fallback is
-        # what catches it.
+        # 100.64/10 is not ``is_private``, so only ``_DEFAULT_DENY_NETWORKS`` catches it.
         import ipaddress
 
         from agentloom.tools.sandbox import _ip_is_internal
@@ -869,8 +875,7 @@ class TestSandboxHelperEdges:
     def test_extract_path_candidates_flag_with_empty_value(self) -> None:
         from agentloom.tools.sandbox import _extract_path_candidates
 
-        # ``--key=`` (empty value) and ``--key=bare`` (no slash) yield
-        # nothing — only path-shaped values are extracted.
+        # Only path-shaped values are extracted: an empty value or a bare word yields nothing.
         assert _extract_path_candidates("--output=") == []
         assert _extract_path_candidates("--name=alice") == []
 
@@ -886,12 +891,9 @@ class TestSandboxHelperEdges:
 
 
 class TestValidateWebhookUrlEnabledSandboxBranches:
-    """Cover the enabled-sandbox path where ``allow_internal_webhook_targets``
-    is False and the internal-host check fires after ``validate_network``."""
+    """Webhook-gate branches under an enabled sandbox, and edges of the deny-list helpers."""
 
     def test_enabled_sandbox_with_opt_in_skips_internal_check(self) -> None:
-        # Opt-in branch: validate_network passes, opt-in returns early
-        # before the internal-host gate.
         sandbox = ToolSandbox(
             enabled=True,
             allow_network=True,
@@ -902,25 +904,18 @@ class TestValidateWebhookUrlEnabledSandboxBranches:
     def test_enabled_sandbox_url_without_hostname_passes_internal_check(
         self,
     ) -> None:
-        # URL with no hostname (``http://``) skips the internal-host
-        # block since there's nothing to classify — the upstream
-        # ``validate_network`` already accepted it.
+        # With no hostname there is nothing to classify; the scheme and domain checks passed.
         sandbox = ToolSandbox(enabled=True, allow_network=True)
-        # ``http:///path`` has empty hostname; passes the internal check.
         sandbox.validate_webhook_url("http:///path")
 
     def test_default_deny_target_rejects_non_http_scheme(self) -> None:
-        # ``default_deny_webhook_target`` is also called directly by
-        # ``send_webhook`` when no sandbox is provided. Cover the
-        # scheme-deny branch via the direct entry point.
+        # send_webhook calls this helper directly when it has no sandbox.
         from agentloom.tools.sandbox import default_deny_webhook_target
 
         reason = default_deny_webhook_target("ftp://example.com/x")
         assert reason is not None and "scheme 'ftp'" in reason
 
     def test_host_is_internal_resolves_ipv4_record(self, monkeypatch: Any) -> None:
-        # AAAA-only case is already covered; pin the IPv4 path too so a
-        # future refactor doesn't quietly skip ``AF_INET`` records.
         import socket as _socket
 
         def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
@@ -940,9 +935,6 @@ class TestValidateWebhookUrlEnabledSandboxBranches:
         assert _host_is_internal("host-with-a-record.example") is True
 
     def test_host_is_internal_returns_false_on_getaddrinfo_error(self, monkeypatch: Any) -> None:
-        # Defence: ``getaddrinfo`` raises ``OSError`` for unresolvable
-        # hostnames; the helper falls back to ``False`` so the sandbox
-        # doesn't over-block public names the resolver couldn't reach.
         def boom(*_args: object, **_kwargs: object):
             raise OSError("no such host")
 
@@ -952,8 +944,6 @@ class TestValidateWebhookUrlEnabledSandboxBranches:
         assert _host_is_internal("unresolvable.test") is False
 
     def test_host_is_internal_skips_unknown_socket_family(self, monkeypatch: Any) -> None:
-        # An exotic address family (Unix, IPX, ...) skips classification
-        # rather than crashing.
         import socket as _socket
 
         def fake_getaddrinfo(host: str, *args: object, **kwargs: object):
@@ -968,8 +958,6 @@ class TestValidateWebhookUrlEnabledSandboxBranches:
         assert _host_is_internal("exotic.example") is False
 
     def test_host_is_internal_skips_malformed_sockaddr(self, monkeypatch: Any) -> None:
-        # ``ipaddress.ip_address`` raising on a malformed sockaddr is
-        # caught and the loop moves on.
         import socket as _socket
 
         def fake_getaddrinfo(host: str, *args: object, **kwargs: object):

@@ -30,7 +30,7 @@ class CostSummary(BaseModel):
 
 
 class CostTracker:
-    """Tracks and aggregates costs across a workflow execution.
+    """Tracker that aggregates costs across a workflow execution.
 
     Pure Python — always available regardless of optional dependencies.
     """

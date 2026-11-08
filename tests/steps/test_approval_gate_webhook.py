@@ -116,7 +116,6 @@ class TestApprovalGateWebhook:
     @respx.mock
     @pytest.mark.anyio()
     async def test_webhook_failure_still_pauses(self) -> None:
-        """Webhook failure must not prevent the step from pausing."""
         respx.post("https://hooks.example.com/notify").mock(return_value=httpx.Response(500))
         step = _gate_step(notify=WebhookConfig(url="https://hooks.example.com/notify", timeout=0.5))
         ctx = _context(step)

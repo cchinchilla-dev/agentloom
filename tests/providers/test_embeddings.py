@@ -1,4 +1,4 @@
-"""Tests for embeddings (#118) across providers, gateway, mock, and step."""
+"""Tests for embeddings across providers, gateway, mock, and step."""
 
 from __future__ import annotations
 
@@ -134,8 +134,6 @@ class TestOpenAIEmbed:
 
     @respx.mock
     async def test_openai_embed_batches_large_input(self, monkeypatch: Any) -> None:
-        # Force a tiny batch size so a 5-input call splits into 3 batches;
-        # verifies the batching loop preserves order across chunks.
         monkeypatch.setattr(OpenAIProvider, "_EMBED_BATCH_SIZE", 2)
         request_count = 0
 
@@ -166,8 +164,7 @@ class TestOpenAIEmbed:
         await provider.close()
 
     def test_openai_supports_embedding_model_prefix(self) -> None:
-        # ``supports_model`` must claim embedding models so the gateway
-        # routes ``text-embedding-3-small`` to OpenAI, not the LLM path.
+        # The gateway picks embed candidates by ``supports_model``.
         provider = OpenAIProvider(api_key="sk-test")
         assert provider.supports_model("text-embedding-3-small")
         assert provider.supports_model("text-embedding-ada-002")
@@ -189,7 +186,7 @@ class TestGoogleEmbed:
                 },
             )
 
-        respx.post(url__regex=r".+batchEmbedContents.+").mock(side_effect=_handler)
+        respx.post(url__regex=r".+batchEmbedContents$").mock(side_effect=_handler)
         provider = GoogleProvider(api_key="g-test")
         r = await provider.embed(inputs=["a", "b"], model="text-embedding-004")
         assert r.embeddings == [[0.1, 0.2], [0.3, 0.4]]
@@ -204,7 +201,7 @@ class TestGoogleEmbed:
             captured["payload"] = json.loads(request.content)
             return httpx.Response(200, json={"embeddings": [{"values": [0.0, 0.0]}]})
 
-        respx.post(url__regex=r".+batchEmbedContents.+").mock(side_effect=_handler)
+        respx.post(url__regex=r".+batchEmbedContents$").mock(side_effect=_handler)
         provider = GoogleProvider(api_key="g-test")
         await provider.embed(
             inputs=["x"],
@@ -276,8 +273,7 @@ class TestGatewayEmbed:
         assert r.embeddings == [[2.0], [5.0]]
 
     async def test_gateway_falls_back_on_not_implemented(self) -> None:
-        # Anthropic-style provider first in the chain must be skipped
-        # cleanly (no CB failure) and the second provider serves the request.
+        # A provider without ``embed()`` is skipped without a circuit-breaker failure.
         class _NoEmbed(BaseProvider):
             name = "anth-like"
 
@@ -310,8 +306,6 @@ class TestGatewayEmbed:
         gw.register(yes, priority=1)
         r = await gw.embed(inputs=["a", "b"], model="x")
         assert r.provider == "yes"
-        # Anthropic-style provider's circuit breaker was NOT tripped by
-        # the NotImplementedError — its failure count stays at zero.
         anth_entry = next(e for e in gw._providers if e.provider is anth)
         assert anth_entry.circuit_breaker._failure_count == 0
 
@@ -334,7 +328,7 @@ class TestGatewayEmbed:
 
 
 class TestMockEmbed:
-    """MockProvider serves recordings or synthesises pseudo-vectors."""
+    """MockProvider serves recordings or synthesizes pseudo-vectors."""
 
     def test_pseudo_vector_deterministic(self) -> None:
         v1 = _pseudo_vector("hello", 8)
@@ -371,7 +365,6 @@ class TestMockEmbed:
         r = await p.embed(inputs=["alpha", "beta"], model="x", dimensions=8, step_id="s")
         assert len(r.embeddings) == 2
         assert len(r.embeddings[0]) == 8
-        # Deterministic: same input → same vector.
         r2 = await p.embed(inputs=["alpha", "beta"], model="x", dimensions=8, step_id="s")
         assert r.embeddings == r2.embeddings
 
@@ -411,8 +404,7 @@ class TestEmbedStepIntegration:
         assert final["vectors"] == [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]
 
     async def test_embed_step_rejects_missing_inputs_field(self) -> None:
-        # An embed step without ``inputs:`` fails at execute time with a
-        # clear error rather than a mysterious ``NoneType`` traceback.
+        # The model accepts an embed step without ``inputs:``; execution fails it.
         wf = WorkflowDefinition(
             name="bad",
             config=WorkflowConfig(provider="mock", model="x"),
@@ -425,8 +417,6 @@ class TestEmbedStepIntegration:
         assert status == WorkflowStatus.FAILED
 
     async def test_embed_step_rejects_wrong_shape(self) -> None:
-        # ``inputs`` resolving to something that isn't str / list[str]
-        # is a state-schema bug — the step surfaces it as FAILED.
         wf = WorkflowDefinition(
             name="bad-shape",
             config=WorkflowConfig(provider="mock", model="x"),
@@ -441,8 +431,7 @@ class TestEmbedStepIntegration:
         assert status == WorkflowStatus.FAILED
 
     async def test_embed_step_accepts_single_string_input(self, tmp_path: Any) -> None:
-        # ``state.foo`` may resolve to a single str — coerce to a
-        # 1-element batch instead of failing the shape check.
+        # A lone string is embedded as a one-element batch.
         wf = WorkflowDefinition(
             name="one",
             config=WorkflowConfig(provider="mock", model="x"),
@@ -464,8 +453,7 @@ class TestEmbedStepIntegration:
         assert len(final["vec"]) == 1
 
     async def test_embed_step_rejects_non_state_reference(self) -> None:
-        # The dotted-path resolver rejects references that don't start
-        # with ``state.`` — no eval, no template rendering.
+        # Only ``state.`` paths resolve: no eval, no template rendering.
         wf = WorkflowDefinition(
             name="ref",
             config=WorkflowConfig(provider="mock", model="x"),
@@ -545,8 +533,6 @@ class TestEmbedStepObserver:
         assert call["prompt_tokens"] == 4
 
     async def test_observer_hook_failure_does_not_break_step(self, tmp_path: Any) -> None:
-        # A raising observer must not turn a successful embed into a failure —
-        # the ``contextlib.suppress(Exception)`` guard covers hook errors.
         from agentloom.observability.noop import NoopObserver
 
         class _Boom(NoopObserver):
@@ -628,8 +614,6 @@ class TestRecordingProviderEmbed:
         assert loaded["v"]["model"] == "text-embedding-3-small"
 
     async def test_recorded_file_replays_through_mock(self, tmp_path: Any) -> None:
-        # End-to-end: record an embed via wrapper, then load the file with
-        # MockProvider strict=True and verify the same vectors come back.
         from agentloom.providers.recorder import RecordingProvider
 
         class _Wrapped(BaseProvider):
@@ -698,13 +682,11 @@ class TestGatewayEmbedResilience:
         gw.register(_Ok(), priority=1)
         r = await gw.embed(inputs=["a"], model="x")
         assert r.provider == "ok"
-        # Throttled provider's breaker must NOT have recorded a failure —
-        # rate limits are load signals, not faults.
+        # Rate limits are load signals, not faults: the breaker records nothing.
         throttled_entry = next(e for e in gw._providers if e.provider.name == "throttled")
         assert throttled_entry.circuit_breaker._failure_count == 0
 
-        # Now put ``ok`` first and verify a ProviderError bubbles up when
-        # only throttled candidates remain.
+        # With no other candidate, the rate limit surfaces as a ProviderError.
         gw2 = ProviderGateway()
         gw2.register(_Throttled(), priority=0)
         with pytest.raises(ProviderError, match="rate-limited"):
@@ -730,14 +712,12 @@ class TestGatewayEmbedResilience:
 
         gw = ProviderGateway()
         gw.register(_Flaky(), priority=0, circuit_fail_threshold=3, circuit_reset_timeout=60.0)
-        # Two failed calls open the breaker on the third (threshold=3
-        # means the fourth attempt is refused).
+        # Threshold 3: the third failure opens the breaker, so the fourth call is refused.
         for _ in range(3):
             with pytest.raises(ProviderError):
                 await gw.embed(inputs=["x"], model="anything")
         entry = gw._providers[0]
         assert entry.circuit_breaker._failure_count >= 3
-        # Next call: breaker is now OPEN, provider isn't invoked at all.
         calls_before = call_count[0]
         with pytest.raises(ProviderError, match="circuit is open"):
             await gw.embed(inputs=["x"], model="anything")
@@ -860,10 +840,7 @@ class TestGatewayEmbedContract:
     """Providers must return one vector per input; the gateway rejects mismatches."""
 
     async def test_len_mismatch_raises_provider_error(self) -> None:
-        # A provider returning fewer vectors than inputs would silently
-        # write misaligned data to state; the gateway wraps the CB call so
-        # the mismatch surfaces as a ``ProviderError`` and the fallback
-        # chain moves on rather than mis-mapping documents to vectors.
+        # Fewer vectors than inputs would silently mis-map documents to vectors in state.
         from agentloom.exceptions import ProviderError
 
         class _Bad(BaseProvider):
@@ -934,9 +911,6 @@ class TestGatewayEmbedObserverHooksOnErrorPaths:
         gw.register(_Yes(), priority=1)
         r = await gw.embed(inputs=["x"], model="anything", step_id="s")
         assert r.provider == "yes"
-        # First candidate's end_hook fires with error="RateLimitError";
-        # the throttled provider is not marked as a fault (no
-        # on_provider_error), so the second candidate serves the call.
         assert any(e.get("error") == "RateLimitError" for e in ends)
 
     async def test_generic_exception_fires_end_hook_and_error_hook(self) -> None:
@@ -1057,9 +1031,6 @@ class TestEmbedStepGuardrails:
             await base_step.execute(_Ctx())  # type: ignore[arg-type]
 
     async def test_step_returns_failed_when_gateway_raises(self, tmp_path: Any) -> None:
-        # Gateway.embed raising a non-``StepError`` bubbles as a FAILED
-        # step result (with ``error`` populated) rather than propagating —
-        # the engine's retry loop then re-attempts within budget.
         from agentloom.core.results import StepStatus
         from agentloom.exceptions import ProviderError
         from agentloom.steps.embed import EmbedStep
@@ -1088,8 +1059,7 @@ class TestEmbedStepGuardrails:
         assert "all providers failed" in (result.error or "")
 
     async def test_step_rejects_empty_state_segment(self) -> None:
-        # ``inputs: state..docs`` — the double-dot creates an empty path
-        # segment which the resolver catches before the gateway is called.
+        # The double dot leaves an empty path segment, caught before the gateway is called.
         from agentloom.core.results import StepStatus
 
         wf = WorkflowDefinition(
@@ -1159,8 +1129,7 @@ class TestMetricsRecordEmbeddingCall:
         from agentloom.observability.metrics import MetricsManager
 
         m = MetricsManager(enabled=False)
-        # No exception, no counter — the guard fires before any backend
-        # lookup so ``_embedding_counter`` staying ``None`` is fine.
+        # The guard returns before touching ``_embedding_counter``, which stays ``None``.
         m.record_embedding_call("openai", "text-embedding-3-small", 1536)
 
     def test_otel_backend_increments_counter_and_records_histogram(self) -> None:
@@ -1188,9 +1157,7 @@ class TestMetricsRecordEmbeddingCall:
         assert histogram_hits == [(1536, {"provider": "openai", "model": "text-embedding-3-small"})]
 
     def test_otel_backend_skips_histogram_when_dimensions_zero(self) -> None:
-        # ``dimensions=0`` means the caller did not request truncation —
-        # recording ``0`` would skew the p50 downward, so skip the
-        # histogram write while still incrementing the counter.
+        # 0 means no truncation was requested; recording it would skew the histogram down.
         from agentloom.observability.metrics import MetricsManager
 
         counter_hits: list[tuple[int, dict[str, str]]] = []
@@ -1260,7 +1227,7 @@ class TestGatewayEmbedNoCandidates:
     async def test_no_candidates_raises_provider_error(self) -> None:
         from agentloom.exceptions import ProviderError
 
-        gw = ProviderGateway()  # nothing registered
+        gw = ProviderGateway()
         with pytest.raises(ProviderError, match="No provider registered"):
             await gw.embed(inputs=["hi"], model="unknown-model")
 
@@ -1276,7 +1243,7 @@ class TestGoogleEmbedTitleKwarg:
             captured["payload"] = json.loads(request.content)
             return httpx.Response(200, json={"embeddings": [{"values": [0.1, 0.2]}]})
 
-        respx.post(url__regex=r".+batchEmbedContents.+").mock(side_effect=_handler)
+        respx.post(url__regex=r".+batchEmbedContents$").mock(side_effect=_handler)
         provider = GoogleProvider(api_key="g-test")
         await provider.embed(
             inputs=["hello"],
@@ -1294,18 +1261,13 @@ class TestSupportsModelNarrowness:
     """``supports_model`` must not claim other providers' embedding SKUs."""
 
     def test_openai_does_not_claim_google_embedding_004(self) -> None:
-        # ``text-embedding-004`` is Google's SKU; OpenAI's matcher must
-        # skip it so gateway fallback doesn't route Google model strings
-        # to the OpenAI adapter.
+        # ``text-embedding-004`` is a Google SKU despite the ``text-embedding-`` prefix.
         p = OpenAIProvider(api_key="k")
         assert not p.supports_model("text-embedding-004")
         assert p.supports_model("text-embedding-3-small")
         assert p.supports_model("text-embedding-ada-002")
 
     def test_google_does_not_claim_openai_text_embedding_3(self) -> None:
-        # ``text-embedding-3-small`` is OpenAI territory; Gemini's matcher
-        # must skip it. ``embedding-001`` (bare) and any ``gemini-*`` are
-        # legitimate Google matches.
         p = GoogleProvider(api_key="k")
         assert not p.supports_model("text-embedding-3-small")
         assert not p.supports_model("text-embedding-004")
@@ -1317,9 +1279,7 @@ class TestStepDefinitionDimensionsValidation:
     """``dimensions`` must be a positive integer or omitted."""
 
     def test_zero_dimensions_rejected_at_parse(self) -> None:
-        # A workflow author who typos ``dimensions: 0`` gets a clean
-        # parse-time error rather than a provider-specific HTTP 400 at
-        # runtime.
+        # A parse-time error beats a provider-specific HTTP 400 at run time.
         with pytest.raises(Exception, match="greater than or equal to 1"):
             StepDefinition(
                 id="v",
@@ -1351,13 +1311,10 @@ class TestStepDefinitionDimensionsValidation:
 
 
 class TestProviderCompleteHTTPErrorPathsUseFormatter:
-    """The ``format_http_error`` swap in ``complete()`` also needs coverage."""
+    """``httpx.HTTPError`` inside ``complete()`` becomes a ``ProviderError`` with the class name."""
 
     @respx.mock
     async def test_openai_complete_wraps_http_error(self) -> None:
-        # The same helper migration in commit 7 covers the ``complete()``
-        # callsite too — an ``httpx.ConnectError`` there must surface the
-        # exception class in the ``ProviderError`` message.
         from agentloom.exceptions import ProviderError
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
@@ -1387,7 +1344,7 @@ class TestProviderCompleteHTTPErrorPathsUseFormatter:
     async def test_google_complete_wraps_http_error(self) -> None:
         from agentloom.exceptions import ProviderError
 
-        respx.post(url__regex=r".+generateContent.+").mock(side_effect=httpx.ConnectError("boom"))
+        respx.post(url__regex=r".+generateContent$").mock(side_effect=httpx.ConnectError("boom"))
         p = GoogleProvider(api_key="k")
         with pytest.raises(ProviderError, match="ConnectError"):
             await p.complete(
@@ -1401,10 +1358,7 @@ class TestMockEmbedHashLookup:
     """Recordings without ``step_id`` keys fall back to hash-based lookup."""
 
     async def test_embed_recording_keyed_by_hash_still_serves(self, tmp_path: Any) -> None:
-        # The ``step_id`` lookup misses; the hash-based fallback picks up
-        # a recording keyed by ``prompt_hash({embed_inputs, model, ...})``.
-        # This is the path CLI tools use when they record without a
-        # step-scoped key.
+        # The recorder keys an embed call made without a step id by this hash.
         from agentloom.providers.mock import prompt_hash
 
         h = prompt_hash(
@@ -1441,18 +1395,14 @@ class TestGatewayEmbedCircuitOpenMidCall:
     """``CircuitOpenError`` raised inside ``_call`` (race) falls back cleanly."""
 
     async def test_circuit_open_error_during_call_moves_to_next_candidate(self) -> None:
-        # The pre-check catches the common case, but the CB can trip mid-
-        # call when another concurrent request opens it. The dedicated
-        # ``except CircuitOpenError`` branch inside ``embed`` handles that
-        # race — a fake CB that raises on call() proves it.
+        # A concurrent request can open the breaker between the pre-check and the call.
         from agentloom.exceptions import CircuitOpenError
 
         class _FakeCB:
             state = "OPEN"
 
             def _maybe_transition_to_half_open(self) -> Any:
-                # Pretend the CB is closed at pre-check time so we reach
-                # the actual call (which then raises).
+                # Closed at pre-check, so the gateway reaches ``call()``, which raises.
                 from agentloom.providers.gateway import CircuitState
 
                 return CircuitState.CLOSED
@@ -1491,8 +1441,6 @@ class TestGatewayEmbedCircuitOpenMidCall:
         gw = ProviderGateway()
         gw.register(_First(), priority=0)
         gw.register(_Second(), priority=1)
-        # Replace the first entry's CB so ``circuit_breaker.call(...)``
-        # raises even though the pre-check passed.
         gw._providers[0].circuit_breaker = _FakeCB()  # type: ignore[assignment]
         r = await gw.embed(inputs=["hi"], model="x")
         assert r.provider == "second"

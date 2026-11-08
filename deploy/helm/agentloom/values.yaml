@@ -29,10 +29,8 @@ job:
   restartPolicy: Never
 
 provider:
-  # RECOMMENDED: Use existingSecret to reference a pre-created K8s Secret.
-  # Setting API keys below is NOT recommended for production — they will
-  # appear in Helm release metadata and potentially in source control.
-  # Prefer: kubectl create secret generic <name> --from-literal=OPENAI_API_KEY=...
+  # Prefer a pre-created Secret (existingSecret); keys set below end up in Helm release metadata.
+  #   kubectl create secret generic <name> --from-literal=OPENAI_API_KEY=...
   existingSecret: ""       # use pre-created secret
   openaiApiKey: ""
   anthropicApiKey: ""

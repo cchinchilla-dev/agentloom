@@ -74,12 +74,6 @@ class WorkflowGraph:
         Router step edges are labelled with their condition expressions; the
         default-target edge is labelled ``"default"``.  All other edges have
         an empty label.
-
-        Args:
-            workflow: Validated :class:`~agentloom.core.models.WorkflowDefinition`.
-
-        Returns:
-            A fully constructed, immutable :class:`WorkflowGraph`.
         """
         from agentloom.core.parser import WorkflowParser
 
@@ -124,12 +118,6 @@ class WorkflowGraph:
         All nodes are given type :attr:`~agentloom.core.models.StepType.LLM_CALL`.
         No workflow reference is stored; :meth:`get_step_definition` always
         returns ``None``.
-
-        Args:
-            dag: A pre-built :class:`~agentloom.core.dag.DAG`.
-
-        Returns:
-            A fully constructed, immutable :class:`WorkflowGraph`.
         """
         nodes: list[GraphNode] = [
             GraphNode(id=node_id, type=StepType.LLM_CALL, label=node_id)
@@ -210,13 +198,11 @@ class WorkflowGraph:
 
         A prime path is a maximal simple path: it cannot be extended at either
         end without repeating a node, and it is not a contiguous sub-sequence
-        of any longer path in the result set.
+        of any longer path in the result set. The result is deterministically sorted.
 
         Args:
             max_paths: Safety limit on intermediate path count.  Raises
                 :class:`ValueError` if exceeded (default 10 000).
-
-        The result is deterministically sorted.
         """
         paths: list[list[str]] = [[node_id] for node_id in sorted(self._dag.nodes)]
 
@@ -287,7 +273,6 @@ class WorkflowGraph:
                 dist[node] = dist.get(best_pred, 0) + 1
                 prev[node] = best_pred
 
-        # Node with the greatest distance is the end of the critical path.
         end = max(topo, key=lambda n: dist.get(n, 0))
 
         path: list[str] = []
@@ -300,7 +285,7 @@ class WorkflowGraph:
         return path
 
     def to_dict(self) -> dict[str, object]:
-        """Serialise the graph to a plain dictionary.
+        """Serialize the graph to a plain dictionary.
 
         Includes node/edge lists, root/leaf sets, execution layers, and the
         critical path.
@@ -390,7 +375,7 @@ class WorkflowGraph:
         """Render the graph as a Mermaid flowchart string."""
 
         def _mermaid_id(text: str) -> str:
-            """Sanitise a node ID for Mermaid (alphanumeric + underscore only)."""
+            """Sanitize a node ID for Mermaid (alphanumeric + underscore only)."""
             return "".join(c if c.isalnum() or c == "_" else "_" for c in text)
 
         def _mermaid_label(text: str) -> str:
@@ -406,7 +391,6 @@ class WorkflowGraph:
 
         lines: list[str] = ["graph TD"]
 
-        # Node declarations with shape based on type.
         for node in self.nodes:
             nid = _mermaid_id(node.id)
             lbl = _mermaid_label(node.label)
@@ -419,7 +403,6 @@ class WorkflowGraph:
             else:
                 lines.append(f'    {nid}["{lbl}"]')
 
-        # Edges.
         for edge in self.edges:
             src = _mermaid_id(edge.source)
             tgt = _mermaid_id(edge.target)
