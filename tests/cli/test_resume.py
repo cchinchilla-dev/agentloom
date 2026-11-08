@@ -86,6 +86,19 @@ class TestResumeCommand:
         assert result.exit_code != 0
         assert "No checkpoint found" in (result.output + (result.stderr or ""))
 
+    def test_invalid_run_id_exits_without_a_traceback(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["resume", "../x", "--checkpoint-dir", str(tmp_path)])
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "Invalid run_id" in (result.output + (result.stderr or ""))
+
+    def test_corrupted_checkpoint_exits_without_a_traceback(self, tmp_path: Path) -> None:
+        (tmp_path / "broken.json").write_text("{not json")
+        result = runner.invoke(app, ["resume", "broken", "--checkpoint-dir", str(tmp_path)])
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "unreadable or corrupted" in (result.output + (result.stderr or ""))
+
     def test_resume_success(self, tmp_path: Path) -> None:
         _write_checkpoint(tmp_path, "run-ok", status="failed")
 
@@ -424,6 +437,58 @@ class TestResumeApproval:
 
         assert result.exit_code != 0
         assert "not paused at an approval gate" in (result.output + (result.stderr or ""))
+
+    def test_a_second_gate_prints_the_run_id_in_its_hint(self, tmp_path: Path) -> None:
+        wf = _approval_workflow()
+        wf.steps.insert(
+            2,
+            StepDefinition(
+                id="approve_again",
+                type=StepType.APPROVAL_GATE,
+                depends_on=["approve"],
+                output="second_decision",
+            ),
+        )
+        wf.steps[3].depends_on = ["approve_again"]
+        _write_checkpoint(
+            tmp_path,
+            "two-gates",
+            status="paused",
+            paused_step_id="approve",
+            workflow=wf,
+            completed_steps=["draft"],
+            state={"input": "hello", "draft_text": "Mock response"},
+            step_results={
+                "draft": {
+                    "step_id": "draft",
+                    "status": "success",
+                    "output": "Mock response",
+                    "duration_ms": 10.0,
+                },
+            },
+        )
+
+        with patch("agentloom.cli.run._setup_providers") as mock_setup:
+            from tests.conftest import MockProvider
+
+            def _wire(gw: object, default: str) -> None:
+                from agentloom.providers.gateway import ProviderGateway
+
+                assert isinstance(gw, ProviderGateway)
+                gw.register(MockProvider(), priority=0)
+
+            mock_setup.side_effect = _wire
+
+            with patch("agentloom.cli.run._setup_observer", return_value=None):
+                result = runner.invoke(
+                    app,
+                    ["resume", "two-gates", "--checkpoint-dir", str(tmp_path), "--approve"],
+                )
+
+        assert result.exit_code == 0, f"stdout: {result.output}"
+        assert "Step 'approve_again' is waiting for a decision" in result.output
+        assert "agentloom resume two-gates --approve" in result.output
+        assert "<run_id>" not in result.output
 
     def test_resume_replays_the_recording_of_a_mock_responses_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
