@@ -81,7 +81,7 @@ ollama:
   #
   # For kind/local clusters, the container runtime (Colima, Docker Desktop)
   # must have enough RAM allocated. Example for Colima:
-  #   colima start --memory 8 --cpu 4
+  #   colima start --memory 12 --cpu 4
   enabled: false
   image: ollama/ollama:latest
   model: phi4
@@ -90,7 +90,7 @@ ollama:
       memory: 512Mi
       cpu: 250m
     limits:
-      memory: 4Gi
+      memory: 10Gi  # fits phi4; lower it with a smaller model
 
 networkPolicy:
   enabled: true

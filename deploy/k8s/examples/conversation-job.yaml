@@ -111,6 +111,11 @@ spec:
     spec:
       serviceAccountName: agentloom
       restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: validator
           image: ghcr.io/cchinchilla-dev/agentloom:latest
@@ -123,6 +128,10 @@ spec:
             limits:
               cpu: "200m"
               memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
             - name: script
               mountPath: /scripts
