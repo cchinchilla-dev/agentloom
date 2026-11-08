@@ -63,7 +63,7 @@ jobs:
       # only governs upload errors, not this binary-verification failure, so
       # ``continue-on-error`` is what actually keeps a Codecov infra failure
       # from blocking main. The codecov/patch status check still reports on PRs.
-      - uses: codecov/codecov-action@18283e04ce6e62d37312384ff67231eb8fd56d24  # v5
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         if: matrix.python-version == '3.12' && runner.os == 'Linux'
         continue-on-error: true
         with:
