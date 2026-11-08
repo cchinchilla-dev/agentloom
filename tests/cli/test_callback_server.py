@@ -758,3 +758,93 @@ class TestCallbackPathTraversal:
             expected_token="s3cret",
         )
         assert stream.responses[0][0] == 409
+
+
+class TestCallbackServerLimits:
+    """GET /pending sits behind the token; one request cannot make the server buffer unbounded."""
+
+    @staticmethod
+    def _chunk_stream(chunks: list[bytes]):
+        class FakeStream:
+            def __init__(self) -> None:
+                self.chunks = list(chunks)
+                self.sent = b""
+
+            async def receive(self, n: int) -> bytes:
+                return self.chunks.pop(0) if self.chunks else b""
+
+            async def send(self, data: bytes) -> None:
+                self.sent += data
+
+        return FakeStream()
+
+    @pytest.mark.anyio()
+    @pytest.mark.parametrize(
+        ("header", "status"),
+        [("", b"401 Unauthorized"), ("X-AgentLoom-Token: nope\r\n", b"401 Unauthorized")],
+    )
+    async def test_pending_without_the_token_is_refused(
+        self, tmp_path: Path, header: str, status: bytes
+    ) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        _write_checkpoint(tmp_path, "run-secret")
+        stream = self._chunk_stream([f"GET /pending HTTP/1.1\r\n{header}\r\n".encode()])
+        await _handle_request(stream, str(tmp_path), True, "s3cret")  # type: ignore[arg-type]
+        assert stream.sent.startswith(b"HTTP/1.1 " + status)
+        assert b"run-secret" not in stream.sent
+
+    @pytest.mark.anyio()
+    async def test_pending_with_the_token_lists_runs(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        _write_checkpoint(tmp_path, "run-secret")
+        raw = b"GET /pending HTTP/1.1\r\nX-AgentLoom-Token: s3cret\r\n\r\n"
+        stream = self._chunk_stream([raw])
+        await _handle_request(stream, str(tmp_path), True, "s3cret")  # type: ignore[arg-type]
+        assert stream.sent.startswith(b"HTTP/1.1 200 OK")
+        assert b"run-secret" in stream.sent
+
+    @pytest.mark.anyio()
+    async def test_endless_headers_stop_at_the_cap(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        chunks = [b"GET /pending HTTP/1.1\r\nX-Pad: "] + [b"a" * 8192] * 20
+        stream = self._chunk_stream(chunks)
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        assert stream.sent.startswith(b"HTTP/1.1 431 Request Header Fields Too Large")
+        assert stream.chunks, "the server kept reading past the header cap"
+
+    @pytest.mark.anyio()
+    async def test_a_body_over_the_cap_is_refused_unread(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_request
+
+        headers = b"POST /webhook HTTP/1.1\r\nContent-Length: 2000000\r\n\r\n"
+        stream = self._chunk_stream([headers] + [b"{" * 8192] * 5)
+        await _handle_request(stream, str(tmp_path), True)  # type: ignore[arg-type]
+        assert stream.sent.startswith(b"HTTP/1.1 413 Content Too Large")
+        assert len(stream.chunks) == 5
+
+    @pytest.mark.parametrize(
+        ("host", "token", "warns"),
+        [
+            ("0.0.0.0", None, True),
+            ("callback.internal", None, True),
+            ("0.0.0.0", "s3cret", False),
+            ("127.0.0.1", None, False),
+            ("::1", None, False),
+            ("localhost", None, False),
+        ],
+    )
+    def test_exposure_warning(self, host: str, token: str | None, warns: bool) -> None:
+        from agentloom.cli.callback_server import _exposure_warning
+
+        assert (_exposure_warning(host, token) is not None) is warns
+
+    def test_token_comparison_accepts_any_text(self) -> None:
+        from agentloom.cli.callback_server import _token_matches
+
+        assert _token_matches("s3cret", "s3cret")
+        assert not _token_matches("señal", "s3cret")
+        assert not _token_matches(None, "s3cret")
+        assert _token_matches(None, None)

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +13,10 @@ import httpx
 
 from agentloom.tools.base import BaseTool
 from agentloom.tools.sandbox import ToolSandbox
+
+# Response header names that can carry a credential: the result reaches the
+# model, the workflow state, checkpoints and recordings
+_CREDENTIAL_HEADER_PARTS = ("authorization", "cookie", "token", "secret", "key")
 
 
 class HttpRequestTool(BaseTool):
@@ -43,7 +50,8 @@ class HttpRequestTool(BaseTool):
         body = kwargs.get("body", "")
         timeout = kwargs.get("timeout", 30)
 
-        self._sandbox.validate_network(url)
+        # The internal-host check resolves the name, which blocks: off the event loop
+        await anyio.to_thread.run_sync(self._sandbox.validate_network, url)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.request(
@@ -54,7 +62,11 @@ class HttpRequestTool(BaseTool):
             )
             return {
                 "status_code": response.status_code,
-                "headers": dict(response.headers),
+                "headers": {
+                    name: value
+                    for name, value in response.headers.items()
+                    if not any(part in name.lower() for part in _CREDENTIAL_HEADER_PARTS)
+                },
                 "body": response.text,
             }
 
@@ -80,23 +92,52 @@ class ShellCommandTool(BaseTool):
     async def execute(self, **kwargs: Any) -> Any:
         command = kwargs["command"]
         cwd = kwargs.get("cwd", ".")
+        timeout = kwargs.get("timeout", 30)
 
         self._sandbox.validate_path(cwd, tool_name="shell_command")
         self._sandbox.validate_command(command, cwd=cwd)
 
         try:
-            result = await anyio.run_process(
-                ["sh", "-c", command],
-                cwd=cwd,
-                check=False,
-            )
-            return {
-                "returncode": result.returncode,
-                "stdout": result.stdout.decode(errors="replace"),
-                "stderr": result.stderr.decode(errors="replace"),
-            }
+            returncode, stdout, stderr = await _run_shell(command, cwd, timeout)
         except TimeoutError:
             return {"returncode": -1, "stdout": "", "stderr": "Command timed out"}
+        return {
+            "returncode": returncode,
+            "stdout": stdout.decode(errors="replace"),
+            "stderr": stderr.decode(errors="replace"),
+        }
+
+
+async def _run_shell(command: str, cwd: str, timeout: float) -> tuple[int | None, bytes, bytes]:
+    """Run *command* under ``sh -c``; past *timeout* or on cancellation, kill all it started.
+
+    Killing only the shell would leave its children running, so the shell
+    leads a new process group (a session, on POSIX) and the group is killed.
+    """
+    output: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
+
+    async def drain(stream: Any, name: str) -> None:
+        async for chunk in stream:
+            output[name].extend(chunk)
+
+    async with await anyio.open_process(
+        ["sh", "-c", command], cwd=cwd, start_new_session=True
+    ) as process:
+        try:
+            with anyio.fail_after(timeout):
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(drain, process.stdout, "stdout")
+                    tg.start_soon(drain, process.stderr, "stderr")
+                    await process.wait()
+        except BaseException:
+            killpg = getattr(os, "killpg", None)
+            if killpg is None:  # pragma: no cover — Windows has no process groups to kill
+                process.kill()
+            else:
+                with contextlib.suppress(ProcessLookupError):
+                    killpg(process.pid, signal.SIGKILL)
+            raise
+    return process.returncode, bytes(output["stdout"]), bytes(output["stderr"])
 
 
 class FileReadTool(BaseTool):

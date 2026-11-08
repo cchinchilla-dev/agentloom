@@ -13,6 +13,7 @@ import anyio
 
 from agentloom.core.inter_agent import calling, log_tools
 from agentloom.core.models import ToolDefinition
+from agentloom.exceptions import ToolNotFoundError
 from agentloom.providers.base import ToolCall
 
 # The key a call's arguments hold their raw text under when it is not a JSON object.
@@ -207,6 +208,24 @@ def parse_tool_calls_from_google(content_parts: list[dict[str, Any]]) -> list[To
             )
         )
     return calls
+
+
+class DeclaredTools:
+    """*registry* restricted to the tools a step declares: any other name is not registered.
+
+    The model chooses the tool names it calls, so a name the step does not offer must not run,
+    even when the workflow registers that tool for other steps.
+    """
+
+    def __init__(self, registry: Any, tools: list[ToolDefinition]) -> None:
+        self._registry = registry
+        self._names = [tool.name for tool in tools]
+        self.tape = getattr(registry, "tape", None)
+
+    def get(self, name: str) -> Any:
+        if name not in self._names:
+            raise ToolNotFoundError(name, self._names)
+        return self._registry.get(name)
 
 
 async def dispatch_tool_calls(

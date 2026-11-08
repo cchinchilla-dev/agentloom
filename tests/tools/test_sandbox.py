@@ -7,7 +7,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
+import respx
 
 from agentloom.core.models import SandboxConfig
 from agentloom.core.parser import WorkflowParser
@@ -308,6 +310,25 @@ class TestNetworkSandbox:
     @pytest.mark.parametrize(
         "url",
         [
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+            "http://127.0.0.1:8080/admin",
+            "http://localhost:6379/",
+            "http://10.0.0.5/internal",
+            "http://[::1]/",
+        ],
+    )
+    def test_internal_host_blocked_without_allowed_domains(self, url: str) -> None:
+        sandbox = ToolSandbox(enabled=True, allow_network=True)
+        with pytest.raises(SandboxViolationError, match="internal address"):
+            sandbox.validate_network(url)
+
+    def test_internal_host_listed_in_allowed_domains_passes(self) -> None:
+        sandbox = ToolSandbox(enabled=True, allow_network=True, allowed_domains=["localhost"])
+        sandbox.validate_network("http://localhost:8080/health")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
             "file:///etc/passwd",
             "file://api.openai.com/etc/passwd",
             "gopher://api.openai.com/test",
@@ -443,6 +464,17 @@ class TestHttpToolIntegration:
 
         with pytest.raises(SandboxViolationError, match="Network access"):
             await tool.execute(url="https://example.com")
+
+    @respx.mock
+    async def test_sandbox_blocks_internal_host_before_any_request(self) -> None:
+        route = respx.get("http://169.254.169.254/latest/meta-data/").mock(
+            return_value=httpx.Response(200, text="role")
+        )
+        tool = HttpRequestTool(sandbox=ToolSandbox(enabled=True, allow_network=True))
+
+        with pytest.raises(SandboxViolationError, match="internal address"):
+            await tool.execute(url="http://169.254.169.254/latest/meta-data/")
+        assert not route.called
 
 
 class TestBlockedOperationHasNoSideEffect:
@@ -890,8 +922,8 @@ class TestValidateWebhookUrlEnabledSandboxBranches:
     is False and the internal-host check fires after ``validate_network``."""
 
     def test_enabled_sandbox_with_opt_in_skips_internal_check(self) -> None:
-        # Opt-in branch: validate_network passes, opt-in returns early
-        # before the internal-host gate.
+        # Opt-in branch: the scheme and domain checks pass, opt-in returns
+        # early before the internal-host gate.
         sandbox = ToolSandbox(
             enabled=True,
             allow_network=True,

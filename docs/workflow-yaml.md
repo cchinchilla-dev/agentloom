@@ -90,6 +90,9 @@ On `agentloom resume <run_id>`:
 Checkpoint files are stored as JSON in `.agentloom/checkpoints/` by default
 (configurable via `--checkpoint-dir`).
 
+!!! warning "Checkpoints are code"
+    `agentloom resume` and the callback server run the workflow definition stored in the checkpoint, not the YAML file. Whoever can write to the checkpoint directory decides what a resumed run executes, so keep it writable only by the user that runs AgentLoom.
+
 ## State
 
 State variables are initialized in the `state` block and accessible in templates:
@@ -808,7 +811,7 @@ config:
 | `readable_paths` | `list[str]` | `[]` | Read-only paths |
 | `writable_paths` | `list[str]` | `[]` | Write-allowed paths |
 | `allow_network` | `bool` | `true` | Allow HTTP/network calls |
-| `allowed_domains` | `list[str]` | `[]` | Domain whitelist |
+| `allowed_domains` | `list[str]` | `[]` | Domain whitelist. When empty, `http_request` still refuses internal hosts ([Tool network access](providers.md#tool-network-access)) |
 | `allowed_schemes` | `list[str]` | `["http", "https"]` | URL scheme whitelist (rejects `file://`, `gopher://`, etc.) |
 | `max_write_bytes` | `int \| null` | `null` (unlimited) | Maximum file write size |
 | `danger_opt_in` | `list[str]` | `[]` | Per-binary opt-in for meta-executables (`bash`, `python`, `env`, `xargs`, ...). Empty by default — meta-executables defeat the command allowlist by re-launching arbitrary binaries. Add only the names you actually need. |

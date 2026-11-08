@@ -300,8 +300,13 @@ def _validate_file_sandbox(file_path: str, sandbox: SandboxConfig) -> None:
     if not sandbox.enabled:
         return
     allowed = sandbox.readable_paths or sandbox.allowed_paths
+    # As for the file tools: an enabled sandbox with no paths reads nothing
     if not allowed:
-        return
+        msg = (
+            f"Attachment path '{file_path}' cannot be read: the sandbox is enabled "
+            f"and lists no readable_paths or allowed_paths"
+        )
+        raise PermissionError(msg)
     resolved = Path(file_path).resolve()
     for allowed_dir in allowed:
         try:

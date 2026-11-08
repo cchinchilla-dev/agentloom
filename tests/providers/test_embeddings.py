@@ -189,7 +189,7 @@ class TestGoogleEmbed:
                 },
             )
 
-        respx.post(url__regex=r".+batchEmbedContents.+").mock(side_effect=_handler)
+        respx.post(url__regex=r".+batchEmbedContents$").mock(side_effect=_handler)
         provider = GoogleProvider(api_key="g-test")
         r = await provider.embed(inputs=["a", "b"], model="text-embedding-004")
         assert r.embeddings == [[0.1, 0.2], [0.3, 0.4]]
@@ -204,7 +204,7 @@ class TestGoogleEmbed:
             captured["payload"] = json.loads(request.content)
             return httpx.Response(200, json={"embeddings": [{"values": [0.0, 0.0]}]})
 
-        respx.post(url__regex=r".+batchEmbedContents.+").mock(side_effect=_handler)
+        respx.post(url__regex=r".+batchEmbedContents$").mock(side_effect=_handler)
         provider = GoogleProvider(api_key="g-test")
         await provider.embed(
             inputs=["x"],
@@ -1276,7 +1276,7 @@ class TestGoogleEmbedTitleKwarg:
             captured["payload"] = json.loads(request.content)
             return httpx.Response(200, json={"embeddings": [{"values": [0.1, 0.2]}]})
 
-        respx.post(url__regex=r".+batchEmbedContents.+").mock(side_effect=_handler)
+        respx.post(url__regex=r".+batchEmbedContents$").mock(side_effect=_handler)
         provider = GoogleProvider(api_key="g-test")
         await provider.embed(
             inputs=["hello"],
@@ -1387,7 +1387,7 @@ class TestProviderCompleteHTTPErrorPathsUseFormatter:
     async def test_google_complete_wraps_http_error(self) -> None:
         from agentloom.exceptions import ProviderError
 
-        respx.post(url__regex=r".+generateContent.+").mock(side_effect=httpx.ConnectError("boom"))
+        respx.post(url__regex=r".+generateContent$").mock(side_effect=httpx.ConnectError("boom"))
         p = GoogleProvider(api_key="k")
         with pytest.raises(ProviderError, match="ConnectError"):
             await p.complete(

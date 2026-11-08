@@ -211,7 +211,7 @@ agentloom callback-server --checkpoint-dir .agentloom/checkpoints --port 8642
 | `POST /reject/<run_id>` | Resume a paused workflow with a rejection. |
 | `GET /pending` | List paused runs. |
 
-The server binds `0.0.0.0` by default — keep it on a loopback or trusted network. For defence in depth, the opt-in `--token <secret>` flag requires a matching `X-AgentLoom-Token` header on `POST /approve` and `POST /reject`; a request without it gets `401`:
+The server binds `0.0.0.0` by default — keep it on a loopback or trusted network; it warns at start when it listens beyond loopback without a token. For defence in depth, the opt-in `--token <secret>` flag requires a matching `X-AgentLoom-Token` header on `POST /approve`, `POST /reject` and `GET /pending`; a request without it gets `401`. Request headers over 64 KiB get `431`, and a body over 1 MiB gets `413`:
 
 ```bash
 agentloom callback-server --token "$CALLBACK_SECRET"
