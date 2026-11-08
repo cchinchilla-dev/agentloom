@@ -18,7 +18,7 @@
 # ============================================================
 
 # --------------- Stage 1: builder ---------------
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 # Install uv (fast Python package manager)
 COPY --from=ghcr.io/astral-sh/uv:0.11.1 /uv /uvx /usr/local/bin/
@@ -54,7 +54,8 @@ CMD ["pytest"]
 # Everything the two runtime images share EXCEPT the dependency install.
 # Keeping it in one stage means `production` and `production-lite` differ
 # by exactly one line — the pip install — so they cannot drift apart.
-FROM python:3.12-slim AS runtime-base
+# Each removes pip once the wheel is in: nothing runs it at runtime.
+FROM python:3.14-slim AS runtime-base
 
 # Non-root user
 RUN groupadd --gid 1000 agentloom \
@@ -88,7 +89,8 @@ FROM runtime-base AS production-lite
 RUN WHEEL=$(ls /tmp/agentloom-*.whl) \
     && pip install --no-cache-dir --root-user-action=ignore --disable-pip-version-check \
        "$WHEEL" \
-    && rm -f /tmp/*.whl
+    && rm -f /tmp/*.whl \
+    && pip uninstall --yes --root-user-action=ignore --disable-pip-version-check pip
 
 USER agentloom
 
@@ -100,6 +102,7 @@ FROM runtime-base AS production
 RUN WHEEL=$(ls /tmp/agentloom-*.whl) \
     && pip install --no-cache-dir --root-user-action=ignore --disable-pip-version-check \
        "${WHEEL}[observability]" \
-    && rm -f /tmp/*.whl
+    && rm -f /tmp/*.whl \
+    && pip uninstall --yes --root-user-action=ignore --disable-pip-version-check pip
 
 USER agentloom
