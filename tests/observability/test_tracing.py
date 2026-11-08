@@ -151,7 +151,7 @@ def _in_memory_tracing() -> tuple[TracingManager, Any]:
 
 
 class TestParallelSubworkflows:
-    """#147: parallel subworkflows that reuse a step id, under a live OTel tracer."""
+    """Parallel subworkflows that reuse a step id, under a live OTel tracer."""
 
     async def test_each_run_keeps_its_own_spans(self, caplog: pytest.LogCaptureFixture) -> None:
         tracing, exporter = _in_memory_tracing()
@@ -235,7 +235,7 @@ class TestParallelSubworkflows:
 
         assert result.status == WorkflowStatus.SUCCESS
         spans = {s.name: s for s in exporter.get_finished_spans()}
-        # The child's end hook used to drop the parent's workflow span and run id.
+        # The child's end hook hands the parent's workflow span and run id back.
         root = spans[SpanName.WORKFLOW.format(workflow_name="parent")]
         after = spans[SpanName.STEP.format(step_id="after")]
         assert after.attributes[SpanAttr.WORKFLOW_RUN_ID] == "root"
@@ -272,7 +272,7 @@ class TestParallelSubworkflows:
         assert result.step_results["child"].status == StepStatus.TIMEOUT
         assert "Failed to detach context" not in caplog.text
         spans = {s.name: s for s in exporter.get_finished_spans()}
-        # The cancelled child never ran its end hook, so the parent's step span was lost.
+        # A cancelled child never runs its end hook; the parent's step span must survive it.
         step = spans[SpanName.STEP.format(step_id="child")]
         assert step.attributes[SpanAttr.WORKFLOW_RUN_ID] == "root"
         child = spans[SpanName.WORKFLOW.format(workflow_name="localize_es")]
@@ -283,7 +283,7 @@ class TestParallelSubworkflows:
 
 
 class TestStoppedSteps:
-    """#169: steps stopped from outside still end their span."""
+    """Steps stopped from outside still end their span."""
 
     async def test_sibling_failure_ends_the_cancelled_step_span(
         self, caplog: pytest.LogCaptureFixture

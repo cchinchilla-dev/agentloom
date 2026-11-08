@@ -1,4 +1,4 @@
-"""Regression tests for the Conversation primitive (#119)."""
+"""Tests for the Conversation primitive."""
 
 from __future__ import annotations
 
@@ -126,7 +126,6 @@ class TestConversationModel:
 class TestTrimmingPolicies:
     @staticmethod
     def _make(msgs: list[Message], **overrides: Any) -> Conversation:
-        # Big enough words to bump the token budget cheaply.
         return Conversation(messages=msgs, **overrides)
 
     def test_drop_oldest_preserves_system_prefix(self) -> None:
@@ -157,7 +156,6 @@ class TestTrimmingPolicies:
             trim_policy="drop_pairs",
         )
         apply_trim_policy(convo, model="mock-model")
-        # Both q1 and a1 are dropped together
         assert not any(m.content.startswith("q1") for m in convo.messages)
         assert not any(m.content.startswith("a1") for m in convo.messages)
 
@@ -207,7 +205,7 @@ class TestTrimmingPolicies:
             trim_policy="summarize_oldest",
         )
         apply_trim_policy(convo, model="mock-model", summarizer=summarizer)
-        assert seen  # summarizer was invoked
+        assert seen
         assert "SHORT SUMMARY" in (convo.summary or "")
 
     def test_no_budget_is_noop(self) -> None:
@@ -229,8 +227,7 @@ class TestTrimmingPolicies:
         assert result.policy == ""
 
     def test_summarize_oldest_falls_back_to_concat(self) -> None:
-        # No summarizer passed → policy folds oldest turns into a plain
-        # concatenation prefixed with speakers.
+        # Without a summarizer the oldest turns fold into a concatenation prefixed with speakers.
         convo = self._make(
             [
                 Message(role="user", content="q1 " * 30),
@@ -242,14 +239,10 @@ class TestTrimmingPolicies:
         )
         apply_trim_policy(convo, model="mock-model")
         assert convo.summary
-        # Fallback concatenation must include speaker markers.
         assert "user:" in (convo.summary or "")
 
     def test_summarize_oldest_does_not_drop_duplicate_retained_turn(self) -> None:
-        # Regression: folded turns must be removed POSITIONALLY, not by
-        # value-equality. A retained turn that is value-equal to a folded
-        # one (repeated "yes"/"thanks"/"ok") must survive. Removing by
-        # ``__eq__`` silently deleted the retained duplicate.
+        # Folded turns go by position, not equality: a retained duplicate of a folded one survives.
         convo = self._make(
             [
                 Message(role="system", content="Be brief."),
@@ -264,17 +257,14 @@ class TestTrimmingPolicies:
         result = apply_trim_policy(convo, model="mock-model")
         # The system turn is pinned; exactly the leading folded turns go.
         assert convo.messages[0].role == "system"
-        # The second "yes" and the final "keep me" must both survive.
         contents = [m.content for m in convo.messages]
         assert "keep me" in contents
         assert contents.count("yes") == 1  # one survived, one folded
-        # trimmed_count reflects what was actually removed positionally.
         removed = 5 - len(convo.messages)
         assert result.trimmed_count == removed
 
     def test_summarize_over_pinned_prefix_is_noop(self) -> None:
-        # Pinned system prefix already exceeds budget — nothing left to
-        # fold; the policy must return without changing the summary.
+        # The pinned system prefix alone exceeds the budget, so nothing is left to fold.
         convo = self._make(
             [
                 Message(role="system", content="verbose " * 100),
@@ -348,8 +338,7 @@ class TestLoadAndProviderShape:
         assert to_provider_messages(c)[0]["name"] == "alice"
 
     def test_to_provider_messages_carries_tool_call_id(self) -> None:
-        # A ``role="tool"`` turn must round-trip its ``tool_call_id`` so a
-        # resumed multi-turn tool workflow stays OpenAI-wire-compatible.
+        # The ``tool_call_id`` keeps a resumed tool workflow valid on the OpenAI wire.
         c = Conversation(
             messages=[
                 Message(role="tool", content="42", tool_call_id="call_abc"),
@@ -399,8 +388,6 @@ class TestConversationStateRoundtrip:
         assert c.messages[1].name == "alice"
 
     async def test_conversation_resumes_correctly_from_checkpoint(self, tmp_path: Path) -> None:
-        # Simulate: a workflow ran two turns, checkpointed, and now we
-        # resume — the loaded Conversation must carry both turns intact.
         initial = Conversation(
             messages=[
                 Message(role="system", content="Be concise."),
@@ -487,7 +474,6 @@ class TestLLMCallWithConversation:
         result = await LLMCallStep().execute(ctx)
         assert result.status == StepStatus.SUCCESS
         chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
-        # user preserved + assistant appended
         assert [m.role for m in chat.messages] == ["user", "assistant"]
 
     async def test_missing_conversation_creates_new(self) -> None:
@@ -511,11 +497,7 @@ class TestLLMCallWithConversation:
         assert len(chat.messages) == 2
 
     async def test_tool_calls_not_persisted_replay_safe(self) -> None:
-        # Replay safety: an assistant turn carrying tool_calls is only valid
-        # on the wire when followed by its paired tool-result turns. The
-        # conversation drops those, so it must NOT persist the tool_calls
-        # either — otherwise the next llm_call would render a malformed
-        # request. Only the final text answer is stored.
+        # Tool calls without their results, which the conversation drops, make a malformed request.
         class ToolProvider(MockProvider):
             async def complete(
                 self,
@@ -553,7 +535,6 @@ class TestLLMCallWithConversation:
         chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
         assert chat.messages[-1].role == "assistant"
         assert chat.messages[-1].content == "It is noon UTC."
-        # tool_calls are NOT persisted (replay safety).
         assert chat.messages[-1].tool_calls == []
 
     async def test_multi_agent_name_propagates_to_openai_payload(self) -> None:
@@ -578,8 +559,6 @@ class TestLLMCallWithConversation:
             gateway=gw,
         )
         await LLMCallStep().execute(ctx)
-        # The provider's stored payload should carry the ``name`` from the
-        # loaded conversation on the earliest message.
         wire = provider.calls[0]["messages"]
         assert wire[0]["name"] == "alice"
 
@@ -626,10 +605,7 @@ class TestLLMCallWithConversation:
             state={"chat": 42},  # not a dict/list/Conversation
             gateway=gw,
         )
-        # Early guard: workflow-author error surfaces as StepError (same
-        # class as ``no gateway`` / ``no prompt``), not a captured
-        # StepStatus.FAILED. Consistent with attachment / template early
-        # guards elsewhere in the executor.
+        # An authoring error raises, as a missing gateway or prompt does, rather than FAILED.
         with pytest.raises(StepError, match="malformed"):
             await LLMCallStep().execute(ctx)
 
@@ -748,16 +724,13 @@ class TestObserverIntegration:
         assert attrs[SpanAttr.CONVERSATION_TURN_COUNT] == 2
 
     def test_metrics_records_trim_and_message_count(self) -> None:
-        # Fire the recorder directly against a MetricsManager to exercise
-        # the counter/histogram wiring without spinning a full workflow.
-        # ``enabled=True`` still degrades to noop when no backend is
-        # installed — we only assert the method does not raise.
+        # With no backend installed ``enabled=True`` is a noop, so this only checks nothing raises.
         mm = MetricsManager(enabled=True)
         mm.record_conversation_turn("chat", 4, trim_policy="drop_oldest", trimmed_count=2)
         mm.record_conversation_turn("chat", 6)  # no-trim path
         mm.record_conversation_turn(
             "chat", 3, trim_policy="drop_oldest", trimmed_count=0
-        )  # trims counter must NOT fire
+        )  # trims counter must not fire
 
     def test_noop_observer_accepts_hook(self) -> None:
         from agentloom.observability.noop import NoopObserver
@@ -814,15 +787,13 @@ steps:
         assert wf.state["chat"]["messages"] == []
 
 
-# ---- summarize_oldest via the gateway (HIGH-1 fix) --------------------------
+# ---- summarize_oldest via the gateway ---------------------------------------
 
 
 class _CountingProvider(MockProvider):
-    """MockProvider that records every step_id it was called with."""
+    """A MockProvider that counts its ``::summarize`` calls and answers them with a summary."""
 
-    # The gateway strips ``step_id`` before calling a provider unless it
-    # opts in — mirror the real MockProvider so the summariser call's
-    # ``{step}::summarize`` id survives to ``complete``.
+    # The gateway strips ``step_id`` from providers that do not opt in; ``::summarize`` needs it.
     accepts_step_id = True
 
     def __init__(self, responses: dict[str, str] | None = None) -> None:
@@ -855,7 +826,7 @@ class TestSummarizeOldestUsesGateway:
         gw = ProviderGateway()
         gw.register(provider, models=["mock-model"])
 
-        # Long history that overflows the tiny budget → summarise fires.
+        # A history over the tiny budget makes summarize_oldest fire.
         history = [
             {"role": "system", "content": "Be brief."},
             {"role": "user", "content": "q1 " * 40},
@@ -975,9 +946,7 @@ class TestApplyTrimPolicyAsync:
         assert result.trimmed_count == 0
 
     def test_sync_apply_ignores_async_summarizer(self) -> None:
-        # The sync entry-point must NOT await; passing an async summariser
-        # degrades to the concat fallback with a warning rather than
-        # returning a coroutine as the summary text.
+        # The sync entry point cannot await: an async summarizer falls back to concatenation.
         convo = Conversation(
             messages=[
                 Message(role="user", content="q1 " * 30),
@@ -996,7 +965,7 @@ class TestApplyTrimPolicyAsync:
         assert convo.summary  # concat fallback still populated it
 
 
-# ---- Multi-agent speaker (MEDIUM-3 fix) ------------------------------------
+# ---- Multi-agent speaker ----------------------------------------------------
 
 
 class TestSpeakerTagging:
@@ -1023,8 +992,7 @@ class TestSpeakerTagging:
         assert provider.calls[0]["messages"] == [{"role": "user", "content": "go"}]
 
     async def test_speaker_system_prompt_not_persisted(self) -> None:
-        # With a speaker, the system_prompt is a transient per-turn message,
-        # never stored in the shared conversation.
+        # With a speaker the system prompt is per turn, kept out of the shared conversation.
         provider = MockProvider(responses={"go": "reply"})
         gw = ProviderGateway()
         gw.register(provider, models=["mock-model"])
@@ -1044,13 +1012,13 @@ class TestSpeakerTagging:
         await LLMCallStep().execute(ctx)
         chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
         assert not any(m.role == "system" for m in chat.messages)
-        # But the provider DID see the system message this turn.
+        # The provider still sees it this turn.
         wire = provider.calls[0]["messages"]
         assert wire[0]["role"] == "system"
         assert "Alice" in wire[0]["content"]
 
 
-# ---- Attachments through a conversation (HIGH-2 fix) -----------------------
+# ---- Attachments through a conversation -------------------------------------
 
 
 class TestConversationAttachments:
@@ -1097,12 +1065,9 @@ class TestConversationAttachments:
         )
         result = await LLMCallStep().execute(ctx)
         assert result.status == StepStatus.SUCCESS
-        # The provider's last message content must be a block list carrying
-        # an ImageBlock — not the bare text prompt.
         last = captured["messages"][-1]["content"]
         assert isinstance(last, list)
         assert any(isinstance(b, ImageBlock) for b in last)
-        # And the text part still carries the rendered prompt.
         assert "image" in extract_text_content(last).lower()
 
     async def test_attachments_not_persisted_in_conversation(self, tmp_path: Path) -> None:
@@ -1131,14 +1096,13 @@ class TestConversationAttachments:
         )
         await LLMCallStep().execute(ctx)
         chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
-        # The persisted user turn stores plain text — no base64 blob bloats
-        # the checkpoint.
+        # Plain text only: a base64 image would bloat every checkpoint.
         user_turn = chat.messages[0]
         assert user_turn.content == "describe"
         assert isinstance(user_turn.content, str)
 
 
-# ---- Streaming + conversation (MEDIUM-4 fix) -------------------------------
+# ---- Streaming + conversation -----------------------------------------------
 
 
 class TestStreamingConversation:
@@ -1189,13 +1153,12 @@ class TestStreamingConversation:
         assert chat.messages[1].name == "bob"
 
 
-# ---- Copilot review fixes -------------------------------------------------
+# ---- Ordering, guards and edge cases ----------------------------------------
 
 
 class TestSummaryPositioning:
     def test_summary_lands_after_system_prefix(self) -> None:
-        # Copilot-2: a model-generated summary must not sit ahead of the
-        # workflow's real system prompt (it could override the instruction).
+        # A summary must not precede the real system prompt, which it could then override.
         c = Conversation(
             messages=[
                 Message(role="system", content="You are strict."),
@@ -1212,7 +1175,6 @@ class TestSummaryPositioning:
         assert wire[2]["role"] == "user"
 
     def test_summary_appended_when_all_system(self) -> None:
-        # All-system conversation with a summary → summary appended at the end.
         c = Conversation(
             messages=[Message(role="system", content="sys only")],
             summary="ctx",
@@ -1262,8 +1224,7 @@ class TestPromptOmittedGuard:
 
         gw = ProviderGateway()
         gw.register(MockProvider(), models=["mock-model"])
-        # An empty path segment (``state..chat``) makes the state resolver
-        # raise ValueError, surfaced as a clear StepError rather than a crash.
+        # The empty segment makes the state resolver raise ValueError, surfaced as a StepError.
         ctx = _make_context(
             StepDefinition(
                 id="turn", type=StepType.LLM_CALL, prompt="hi", conversation="state..chat"
@@ -1378,14 +1339,13 @@ class TestSingleAgentSystemInsert:
         )
         await LLMCallStep().execute(ctx)
         chat = Conversation.model_validate(await ctx.state_manager.get("chat"))
-        # Single-agent: the system prompt IS persisted, exactly once, at head.
+        # Without a speaker the system prompt is persisted, once, at the head.
         assert chat.messages[0].role == "system"
         assert chat.messages[0].content == "You are helpful."
         assert sum(1 for m in chat.messages if m.role == "system") == 1
 
     async def test_attachments_ignored_without_user_turn(self, tmp_path: Path) -> None:
-        # prompt omitted + attachments + a conversation ending on a user turn:
-        # the attachment hoist must NOT overwrite the trailing user message.
+        # No prompt, so no new user turn: the attachments must not overwrite the trailing one.
         png = (
             b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
             b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00"
@@ -1423,7 +1383,6 @@ class TestSingleAgentSystemInsert:
         )
         result = await LLMCallStep().execute(ctx)
         assert result.status == StepStatus.SUCCESS
-        # The trailing user text is preserved (not overwritten by the hoist).
         assert captured["messages"][-1]["content"] == "keep this"
 
 
@@ -1525,10 +1484,7 @@ class TestAsyncSummarizeOverPinned:
 
 
 class TestInternalTrimGuards:
-    # The per-policy helpers carry a defensive ``token_budget is None`` guard
-    # that ``apply_trim_policy`` normally short-circuits before reaching them.
-    # Call them directly so the guard stays covered if a future caller skips
-    # the top-level check.
+    # ``apply_trim_policy`` short-circuits before the helpers' own ``token_budget is None`` guards.
     def test_drop_oldest_budget_none_guard(self) -> None:
         convo = Conversation(messages=[Message(role="user", content="hi")])
         assert _drop_oldest(convo, "m").policy == "drop_oldest"

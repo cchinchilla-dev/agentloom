@@ -99,7 +99,7 @@ class TestSingleStep:
         engine = WorkflowEngine(workflow=wf, state_manager=state, provider_gateway=gw)
         result = await engine.run()
         assert result.status == WorkflowStatus.SUCCESS
-        # MockProvider receives the rendered prompt with "Alice" (no system prompt → index 0)
+        # No system prompt, so the rendered prompt is message 0.
         assert provider.calls[0]["messages"][0]["content"] == "Hello Alice"
 
 
@@ -132,7 +132,7 @@ class TestParallelExecution:
         assert result.total_tokens == 90  # 3 × 30 tokens
 
     async def test_parallel_steps_are_concurrent(self) -> None:
-        """Verify both parallel steps actually execute (not just one)."""
+        """All three independent steps reach the provider, not just one."""
         counter = CountingProvider()
         gw = ProviderGateway()
         gw.register(counter, models=["mock-model"])
@@ -332,7 +332,7 @@ class TestBudgetEnforcement:
         assert result.status in (WorkflowStatus.FAILED, WorkflowStatus.BUDGET_EXCEEDED)
 
     async def test_budget_remaining_emitted_to_observer(self) -> None:
-        provider = MockProvider()  # costs 0.001 per call
+        provider = MockProvider()
         gw = ProviderGateway()
         gw.register(provider, models=["mock-model"])
 
@@ -351,7 +351,7 @@ class TestBudgetEnforcement:
         assert remaining >= 0.0
 
     async def test_within_budget_completes(self) -> None:
-        provider = MockProvider()  # costs 0.001 per call
+        provider = MockProvider()
         gw = ProviderGateway()
         gw.register(provider, models=["mock-model"])
 
@@ -377,7 +377,7 @@ class TestBudgetEnforcement:
 
 class TestRetryBehavior:
     async def test_step_retries_on_failure(self) -> None:
-        """Step with max_retries=1 should try twice before failing."""
+        """A step with ``max_retries=1`` tries twice, then fails."""
         gw = ProviderGateway()
         gw.register(FailingProvider(), models=["mock-model"])
 
@@ -415,26 +415,20 @@ class TestObserverIntegration:
         result = await engine.run()
 
         assert result.status == WorkflowStatus.SUCCESS
-        # run_id is always generated now (used for trace correlation), so
-        # the observer receives a non-empty hex string regardless of whether
-        # a checkpointer was configured.
+        # run_id is generated even without a checkpointer, for trace correlation.
         observer.on_workflow_start.assert_called_once()
         call = observer.on_workflow_start.call_args
         assert call.args == ("obs-test",)
-        assert call.kwargs["run_id"]  # non-empty
-        # The observer received the same id the engine carries internally —
-        # required so spans and external systems can join on it.
+        assert call.kwargs["run_id"]
+        # Spans and external systems join on the id the engine carries.
         assert call.kwargs["run_id"] == engine.run_id
         observer.on_step_start.assert_called_once_with("s", "llm_call", stream=False)
         observer.on_step_end.assert_called_once()
         observer.on_workflow_end.assert_called_once()
-        # Token events also fired (provider-level spans use start/end pair).
         observer.on_tokens.assert_called_once()
 
     async def test_run_id_populated_on_failure_path(self) -> None:
-        # Regression for the gap where ``run_id`` was only stamped on the
-        # success path. Trace correlation + history listing require it on
-        # every termination, including failures.
+        # Trace correlation and history need run_id on every termination, failures included.
         gw = ProviderGateway()
         gw.register(FailingProvider(), models=["mock-model"])
         wf = WorkflowDefinition(
@@ -450,10 +444,7 @@ class TestObserverIntegration:
         )
 
     async def test_run_history_written_on_failure_path(self, tmp_path) -> None:
-        # ``agentloom history`` should list failed runs alongside
-        # successful ones — otherwise debugging a production incident
-        # via the CLI is impossible. Regression for the prior behavior
-        # where only the success path called the writer.
+        # ``agentloom history`` lists failed runs too: debugging an incident needs them.
         from pathlib import Path as _Path
 
         gw = ProviderGateway()
@@ -487,9 +478,7 @@ class TestObserverIntegration:
     async def test_run_history_failure_does_not_break_workflow(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The history writer is best-effort: if it raises (broken disk,
-        # import error, anything), the workflow must still return its
-        # result to the caller. Engine swallows + debug-logs the error.
+        # History writing is best-effort: the engine swallows and debug-logs any writer error.
         from agentloom.history import writer as writer_mod
 
         class _Boom:
@@ -510,7 +499,6 @@ class TestObserverIntegration:
         )
         engine = WorkflowEngine(workflow=wf, provider_gateway=gw)
         result = await engine.run()
-        # Workflow ran cleanly even though history write blew up.
         assert result.status == WorkflowStatus.SUCCESS
 
     async def test_observer_on_failure(self) -> None:
@@ -570,12 +558,9 @@ class TestObserverIntegration:
         result = await engine.run()
 
         assert result.status == WorkflowStatus.SUCCESS
-        # Observer received stream=True
         observer.on_step_start.assert_called_once_with("s", "llm_call", stream=True)
-        # Callback was invoked
         assert len(chunks) > 0
         assert "".join(chunks) == "Mock response"
-        # TTFT was reported
         step_end_kwargs = observer.on_step_end.call_args[1]
         assert step_end_kwargs.get("stream") is True
         assert step_end_kwargs.get("time_to_first_token_ms") is not None
@@ -604,9 +589,7 @@ class TestObserverIntegration:
         result = await engine.run()
 
         assert result.status == WorkflowStatus.SUCCESS
-        # Step-level stream=False wins
         observer.on_step_start.assert_called_once_with("s", "llm_call", stream=False)
-        # No TTFT for non-streaming
         sr = result.step_results["s"]
         assert sr.time_to_first_token_ms is None
 
@@ -654,16 +637,13 @@ class TestSubworkflowIntegration:
         assert result.status == WorkflowStatus.SUCCESS
         assert result.step_results["sub"].status == StepStatus.SUCCESS
         assert result.step_results["summarize"].status == StepStatus.SUCCESS
-        # 1 child step + 1 parent step = 2 total LLM calls
         assert len(provider.calls) == 2
 
 
 # Multi-layer complex workflow
 class TestComplexWorkflow:
     async def test_five_layer_workflow(self) -> None:
-        """Simulates a realistic multi-layer workflow:
-        fetch(tool) → classify(llm) → route(router) → handle(llm) || skip
-        """
+        """A realistic chain: fetch (tool) → classify → route → escalate, log_only skipped."""
         provider = MockProvider(responses={"Classify: data": "critical"})
         gw = ProviderGateway()
         gw.register(provider, models=["mock-model"])

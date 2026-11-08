@@ -414,13 +414,13 @@ When a parent workflow launches a subworkflow step:
 | Parent budget | Child budget | Behaviour |
 |---------------|--------------|-----------|
 | Set (`$0.10`) | None | Child engine inherits the parent's enforcer. Child charges count against the parent's `_spent`, so the parent's gate trips at the right step. The child's own `total_cost_usd` is what its steps charged, not the parent's total. A child that breaks the parent's budget gives its step a `failed` result with its steps' tokens and `cost_usd: 0`, as they charged it already. |
-| Set (`$0.10`) | Set (`$0.05`) | Child uses a fresh enforcer scoped to its own limit. Pre-0.5.0 behaviour preserved. The parent's per-step accounting still adds the rolled-up subworkflow cost to the parent counter, whether the child succeeds, fails, pauses at an approval gate or breaks its own budget; a breach fails the step without a retry, and a pause that breaks the parent's budget still pauses. |
+| Set (`$0.10`) | Set (`$0.05`) | Child uses a fresh enforcer scoped to its own limit. The parent's per-step accounting still adds the rolled-up subworkflow cost to the parent counter, whether the child succeeds, fails, pauses at an approval gate or breaks its own budget; a breach fails the step without a retry, and a pause that breaks the parent's budget still pauses. |
 | None | Set (`$0.05`) | Child enforces its own budget; parent has no limit to enforce. |
 | None | None | No enforcement at either level. |
 
 ### Pause-over-budget precedence
 
-When an `approval_gate` and a budget-blowing LLM step land in the same layer, **pause wins**. Pre-0.5.0 budget short-circuited the pause: the LLM step completed (spending the money), the pause was dropped, and the workflow ended `budget_exceeded` with no resumable checkpoint at the gate. The reversed precedence preserves both options — the human can `--approve` or `--reject`, and the workflow re-evaluates budget on resume. A workflow that resumes with budget already exhausted will then surface `BudgetExceededError` on the next dispatch (the user explicitly chose to look at the pause first).
+When an `approval_gate` and a budget-blowing LLM step land in the same layer, **pause wins**. Letting the budget win would complete the LLM step (spending the money), drop the pause and end the workflow `budget_exceeded` with no resumable checkpoint at the gate. Pausing first keeps both options — the human can `--approve` or `--reject`, and the workflow re-evaluates budget on resume. A workflow that resumes with budget already exhausted will then surface `BudgetExceededError` on the next dispatch (the user explicitly chose to look at the pause first).
 
 The workflow's `timeout` gives way to a pause the same way: the steps it cut short are marked `timeout` and run again on resume. Only a pause of the current run counts: a resumed run that breaks its budget or its timeout before it reaches the gate it had paused at ends `budget_exceeded` or `timeout`, not `paused` at that gate again.
 

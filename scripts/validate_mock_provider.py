@@ -90,8 +90,8 @@ async def main() -> None:
         assert recording.exists(), "recording file not created"
         data = json.loads(recording.read_text())
         entries = {k: v for k, v in data.items() if not k.startswith("_")}  # skip _version
-        assert len(entries) == 2, f"expected 2 recorded entries, got {len(entries)}: {list(entries)}"
-        for key, entry in entries.items():
+        assert len(entries) == 2, f"expected 2 entries, got {len(entries)}: {list(entries)}"
+        for entry in entries.values():
             assert entry["content"].startswith("det::"), entry
             assert entry["usage"]["total_tokens"] == 12
             assert "latency_ms" in entry

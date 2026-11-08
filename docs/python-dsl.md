@@ -199,7 +199,7 @@ If the key does not exist yet, `fn` receives `None`; the caller chooses how to s
 
 ### Dotted writes refuse to overwrite scalars
 
-Writing `output: "user.name"` when `state.user` was a scalar (`"alice"`) used to silently replace the string with `{"name": ...}` and lose the original value. The current contract raises `StateWriteError` with a message naming the traversed prefix and the existing type — pick a different output key, or overwrite `user` at the parent path first.
+Writing `output: "user.name"` when `state.user` is a scalar (`"alice"`) does not replace the string with `{"name": ...}`: it raises `StateWriteError` with a message naming the traversed prefix and the existing type — pick a different output key, or overwrite `user` at the parent path first.
 
 ```python
 sm = StateManager(initial_state={"user": "alice"})

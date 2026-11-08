@@ -5,7 +5,7 @@ metadata:
   namespace: agentloom
 data:
   validate_conversation.py: |
-    """Functional validation of the Conversation primitive (#119) in Kubernetes."""
+    """Functional validation of the Conversation primitive in Kubernetes."""
 
     import anyio
 

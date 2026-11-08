@@ -1,4 +1,4 @@
-"""An llm_call step marks the failures it returns transient or permanent (#182)."""
+"""An llm_call step marks the failures it returns transient or permanent."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from agentloom.providers.mock import MockProvider
 
 
 class _BrokenStream(BaseProvider):
-    """Starts a stream, then fails it with a 400 after the first chunk."""
+    """A provider whose stream fails with a 400 after the first chunk."""
 
     name = "broken"
 
@@ -114,8 +114,7 @@ async def test_a_stream_that_fails_midway_with_a_400_is_not_retried() -> None:
 
 
 async def test_a_streamed_step_retries_invalid_structured_output(tmp_path: Path) -> None:
-    # A stream is validated once, at its end, with no attempts of its own: the engine's
-    # retry is its second attempt, as the non-streamed step's validation loop is.
+    # A stream is validated once, at its end, so the engine's retry is its second attempt.
     recording = tmp_path / "rec.json"
     recording.write_text(json.dumps({"s": [{"content": "not json"}, {"content": '{"a": 1}'}]}))
     mock = MockProvider(responses_file=recording)

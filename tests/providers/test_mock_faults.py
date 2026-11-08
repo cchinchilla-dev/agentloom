@@ -1,4 +1,4 @@
-"""Deterministic faults declared in a mock recording (#123)."""
+"""Deterministic faults declared in a mock recording."""
 
 from __future__ import annotations
 
@@ -179,7 +179,7 @@ async def test_a_fault_is_reported_to_the_observer(tmp_path: Path) -> None:
 
 
 async def test_an_observer_without_the_fault_hook_still_replays(tmp_path: Path) -> None:
-    class ReplayOnly:  # written before on_mock_fault existed
+    class ReplayOnly:
         def __init__(self) -> None:
             self.replays: list[str] = []
 

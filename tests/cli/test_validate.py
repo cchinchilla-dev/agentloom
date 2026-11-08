@@ -12,8 +12,6 @@ runner = CliRunner()
 
 
 class TestValidateCommand:
-    """Test the 'agentloom validate' CLI command."""
-
     def test_validate_valid_yaml(self, tmp_path: Path) -> None:
         yaml_content = """
 name: valid-workflow

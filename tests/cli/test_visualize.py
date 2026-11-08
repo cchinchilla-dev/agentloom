@@ -101,8 +101,7 @@ steps:
 
 
 class TestFormatChoice:
-    """F39: ``--format`` is a typed Choice — an unknown value is
-    rejected with a clear error instead of silently degrading to ASCII."""
+    """``--format`` is a typed Choice: an unknown value is rejected, not rendered as ASCII."""
 
     _YAML = """\
 name: fmt-test

@@ -72,8 +72,6 @@ class TestDAGConstruction:
 
 
 class TestTopologicalSort:
-    """Test topological sort functionality."""
-
     def test_linear_chain(self) -> None:
         dag = DAG.from_steps(
             [
@@ -94,17 +92,11 @@ class TestTopologicalSort:
             ]
         )
         order = dag.topological_sort()
-        # a and b have no deps, should come first (sorted alphabetically)
         assert order.index("a") < order.index("c")
         assert order.index("b") < order.index("c")
 
     def test_topological_sort_deterministic_order(self) -> None:
-        """Siblings (no edges between them) come out in alphabetical order.
-
-        Pins the deterministic tie-break that the heapq min-heap inherits
-        from the previous sorted-list implementation — workflows shouldn't
-        observe any execution-plan reshuffling after the perf rewrite.
-        """
+        """Siblings (no edges between them) come out in alphabetical order, so plans stay stable."""
         dag = DAG.from_steps(
             [
                 ("d", []),
@@ -116,9 +108,7 @@ class TestTopologicalSort:
             ]
         )
         order = dag.topological_sort()
-        # Independent roots come out alphabetically before any dependent.
         assert order[:4] == ["a", "b", "c", "d"]
-        # Dependents (also siblings of each other) come out alphabetically.
         assert order[4:] == ["y", "z"]
 
     def test_single_node(self) -> None:
@@ -139,8 +129,6 @@ class TestTopologicalSort:
 
 
 class TestCycleDetection:
-    """Test cycle detection in the DAG."""
-
     def test_no_cycle(self) -> None:
         dag = DAG.from_steps(
             [
@@ -259,7 +247,6 @@ class TestGetReadyNodes:
             ]
         )
         ready = dag.get_ready_nodes(completed={"a"})
-        # b is still ready, c needs both a and b
         assert ready == ["b"]
 
     def test_after_all_deps_completed(self) -> None:
@@ -296,12 +283,10 @@ class TestIterativeCycleDetection:
         dag = DAG()
         for i in range(2000):
             dag.add_edge(f"n{i}", f"n{i + 1}")
-        # No cycle; must validate without raising RecursionError.
         assert dag.validate() == []
 
     def test_cycle_detection_message_is_accurate(self) -> None:
-        # Two independent cycles. Both should be reported with their own
-        # path, not leak nodes from the first traversal into the second.
+        # Each cycle is reported with its own path: no node leaks from one traversal to the next.
         dag = DAG()
         dag.add_edge("a", "b")
         dag.add_edge("b", "a")

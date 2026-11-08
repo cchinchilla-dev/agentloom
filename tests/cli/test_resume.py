@@ -75,7 +75,7 @@ class TestResumeCommand:
     def test_resume_imports_the_projects_schemas(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """As ``run``: a response_schema model of the working directory imports (#120)."""
+        """As ``run``: a response_schema model of the working directory imports."""
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(sys, "path", [p for p in sys.path if p not in ("", str(Path.cwd()))])
         runner.invoke(app, ["resume", "nonexistent", "--checkpoint-dir", str(tmp_path)])
@@ -87,11 +87,9 @@ class TestResumeCommand:
         assert "No checkpoint found" in (result.output + (result.stderr or ""))
 
     def test_resume_success(self, tmp_path: Path) -> None:
-        """Resume a checkpoint and run to success using mock provider."""
         _write_checkpoint(tmp_path, "run-ok", status="failed")
 
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
-            # Wire up MockProvider via the gateway
             from tests.conftest import MockProvider
 
             def _wire_providers(gw: object, default: str) -> None:
@@ -113,7 +111,6 @@ class TestResumeCommand:
         assert "resume-test" in result.output
 
     def test_resume_json_output(self, tmp_path: Path) -> None:
-        """Resume with --json flag produces JSON output."""
         _write_checkpoint(tmp_path, "run-json", status="failed")
 
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
@@ -141,16 +138,14 @@ class TestResumeCommand:
                 )
 
         assert result.exit_code == 0, f"stdout: {result.output}"
-        # Output should contain valid JSON (after the "Resuming..." line)
+        # The JSON block follows the "Resuming workflow..." line.
         lines = result.output.strip().split("\n")
-        # Find the JSON block (skip "Resuming workflow..." line)
         json_start = next(i for i, line in enumerate(lines) if line.strip().startswith("{"))
         json_text = "\n".join(lines[json_start:])
         parsed = json.loads(json_text)
         assert parsed["workflow_name"] == "resume-test"
 
     def test_resume_with_stream(self, tmp_path: Path) -> None:
-        """Resume with --stream flag enables streaming callback."""
         _write_checkpoint(tmp_path, "run-stream", status="failed")
 
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
@@ -180,7 +175,6 @@ class TestResumeCommand:
         assert result.exit_code == 0, f"stdout: {result.output}"
 
     def test_resume_with_provider_override(self, tmp_path: Path) -> None:
-        """Resume with --provider and --model overrides."""
         _write_checkpoint(tmp_path, "run-override", status="failed")
 
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
@@ -213,7 +207,6 @@ class TestResumeCommand:
         assert result.exit_code == 0, f"stdout: {result.output}"
 
     def test_resume_failed_workflow_exits_nonzero(self, tmp_path: Path) -> None:
-        """Resume a workflow that fails should exit with code 1."""
         _write_checkpoint(tmp_path, "run-fail", status="failed")
 
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
@@ -258,7 +251,7 @@ class TestResumeCommand:
         assert parsed["final_state"]["result_a"] == "Mock response"
 
     def test_resume_generic_openai_without_base_url(self, tmp_path: Path) -> None:
-        """``--provider generic_openai`` on a workflow without ``base_url`` fails cleanly (#48)."""
+        """``--provider generic_openai`` on a workflow without ``base_url`` fails cleanly."""
         _write_checkpoint(tmp_path, "run-generic", status="failed")
         result = runner.invoke(
             app,

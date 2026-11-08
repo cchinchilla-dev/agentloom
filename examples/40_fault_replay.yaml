@@ -1,7 +1,7 @@
 name: fault-replay
 version: "1.0"
 description: |
-  Deterministic failure replay (#123). The recording declares two faults for
+  Deterministic failure replay. The recording declares two faults for
   ``draft`` before its answer: a 429 rate limit, then a 503. Every run fails
   the same two calls the same way, and the step's retry policy recovers on the
   third attempt, through the same gateway and retry paths a real outage takes.

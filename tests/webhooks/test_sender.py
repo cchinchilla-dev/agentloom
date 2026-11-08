@@ -91,7 +91,6 @@ class TestSendWebhook:
     async def test_failure_does_not_raise(self, wh_context: WebhookContext) -> None:
         respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(500))
         config = WebhookConfig(url="https://hooks.example.com/wh", timeout=1.0)
-        # Should not raise even on HTTP 500
         await send_webhook(config, wh_context)
 
     @respx.mock
@@ -105,8 +104,7 @@ class TestSendWebhook:
             ]
         )
         config = WebhookConfig(url="https://hooks.example.com/wh", timeout=1.0)
-        # Exercise the full retry schedule (2s + 4s backoff) by lifting the
-        # deadline above the 5s default.
+        # A deadline above the 5s default lets the full 2s + 4s backoff schedule run.
         await send_webhook(config, wh_context, deadline_s=30.0)
         assert route.call_count == 3
 
@@ -148,11 +146,11 @@ class TestSendWebhook:
     @respx.mock
     @pytest.mark.anyio()
     async def test_deadline_enforced(self, wh_context: WebhookContext) -> None:
-        """A slow endpoint must not block the caller past ``deadline_s``."""
+        """The retry backoff stops at ``deadline_s``; the delivery is reported as a timeout."""
         respx.post("https://hooks.example.com/wh").mock(return_value=httpx.Response(500))
         config = WebhookConfig(url="https://hooks.example.com/wh", timeout=1.0)
         observer = MagicMock()
-        # 1s deadline vs. 2s+4s retry schedule → should timeout fast.
+        # The 1s deadline falls inside the 2s backoff after the first 500.
         await send_webhook(config, wh_context, observer=observer, deadline_s=1.0)
         observer.on_webhook_delivery.assert_called_once()
         args = observer.on_webhook_delivery.call_args[0]
@@ -160,13 +158,7 @@ class TestSendWebhook:
 
 
 class TestSandboxGate:
-    """Webhook sender consults the sandbox before issuing the POST.
-
-    Without this gate, ``approval_gate.notify.url`` reaches loopback /
-    link-local / RFC 1918 destinations regardless of the sandbox's
-    ``allowed_domains``, opening an SSRF surface to cloud metadata
-    services and in-cluster daemons.
-    """
+    """The sandbox gates the POST so a notify URL cannot reach internal hosts (SSRF)."""
 
     @respx.mock
     @pytest.mark.anyio()

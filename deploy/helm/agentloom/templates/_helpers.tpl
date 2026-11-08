@@ -101,11 +101,7 @@ containers:
       {{- if .Values.ollama.enabled }}
       - name: OLLAMA_BASE_URL
         value: "http://{{ include "agentloom.fullname" . }}-ollama.{{ .Release.Namespace }}.svc.cluster.local:11434"
-      # ``AGENTLOOM_OLLAMA_FALLBACK`` opt-in is implied when Ollama is
-      # deployed in-cluster — a user who set ``ollama.enabled=true``
-      # expects AgentLoom to actually use the deployed service. Without
-      # this the pre-0.5.0 implicit-fallback behaviour is gone and the
-      # bundled Ollama pod sits unreachable from agentloom pods.
+      # Without the flag only workflows whose provider is ollama would reach the in-cluster Ollama.
       - name: AGENTLOOM_OLLAMA_FALLBACK
         value: "1"
       {{- end }}

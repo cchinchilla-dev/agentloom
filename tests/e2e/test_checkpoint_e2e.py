@@ -1,12 +1,6 @@
 """End-to-end test for the checkpoint lifecycle against a live Ollama instance.
 
-Exercises the full flow: ``agentloom run --checkpoint`` → verify checkpoint
-file → ``agentloom runs`` → ``agentloom resume``.
-
-Requires a running Ollama server with the test model pulled.
-Excluded from normal test runs via the ``e2e`` marker.
-
-To run locally::
+Needs a running Ollama server with the test model pulled::
 
     ollama pull qwen2.5:0.5b
     uv run pytest -m e2e -k checkpoint -v
@@ -83,17 +77,14 @@ class TestCheckpointLifecycle:
             )
             assert "Run ID:" in result.stdout
 
-            # Extract run ID
             match = re.search(r"Run ID:\s+(\S+)", result.stdout)
             assert match, f"Could not find Run ID in: {result.stdout}"
             run_id = match.group(1)
 
-            # Verify checkpoint file on disk
             cp_files = list(Path(cp_dir).glob("*.json"))
             assert len(cp_files) == 1
             assert cp_files[0].stem == run_id
 
-            # Verify checkpoint content
             checkpoint = json.loads(cp_files[0].read_text())
             assert checkpoint["workflow_name"] == "e2e-checkpoint"
             assert checkpoint["status"] == "success"
@@ -108,7 +99,6 @@ class TestCheckpointLifecycle:
             assert run_id in list_result.stdout
             assert "e2e-checkpoint" in list_result.stdout
 
-            # JSON output
             list_json = _run_cli("runs", "--checkpoint-dir", cp_dir, "--json")
             assert list_json.returncode == 0
             runs_data = json.loads(list_json.stdout)

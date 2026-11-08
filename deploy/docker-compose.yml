@@ -16,21 +16,14 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-      # The default `production` stage already ships the observability
-      # extra — no build arg needed. Use `target: production-lite` for
-      # the smaller image without OTel / Prometheus support.
+      # `production` (default) ships the observability extra; `target: production-lite` drops it.
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
     env_file:
       - path: ../.env
         required: false
-    # Both the ``examples/`` tree and the committed ``recordings/``
-    # fixtures live inside the image at ``/workflows`` and
-    # ``/workflows/recordings`` respectively, so the mock-provider
-    # examples run offline without extra mounts. Uncomment / edit the
-    # volumes block to point at your own workflow directory instead —
-    # e.g. ``../my-workflows:/workflows/custom:ro``.
+    # examples/ and recordings/ are baked into /workflows; mount your own workflows like this:
     #
     # volumes:
     #   - ../my-workflows:/workflows/custom:ro

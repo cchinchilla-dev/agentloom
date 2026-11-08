@@ -2,7 +2,7 @@ name: chatbot-conversation
 version: "1.0"
 description: |
   Multi-turn chatbot that keeps state across llm_call steps via the
-  Conversation primitive (#119). Each step loads ``state.chat``, appends
+  Conversation primitive. Each step loads ``state.chat``, appends
   the rendered ``prompt`` as the next user turn, calls the model, and
   writes the assistant reply back — the checkpointer picks the whole
   history up transparently on resume.

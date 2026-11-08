@@ -83,12 +83,11 @@ def _skip(msg: str) -> None:
 
 
 def _load_yaml(path: Path) -> dict | list | None:
-    """Load a YAML file. Returns None on parse error."""
+    """Load a YAML file, or return None when PyYAML is missing."""
     if yaml is None:
         return None
     with open(path) as f:
         return yaml.safe_load(f)
-
 
 
 def _file_exists(path: Path) -> bool:
@@ -159,9 +158,9 @@ def audit_dockerfile() -> None:
     else:
         _fail("Missing OTEL_EXPORTER_OTLP_ENDPOINT default")
 
-    # python:3.12-slim base (not alpine)
-    if "python:3.12-slim" in content:
-        _pass("Base image is python:3.12-slim (not alpine)")
+    slim = re.search(r"^FROM\s+python:3\.\d+-slim\b", content, re.MULTILINE)
+    if slim:
+        _pass(f"Base image is {slim.group(0).split()[1]} (not alpine)")
     elif "alpine" in content.lower():
         _fail("Alpine base — pydantic/httpx compilation issues")
     else:

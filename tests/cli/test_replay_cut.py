@@ -1,4 +1,4 @@
-"""``agentloom replay --live-from / --force-live`` (#165)."""
+"""``agentloom replay --live-from / --force-live`` switches a replay to live calls."""
 
 from __future__ import annotations
 

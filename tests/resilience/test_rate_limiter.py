@@ -109,7 +109,6 @@ class TestRefill:
     def test_refill_adds_tokens(self) -> None:
         rl = RateLimiter(max_requests_per_minute=60)
         rl._request_tokens = 0.0
-        # Simulate time passing
         rl._request_last_refill = time.monotonic() - 1.0  # 1 second ago
         rl._refill()
         # 60 RPM = 1 per second, so ~1 token should be refilled

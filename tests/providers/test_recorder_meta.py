@@ -1,4 +1,4 @@
-"""Recordings keep each response's metadata, outside the request hash (#166)."""
+"""Recordings keep each response's metadata, outside the request hash."""
 
 from __future__ import annotations
 

@@ -87,7 +87,7 @@ Returned by `engine.run()` after workflow execution completes:
 | `total_cost_usd` | `float` | Estimated total cost |
 | `error` | `str | None` | First failure message, if any |
 | `run_id` | `str` | Per-execution UUID (always set; propagated to spans / history records) |
-| `annotations` | `list[QualityAnnotation]` | Post-hoc quality scores attached via `result.annotate(...)` (#59) |
+| `annotations` | `list[QualityAnnotation]` | Post-hoc quality scores attached via `result.annotate(...)` |
 
 ### StepResult
 
@@ -150,7 +150,7 @@ The engine talks to its collaborators (state manager, provider gateway, tool reg
 | `CheckpointerProtocol` | Engine checkpoint save / restore |
 | `StreamCallbackProtocol` | Per-chunk callback for streaming LLM steps |
 
-Step code holds a `StepContext` whose collaborator references are typed as `Any` plus a comment naming the expected protocol — Pydantic v2 forward refs to runtime-checkable Protocols are fragile, but call sites that import from `core.protocols` still get type-checker coverage. The lone exception is `checkpointer`, which keeps the concrete `BaseCheckpointer` ABC import carried over from #111 (the original fix needed an eager import to satisfy Pydantic v2 model resolution; the comment in `steps/base.py` records the rationale). Each protocol is `@runtime_checkable` so tests can pass mocks without subclassing the concrete implementation.
+Step code holds a `StepContext` whose collaborator references are typed as `Any` plus a comment naming the expected protocol — Pydantic v2 forward refs to runtime-checkable Protocols are fragile, but call sites that import from `core.protocols` still get type-checker coverage. The lone exception is `checkpointer`, which imports the concrete `BaseCheckpointer` ABC at runtime because Pydantic v2 resolves that annotation. Each protocol is `@runtime_checkable` so tests can pass mocks without subclassing the concrete implementation.
 
 The engine and `resilience/retry.py` share `compute_backoff` and `is_retryable_exception` — there's a single source of truth for retry waveforms and retryability rules across both step retries and gateway retries.
 
@@ -166,7 +166,7 @@ The engine and `resilience/retry.py` share `compute_backoff` and `is_retryable_e
 | `agentloom.contracts.stable` | `Message`, `Attachment`, `ToolCall`, `ToolDefinition`, `TokenUsage`, `ProviderResponse`, `ResponseMeta`, `WorkflowHandle` | Semantic versioning |
 | `agentloom.contracts.experimental` | `SpanName`, `SpanAttr`, `MetricName`, `GenAIOperationName`, `GenAIProviderName`; the inter-agent event models (`InterAgentEvent` and its six types) and their JSON Schema (`SCHEMA_PATH`, `SCHEMA_URI`) | May change in a minor release; importing it emits a `FutureWarning` |
 
-The runtime modules that used to define these models (`core.models`, `core.results`, `providers.base`, `observability.schema`) re-export them, so existing imports keep working and both paths give the same class.
+The runtime modules `core.models`, `core.results`, `providers.base` and `observability.schema` re-export them, so both import paths give the same class.
 
 `WorkflowHandle` is a structural protocol: `input_schema` and `output_schema` (JSON Schema) and `async run(inputs) -> outputs`. A wrapper around another framework satisfies it without depending on AgentLoom. `agentloom.core.handle.WorkflowAdapter` exposes an AgentLoom workflow through it:
 

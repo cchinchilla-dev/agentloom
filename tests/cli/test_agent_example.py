@@ -1,4 +1,4 @@
-"""Example 41 runs offline from its recording and verifies (#120)."""
+"""Example 41 runs offline from its recording and passes the determinism check."""
 
 from __future__ import annotations
 

@@ -26,11 +26,7 @@ class TestDotAccessDict:
         assert d.user.name == "Bob"
 
     def test_missing_key_returns_empty_string(self) -> None:
-        # Missing key now returns the ``_MissingDotAccess`` sentinel so a
-        # chained ``{state.missing.deep}`` keeps rendering empty instead
-        # of raising ``AttributeError`` on the next segment. The sentinel
-        # still renders to ``""`` under ``str``/``format`` — that's what
-        # ``str.format_map`` actually calls.
+        # The ``_MissingDotAccess`` sentinel renders empty and keeps chained access from raising.
         d = DotAccessDict({"name": "Alice"})
         assert str(d.missing) == ""
 
@@ -51,8 +47,7 @@ class TestDotAccessDict:
         assert d.items[0].name == "Alice"
 
     def test_list_out_of_bounds_renders_empty(self) -> None:
-        # Out-of-range list index renders the sentinel (empty under
-        # ``str``/``format``) so chained access stays graceful.
+        # An out-of-range index yields the sentinel, so chained access past it stays graceful.
         d = DotAccessDict({"items": [1]})
         assert str(d.items[5]) == ""
 
@@ -80,8 +75,7 @@ class TestDotAccessList:
         assert dl[-1] == 3
 
     def test_out_of_bounds_renders_empty(self) -> None:
-        # Out-of-range list index renders the sentinel (empty under
-        # ``str``/``format``) so chained access stays graceful.
+        # An out-of-range index yields the sentinel, so chained access past it stays graceful.
         dl = DotAccessList([1])
         assert str(dl[5]) == ""
 
@@ -199,11 +193,7 @@ class TestLLMCallStep:
         assert result.token_usage.total_tokens == 30
 
     def test_prompt_metadata_template_vars_handles_indexed_paths(self) -> None:
-        # ``state.items[0].name`` must round-trip as the full path, not be
-        # truncated to ``state.items``. The previous regex (``[\w.]+``) chopped
-        # at ``[``; the new one captures the bracketed segment so the
-        # ``agentloom.prompt.template_vars`` attr stays accurate for prompts
-        # that reach into list elements.
+        # The full indexed path is captured, so ``agentloom.prompt.template_vars`` stays accurate.
         from agentloom.steps.llm_call import _build_prompt_metadata
 
         meta = _build_prompt_metadata(
@@ -214,15 +204,11 @@ class TestLLMCallStep:
         )
         assert "state.items[0].name" in meta.template_vars
         assert "state.q" in meta.template_vars
-        # The format-spec / conversion suffix must NOT bleed into the
-        # captured variable name — this would corrupt downstream filtering
-        # on ``agentloom.prompt.template_vars``.
+        # A format spec or conversion suffix in a name would corrupt filtering on that attribute.
         assert all("!" not in v and ":" not in v for v in meta.template_vars)
 
     async def test_template_error_raises_step_error(self, step: LLMCallStep) -> None:
-        # ``KeyError`` / ``ValueError`` from ``format_map`` surface as a
-        # ``StepError`` so the engine reports a clean failure with the
-        # step id, not a raw template traceback.
+        # A ``StepError`` carries the step id, which a raw ``format_map`` traceback would not.
         from agentloom.exceptions import StepError
 
         gw = ProviderGateway()
@@ -240,9 +226,6 @@ class TestLLMCallStep:
         assert raised.value.is_retryable is False
 
     async def test_capture_prompts_attaches_span_event(self, step: LLMCallStep) -> None:
-        # When ``capture_prompts=True``, ``LLMCallStep`` calls
-        # ``observer.attach_step_event`` with the rendered prompt as the
-        # event payload. Off by default — covered separately.
         from unittest.mock import MagicMock
 
         from tests.conftest import MockProvider
@@ -268,7 +251,6 @@ class TestLLMCallStep:
         )
         result = await step.execute(ctx)
         assert result.status == StepStatus.SUCCESS
-        # Event fired with the rendered prompt as payload.
         observer.attach_step_event.assert_called_once()
         call = observer.attach_step_event.call_args
         assert call.args[0] == "answer"
@@ -277,9 +259,7 @@ class TestLLMCallStep:
         assert call.args[2]["system_prompt"] == "System world"
 
     async def test_capture_prompts_redacts_against_policy(self, step: LLMCallStep) -> None:
-        # With a redaction policy on the context, the captured span event
-        # is re-rendered against the redacted state so secret values
-        # never reach the trace backend. The wire still gets plaintext.
+        # The span event renders against redacted state; the provider still gets plaintext.
         from unittest.mock import MagicMock
 
         from agentloom.core.redact import RedactionPolicy, is_redacted
@@ -309,19 +289,15 @@ class TestLLMCallStep:
         )
         result = await step.execute(ctx)
         assert result.status == StepStatus.SUCCESS
-        # Captured event renders the sentinel for the flagged key, the
-        # plaintext for the other one.
         observer.attach_step_event.assert_called_once()
         payload = observer.attach_step_event.call_args.args[2]
         assert "sk-do-not-trace" not in payload["prompt"]
         assert "sk-do-not-trace" not in payload["system_prompt"]
         assert "alice" in payload["prompt"]
-        # The sentinel itself appears in the redacted prompt.
         sentinel_marker = "<REDACTED:sha256="
         assert sentinel_marker in payload["prompt"]
         assert sentinel_marker in payload["system_prompt"]
-        # ``is_redacted`` recognises the substituted token.
-        # (Strip the prompt down to just the sentinel for the check.)
+        # ``is_redacted`` takes the bare token, so slice it out of each prompt.
         for line in (payload["prompt"], payload["system_prompt"]):
             start = line.find(sentinel_marker)
             end = line.find(">", start) + 1
@@ -347,7 +323,6 @@ class TestLLMCallStep:
         )
         result = await step.execute(ctx)
         assert result.status == StepStatus.SUCCESS
-        # Verify system message was sent
         assert provider.calls[0]["messages"][0]["role"] == "system"
         assert "helpful" in provider.calls[0]["messages"][0]["content"]
 
@@ -358,7 +333,6 @@ class TestLLMCallStep:
 
         from agentloom.providers.multimodal import ImageBlock, TextBlock
 
-        # Create a tiny image file
         tiny_png = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
             "nGP4z8BQDwAEgAF/pooBPQAAAABJRU5ErkJggg=="
@@ -387,7 +361,6 @@ class TestLLMCallStep:
         result = await step.execute(ctx)
         assert result.status == StepStatus.SUCCESS
 
-        # Verify content blocks were sent
         user_msg = provider.calls[0]["messages"][0]
         assert user_msg["role"] == "user"
         content = user_msg["content"]
@@ -395,11 +368,9 @@ class TestLLMCallStep:
         assert isinstance(content[0], TextBlock)
         assert isinstance(content[1], ImageBlock)
         assert content[1].media_type == "image/png"
-        # Verify attachment_count is set on StepResult
         assert result.attachment_count == 1
 
     async def test_attachment_source_template_rendered(self, step: LLMCallStep) -> None:
-        """Template variables in attachment source are resolved."""
         import base64
         import tempfile
 
@@ -512,7 +483,7 @@ class TestLLMCallStep:
         assert "".join(text for _, text in received_chunks) == "Mock response"
 
     async def test_nonstreaming_backward_compat(self, step: LLMCallStep) -> None:
-        """stream=False preserves existing complete() behavior."""
+        """``stream=False`` calls ``complete()`` and records no time to first token."""
         from tests.conftest import MockProvider
 
         provider = MockProvider()
@@ -537,11 +508,10 @@ class TestLLMCallStep:
 
 
 class TestThinkingConfig:
-    """``StepDefinition.thinking`` activates provider-side reasoning from
-    YAML/dict config. The step layer forwards the ``ThinkingConfig`` object
-    to the gateway under a single ``thinking_config`` kwarg; each provider
-    adapter translates it to its own request shape (Anthropic ``thinking``,
-    Gemini ``thinkingConfig``, Ollama ``think``)."""
+    """``StepDefinition.thinking`` reaches the gateway as a single ``thinking_config`` kwarg.
+
+    Each provider adapter translates it to its own request shape.
+    """
 
     @staticmethod
     def test_disabled_thinking_emits_no_kwargs() -> None:
@@ -584,8 +554,7 @@ class TestThinkingConfig:
             thinking=cfg,
         )
         kwargs = LLMCallStep._build_thinking_kwargs(step)
-        # The translation to ``budget_tokens`` happens per-provider, so the
-        # step layer just passes the config object through.
+        # Each provider translates the config, budget included; the step passes it through.
         assert kwargs == {"thinking_config": cfg}
 
     @staticmethod
@@ -598,12 +567,7 @@ class TestThinkingConfig:
 
     @staticmethod
     def test_yaml_thinking_config_parses() -> None:
-        # Workflow YAML must accept ``thinking`` as a nested mapping under
-        # the step definition without any extra wiring. We feed a parsed
-        # mapping into ``from_dict`` rather than the YAML string form so
-        # the test stays clear of the path-existence quirk in
-        # ``WorkflowParser.from_yaml`` (which calls ``Path.exists()`` on
-        # the input and trips ENAMETOOLONG on multi-line strings).
+        # ``from_yaml`` calls ``Path.exists()`` on its input: ENAMETOOLONG on a long YAML string.
         import yaml as yaml_loader
 
         from agentloom.core.parser import WorkflowParser

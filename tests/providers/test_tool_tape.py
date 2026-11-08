@@ -1,4 +1,4 @@
-"""Tool results in a recording (#164): capture them, replay them offline, verify them."""
+"""Tool results in a recording: capture them, replay them offline, verify them."""
 
 from __future__ import annotations
 
@@ -111,7 +111,7 @@ async def test_verify_mode_fails_on_result_drift_and_names_the_call(tmp_path: Pa
 
 
 async def test_recordings_without_tools_section_load_unchanged(tmp_path: Path) -> None:
-    # A recording made before #164 holds LLM turns only: it replays with live tools, as before.
+    # A recording without a ``_tools`` section holds LLM turns only: it replays with live tools.
     tool = _AddTool()
     provider = MockProvider(responses_file=_recording(tmp_path), strict=True)
     replayed = await _run(provider, tool, None)

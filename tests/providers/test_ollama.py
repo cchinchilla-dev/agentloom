@@ -37,10 +37,7 @@ class TestOllamaProvider:
 
     @respx.mock
     async def test_ollama_reasoning_tokens_zero_documented_limitation(self) -> None:
-        # Ollama exposes a single ``eval_count`` for all output tokens
-        # without splitting thinking vs visible. ``reasoning_tokens`` thus
-        # always reports 0 — documented limitation. Cost is unaffected
-        # (local models are free).
+        # Ollama has one ``eval_count`` for all output, thinking included: nothing to split.
         respx.post("http://localhost:11434/api/chat").mock(
             return_value=httpx.Response(200, json=MOCK_RESPONSE)
         )
@@ -53,10 +50,7 @@ class TestOllamaProvider:
 
     @respx.mock
     async def test_ollama_message_thinking_populates_reasoning_content(self) -> None:
-        # Ollama 0.9+ separates the trace into ``message.thinking`` when
-        # the caller requested thinking via the ``think`` request param.
-        # The adapter must surface it on ``reasoning_content`` with the
-        # visible answer kept clean on ``content``.
+        # With ``think`` requested, Ollama 0.9+ returns the trace in ``message.thinking``.
         thinking_response = {
             "model": "deepseek-r1",
             "message": {
@@ -81,10 +75,7 @@ class TestOllamaProvider:
 
     @respx.mock
     async def test_ollama_inline_think_tags_stripped_from_content(self) -> None:
-        # Older models (or calls without ``think=true``) leak the trace
-        # inline as ``<think>...</think>`` in ``message.content``. The
-        # adapter strips the wrapper and surfaces the captured group on
-        # ``reasoning_content``.
+        # Without ``think=true``, or on older models, the trace comes inline in ``<think>`` tags.
         legacy_response = {
             "model": "qwen3",
             "message": {
@@ -108,10 +99,7 @@ class TestOllamaProvider:
 
     @respx.mock
     async def test_ollama_think_param_passed_to_payload(self) -> None:
-        # ``ThinkingConfig.enabled=True`` must surface as the top-level
-        # ``think`` request param so Ollama 0.9+ activates thinking mode.
-        # When ``level`` is set, it overrides the bool — GPT-OSS via
-        # Ollama accepts ``"low"|"medium"|"high"`` directly.
+        # ``level`` overrides the bool: GPT-OSS on Ollama takes ``"low"|"medium"|"high"`` as is.
         from agentloom.core.models import ThinkingConfig
 
         route = respx.post("http://localhost:11434/api/chat").mock(
@@ -130,8 +118,7 @@ class TestOllamaProvider:
 
     @respx.mock
     async def test_ollama_think_param_bool_when_no_level(self) -> None:
-        # Without ``level``, the adapter sends ``think: true`` so reasoning
-        # models (DeepSeek-R1, Qwen3) activate their default thinking mode.
+        # A bare ``think: true`` starts the default thinking mode of DeepSeek-R1 or Qwen3.
         from agentloom.core.models import ThinkingConfig
 
         route = respx.post("http://localhost:11434/api/chat").mock(
@@ -149,10 +136,6 @@ class TestOllamaProvider:
 
     @respx.mock
     async def test_ollama_capture_reasoning_false_suppresses_trace(self) -> None:
-        # When the caller opts out via ``capture_reasoning=False`` the
-        # adapter must NOT surface ``message.thinking`` or inline
-        # ``<think>...</think>`` content on ``reasoning_content``. The
-        # visible answer must still be clean (tags stripped from content).
         from agentloom.core.models import ThinkingConfig
 
         legacy_with_inline = {
@@ -181,10 +164,7 @@ class TestOllamaProvider:
 
     @respx.mock
     async def test_ollama_stream_thinking_chunks_concat_into_reasoning_content(self) -> None:
-        # The streaming path must collect ``message.thinking`` deltas across
-        # NDJSON chunks and concatenate them into ``StreamResponse.reasoning_content``
-        # once the ``done`` event fires. ``think`` request param must also
-        # land on the wire payload for this branch.
+        # The ``think`` request param must reach the wire on the streaming path too.
         from agentloom.core.models import ThinkingConfig
 
         ndjson = (
@@ -450,18 +430,14 @@ class TestOllamaBaseURLResolution:
             side_effect=httpx.ConnectError("connection refused")
         )
         provider = OllamaProvider()
-        # Post-fix: the message begins with the exception class name so log
-        # greps can spot the failure mode even when ``str(exc)`` is empty
-        # (async httpx ReadTimeout in particular has an empty str repr).
+        # The message leads with the class name: ``str(exc)`` can be empty (httpx ``ReadTimeout``).
         with pytest.raises(ProviderError, match="ConnectError"):
             await provider.complete(messages=[{"role": "user", "content": "x"}], model="phi4")
         await provider.close()
 
     @respx.mock
     async def test_options_built_from_temperature_max_tokens_extras(self) -> None:
-        """Verify temperature, max_tokens (→num_predict), and allowlisted
-        extras (top_p, seed) all land in the request ``options`` block, while
-        ``format`` and ``tools`` sit at the top level."""
+        """Sampling and extras go in ``options``; ``format`` and ``tools`` stay top level."""
         captured: dict[str, object] = {}
 
         def _capture(request: httpx.Request) -> httpx.Response:

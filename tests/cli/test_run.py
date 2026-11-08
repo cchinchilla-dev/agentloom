@@ -38,7 +38,7 @@ class TestRunCommand:
         assert result.exit_code != 0
 
     def test_state_override_format(self) -> None:
-        """Invalid state format should fail."""
+        """A ``--state`` override not in ``key=value`` form fails."""
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             f.write(SIMPLE_YAML)
             f.flush()
@@ -47,7 +47,7 @@ class TestRunCommand:
         assert "key=value" in (result.output + (result.stderr or ""))
 
     def test_generic_openai_key_variable_not_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An unset ``api_key_env`` variable stops the run with a clear error (#48)."""
+        """An unset ``api_key_env`` variable stops the run with a clear error."""
         monkeypatch.delenv("VLLM_API_KEY", raising=False)
         endpoint = (
             "provider: generic_openai\n"
@@ -64,7 +64,7 @@ class TestRunCommand:
 
 class TestRunCheckpoint:
     def test_checkpoint_flag_creates_checkpoint(self) -> None:
-        """Running with --checkpoint should print a run ID and create a checkpoint file."""
+        """``--checkpoint`` prints the run ID and writes one checkpoint file."""
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             f.write(SIMPLE_YAML)
             f.flush()
@@ -96,16 +96,13 @@ class TestRunCheckpoint:
                 assert result.exit_code == 0, f"stdout: {result.output}"
                 assert "Run ID:" in result.output
 
-                # Verify checkpoint file exists
                 from pathlib import Path
 
                 cp_files = list(Path(cp_dir).glob("*.json"))
                 assert len(cp_files) == 1
 
     def test_no_run_id_echo_without_checkpoint_flag(self) -> None:
-        """Without --checkpoint the CLI should not surface the Run ID to
-        the user (the id is only actionable when a checkpointer is active —
-        otherwise it's internal-only metadata used for trace correlation)."""
+        """Without ``--checkpoint`` the run ID is not printed: nothing can resume it."""
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             f.write(SIMPLE_YAML)
             f.flush()
@@ -141,9 +138,7 @@ def no_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
 class TestSetupProviders:
     @pytest.mark.usefixtures("no_provider_env")
     def test_ollama_registered_when_explicit_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A workflow that names ``ollama`` as its primary provider
-        opts in via ``AGENTLOOM_OLLAMA_FALLBACK``. The post-0.5.0 default
-        no longer auto-registers it for the no-config case."""
+        """Ollama registers when the workflow names it as its primary provider."""
         from agentloom.cli.run import _setup_providers
         from agentloom.providers.gateway import ProviderGateway
 
@@ -155,9 +150,7 @@ class TestSetupProviders:
 
     @pytest.mark.usefixtures("no_provider_env")
     def test_ollama_not_registered_by_default(self) -> None:
-        """Mirror of the config-layer test — the CLI surface honours the
-        opt-in too. Pre-0.5.0 this returned an Ollama provider even with
-        no env var set."""
+        """Without the opt-in flag the CLI does not register Ollama, as in the config layer."""
         from agentloom.cli.run import _setup_providers
         from agentloom.providers.gateway import ProviderGateway
 
@@ -176,7 +169,7 @@ class TestSetupProviders:
         _setup_providers(gw, "openai")
         names = [e.provider.name for e in gw._providers]
         assert "openai" in names
-        # ollama is opt-in (post-0.5.0) — must NOT show up here.
+        # Ollama is opt-in: another provider's key does not bring it in.
         assert "ollama" not in names
 
     def test_anthropic_registered_when_key_set(self) -> None:
@@ -201,10 +194,7 @@ class TestSetupProviders:
 
     @pytest.mark.usefixtures("no_provider_env")
     def test_priority_reflects_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When both OpenAI (primary) and Ollama (opt-in fallback) are
-        registered, the default provider should sort ahead of the
-        fallback. Force ``AGENTLOOM_OLLAMA_FALLBACK=1`` here because
-        Ollama is no longer registered by default (post-0.5.0)."""
+        """With Ollama opted in as fallback, the default provider sorts ahead of it."""
         from agentloom.cli.run import _setup_providers
         from agentloom.providers.gateway import ProviderGateway
 
@@ -227,8 +217,7 @@ class TestSetupObserver:
         from agentloom.cli.run import _setup_observer
 
         _setup_observer(lite=False)
-        # If OTel is installed, observer is created; if not, None
-        # Either way, no error should occur
+        # No assertion: the result depends on whether OTel is installed; neither path may raise.
 
     def test_observer_respects_otel_endpoint_env(self) -> None:
         from types import ModuleType
@@ -268,7 +257,6 @@ class TestPrintResult:
             },
             final_state={"answer": "42"},
         )
-        # Should not raise
         _print_result(result)
 
     def test_prints_failure(self) -> None:
@@ -347,10 +335,7 @@ class TestRunRecordAndReplay:
         assert "--record-tools needs --record" in (result.output + (result.stderr or ""))
 
     def test_mock_responses_invalid_file_exits_with_error(self) -> None:
-        # An unreadable / malformed recording file is a startup error —
-        # ``MockProvider.__init__`` raises ValueError and the CLI must
-        # turn that into a clean exit-1 with the file path in the message,
-        # not let the workflow continue against an empty fixture.
+        # A malformed recording is a startup error (exit 1), not a run on an empty fixture.
         from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -454,15 +439,13 @@ class TestRunRecordAndReplay:
             import json as _json
 
             data = _json.loads(rec_path.read_text())
-            # v2 recording file carries a _version envelope; there should be
-            # exactly one captured call entry alongside it.
+            # The recording carries a ``_version`` envelope beside the one captured call.
             entries = {k: v for k, v in data.items() if not k.startswith("_")}
             assert len(entries) == 1
 
 
 class TestStateJSONParsing:
-    """F38: ``--state`` decodes JSON-shaped values into real lists /
-    dicts / numbers; plain strings and URLs pass through untouched."""
+    """``--state`` decodes JSON-shaped values; plain strings and URLs pass through untouched."""
 
     def test_parses_json_array(self) -> None:
         from agentloom.cli.run import _parse_state_value
@@ -493,8 +476,7 @@ class TestStateJSONParsing:
         assert _parse_state_value("hello") == "hello"
 
     def test_preserves_url_with_query_string(self) -> None:
-        # A URL is not JSON-shaped — it must round-trip as a string even
-        # though it contains ``=`` and ``&``.
+        # A URL holds ``=`` and ``&`` but is not JSON-shaped, so it stays a string.
         from agentloom.cli.run import _parse_state_value
 
         url = "https://example.com/x?a=b&c=d"
@@ -503,7 +485,6 @@ class TestStateJSONParsing:
     def test_json_shaped_but_invalid_falls_back_to_string(self) -> None:
         from agentloom.cli.run import _parse_state_value
 
-        # Opens like JSON but is not valid — keep the raw string.
         assert _parse_state_value("[not, valid") == "[not, valid"
 
     def test_empty_value_preserved(self) -> None:

@@ -97,7 +97,6 @@ class TestApprovalGateResume:
     async def test_resume_with_approve(self, tmp_path: Path) -> None:
         checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
 
-        # First run — pauses at approve
         engine = WorkflowEngine(
             workflow=_approval_workflow(),
             provider_gateway=_mock_gateway(),
@@ -107,7 +106,6 @@ class TestApprovalGateResume:
         first = await engine.run()
         assert first.status == WorkflowStatus.PAUSED
 
-        # Resume with approval
         checkpoint_data = await checkpointer.load("approve-run")
         resumed = await WorkflowEngine.from_checkpoint(
             checkpoint_data=checkpoint_data,

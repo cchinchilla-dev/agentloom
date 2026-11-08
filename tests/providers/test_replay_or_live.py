@@ -1,4 +1,4 @@
-"""Replay up to a cut point, then run live (#165)."""
+"""Replay up to a cut point, then run live."""
 
 from __future__ import annotations
 

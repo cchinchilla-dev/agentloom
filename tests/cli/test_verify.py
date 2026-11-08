@@ -1,4 +1,4 @@
-"""``agentloom verify-determinism`` and the event log ``--record`` writes (#135)."""
+"""``agentloom verify-determinism`` and the event log ``--record`` writes."""
 
 from __future__ import annotations
 
@@ -208,7 +208,7 @@ steps:
 
 
 def test_verify_cli_passes_on_a_retried_subworkflow(tmp_path: Path) -> None:
-    """#185: the recorded run retried ``sub`` after a 503; its replays do not, and still agree."""
+    """The recorded run retried ``sub`` after a 503; its replays do not, and still agree."""
     workflow = tmp_path / "wf.yaml"
     workflow.write_text(RETRIED_SUB)
     answers = tmp_path / "answers.json"
@@ -228,7 +228,7 @@ def test_inter_agent_events_extend_recordings_without_breaking_v2_format(tmp_pat
     with _tools(itertools.repeat("recorded")):
         replayed = runner.invoke(app, ["replay", str(workflow), "-r", str(recording)])
     assert replayed.exit_code == 0, replayed.output
-    # A recording from before the event log: the replays are compared with each other only.
+    # A recording without an event log: the replays are compared with each other only.
     data = json.loads(recording.read_text())
     del data[EVENTS_KEY]
     recording.write_text(json.dumps(data))
