@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-import pytest
+from typing import Annotated, Any
 
+import pytest
+from pydantic import BaseModel
+
+from agentloom.core.models import StepDefinition, WorkflowDefinition
 from agentloom.core.redact import (
     ENV_VAR,
     RedactionPolicy,
     is_redacted,
+    redact_model,
     redact_state,
 )
+from agentloom.core.results import StepResult
 
 
 class TestRedactionPolicy:
@@ -329,3 +335,140 @@ class TestRedactionEdgeCases:
         assert is_redacted(out["access_token"])
         assert is_redacted(out["credentials"]["access_token"])
         assert out["credentials"]["user"] == "alice"
+
+
+class _Inner(BaseModel):
+    token_count: int = 0
+    label: str = ""
+    extra: dict[str, Any] = {}
+
+
+class _Outer(BaseModel):
+    inner: _Inner | None = None
+    items: list[_Inner] = []
+    by_name: dict[str, _Inner] = {}
+    free: dict[str, Any] = {}
+    texts: dict[str, str] = {}
+    counts: dict[str, int] = {}
+    either: Any | int = None
+    choice: str | _Inner = ""
+    paths: list[str] | None = None
+    table: dict[str, int] | None = None
+    raw: Any = None
+    tagged: Annotated[_Inner, "tag"] | None = None
+    tagged_items: list[Annotated[_Inner, "tag"]] = []
+    secrets: dict[str, str] | None = None
+    notes: list[dict[str, Any]] | None = None
+    maybe_texts: dict[str, str | None] = {}
+
+
+class TestRedactModel:
+    """``redact_model`` redacts the workflow's data and leaves the model's own fields typed."""
+
+    POLICY = RedactionPolicy(["*token*", "api_key"])
+
+    def test_the_models_own_fields_are_never_matched(self) -> None:
+        result = StepResult(step_id="s", status="success", time_to_first_token_ms=12.5)
+        result.token_usage.prompt_tokens = 7
+        out = redact_model(result.model_dump(), StepResult, self.POLICY)
+        assert out["token_usage"]["prompt_tokens"] == 7
+        assert out["time_to_first_token_ms"] == 12.5
+        StepResult.model_validate(out)
+
+    def test_free_form_data_is_redacted_by_key(self) -> None:
+        result = StepResult(step_id="s", status="success", output={"api_key": "dummy-1", "n": 1})
+        out = redact_model(result.model_dump(), StepResult, self.POLICY)
+        assert is_redacted(out["output"]["api_key"])
+        assert out["output"]["n"] == 1
+
+    def test_walks_nested_models_lists_and_maps_of_models(self) -> None:
+        data = _Outer(
+            inner=_Inner(token_count=1),
+            items=[_Inner(token_count=2)],
+            by_name={"dummy_token": _Inner(token_count=3)},
+        ).model_dump()
+        out = redact_model(data, _Outer, self.POLICY)
+        assert out["inner"]["token_count"] == 1
+        assert out["items"][0]["token_count"] == 2
+        assert out["by_name"]["dummy_token"]["token_count"] == 3  # a model, never a sentinel
+
+    def test_a_sentinel_lands_only_where_text_is_accepted(self) -> None:
+        data = _Outer(
+            free={"api_key": 1}, texts={"api_key": "sk"}, counts={"api_key": 5}
+        ).model_dump()
+        out = redact_model(data, _Outer, self.POLICY)
+        assert is_redacted(out["free"]["api_key"])
+        assert is_redacted(out["texts"]["api_key"])
+        assert out["counts"]["api_key"] == 5
+        _Outer.model_validate(out)
+
+    def test_unions_pick_the_option_that_fits(self) -> None:
+        data = _Outer(
+            either={"api_key": "sk"},
+            choice=_Inner(token_count=4),
+            paths=["a"],
+            table={"api_key": 2},
+        ).model_dump()
+        out = redact_model(data, _Outer, self.POLICY)
+        assert is_redacted(out["either"]["api_key"])  # Any among the options: free-form
+        assert out["choice"]["token_count"] == 4
+        assert out["paths"] == ["a"]
+        assert out["table"] == {"api_key": 2}
+
+        more = _Outer(
+            tagged=_Inner(token_count=6, extra={"api_key": "sk"}),
+            tagged_items=[_Inner(extra={"api_key": "sk"})],
+            secrets={"api_key": "sk"},
+            notes=[{"api_key": "sk"}],
+            maybe_texts={"api_key": "sk"},
+        ).model_dump()
+        out = redact_model(more, _Outer, self.POLICY)
+        assert out["tagged"]["token_count"] == 6
+        assert is_redacted(out["tagged"]["extra"]["api_key"])
+        assert is_redacted(out["tagged_items"][0]["extra"]["api_key"])
+        assert is_redacted(out["secrets"]["api_key"])
+        assert is_redacted(out["notes"][0]["api_key"])
+        assert is_redacted(out["maybe_texts"]["api_key"])
+        assert redact_model({"choice": "api_key"}, _Outer, self.POLICY) == {"choice": "api_key"}
+
+    def test_a_key_the_model_does_not_declare_is_data(self) -> None:
+        out = redact_model({"api_key": "sk", "raw": "x"}, _Outer, self.POLICY)
+        assert is_redacted(out["api_key"])
+        assert out["raw"] == "x"  # an Any scalar under its own field name
+
+    def test_parse_as_and_opaque(self) -> None:
+        step = StepDefinition(
+            id="sub",
+            type="subworkflow",
+            workflow_inline={
+                "name": "child",
+                "state": {"api_key": "dummy-child"},
+                "steps": [{"id": "a", "type": "llm_call", "prompt": "p", "max_tokens": 50}],
+            },
+            tools=[{"name": "t", "parameters": {"properties": {"api_key": {"type": "string"}}}}],
+        )
+        out = redact_model(
+            step.model_dump(),
+            StepDefinition,
+            self.POLICY,
+            parse_as={"workflow_inline": WorkflowDefinition},
+            opaque={"parameters"},
+        )
+        child = out["workflow_inline"]
+        assert is_redacted(child["state"]["api_key"])
+        assert child["steps"][0]["max_tokens"] == 50
+        WorkflowDefinition.model_validate(child)
+        assert out["tools"][0]["parameters"]["properties"]["api_key"] == {"type": "string"}
+
+    def test_a_map_of_models_keeps_its_keys_and_values(self) -> None:
+        wf = WorkflowDefinition(
+            name="w",
+            state_schema={"*token*": {"redact": True}},
+            steps=[StepDefinition(id="a", type="llm_call", prompt="p")],
+        )
+        out = redact_model(wf.model_dump(), WorkflowDefinition, self.POLICY)
+        assert out["state_schema"] == {"*token*": {"redact": True}}
+
+    def test_no_policy_returns_the_dump(self) -> None:
+        data = {"api_key": "sk"}
+        assert redact_model(data, _Outer, RedactionPolicy()) is data

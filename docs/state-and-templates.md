@@ -139,9 +139,6 @@ state_schema:
 - `AGENTLOOM_REDACT_STATE_KEYS=api_key,*_token,*password*` sets patterns for every workflow run in that environment, on top of each file's `state_schema`.
 - A redacted value becomes `<REDACTED:sha256=…>`, the same for the same value, so files can still be compared.
 
-> [!CAUTION]
-> Patterns are matched against every key in what a run saves, AgentLoom's own fields included. A pattern that matches a numeric one makes every run fail, even one whose steps all succeed: `*token*` matches `max_tokens` and `token_usage`. Write patterns for your own keys, such as `api_key`, `*_token` or `*password*`.
-
 Redaction applies wherever the state leaves the process:
 
 - checkpoints, including the workflow definition and step results saved in them;
@@ -149,6 +146,8 @@ Redaction applies wherever the state leaves the process:
 - the result that `agentloom run --json` prints, and that `WorkflowResult` returns in Python;
 - an approval gate's webhook `body_template`;
 - the prompts that `capture_prompts` adds to traces.
+
+In the workflow definition and the step results, patterns match the workflow's own data: its `state:` block, `tool_args`, `input`, webhook headers and each step's `output`, which is redacted whole when the key it writes matches. AgentLoom's own fields, such as `max_tokens` or `token_usage`, are never matched, so a pattern like `*token*` is safe.
 
 The state in memory stays plain, so a step that needs the secret, such as a tool call with `{state.api_key}`, still gets it. A subworkflow inherits its parent's patterns.
 
