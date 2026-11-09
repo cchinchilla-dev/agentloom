@@ -6,17 +6,29 @@ import hmac
 import ipaddress
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import typer
+
+if TYPE_CHECKING:
+    from agentloom.checkpointing.base import CheckpointData
+    from agentloom.checkpointing.file import FileCheckpointer
+    from agentloom.core.engine import WorkflowEngine
+    from agentloom.providers.gateway import ProviderGateway
 
 logger = logging.getLogger("agentloom.callback")
 
 # Bounds on what one request may make the server buffer
 _MAX_HEADER_BYTES = 64 * 1024
 _MAX_BODY_BYTES = 1024 * 1024
+
+# The longest the sweep sleeps: how soon it sees a gate that another process paused
+_SWEEP_INTERVAL = 30.0
+# Runs this server is resuming: a second decision for one of them, or the sweep, would run it twice
+_resuming: set[str] = set()
 
 
 def callback_server(
@@ -92,6 +104,12 @@ async def _serve(  # pragma: no cover
         typer.echo(warning, err=True)
 
     async with anyio.create_task_group() as tg:
+
+        async def _sweep_forever() -> None:
+            while True:
+                await anyio.sleep(await _sweep_once(checkpoint_dir, lite, tg, config_path))
+
+        tg.start_soon(_sweep_forever)
 
         async def _handle_conn(stream: anyio.abc.SocketStream) -> None:
             try:
@@ -287,6 +305,7 @@ async def _handle_pending(stream: anyio.abc.SocketStream, checkpoint_dir: str) -
             "run_id": r.run_id,
             "workflow_name": r.workflow_name,
             "paused_step_id": r.paused_step_id,
+            "expires_at": r.expires_at,
             "updated_at": r.updated_at,
         }
         for r in all_runs
@@ -307,13 +326,8 @@ async def _handle_decision(
     config_path: Path | None = None,
 ) -> None:
     from agentloom.checkpointing.file import FileCheckpointer
-    from agentloom.cli.run import _setup_generic_openai, _setup_observer, _setup_providers
-    from agentloom.core.engine import WorkflowEngine
     from agentloom.exceptions import ConfigError, ProviderError
-    from agentloom.providers.gateway import ProviderGateway
-    from agentloom.tools.builtins import register_builtins
-    from agentloom.tools.registry import ToolRegistry
-    from agentloom.tools.sandbox import ToolSandbox
+    from agentloom.steps import approval_gate
 
     # Without --token approve/reject are open; _serve warns when bound beyond loopback
     if not _token_matches(provided_token, expected_token):
@@ -344,21 +358,114 @@ async def _handle_decision(
         await _send_response(stream, 409, {"error": "checkpoint has no paused step id"})
         return
 
-    approval_decisions = {paused_step: decision}
+    if run_id in _resuming:
+        await _send_response(stream, 409, {"error": f"run '{run_id}' is already resuming"})
+        return
+    _resuming.add(run_id)
+    try:
+        try:
+            engine, gateway, observer = await _prepare_resume(
+                checkpoint_data, checkpointer, decision, lite, config_path
+            )
+        except (ProviderError, ConfigError) as e:
+            await _send_response(stream, 500, {"error": str(e)})
+            return
 
+        body: dict[str, Any] = {
+            "run_id": run_id,
+            "decision": decision,
+            "step_id": paused_step,
+            "message": f"Workflow resuming with decision '{decision}'",
+        }
+        if checkpoint_data.gate_expired(approval_gate._now()):
+            body["expired_at"] = checkpoint_data.expires_at
+            body["message"] = (
+                f"The gate expired at {checkpoint_data.expires_at}: its on_timeout decides, "
+                f"and without one the run fails with timeout"
+            )
+        # Respond with 202, then run the engine (blocking this connection)
+        await _send_response(stream, 202, body)
+        await _run_resumed(run_id, decision, engine, gateway, observer)
+    finally:
+        _resuming.discard(run_id)
+
+
+async def _sweep_once(
+    checkpoint_dir: str,
+    lite: bool,
+    task_group: anyio.abc.TaskGroup,
+    config_path: Path | None = None,
+) -> float:
+    """Start resuming each paused run whose gate expired; return the seconds to sleep."""
+    from agentloom.checkpointing.file import FileCheckpointer
+    from agentloom.steps import approval_gate
+
+    checkpointer = FileCheckpointer(checkpoint_dir=checkpoint_dir)
+    now = approval_gate._now()
+    wait = _SWEEP_INTERVAL
+    for checkpoint_data in await checkpointer.list_runs():
+        expires_at = checkpoint_data.expires_at
+        # ``run.step`` is a subworkflow's own checkpoint: resuming its parent reaches its gate
+        if expires_at is None or "." in checkpoint_data.run_id:
+            continue
+        left = (datetime.fromisoformat(expires_at) - now).total_seconds()
+        if left > 0:
+            wait = min(wait, left)
+        elif checkpoint_data.run_id not in _resuming:
+            _resuming.add(checkpoint_data.run_id)
+            task_group.start_soon(_resume_expired, checkpoint_data, checkpointer, lite, config_path)
+    return wait
+
+
+async def _resume_expired(
+    checkpoint_data: CheckpointData,
+    checkpointer: FileCheckpointer,
+    lite: bool,
+    config_path: Path | None,
+) -> None:
+    """Resume a run whose gate expired, without a decision: the gate applies its ``on_timeout``."""
+    run_id = checkpoint_data.run_id
+    try:
+        engine, gateway, observer = await _prepare_resume(
+            checkpoint_data, checkpointer, None, lite, config_path
+        )
+        await _run_resumed(run_id, None, engine, gateway, observer)
+    except Exception:
+        # A failure here must not stop the server; the next sweep tries the run again
+        logger.warning("Could not resume run '%s' after its gate expired", run_id, exc_info=True)
+    finally:
+        _resuming.discard(run_id)
+
+
+async def _prepare_resume(
+    checkpoint_data: CheckpointData,
+    checkpointer: FileCheckpointer,
+    decision: str | None,
+    lite: bool,
+    config_path: Path | None,
+) -> tuple[WorkflowEngine, ProviderGateway, Any]:
+    """An engine that resumes *checkpoint_data*, with its providers, tools and observer."""
+    from agentloom.cli.run import _setup_generic_openai, _setup_observer, _setup_providers
+    from agentloom.core.engine import WorkflowEngine
+    from agentloom.providers.gateway import ProviderGateway
+    from agentloom.tools.builtins import register_builtins
+    from agentloom.tools.registry import ToolRegistry
+    from agentloom.tools.sandbox import ToolSandbox
+
+    paused_step = checkpoint_data.paused_step_id
     engine = await WorkflowEngine.from_checkpoint(
         checkpoint_data=checkpoint_data,
         checkpointer=checkpointer,
-        approval_decisions=approval_decisions,
+        approval_decisions={paused_step: decision} if decision and paused_step else None,
     )
 
     gateway = ProviderGateway()
     try:
         _setup_generic_openai(gateway, engine.workflow.config)
         _setup_providers(gateway, engine.workflow.config.provider, config_path)
-    except (ProviderError, ConfigError) as e:
-        await _send_response(stream, 500, {"error": str(e)})
-        return
+    except BaseException:
+        await gateway.close()
+        raise
     engine.provider_gateway = gateway
 
     sandbox_cfg = engine.workflow.config.sandbox
@@ -381,24 +488,23 @@ async def _handle_decision(
 
     observer = _setup_observer(lite)
     engine.observer = observer
+    return engine, gateway, observer
 
-    # Respond with 202, then run the engine (blocking this connection)
-    await _send_response(
-        stream,
-        202,
-        {
-            "run_id": run_id,
-            "decision": decision,
-            "step_id": paused_step,
-            "message": f"Workflow resuming with decision '{decision}'",
-        },
-    )
 
-    result = await engine.run()
-
-    if observer:
-        observer.shutdown()  # pragma: no cover
-    await gateway.close()
+async def _run_resumed(
+    run_id: str,
+    decision: str | None,
+    engine: WorkflowEngine,
+    gateway: ProviderGateway,
+    observer: Any,
+) -> None:
+    """Run a prepared engine to its end, then release its providers and observer."""
+    try:
+        result = await engine.run()
+    finally:
+        if observer:
+            observer.shutdown()  # pragma: no cover
+        await gateway.close()
 
     logger.info(
         "Callback resume completed: run=%s decision=%s status=%s",

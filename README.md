@@ -367,7 +367,7 @@ Checkpoints are stored as JSON files in `.agentloom/checkpoints/` by default. Th
 
 ### Human-in-the-loop
 
-An `approval_gate` step pauses a checkpointed run until someone approves or rejects it, from the CLI or over HTTP through `agentloom callback-server`. An optional webhook notifies Slack, CI, or a dashboard when the gate pauses.
+An `approval_gate` step pauses a checkpointed run until someone approves or rejects it, from the CLI or over HTTP through `agentloom callback-server`. An optional webhook notifies Slack, CI, or a dashboard when the gate pauses, and `timeout_seconds` with `on_timeout` settles a gate nobody decides in time.
 
 ```yaml
 - id: approve

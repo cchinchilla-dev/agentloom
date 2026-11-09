@@ -83,6 +83,7 @@ async def _resume_async(
     )
     from agentloom.core.engine import WorkflowEngine
     from agentloom.providers.gateway import ProviderGateway
+    from agentloom.steps import approval_gate
     from agentloom.tools.builtins import register_builtins
     from agentloom.tools.registry import ToolRegistry
     from agentloom.tools.sandbox import ToolSandbox
@@ -107,6 +108,14 @@ async def _resume_async(
             )
             raise typer.Exit(1)
         approval_decisions[checkpoint_data.paused_step_id] = decision
+
+    if decision and checkpoint_data.gate_expired(approval_gate._now()):
+        flag = "--approve" if decision == "approved" else "--reject"
+        typer.echo(
+            f"The gate expired at {checkpoint_data.expires_at}: {flag} is ignored. Its "
+            f"on_timeout decides, and without one the run fails with timeout.",
+            err=True,
+        )
 
     if decision:
         typer.echo(

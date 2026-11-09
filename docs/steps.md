@@ -211,7 +211,20 @@ A rejection doesn't stop the run. The gate succeeds either way, and the steps af
 | `notify.headers` | none | Headers sent with it, as given. |
 | `notify.body_template` | none | The JSON body, as a template. Without it, a default body is sent. |
 | `notify.timeout` | `30` | Seconds for each delivery attempt, within the overall limit below. |
-| `timeout_seconds`, `on_timeout` | none | Accepted, but not enforced yet: a paused run waits for a decision however long it takes. |
+| `timeout_seconds` | none | Seconds the gate waits for a decision, from its first pause. See [When nobody decides](#when-nobody-decides). |
+| `on_timeout` | none | `approve` or `reject`: the decision the gate takes once its time runs out. Needs `timeout_seconds`. |
+
+### When nobody decides
+
+With `timeout_seconds`, the gate's first pause sets when it expires, and the checkpoint keeps that time. The first resume after it settles the gate:
+
+- **With `on_timeout`,** the gate takes that decision, whatever `--approve` or `--reject` says, and writes it to `output`.
+- **Without `on_timeout`,** the gate ends as `timeout`, without retries, and the run fails.
+- **Before the expiry,** a decision applies as usual, and a resume without one pauses again with the same expiry.
+
+[`agentloom callback-server`](cli.md#callback-server) makes that resume itself, without a request, within 30 seconds of the expiry. Without the server, the gate waits for the next `agentloom resume`. `agentloom runs` and the server's `GET /pending` show when each paused gate expires. A gate inside a [subworkflow](#approval-gates-inside) expires the same way.
+
+A checkpoint written by an earlier version has no expiry: its gate starts counting at the next resume.
 
 ### The webhook
 

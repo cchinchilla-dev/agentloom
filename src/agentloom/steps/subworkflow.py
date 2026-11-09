@@ -54,7 +54,9 @@ class SubworkflowStep(BaseStep):
             seed.update(step.input)
             child_state = StateManager(initial_state=seed)
         else:
-            child_state = StateManager(initial_state=parent_state)
+            # The parent's decisions answer its own gates, not a child gate that shares an id
+            seed = {key: value for key, value in parent_state.items() if key != "_approval"}
+            child_state = StateManager(initial_state=seed)
         decisions: dict[str, str] = {}
 
         # A nested gate's decision is at ``_approval.<step.id>.<gate>``; the child reads it at
@@ -141,7 +143,7 @@ class SubworkflowStep(BaseStep):
             # Defensive: run() returns a paused result (below); a raised pause is handled alike.
             qualified = f"{step.id}.{pause.step_id}" if pause.step_id else step.id
             record_spend(own_spend(), "", "", TokenUsage())  # as below, without results
-            raise PauseRequestedError(qualified, str(pause)) from pause
+            raise PauseRequestedError(qualified, str(pause), pause.expires_at) from pause
         except Exception as e:
             # Failed outside its steps: they were paid all the same
             record_spend(own_spend(), "", "", ran_tokens(await engine.state.all_step_results()))
@@ -190,7 +192,8 @@ class SubworkflowStep(BaseStep):
             # The attempt counts the child's tokens before the gate and, with an own budget, its
             # spend, which no result reports
             record_spend(own_spend(), "", "", ran_tokens(result.step_results))
-            raise PauseRequestedError(qualified, str(result.error or ""))
+            expires_at = engine._gate_deadlines.get(inner_paused_id) if inner_paused_id else None
+            raise PauseRequestedError(qualified, str(result.error or ""), expires_at)
 
         duration = (time.monotonic() - start) * 1000
 

@@ -45,6 +45,8 @@ class StepContext(BaseModel):
     checkpointer: BaseCheckpointer | None = None
     # The running engine's enforcer; a subworkflow without its own ``budget_usd`` shares it.
     budget_enforcer: Any | None = None  # BudgetEnforcer
+    # When this run's pending approval gates expire, by step id, as the checkpoint keeps them
+    gate_deadlines: dict[str, str] = Field(default_factory=dict)
 
 
 class BaseStep(ABC):
