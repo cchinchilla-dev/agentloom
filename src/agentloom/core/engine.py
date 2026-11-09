@@ -183,6 +183,7 @@ class WorkflowEngine:
         self.run_id = run_id or uuid.uuid4().hex[:12]
         self._completed_steps: set[str] = set()
         self._checkpoint_created_at = datetime.now(UTC).isoformat()
+        self._gate_deadlines: dict[str, str] = {}
 
         # The env var is a deployment-wide baseline; ``state_schema`` adds the workflow's own keys
         self._redaction_policy = RedactionPolicy(workflow.redaction_patterns()).merge(
@@ -298,6 +299,7 @@ class WorkflowEngine:
             completed_steps=completed_steps,
             status=status,
             paused_step_id=paused_step_id,
+            gate_deadlines=dict(self._gate_deadlines),
             spent_usd=self._spent,
             created_at=self._checkpoint_created_at,
             updated_at=datetime.now(UTC).isoformat(),
@@ -401,6 +403,7 @@ class WorkflowEngine:
         engine._spent_before = spent
         engine._completed_steps = set(checkpoint_data.completed_steps)
         engine._checkpoint_created_at = checkpoint_data.created_at
+        engine._gate_deadlines = dict(checkpoint_data.gate_deadlines)
         return engine
 
     @property
@@ -931,6 +934,7 @@ class WorkflowEngine:
             checkpointer=self._checkpointer,
             capture_prompts=self.workflow.config.capture_prompts,
             budget_enforcer=self._budget,
+            gate_deadlines=self._gate_deadlines,
         )
 
         max_retries = step_def.retry.max_retries
@@ -1091,6 +1095,8 @@ class WorkflowEngine:
                     if pause_err.step_id and pause_err.step_id != step_id
                     else None
                 )
+                if pause_err.expires_at is not None:
+                    self._gate_deadlines[qualified_path or step_id] = pause_err.expires_at
                 # What the step spent before its gate is charged, a breach giving way to the pause
                 spend = attempt_spend()
                 failed.absorb(spend)

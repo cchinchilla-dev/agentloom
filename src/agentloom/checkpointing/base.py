@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -34,10 +35,24 @@ class CheckpointData(BaseModel):
     completed_steps: list[str] = Field(default_factory=list)
     status: str = "running"
     paused_step_id: str | None = None
+    # When each pending approval gate expires (ISO 8601, UTC), by id: ``sub.gate`` for a child's
+    gate_deadlines: dict[str, str] = Field(default_factory=dict)
     # The spend a resumed run starts from; without it, the step results' cost stands in.
     spent_usd: float = 0.0
     created_at: str = ""
     updated_at: str = ""
+
+    @property
+    def expires_at(self) -> str | None:
+        """When the gate this run is paused at expires; ``None`` without a ``timeout_seconds``."""
+        if self.status != "paused" or self.paused_step_id is None:
+            return None
+        return self.gate_deadlines.get(self.paused_step_id)
+
+    def gate_expired(self, now: datetime) -> bool:
+        """Whether the gate this run is paused at has run out of time by *now*."""
+        expires_at = self.expires_at
+        return expires_at is not None and now >= datetime.fromisoformat(expires_at)
 
 
 class BaseCheckpointer(ABC):

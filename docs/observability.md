@@ -85,7 +85,7 @@ quality:<target>                  a trace of its own, from result.annotate()
 | `agentloom.prompt.hash`, `.length_chars`, `.template_id`, `.template_vars` | The rendered prompt's hash and length, `<workflow>:<step>`, and the state keys it used. |
 | `agentloom.conversation.turn_count`, `.token_count`, `.trimmed_messages` | For a step with a conversation. |
 | `gen_ai.agent.name`, `agent.iterations`, `agent.tool_calls`, `agent.cost_usd`, `agent.output_valid` | For an `agent` step. |
-| `agentloom.approval_gate.decision` | `pending`, `approved` or `rejected`. |
+| `agentloom.approval_gate.decision` | `pending`, `approved`, `rejected` or `timeout`. |
 | `agentloom.webhook.status`, `agentloom.webhook.latency_s` | A gate's notification: `success`, `failed`, `timeout` or `sandbox_blocked`. |
 | `agentloom.mock.matched_by`, `agentloom.mock.step_id`, `agentloom.mock.fault_type` | How a recording answered. See [Testing & replay](testing-and-replay.md#metrics). |
 | `agentloom.recording.provider`, `.model`, `.latency_s` | A call recorded with `--record`. |
@@ -148,7 +148,7 @@ The collector turns metric names into Prometheus names: dots become underscores,
 
 | Metric | Type | Labels | Counts |
 |--------|------|--------|--------|
-| `agentloom_approval_gates_total` | Counter | `decision`, `workflow` | `pending` when a gate pauses, then the decision when the run resumes. |
+| `agentloom_approval_gates_total` | Counter | `decision`, `workflow` | `pending` when a gate pauses, then the decision when the run resumes, or `timeout` when it expires with no `on_timeout`. |
 | `agentloom_webhook_deliveries_total` | Counter | `status`, `workflow` | Gate notifications, once each, however many attempts they took. |
 | `agentloom_webhook_latency_seconds` | Histogram | `status` | Their durations. |
 | `agentloom_mock_replays_total` | Counter | `workflow`, `matched_by` | Model calls a recording answered; embeddings aren't counted. |

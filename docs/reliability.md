@@ -54,7 +54,7 @@ A failure is either permanent, and fails the step at once, or transient, and is 
 | `router` | An expression the router doesn't allow. | A syntax error, a condition that raises, no match and no `default`. |
 | `subworkflow` | A child that failed permanently, or went over its own budget. | Any other failure of the child. |
 | `embed` | A provider status not listed. | A missing input, listed statuses, errors without a status. |
-| `approval_gate` | | A decision other than `approved` or `rejected`. |
+| `approval_gate` | A gate that expired with no `on_timeout`. | A decision other than `approved` or `rejected`. |
 | Any step | Going over the run's budget. | The step's `timeout`. |
 
 Several of the retried failures can't succeed on a later attempt, such as a router's syntax error or a sandbox refusal: they spend every retry and wait before the step fails. Where that is likely, set `retry: {max_retries: 0}`.
@@ -181,6 +181,7 @@ agentloom resume 3f9c2a7b1e04 --reject
 - The decision becomes the gate's `output`, `approved` or `rejected`, and the gate succeeds either way: steps after it run unless a [router](steps.md#router) acts on the decision.
 - A resume without `--approve` or `--reject` pauses at the gate again, and sends its webhook again.
 - Gates that pause in the same layer take one resume each.
+- A gate with `timeout_seconds` that nobody decides in time takes its `on_timeout`, or fails the run. See [When nobody decides](steps.md#when-nobody-decides).
 - `agentloom callback-server` resumes paused runs over HTTP, from the same checkpoint directory. See [CLI](cli.md).
 
 ### From Python

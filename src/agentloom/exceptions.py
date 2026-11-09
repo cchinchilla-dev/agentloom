@@ -234,6 +234,8 @@ class PauseRequestedError(AgentLoomError):
     resumes the workflow.
     """
 
-    def __init__(self, step_id: str, message: str = "") -> None:
+    def __init__(self, step_id: str, message: str = "", expires_at: str | None = None) -> None:
         self.step_id = step_id
+        # When an approval gate's ``timeout_seconds`` runs out, as an ISO 8601 UTC time
+        self.expires_at = expires_at
         super().__init__(message or f"Pause requested at step '{step_id}'")

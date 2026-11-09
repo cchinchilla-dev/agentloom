@@ -167,6 +167,7 @@ Continues a run from its checkpoint. [Checkpoints and resume](reliability.md#che
 - A run whose workflow says `provider: mock` resumes against its recording.
 - `resume` has no `--budget` or `--state`.
 - An unknown run, `--approve` with `--reject`, or a decision for a run that isn't paused exits with `1`.
+- A decision for a gate that [expired](steps.md#when-nobody-decides) is ignored, and `resume` says so: the gate takes its `on_timeout`.
 
 ## `runs`
 
@@ -174,7 +175,7 @@ Continues a run from its checkpoint. [Checkpoints and resume](reliability.md#che
 agentloom runs [--checkpoint-dir DIR] [--json]
 ```
 
-Lists the checkpoints, with each run's id, workflow, status and last update, in UTC. Subworkflows have rows of their own, as `<run_id>.<step_id>`. `--json` prints the checkpoints whole, state and definition included.
+Lists the checkpoints, with each run's id, workflow, status and last update, in UTC, and when a paused run's gate [expires](steps.md#when-nobody-decides). Subworkflows have rows of their own, as `<run_id>.<step_id>`. `--json` prints the checkpoints whole, state and definition included.
 
 ## `history`
 
@@ -215,13 +216,15 @@ An HTTP server that resumes paused runs from their checkpoints, for approvals th
 
 | Endpoint | What it does |
 |----------|--------------|
-| `GET /pending` | Lists the paused runs. |
+| `GET /pending` | Lists the paused runs, with `expires_at` for a gate that has `timeout_seconds`. |
 | `POST /approve/<run_id>` | Approves the run's gate and resumes it. |
 | `POST /reject/<run_id>` | Rejects it and resumes it. |
 | `POST /webhook` | Receives an approval gate's notification and prints it. |
 
 - `/approve` and `/reject` answer `202` and then resume the run. The outcome reaches the checkpoint and the run's record, not the caller. An unknown run answers `404`, a run that isn't paused `409`, and a config file that stopped loading after the server started `500`.
-- Two decisions sent at once for one run are both accepted, and both resume it.
+- A decision for a run the server is already resuming answers `409`.
+- A decision for a gate that [expired](steps.md#when-nobody-decides) answers `202` with `expired_at`: the gate takes its `on_timeout`.
+- The server resumes each run whose gate expired, without a request: it looks every 30 seconds, and at the next expiry it knows of.
 - With `--token`, every endpoint but `/webhook` answers `401` without the right header. A server on an address other than loopback, without a token, prints a warning: anyone who reaches it can decide. The token is a command-line argument, visible to other users of the machine in its process list.
 - Runs with `provider: mock` can't resume here: the server sets up only live providers. Use `agentloom resume`.
 - A gate's webhook can't reach a server on `localhost` or a private address unless the workflow sets `sandbox.allow_internal_webhook_targets: true`. See [The webhook](steps.md#the-webhook).

@@ -378,8 +378,8 @@ class StepDefinition(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
     return_keys: list[str] | None = None
 
-    # Approval gate fields; nothing enforces timeout_seconds / on_timeout yet (#210).
-    timeout_seconds: int | None = None
+    # Approval gate fields: the decision ``on_timeout`` takes once ``timeout_seconds`` run out
+    timeout_seconds: int | None = Field(default=None, gt=0)
     on_timeout: Literal["approve", "reject"] | None = None
     notify: WebhookConfig | None = None
 
@@ -447,6 +447,13 @@ class StepDefinition(BaseModel):
                 f"Agent step {self.id!r}: {overridden} come from the agent's definition "
                 f"and cannot be set on the step"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_gate_timeout(self) -> StepDefinition:
+        """Refuse ``on_timeout`` without the ``timeout_seconds`` that would trigger it."""
+        if self.on_timeout is not None and self.timeout_seconds is None:
+            raise ValueError(f"Step {self.id!r}: 'on_timeout' needs 'timeout_seconds'")
         return self
 
     @model_validator(mode="after")

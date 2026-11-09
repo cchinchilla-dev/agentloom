@@ -33,8 +33,10 @@ async def _runs_async(checkpoint_dir: str, output_json: bool) -> None:
         return
 
     # Table output
-    typer.echo(f"{'RUN ID':<14} {'WORKFLOW':<25} {'STATUS':<12} {'UPDATED'}")
-    typer.echo("-" * 72)
+    typer.echo(f"{'RUN ID':<14} {'WORKFLOW':<25} {'STATUS':<12} {'UPDATED':<20} {'GATE EXPIRES'}")
+    typer.echo("-" * 92)
     for entry in entries:
         updated = entry.updated_at[:19] if entry.updated_at else "—"
-        typer.echo(f"{entry.run_id:<14} {entry.workflow_name:<25} {entry.status:<12} {updated}")
+        expires = entry.expires_at[:19] if entry.expires_at else "—"
+        row = f"{entry.run_id:<14} {entry.workflow_name:<25} {entry.status:<12} {updated:<20}"
+        typer.echo(f"{row} {expires}")
