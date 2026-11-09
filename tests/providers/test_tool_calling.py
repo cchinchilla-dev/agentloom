@@ -12,6 +12,8 @@ import respx
 
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import (
+    Conversation,
+    Message,
     ResponseSchema,
     StepDefinition,
     StepType,
@@ -24,7 +26,10 @@ from agentloom.exceptions import RecordingMismatchError, StepError
 from agentloom.providers.anthropic import AnthropicProvider
 from agentloom.providers.base import ToolCall
 from agentloom.providers.gateway import ProviderGateway
+from agentloom.providers.google import GoogleProvider
+from agentloom.providers.ollama import OllamaProvider
 from agentloom.providers.openai import OpenAIProvider
+from agentloom.steps._conversation import to_provider_messages
 from agentloom.steps._structured import output_tool
 from agentloom.steps._tools import (
     INVALID_ARGUMENTS,
@@ -32,6 +37,7 @@ from agentloom.steps._tools import (
     build_assistant_message_with_tool_calls,
     build_tool_result_messages,
     dispatch_tool_calls,
+    fill_tool_parameters,
     parse_tool_calls_from_anthropic,
     parse_tool_calls_from_google,
     parse_tool_calls_from_openai,
@@ -970,6 +976,68 @@ class TestProviderFormatPreservesToolMessages:
         assert contents[2]["parts"][0]["functionResponse"]["response"] == {"result": "3"}
 
 
+class TestToolParametersFromTheRegistry:
+    def test_missing_parameters_come_from_the_registry(self) -> None:
+        tools = [ToolDefinition(name="add", description="d")]
+        filled = fill_tool_parameters(tools, _registry_with(_AddTool()))
+        assert filled[0].parameters == _AddTool.parameters_schema
+        assert filled[0].description == "d"
+        assert tools[0].parameters == {}  # the step's own definition is left as it was
+
+    def test_declared_parameters_win(self) -> None:
+        declared = {"type": "object", "properties": {"only": {"type": "string"}}}
+        filled = fill_tool_parameters(
+            [ToolDefinition(name="add", parameters=declared)], _registry_with(_AddTool())
+        )
+        assert filled[0].parameters == declared
+
+    def test_an_unregistered_tool_stays_empty(self) -> None:
+        filled = fill_tool_parameters([ToolDefinition(name="nope")], _registry_with(_AddTool()))
+        assert filled[0].parameters == {}
+
+    def test_no_registry(self) -> None:
+        filled = fill_tool_parameters([ToolDefinition(name="add")], None)
+        assert filled[0].parameters == {}
+
+    @respx.mock
+    async def test_the_request_carries_the_registered_schema(self) -> None:
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+                    ],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            )
+        )
+        workflow = WorkflowDefinition(
+            name="w",
+            config=WorkflowConfig(provider="openai", model="gpt-4o-mini"),
+            steps=[
+                StepDefinition(
+                    id="ask",
+                    type=StepType.LLM_CALL,
+                    prompt="hi",
+                    tools=[ToolDefinition(name="add", description="d")],
+                )
+            ],
+        )
+        gateway = ProviderGateway()
+        gateway.register(OpenAIProvider(api_key="dummy-key"))
+        engine = WorkflowEngine(
+            workflow=workflow, provider_gateway=gateway, tool_registry=_registry_with(_AddTool())
+        )
+        result = await engine.run()
+        await gateway.close()
+
+        assert result.status == WorkflowStatus.SUCCESS
+        sent = json.loads(route.calls[0].request.content)["tools"][0]["function"]
+        assert sent["parameters"] == _AddTool.parameters_schema
+
+
 class TestLLMStepToolLoop:
     @respx.mock
     async def test_a_tool_the_step_does_not_declare_does_not_run(self) -> None:
@@ -1320,7 +1388,7 @@ class TestLLMStepToolLoop:
                                 name="add", description="d", parameters={"type": "object"}
                             )
                         ],
-                        max_tool_iterations=1,
+                        max_tool_iterations=2,
                         retry={"max_retries": 0},
                     )
                 ],
@@ -1997,3 +2065,92 @@ class TestAnthropicNoneSuppressesTools:
         provider._responses["ask"] = []  # type: ignore[assignment]
         r = await provider.complete(messages=[], model="mock", step_id="ask")
         assert r.content == "fallback"
+
+
+class TestSeededToolTurns:
+    """A conversation's stored tool turns reach each provider in its own wire shape."""
+
+    @staticmethod
+    def _messages() -> list[dict[str, Any]]:
+        return to_provider_messages(
+            Conversation(
+                messages=[
+                    Message(role="user", content="add"),
+                    Message(
+                        role="assistant",
+                        content="adding",
+                        tool_calls=[
+                            ToolCall(id="c1", name="add", arguments={"a": 1}),
+                            ToolCall(id="c2", name="add", arguments={"a": 2}),
+                        ],
+                    ),
+                    Message(role="tool", content="1", tool_call_id="c1"),
+                    Message(role="tool", content="2", tool_call_id="c2"),
+                    Message(role="user", content="and then?"),
+                ]
+            )
+        )
+
+    def test_openai(self) -> None:
+        wire = OpenAIProvider._format_messages(self._messages())
+
+        assert wire[1] == {
+            "role": "assistant",
+            "content": "adding",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "add", "arguments": '{"a": 1}'},
+                },
+                {
+                    "id": "c2",
+                    "type": "function",
+                    "function": {"name": "add", "arguments": '{"a": 2}'},
+                },
+            ],
+        }
+        assert wire[2] == {"role": "tool", "tool_call_id": "c1", "content": "1"}
+        assert wire[3] == {"role": "tool", "tool_call_id": "c2", "content": "2"}
+        assert wire[4]["content"] == "and then?"
+
+    def test_anthropic(self) -> None:
+        _, wire = AnthropicProvider._format_messages(self._messages())
+
+        assert len(wire) == 4  # one user turn holds both results
+        assert wire[1] == {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "adding"},
+                {"type": "tool_use", "id": "c1", "name": "add", "input": {"a": 1}},
+                {"type": "tool_use", "id": "c2", "name": "add", "input": {"a": 2}},
+            ],
+        }
+        assert wire[2]["role"] == "user"
+        assert [b["tool_use_id"] for b in wire[2]["content"]] == ["c1", "c2"]
+        assert all(b["type"] == "tool_result" for b in wire[2]["content"])
+
+    def test_google(self) -> None:
+        _, wire = GoogleProvider._format_messages(self._messages())
+
+        assert wire[1]["role"] == "model"
+        assert wire[1]["parts"][1] == {"functionCall": {"name": "add", "args": {"a": 1}}}
+        assert wire[2]["role"] == "function"
+        assert [p["functionResponse"]["name"] for p in wire[2]["parts"]] == ["add", "add"]
+        assert wire[2]["parts"][0]["functionResponse"]["response"] == {"result": "1"}
+
+    def test_ollama(self) -> None:
+        wire = OllamaProvider._format_messages(self._messages())
+
+        assert wire[1]["tool_calls"][0] == {"function": {"name": "add", "arguments": {"a": 1}}}
+        assert wire[2] == {"role": "tool", "name": "add", "content": "1"}
+
+    def test_a_tool_loop_turn_is_left_alone(self) -> None:
+        loop = [
+            build_assistant_message_with_tool_calls(
+                "openai", "", [ToolCall(id="c1", name="add", arguments={})]
+            ),
+            {"role": "tool", "tool_call_id": "c1", "content": "1"},
+        ]
+
+        assert OpenAIProvider._format_messages(loop) == loop

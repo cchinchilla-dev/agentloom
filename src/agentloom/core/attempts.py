@@ -34,6 +34,8 @@ class Spend:
 
     cost_usd: float = 0.0
     by_model: dict[tuple[str, str], TokenUsage] = field(default_factory=dict)
+    # The wait a provider asked for when it refused the attempt's last call, in seconds
+    retry_after_s: float | None = None
 
     def add(self, cost_usd: float, provider: str, model: str, usage: TokenUsage) -> None:
         self.cost_usd += cost_usd
@@ -69,6 +71,11 @@ def running_steps() -> tuple[str, ...]:
     return _STEPS.get()
 
 
+def qualified_step(step_id: str) -> str:
+    """*step_id* under the steps enclosing it, so a subworkflow's step has a key of its own."""
+    return "/".join((*_STEPS.get()[:-1], step_id))
+
+
 def enter_step(step_id: str) -> None:
     """Mark ``step_id`` as running inside the steps already running, for the rest of its task."""
     _STEPS.set((*_STEPS.get(), step_id))
@@ -90,6 +97,13 @@ def record_spend(cost_usd: float, provider: str, model: str, usage: TokenUsage) 
     """Count a provider call that answered against the running attempt, if there is one."""
     if (spend := _SPEND.get()) is not None:
         spend.add(cost_usd, provider, model, usage)
+        spend.retry_after_s = None
+
+
+def record_retry_after(seconds: float) -> None:
+    """Note how long the providers asked the running attempt to wait, if there is one."""
+    if (spend := _SPEND.get()) is not None:
+        spend.retry_after_s = seconds
 
 
 def attempt_spend() -> Spend:
@@ -99,8 +113,8 @@ def attempt_spend() -> Spend:
 
 def restart_spend() -> None:
     """Count the running attempt's calls from zero again, once what they spent is charged."""
-    if _SPEND.get() is not None:
-        _SPEND.set(Spend())
+    if (spend := _SPEND.get()) is not None:
+        _SPEND.set(Spend(retry_after_s=spend.retry_after_s))  # the retry about to wait reads it
 
 
 class AttemptLog:

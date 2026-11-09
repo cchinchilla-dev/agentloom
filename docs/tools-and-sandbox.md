@@ -24,7 +24,7 @@ Tools let a workflow act: call an HTTP API, run a command, read and write files,
 | Field | What it is |
 |-------|------------|
 | `tool_name` | A registered tool: one of the [built-in tools](#built-in-tools), or [one of your own](#tools-of-your-own). |
-| `tool_args` | The tool's arguments. Top-level string values are [templates](state-and-templates.md#templates-in-tool_args), and `state.items` passes a whole value. |
+| `tool_args` | The tool's arguments. String values, at any depth, are [templates](state-and-templates.md#templates-in-tool_args), and `state.items` passes a whole value. |
 | `output` | The key for what the tool returns. |
 
 The step also takes the [fields every step has](workflow-files.md#fields-every-step-has): `depends_on`, `timeout` and `retry`.
@@ -55,7 +55,7 @@ Every error a tool raises is retried, a [sandbox](#the-sandbox) refusal included
 | The tool's parameters | Not needed. | An LLM call declares them in `tools`; an agent takes the tool's own. |
 | A tool error | Fails the step, which is retried. | Goes back to the model as the tool's result; the step goes on. |
 | `--record-tools` | Not recorded: the tool runs again on replay. | Recorded, and replayed without running the tool. See [Testing & replay](testing-and-replay.md). |
-| Traces and metrics | The step's own. | A tool span and the `agentloom_tool_calls_total` and `agentloom_tool_call_duration_seconds` metrics. See [Observability](observability.md). |
+| Traces and metrics | A tool span and the `agentloom_tool_calls_total` and `agentloom_tool_call_duration_seconds` metrics. See [Observability](observability.md). | The same. |
 
 ## Built-in tools
 
@@ -66,9 +66,9 @@ Every error a tool raises is retried, a [sandbox](#the-sandbox) refusal included
 | Argument | Default | What it is |
 |----------|---------|------------|
 | `url` | required | The URL, `http` or `https`. |
-| `method` | `GET` | `GET`, `POST`, `PUT` or `DELETE`. |
+| `method` | `GET` | `GET`, `POST`, `PUT` or `DELETE`. Any other method fails the call. |
 | `headers` | none | Request headers. |
-| `body` | none | The request body, as a string. Send JSON as a string, with a `Content-Type` header. |
+| `body` | none | The request body. A string is sent as it is, so set its `Content-Type` header. A mapping is sent as JSON. |
 | `timeout` | `30` | Seconds for each phase of the request: connecting, sending, reading. |
 
 It returns `{status_code, headers, body}`, with the body as text.
@@ -93,14 +93,14 @@ It returns `{returncode, stdout, stderr}`.
 - The output isn't limited in size.
 
 > [!WARNING]
-> Commands inherit the whole environment of the AgentLoom process, provider API keys included, and the sandbox doesn't stop a command from reading it.
+> With the sandbox disabled, commands inherit the whole environment of the AgentLoom process, provider API keys included. With it enabled, a command gets only `PATH`, `HOME`, `LANG`, `LC_ALL` and `TZ`.
 
 ### `file_read` and `file_write`
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
 | `file_read` | `path`, `encoding` (`utf-8`) | The whole file, as text. |
-| `file_write` | `path`, `content`, `encoding` (`utf-8`) | `{written, path}`, where `written` counts characters, not bytes. |
+| `file_write` | `path`, `content`, `encoding` (`utf-8`) | `{written, path}`, where `written` counts bytes in `encoding`. |
 
 - Relative paths start from the directory you run from.
 - `file_write` creates missing parent directories and replaces an existing file. `content` must be a string.
@@ -108,7 +108,7 @@ It returns `{returncode, stdout, stderr}`.
 
 ### Declaring them to a model
 
-An [LLM call](llm-calls.md#tool-calling) sends the model the `tools` it declares, with their `description` and `parameters` as written in the step, so repeat each tool's arguments there. An [agent](agents.md) names its tools and sends their own description and parameters.
+An [LLM call](llm-calls.md#tool-calling) sends the model the `tools` it declares, with their `description` and `parameters` as written in the step. A tool declared without `parameters` is sent with the registered tool's own. An [agent](agents.md) names its tools and sends their own description and parameters.
 
 ```yaml
 tools:
@@ -201,7 +201,7 @@ config:
 | Field | Default | What it allows, with `enabled: true` |
 |-------|---------|--------------------------------------|
 | `enabled` | `false` | Turns the checks on. |
-| `allowed_commands` | none | The programs `shell_command` may run, by file name. |
+| `allowed_commands` | none | The programs `shell_command` may run, by name. |
 | `allowed_paths` | none | Directories the file tools may read and write. |
 | `readable_paths` | none | More directories to read from. |
 | `writable_paths` | none | More directories to write to. |
@@ -211,11 +211,14 @@ config:
 | `max_write_bytes` | no limit | The largest `file_write`, in bytes. |
 | `danger_opt_in` | none | Interpreters and launchers that `allowed_commands` may include. See [Commands](#commands). |
 | `allow_internal_webhook_targets` | `false` | Lets an approval gate's webhook reach internal addresses. See [The webhook](steps.md#the-webhook). |
+| `deny_internal_hosts` | `false` | Refuses internal addresses for `http_request`, even when `allowed_domains` lists them. See [Subworkflows](#subworkflows). |
 
 Paths are relative to the directory you run from, resolved when the run starts.
 
+`allow_network: false` without `enabled: true` limits [attachment](llm-calls.md#attachments) downloads and nothing else: `http_request` still reaches any URL.
+
 > [!WARNING]
-> Keys under `sandbox` aren't checked: a misspelled key, such as `allowed_command`, is ignored without an error, and the policy it meant to set doesn't apply. `agentloom validate` doesn't catch it either.
+> A misspelled key under `sandbox`, such as `allowed_command`, stops the load, and `agentloom validate` names it.
 
 ### What it covers
 
@@ -226,7 +229,7 @@ Paths are relative to the directory you run from, resolved when the run starts.
 | `http_request` | Any URL, internal addresses included. | [Network](#network). |
 | Tools of your own | No checks. | No checks. |
 | [Attachment](llm-calls.md#attachments) downloads | `allow_network`, `allowed_domains`, no internal addresses. | The same. |
-| Attachment files | Any path. | `readable_paths`, or `allowed_paths` when `readable_paths` is empty. |
+| Attachment files | Any path. | `allowed_paths` and `readable_paths`. |
 | [Webhooks](steps.md#the-webhook) | No internal addresses, unless allowed. | Also `allow_network`, `allowed_schemes` and `allowed_domains`. |
 
 ### Commands
@@ -235,12 +238,15 @@ With the sandbox enabled, a `shell_command` call is checked in this order:
 
 1. **The directory.** `cwd` must sit under `allowed_paths` or `readable_paths`. Otherwise every command is refused: with `cwd` left at `.`, the directory you run from must be covered, or each call must pass a `cwd` that is.
 2. **Shell operators.** `|`, `;`, `&`, a backtick, `<`, `>`, `$(`, `<(`, `>(` and line breaks are refused anywhere in the command, even inside quotes. One call runs one program.
-3. **The program.** The file name of the first word must be in `allowed_commands`, matching case. `grep`, `/usr/bin/grep` and `./grep` all count as `grep`.
-4. **Interpreters and launchers.** `sh`, `bash`, `zsh`, `fish`, `ksh`, `dash`, `env`, `xargs`, `exec`, `eval`, `source`, `.`, `python`, `python3`, `node`, `perl`, `ruby`, `php`, `lua`, `awk`, `nc`, `ncat`, `socat` and `ssh` can run anything else, so they are refused even when allowed, unless `danger_opt_in` lists them too, one by one.
-5. **Path arguments.** When any path list is set, each argument that looks like a path, such as `.`, `..`, anything with a `/`, or the value of `--opt=dir/file`, must resolve, from `cwd`, under one of the three lists.
+3. **Shell expansion.** `$`, `~`, `*`, `?`, `[` and brace lists such as `{a,b}` or `{1..3}` are refused anywhere in the command, even inside quotes, so `'$5'` or `"*.log"` can't be passed to a program. A command that needs them can't run in the sandbox.
+4. **The program.** The file name of the first word must be in `allowed_commands`, matching case. A path, such as `/usr/bin/grep` or `./grep`, must be the file that name resolves to on `PATH`; any other file of that name is refused.
+5. **Interpreters and launchers.** `sh`, `bash`, `zsh`, `fish`, `ksh`, `dash`, `env`, `xargs`, `find`, `exec`, `eval`, `source`, `.`, `python`, `python3`, `node`, `perl`, `ruby`, `php`, `lua`, `awk`, `nc`, `ncat`, `socat` and `ssh` can run anything else, so they are refused even when allowed, unless `danger_opt_in` lists them too, one by one.
+6. **Path arguments.** When any path list is set, each argument that looks like a path, such as `.`, `..`, anything with a `/`, or the value of `--opt=dir/file`, must resolve, from `cwd`, under one of the three lists. A bare name that is a symbolic link is checked too. A path attached to a short flag is checked from its first `/`, so `-finclude/list` reads as `/list` and is refused: pass it as a separate argument, `-f include/list`.
 
 > [!CAUTION]
-> The command is checked as written, and the shell expands it afterwards: `$VAR`, `~` and patterns such as `.*` can reach paths outside the lists, and `echo $OPENAI_API_KEY` prints the key. The command checks guard against mistakes, not against a model that reads untrusted input: don't give `shell_command` to one.
+> The checks see the command as written, not what an allowed program does with its arguments. They guard against mistakes, not against a model that reads untrusted input: don't give `shell_command` to one.
+>
+> A path argument doesn't say whether the program reads or writes it, so `cp` can write under `readable_paths` and `cat` can read under `writable_paths`. A URL is taken for a relative path, so with `curl` allowed, `curl file:///etc/passwd` passes, and `allow_network: false` doesn't stop it.
 
 ### Files
 
@@ -255,7 +261,7 @@ With the sandbox enabled, an `http_request` call is checked against:
 
 - `allow_network: false`, which refuses every request;
 - `allowed_schemes`: the URL's scheme must be listed. Only `http` and `https` ever work;
-- `allowed_domains`, when set: the host must be listed exactly, without regard to case. `api.example.com` doesn't admit `eu.api.example.com`. A listed host is reached even when it is internal, which is how to allow a service on your own network.
+- `allowed_domains`, when set: the host must be listed exactly, without regard to case. `api.example.com` doesn't admit `eu.api.example.com`. A listed host is reached even when it is internal, which is how to allow a service on your own network, unless `deny_internal_hosts` is on.
 
 Without `allowed_domains`, internal addresses are refused: loopback, private and link-local ranges, the cloud metadata address `169.254.169.254`, shared address space and `localhost`, in any spelling, such as `127.1`, `0x7f000001` or `[::ffff:127.0.0.1]`. A host name is resolved and every address it returns is checked, and a host that doesn't resolve is refused.
 
@@ -272,7 +278,23 @@ The request then connects to the addresses the check resolved, so a DNS answer t
 
 ### Subworkflows
 
-The built-in tools follow the top-level workflow's sandbox everywhere, inside [subworkflows](steps.md#subworkflow) too: a child's own `sandbox` doesn't change what its tools may do, stricter or looser. A child's `sandbox` applies to its attachments and webhooks, and is replaced by the parent's when the parent's is enabled.
+A [subworkflow](steps.md#subworkflow) runs its built-in tools, attachments and webhooks under one sandbox:
+
+| Parent | Child | The child runs under |
+|--------|-------|----------------------|
+| Disabled | Disabled | Its own `sandbox` block, which leaves the built-in tools unlimited. |
+| Enabled | Disabled | The parent's. |
+| Disabled | Enabled | Its own. |
+| Enabled | Enabled | What both allow. |
+
+With both enabled, a child can narrow the parent's sandbox and can't widen it:
+
+- A command or a `danger_opt_in` entry must be on both lists.
+- A directory must be readable, or writable, under both. Of two nested directories, the deeper one applies.
+- `allowed_domains` and `allowed_schemes` must share an entry when both are set; one left empty sets no limit. Two lists with nothing in common refuse every request. A parent with no `allowed_domains` refuses internal addresses, so a child that lists hosts runs with `deny_internal_hosts` on: its list can't open them.
+- `allow_network` and `allow_internal_webhook_targets` must be true in both, and the smaller `max_write_bytes` applies.
+
+The child's built-in tools are rebuilt from these `config.sandbox` blocks and from nothing else: from Python, a different `ToolSandbox` passed to `register_builtins` doesn't carry over to a child that has its own sandbox. Tools of your own stay unchecked.
 
 ## Running tools in parallel
 

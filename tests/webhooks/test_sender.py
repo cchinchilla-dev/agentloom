@@ -48,6 +48,19 @@ class TestBuildPayload:
         assert payload["approve_url"] == "http://localhost:8642/approve/run-123"
         assert payload["reject_url"] == "http://localhost:8642/reject/run-123"
 
+    def test_a_nested_gates_links_name_the_root_run_and_the_gate(self) -> None:
+        ctx = WebhookContext(
+            run_id="run-123.sub.inner",
+            step_id="approve_draft",
+            workflow_name="child",
+            callback_base_url="http://localhost:8642/",
+        )
+        config = WebhookConfig(url="https://hooks.example.com/wh")
+        payload = json.loads(_build_payload(config, ctx))
+        link = "/run-123?gate=sub.inner.approve_draft"
+        assert payload["approve_url"] == f"http://localhost:8642/approve{link}"
+        assert payload["reject_url"] == f"http://localhost:8642/reject{link}"
+
     def test_template_rendering(self, wh_context: WebhookContext) -> None:
         config = WebhookConfig(
             url="https://hooks.example.com/wh",
@@ -156,6 +169,28 @@ class TestSendWebhook:
         assert args[0] == "approve_draft"
         assert args[1] == "email-review"
         assert args[2] == "failed"
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_observer_without_the_hook_changes_nothing(
+        self, wh_context: WebhookContext, public_dns: str
+    ) -> None:
+        route = respx.post(f"https://{public_dns}/wh").mock(return_value=httpx.Response(200))
+        config = WebhookConfig(url="https://hooks.example.com/wh")
+        await send_webhook(config, wh_context, observer=object())  # type: ignore[arg-type]
+        assert route.call_count == 1
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_a_hook_that_raises_does_not_repeat_the_post(
+        self, wh_context: WebhookContext, public_dns: str
+    ) -> None:
+        route = respx.post(f"https://{public_dns}/wh").mock(return_value=httpx.Response(200))
+        config = WebhookConfig(url="https://hooks.example.com/wh")
+        observer = MagicMock()
+        observer.on_webhook_delivery.side_effect = RuntimeError("hook bug")
+        await send_webhook(config, wh_context, observer=observer)
+        assert route.call_count == 1
 
     @respx.mock
     @pytest.mark.anyio()

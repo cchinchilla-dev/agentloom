@@ -1,9 +1,10 @@
-"""Example 41 runs offline from its recording and passes the determinism check."""
+"""The offline examples replay from their recordings; 41 passes the determinism check."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -43,3 +44,43 @@ def test_verify_determinism_passes_on_the_agent_example() -> None:
 
     assert result.exit_code == 0, result.output
     assert "status success, 18 events" in result.output
+
+
+HASHED = [
+    ("36_structured_output", "structured_output"),
+    ("37_embeddings", "embeddings"),
+    ("38_chatbot_conversation", "chatbot_conversation"),
+    ("39_multi_agent_conversation", "multi_agent_conversation"),
+    ("40_fault_replay", "fault_replay"),
+    ("41_agent", "agent"),
+]
+
+
+@pytest.mark.parametrize(("example", "recording"), HASHED)
+def test_example_replays_strictly(example: str, recording: str) -> None:
+    argv = ["replay", f"examples/{example}.yaml", "-r", f"recordings/{recording}.json"]
+    result = runner.invoke(app, argv)
+    assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize(("example", "recording"), HASHED)
+def test_every_turn_of_the_example_recording_checks_its_request(
+    example: str, recording: str
+) -> None:
+    data = json.loads((REPO / f"recordings/{recording}.json").read_text(encoding="utf-8"))
+    turns = [
+        t
+        for k, v in data.items()
+        if not k.startswith("_")
+        for t in (v if isinstance(v, list) else [v])
+    ]
+    assert turns
+    assert all(len(turn["request_hash"]) == 64 for turn in turns)
+
+
+def test_tool_calling_example_replays_strictly() -> None:
+    # Its second turn carries a live tool result, so that recording has no hash to check.
+    argv = ["replay", "examples/35_tool_calling.yaml", "-r", "recordings/tool_calling.json"]
+    with patch("agentloom.steps._tools._execute", AsyncMock(return_value=("{}", True))):
+        result = runner.invoke(app, argv)
+    assert result.exit_code == 0, result.output

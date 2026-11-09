@@ -8,7 +8,7 @@ from agentloom.core.models import Condition, StepDefinition, StepType
 from agentloom.core.state import StateManager
 from agentloom.exceptions import SecurityError
 from agentloom.steps.base import StepContext
-from agentloom.steps.router import RouterStep, evaluate_expression
+from agentloom.steps.router import RouterStep, _build_state_proxy, evaluate_expression
 
 
 class TestRejectsDunderAttributeAccess:
@@ -565,6 +565,31 @@ class TestRouterProxyRuntimeEdges:
         result = await step.execute(ctx)
         assert result.output == "ok"
 
+    @pytest.mark.parametrize(
+        ("expression", "target"),
+        [
+            ("steps.prior.output.get('_token') == 'dummy-secret'", "other"),
+            ("'_token' in steps.prior.output.keys()", "other"),
+            ("'dummy-secret' in steps.prior.output.values()", "other"),
+            ("steps.prior.output.get('public') == 1", "ok"),
+            ("steps.prior.output.public == 1", "ok"),
+        ],
+    )
+    async def test_steps_proxy_keeps_private_keys_out_of_reach(
+        self, expression: str, target: str
+    ) -> None:
+        output = {"_token": "dummy-secret", "public": 1}
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="r",
+                type=StepType.ROUTER,
+                conditions=[Condition(expression=expression, target="ok")],
+                default="other",
+            ),
+            state_manager=StateManager(initial_state={"steps": {"prior": {"output": output}}}),
+        )
+        assert (await RouterStep().execute(ctx)).output == target
+
     async def test_steps_proxy_returns_scalar_when_step_data_not_dict(self) -> None:
         # ``_StepsProxy`` returns a ``steps`` entry that is not a dict as is, unwrapped.
         step = RouterStep()
@@ -677,3 +702,26 @@ class TestRouterChainedSafeCalls:
     def test_still_rejects_disallowed_builtins(self) -> None:
         with pytest.raises(SecurityError):
             evaluate_expression("__import__('os').system('x')", {})
+
+
+class TestReadOnlyMethodsKeepThePrivateKeysOut:
+    """``get`` and its kin stop at the ``_`` keys that attribute and subscript access refuse."""
+
+    STATE = {"_secret": "dummy-hidden", "public": 1}
+
+    def _eval(self, expression: str) -> object:
+        return evaluate_expression(expression, {"state": _build_state_proxy(self.STATE)})
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "state.get('_secret') is None",
+            "state.get('_' + 'secret') is None",
+            "'_secret' not in state.keys()",
+            "'dummy-hidden' not in state.values()",
+            "('_secret', 'dummy-hidden') not in state.items()",
+            "state.get('public') == 1",
+        ],
+    )
+    def test_private_keys_stay_out_of_reach(self, expression: str) -> None:
+        assert self._eval(expression) is True

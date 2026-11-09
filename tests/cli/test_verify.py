@@ -274,3 +274,34 @@ def test_verify_cli_imports_the_projects_schemas(
 
     assert result.exit_code == 0, result.output
     assert "status success" in result.output
+
+
+class TestFailedReplays:
+    @staticmethod
+    def _failing(tmp_path: Path) -> tuple[Path, Path]:
+        workflow, recording = _record(tmp_path)
+        data = json.loads(recording.read_text())
+        del data["b"], data[EVENTS_KEY]  # every replay fails the same way, on the missing step
+        recording.write_text(json.dumps(data))
+        return workflow, recording
+
+    def test_replays_that_all_fail_the_same_way_exit_one(self, tmp_path: Path) -> None:
+        workflow, recording = self._failing(tmp_path)
+        result = _verify(workflow, recording, tool=itertools.repeat("recorded"))
+        assert result.exit_code == 1
+        assert "Deterministic" not in result.output
+        assert "--allow-failed" in result.output
+        assert "failed" in result.output
+
+    def test_allow_failed_accepts_a_stable_failure(self, tmp_path: Path) -> None:
+        workflow, recording = self._failing(tmp_path)
+        result = _verify(workflow, recording, "--allow-failed", tool=itertools.repeat("recorded"))
+        assert result.exit_code == 0, result.output
+        assert "status failed" in result.output
+
+    def test_allow_failed_still_catches_a_difference(self, tmp_path: Path) -> None:
+        workflow, recording = self._failing(tmp_path)
+        changing = iter(["one", "two", "three", "four"])
+        result = _verify(workflow, recording, "--allow-failed", tool=changing)
+        assert result.exit_code == 1
+        assert "differs" in result.output

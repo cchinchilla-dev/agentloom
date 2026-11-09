@@ -457,3 +457,43 @@ class TestGoogleReasoningStream:
         assert sr.usage.reasoning_tokens == 7
         assert sr.reasoning_content == "thinking trace "
         await provider.close()
+
+
+_GEMINI = "gemini-2.5-flash"
+_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash"
+_HI = [{"role": "user", "content": "hi"}]
+
+
+class TestWireFailures:
+    @respx.mock
+    async def test_a_200_that_is_not_json_is_a_provider_error(self) -> None:
+        respx.post(f"{_GEMINI_BASE}:generateContent").mock(
+            return_value=httpx.Response(200, text="<html/>")
+        )
+        provider = GoogleProvider(api_key="dummy-key")
+        with pytest.raises(ProviderError, match="not valid JSON") as exc:
+            await provider.complete(_HI, _GEMINI)
+        assert exc.value.status_code is None
+        await provider.close()
+
+    @respx.mock
+    async def test_embeddings_that_are_not_json_are_a_provider_error(self) -> None:
+        respx.post(f"{_GEMINI_BASE}:batchEmbedContents").mock(
+            return_value=httpx.Response(200, text="oops")
+        )
+        provider = GoogleProvider(api_key="dummy-key")
+        with pytest.raises(ProviderError, match="not valid JSON"):
+            await provider.embed(inputs=["a"], model=_GEMINI)
+        await provider.close()
+
+    @respx.mock
+    async def test_a_network_error_in_a_stream_is_a_provider_error(self) -> None:
+        respx.post(url__startswith=f"{_GEMINI_BASE}:streamGenerateContent").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
+        provider = GoogleProvider(api_key="dummy-key")
+        sr = await provider.stream(_HI, _GEMINI)
+        with pytest.raises(ProviderError, match="ConnectError") as exc:
+            [c async for c in sr]
+        assert exc.value.status_code is None
+        await provider.close()

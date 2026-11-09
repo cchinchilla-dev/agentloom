@@ -278,6 +278,30 @@ class TestCallExclude:
         assert cb._half_open_calls == 0
 
 
+class TestCancelInHalfOpen:
+    """A call cancelled from outside says nothing about the provider, but its slot goes back."""
+
+    async def test_the_slot_is_freed_and_the_next_probe_gets_through(self) -> None:
+        cb = CircuitBreaker(name="t", fail_threshold=1, half_open_max_calls=1)
+        cb._set_state(CircuitState.HALF_OPEN)
+
+        async def hang() -> str:
+            await anyio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def ok() -> str:
+            return "ok"
+
+        with anyio.move_on_after(0.01):
+            await cb.call(hang)
+
+        assert cb._half_open_calls == 0
+        assert cb.failure_count == 0
+        assert cb.state == CircuitState.HALF_OPEN
+        assert await cb.call(ok) == "ok"
+        assert cb.state == CircuitState.CLOSED
+
+
 class TestSetStateNoop:
     """``_set_state`` to the current state is a no-op: ``on_state_change`` does not fire."""
 

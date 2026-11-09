@@ -35,6 +35,11 @@ class TestRunsCommand:
         assert result.exit_code == 0
         assert "No checkpoint runs found" in result.output
 
+    def test_no_checkpoints_as_json_is_an_empty_list(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["runs", "--checkpoint-dir", str(tmp_path), "--json"])
+        assert result.exit_code == 0
+        assert json.loads(result.stdout) == []
+
     def test_lists_runs(self, tmp_path: Path) -> None:
         _write_checkpoint(tmp_path, "run1", "workflow-a")
         _write_checkpoint(tmp_path, "run2", "workflow-b")

@@ -12,6 +12,7 @@ from agentloom.core.state import StateManager
 from agentloom.core.templates import SafeFormatDict, build_template_vars
 from agentloom.exceptions import StepError
 from agentloom.resilience.retry import classify_failure
+from agentloom.steps._tools import report_tool_call
 from agentloom.steps.base import BaseStep, StepContext
 
 # Format only real placeholders, so raw JSON, HTML and ``{foo: true}`` pass (no spec after ``: ``).
@@ -29,8 +30,7 @@ class ToolStep(BaseStep):
         if context.tool_registry is None:
             raise StepError(step.id, "No tool registry configured", is_retryable=False)
 
-        if not step.tool_name:
-            raise StepError(step.id, "Tool step requires a 'tool_name' field", is_retryable=False)
+        assert step.tool_name is not None  # a tool step without one fails validation
 
         try:
             tool = context.tool_registry.get(step.tool_name)
@@ -49,6 +49,16 @@ class ToolStep(BaseStep):
         except Exception as e:
             log_tools([(step.tool_name, resolved_args)], [(str(e), False)])
             duration = (time.monotonic() - start) * 1000
+            report_tool_call(
+                context.observer,
+                step_id=step.id,
+                call_id=step.id,
+                tool_name=step.tool_name,
+                arguments=resolved_args,
+                result=str(e),
+                duration_ms=duration,
+                success=False,
+            )
             return StepResult(
                 step_id=step.id,
                 status=StepStatus.FAILED,
@@ -59,6 +69,16 @@ class ToolStep(BaseStep):
 
         log_tools([(step.tool_name, resolved_args)], [(result, True)])
         duration = (time.monotonic() - start) * 1000
+        report_tool_call(
+            context.observer,
+            step_id=step.id,
+            call_id=step.id,
+            tool_name=step.tool_name,
+            arguments=resolved_args,
+            result=result,
+            duration_ms=duration,
+            success=True,
+        )
 
         if step.output:
             await context.state_manager.set(step.output, result)
@@ -71,7 +91,12 @@ class ToolStep(BaseStep):
         )
 
     @staticmethod
-    def _resolve_args(args: dict[str, Any], state: dict[str, Any], step_id: str) -> dict[str, Any]:
+    def _resolve_args(
+        args: dict[str, Any],
+        state: dict[str, Any],
+        step_id: str,
+        reference: str = "tool_args reference",
+    ) -> dict[str, Any]:
         """Resolve argument values that reference state variables.
 
         * ``"state.<key>"`` — resolved by ``StateManager._resolve_key``
@@ -87,14 +112,18 @@ class ToolStep(BaseStep):
         * Dicts of the shape ``{value: "...", template: false}`` — escape
           hatch for the rare string that looks like a placeholder but
           must be passed through verbatim. Returns ``value`` unchanged.
+        * Other dicts and lists — resolved item by item, by these same rules.
         * Everything else — passed through unchanged.
         """
         template_vars = build_template_vars(state)
-        resolved: dict[str, Any] = {}
-        for key, value in args.items():
-            if isinstance(value, dict) and value.get("template") is False and "value" in value:
-                resolved[key] = value["value"]
-                continue
+
+        def resolve(value: Any) -> Any:
+            if isinstance(value, dict):
+                if value.get("template") is False and set(value) == {"template", "value"}:
+                    return value["value"]
+                return {key: resolve(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [resolve(item) for item in value]
             if isinstance(value, str):
                 if value.startswith("state."):
                     path = value[len("state.") :]
@@ -102,15 +131,12 @@ class ToolStep(BaseStep):
                         # Non-retryable: a missing state key does not appear on a retry.
                         raise StepError(
                             step_id,
-                            f"tool_args reference 'state.{path}' but no such key "
-                            f"exists in workflow state",
+                            f"{reference} 'state.{path}' but no such key exists in workflow state",
                             is_retryable=False,
                         )
-                    resolved[key] = StateManager._resolve_key(state, path)
-                elif _PLACEHOLDER_RE.search(value):
-                    resolved[key] = value.format_map(SafeFormatDict(template_vars))
-                else:
-                    resolved[key] = value
-            else:
-                resolved[key] = value
-        return resolved
+                    return StateManager._resolve_key(state, path)
+                if _PLACEHOLDER_RE.search(value):
+                    return value.format_map(SafeFormatDict(template_vars))
+            return value
+
+        return {key: resolve(value) for key, value in args.items()}

@@ -535,3 +535,82 @@ class TestHooks:
         chat = Conversation.model_validate(await state.get("chat"))
         assert [m.content for m in chat.messages][-2:] == ["hi", "nope"]
         assert json.dumps(await state.get("reply")) == '"nope"'
+
+
+class TestToolLoopLimits:
+    """A forced ``tool_choice`` applies once; the reply at the cap runs no tools."""
+
+    @staticmethod
+    async def _plain(
+        step: StepDefinition, gateway: _Gateway
+    ) -> tuple[StepResult, StateManager, _Add]:
+        return await _run(step, gateway, executor=LLMCallStep())
+
+    @pytest.mark.parametrize("choice", ["required", {"name": "add"}])
+    async def test_a_forced_choice_applies_to_the_first_call_only(self, choice: Any) -> None:
+        gateway = _Gateway(_turn("", _add(1, 2, 3)), _turn("", _add(2, 3, 4)), _turn("done"))
+        result, _, tool = await self._plain(_step(tool_choice=choice), gateway)
+
+        sent = [c["agentloom_tool_choice"] for c in gateway.calls]
+        assert sent == [choice, "auto", "auto"]
+        assert result.output == "done"
+        assert len(tool.calls) == 2
+
+    @pytest.mark.parametrize("choice", ["auto", "none"])
+    async def test_other_choices_stay_as_they_are(self, choice: str) -> None:
+        gateway = _Gateway(_turn("", _add(1, 2, 3)), _turn("done"))
+        await self._plain(_step(tool_choice=choice), gateway)
+
+        assert [c["agentloom_tool_choice"] for c in gateway.calls] == [choice, choice]
+
+    async def test_the_output_tool_stays_forced(self) -> None:
+        gateway = _Gateway(_turn("", _add(1, 2, 3)), _turn("", _final(2, total=5)))
+        await _run(_step(), gateway)
+
+        assert [c["agentloom_tool_choice"] for c in gateway.calls] == ["required", "required"]
+
+    async def test_the_tools_of_the_reply_at_the_cap_do_not_run(self) -> None:
+        gateway = _Gateway(_turn("", _add(1, 2, 3)), _turn("partial", _add(2, 4, 5)))
+        result, state, tool = await self._plain(_step(iterations=2), gateway)
+
+        assert tool.calls == [{"a": 2, "b": 3}]
+        assert result.status == StepStatus.SUCCESS
+        assert result.output == "partial"
+        assert result.prompt_metadata is not None
+        assert result.prompt_metadata.finish_reason == "max_tool_iterations"
+        assert await state.get("reply") == "partial"
+
+    async def test_with_one_iteration_no_tool_runs(self) -> None:
+        gateway = _Gateway(_turn("", _add(1, 2, 3)))
+        _, _, tool = await self._plain(_step(iterations=1, tool_choice="required"), gateway)
+
+        assert tool.calls == []
+
+    async def test_with_no_reply_at_the_cap_the_tools_do_not_run(self) -> None:
+        gateway = _Gateway(_turn("", _add(1, 2, 3)))
+        result, _, tool = await _run(_step(iterations=1), gateway)
+
+        assert result.status == StepStatus.FAILED
+        assert tool.calls == []
+
+    async def test_a_reply_at_the_cap_still_waits_on_its_tools(self) -> None:
+        gateway = _Gateway(_turn("", _add(1, 2, 3), _final(1, total=5)))
+        result, _, tool = await _run(_step(iterations=1), gateway)
+
+        assert result.status == StepStatus.SUCCESS
+        assert tool.calls == [{"a": 2, "b": 3}]
+
+    @pytest.mark.parametrize("choice", ["required", {"name": "add"}])
+    async def test_a_forced_choice_with_no_answer_says_so(self, choice: Any) -> None:
+        gateway = _Gateway(_turn("", _add(1, 2, 3)), _turn("", _add(2, 3, 4)))
+        result, _, _ = await self._plain(_step(iterations=2, tool_choice=choice), gateway)
+
+        assert result.prompt_metadata is not None
+        assert result.prompt_metadata.finish_reason == "max_tool_iterations_no_answer"
+
+    async def test_auto_with_no_answer_is_a_plain_cap(self) -> None:
+        gateway = _Gateway(_turn("", _add(1, 2, 3)), _turn("", _add(2, 3, 4)))
+        result, _, _ = await self._plain(_step(iterations=2), gateway)
+
+        assert result.prompt_metadata is not None
+        assert result.prompt_metadata.finish_reason == "max_tool_iterations"

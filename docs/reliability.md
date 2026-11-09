@@ -33,12 +33,12 @@ Each step retries its own failed attempts, with waits that grow between them:
 | `jitter` | `true` | Varies each wait by up to 25% either way, so parallel steps don't retry in step. |
 | `retryable_status_codes` | `429`, `500`, `502`, `503`, `504` | The provider statuses worth another attempt. |
 
-- **The waits** are 1 second before the first retry, then `backoff_base`, `backoff_base²` and so on, up to `backoff_max`. Jitter applies after that cap. With the defaults, a step waits about 1, 2 and 4 seconds.
+- **The waits** are `backoff_base` seconds before the first retry, then `backoff_base²`, `backoff_base³` and so on, up to `backoff_max`. Jitter applies after that cap. With the defaults, a step waits about 2, 4 and 8 seconds.
 - **Every step has its own `retry`,** a router or a subworkflow included. `config.max_retries` sets `max_retries` for each step that doesn't set its own; a subworkflow's steps take their child's `config.max_retries`.
-- **An attempt runs the whole step again.** It renders its prompts from the state as it is then, runs its tools again, and runs a subworkflow from its first step. Nothing a failed attempt did is undone, so tools with side effects should be safe to repeat.
+- **An attempt runs the whole step again.** It renders its prompts again, runs its tools again, and runs a subworkflow from its first step. Nothing a failed attempt did is undone, so tools with side effects should be safe to repeat.
 - **Retries multiply in subworkflows.** A child's steps retry inside each attempt of the `subworkflow` step: two retries in the child and one in the parent make up to six attempts.
-- A provider's `Retry-After` header isn't waited for: the step's own waits apply.
-- A negative `max_retries` fails when the workflow loads. The other values aren't checked, and a misspelled key under `retry` is ignored.
+- A provider's `Retry-After` header is honoured: the step waits the longer of that and its backoff, up to `backoff_max`. When several providers refuse the call, the soonest one counts.
+- A negative `max_retries` fails when the workflow loads. The other values aren't checked. A misspelled key under `retry` stops the load.
 
 A failed step's result says whether its last failure was `transient` or `permanent`, but not how many attempts it took. The log has a line for each retry: `Step 'summarize' failed (attempt 2/6), retrying in 2.1s`.
 
@@ -55,7 +55,7 @@ A failure is either permanent, and fails the step at once, or transient, and is 
 | `subworkflow` | A child that can't be loaded, that failed permanently, or that went over its own budget. | Any other failure of the child. |
 | `embed` | A provider status not listed, a missing input or one of the wrong type, no provider with embeddings. | Listed statuses, errors without a status. |
 | `approval_gate` | A gate that expired with no `on_timeout`, a decision other than `approved` or `rejected`. | None of its own. |
-| Any step | Going over the run's budget. | The step's `timeout`. |
+| Any step | Going over the run's budget, an `output` path the [state refuses](state-and-templates.md#writing-state). | The step's `timeout`. |
 
 AgentLoom can't tell which of a tool's own errors would pass on a later attempt. For a tool that fails the same way each time, set `retry: {max_retries: 0}`.
 
@@ -79,7 +79,7 @@ Under `continue`, keep in mind that a failed step writes nothing:
 
 - its `output` key and `steps.<id>` don't exist, so `{state.summary}` renders empty, with a warning;
 - a router can't tell it failed: `steps.fetch.status` reads `None`, not `failed`;
-- a router that fails runs all of its branches.
+- a router that fails runs none of its branches: they and everything after them are skipped.
 
 Either way, a run with a failed step ends `failed`.
 
@@ -97,7 +97,7 @@ Either way, a run with a failed step ends `failed`.
 | `2` | The options contradict each other, such as `--record-tools` without `--record`. |
 | `130` | The run was interrupted with Ctrl-C or SIGTERM. |
 
-`agentloom resume` exits with `0` or `1` the same way. Its summary marks a timed-out step `[FAIL]`, like a failed one. With `--json`, the output starts with a line such as `Running workflow: …`, and `Run ID: …` with `--checkpoint`, before the JSON.
+`agentloom resume` exits the same way. Its summary marks a timed-out step `[TIMEOUT]`. With `--json`, stdout holds only the JSON: lines such as `Running workflow: …`, and `Run ID: …` with `--checkpoint`, go to stderr.
 
 ## Budgets
 
@@ -124,9 +124,9 @@ my-finetuned-model:
 
 Each attempt goes through the provider gateway, which has protections of its own. [Providers](providers.md) covers them in full; this is how they combine with retries:
 
-- **Fallback.** An attempt tries the providers that serve the model, in order, then the fallback providers. Only when all of them fail does the attempt fail, with a status only if they all returned the same one. Every provider receives the same model name, and a [streamed](llm-calls.md#streaming) call doesn't fall back at all.
-- **Circuit breaker.** Five failed calls in a row to one provider, from any step, open its circuit, and calls skip that provider for 60 seconds; one call then tests it. 429 responses don't count, except on a streamed call, and neither does a request the provider can't take. With no other provider for the model, an open circuit fails each attempt as transient, and the step goes on retrying until its retries run out.
-- **Rate limits.** Each provider is held to 60 requests and 100,000 tokens a minute, the `mock` provider included when `agentloom run` sets it up.
+- **Fallback.** An attempt tries `config.provider` if it can serve the model, the other providers that serve it, in order, then the fallback providers. Only when all of them fail does the attempt fail, with a status only if they all returned the same one. Every provider receives the model name as requested, unless its [`model_aliases`](providers.md#config-file) translates it, and a [streamed](llm-calls.md#streaming) call falls back only before its first chunk.
+- **Circuit breaker.** Five failed calls in a row to one provider, from any step, open its circuit, and calls skip that provider for 60 seconds; one call then tests it. 429 responses don't count, and neither does a request the provider can't take, one over the provider's token limit, or a replay that misses its recording. With no other provider for the model, an open circuit fails each attempt as transient, and the step goes on retrying until its retries run out.
+- **Rate limits.** Each provider is held to 60 requests and 100,000 tokens a minute, except the `mock` provider that the CLI sets up, which has no limit.
 
 A resumed run starts with closed circuits and fresh rate limits.
 
@@ -157,15 +157,15 @@ agentloom resume 3f9c2a7b1e04
 ```
 
 - **The checkpoint is what runs,** not the YAML file: changes made to the file since don't apply. Providers are set up again, so API keys are read from the environment, and a `mock` provider reads its recording again.
-- **Steps that succeeded keep their results.** Every other step runs: failed, timed out, skipped, paused and never started.
+- **Steps that succeeded keep their results.** Every other step runs: failed, timed out, skipped, paused and never started. A branch that a finished router didn't take stays skipped, all the way down.
 - **The budget goes on from what was spent,** and `config.timeout` starts over.
-- **Redacted keys come back redacted:** steps that read them receive `<REDACTED:sha256=…>`.
+- **Redacted keys come back redacted:** steps that read them receive `<REDACTED:sha256=…>`, unless `agentloom resume --state key=value` puts the value back.
 
-Any run with a checkpoint can be resumed. A successful one has nothing left to run. One that went over budget goes over again at once: `agentloom resume` has no `--budget`, and a higher limit has to be set from Python.
+Any run with a checkpoint can be resumed. A successful one has nothing left to run. One that went over budget goes over again at once, unless `agentloom resume --budget` raises the limit. The new limit includes what the run has already spent.
 
 After a router, steps two or more levels down a branch it didn't take run on resume, as if the branch had been taken.
 
-`agentloom resume` takes `--checkpoint-dir`, `--provider`, `--model`, `--approve`, `--reject`, `--lite`, `--json` and `--stream`. See [CLI](cli.md).
+`agentloom resume` takes `--checkpoint-dir`, `--provider`, `--model`, `--state`, `--budget`, `--approve`, `--reject`, `--lite`, `--json` and `--stream`. See [CLI](cli.md).
 
 ### Approval gates
 
@@ -177,7 +177,7 @@ agentloom resume 3f9c2a7b1e04 --approve
 agentloom resume 3f9c2a7b1e04 --reject
 ```
 
-- The run needs `--checkpoint`. Without it, the run still pauses and prints the commands to resume it, but there is nothing to resume.
+- The run needs `--checkpoint`. Without it, the run still pauses, but there is nothing to resume, and it prints no commands.
 - The decision becomes the gate's `output`, `approved` or `rejected`, and the gate succeeds either way: steps after it run unless a [router](steps.md#router) acts on the decision.
 - A resume without `--approve` or `--reject` pauses at the gate again, and sends its webhook again.
 - Gates that pause in the same layer take one resume each.

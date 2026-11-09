@@ -25,8 +25,8 @@ class ProviderConfig(BaseModel):
     models: list[str] = Field(default_factory=list)
     priority: int = 0
     is_fallback: bool = False
-    max_retries: int = 3
-    timeout: float = 30.0
+    # A requested model id -> the id this provider knows it by; the gateway translates per candidate
+    model_aliases: dict[str, str] = Field(default_factory=dict)
 
 
 _PROVIDER_DEFAULTS: dict[str, dict[str, object]] = {
@@ -51,71 +51,32 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, object]] = {
 }
 
 
+def default_model(provider: str) -> str | None:
+    """The model *provider* runs when a workflow names none; ``None`` if it has no default."""
+    models = _PROVIDER_DEFAULTS.get(provider, {}).get("models")
+    return str(models[0]) if isinstance(models, list) and models else None
+
+
 class AgentLoomConfig(BaseModel):
     """Global configuration, loaded from env vars or config file."""
 
     model_config = ConfigDict(extra="forbid")
 
-    log_level: str = "INFO"
-    log_format: str = "json"  # "json" or "text"
-    observability_enabled: bool = True
-    default_provider: str = "openai"
-    max_concurrent_steps: int = 10
-    budget_limit_usd: float | None = None
-    checkpoint_enabled: bool = False
-    checkpoint_dir: str = ".agentloom/checkpoints"
     providers: list[ProviderConfig] = Field(default_factory=list)
-
-
-_ENV_MAP: dict[str, tuple[str, type]] = {
-    "LOG_LEVEL": ("log_level", str),
-    "LOG_FORMAT": ("log_format", str),
-    "OBSERVABILITY": ("observability_enabled", bool),
-    "DEFAULT_PROVIDER": ("default_provider", str),
-    "MAX_CONCURRENT_STEPS": ("max_concurrent_steps", int),
-    "BUDGET_LIMIT": ("budget_limit_usd", float),
-    "CHECKPOINT": ("checkpoint_enabled", bool),
-    "CHECKPOINT_DIR": ("checkpoint_dir", str),
-}
-
-_ENV_PREFIX = "AGENTLOOM_"
 
 
 _TRUTHY_FLAG_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
-def _coerce(value: str, target_type: type) -> object:
-    """Convert an env var string to the target type."""
-    if target_type is bool:
-        normalized = value.strip().lower()
-        if normalized in _TRUTHY_FLAG_VALUES:
-            return True
-        if normalized in ("0", "false", "no", "off"):
-            return False
-        msg = f"Invalid boolean value for configuration: {value!r}"
-        raise ValueError(msg)
-    return target_type(value)
-
-
 def _env_flag_enabled(name: str) -> bool:
     """True when an ``AGENTLOOM_*`` boolean opt-in flag is set truthy.
 
-    Honours the same vocabulary as :func:`_coerce` — ``1/true/yes/on``
-    enable; an unset var, an empty string, or any falsey / unrecognized
-    value does not. Unlike :func:`_coerce` this never raises: a typo in
-    an opt-in flag fails closed rather than aborting provider discovery.
+    ``1/true/yes/on`` enable; an unset var, an empty string, or any falsey /
+    unrecognized value does not. This never raises: a typo in an opt-in flag
+    fails closed rather than aborting provider discovery.
     """
     value = os.environ.get(name)
     return value is not None and value.strip().lower() in _TRUTHY_FLAG_VALUES
-
-
-def _apply_env_overrides(data: dict[str, object]) -> dict[str, object]:
-    """Apply AGENTLOOM_* env var overrides to raw config data."""
-    for suffix, (field, target_type) in _ENV_MAP.items():
-        env_val = os.environ.get(f"{_ENV_PREFIX}{suffix}")
-        if env_val is not None:
-            data[field] = _coerce(env_val, target_type)
-    return data
 
 
 def discover_providers(default_provider: str) -> list[ProviderConfig]:
@@ -238,13 +199,7 @@ def load_config(
     config_path: str | Path | None = None,
     default_provider_override: str | None = None,
 ) -> AgentLoomConfig:
-    """Load configuration with env var overrides and provider auto-discovery.
-
-    Resolution order (later wins):
-      1. Built-in defaults
-      2. YAML config file (if provided)
-      3. ``AGENTLOOM_*`` environment variables
-      4. ``default_provider_override`` (if given)
+    """Load the providers from the config file, or discover them from the environment.
 
     A ``providers:`` block in the file replaces auto-discovery; each provider
     takes its API key from its usual environment variable, never from the
@@ -259,7 +214,6 @@ def load_config(
     if config_path is not None:
         data = _read_config_file(config_path)
 
-    data = _apply_env_overrides(data)
     try:
         config = AgentLoomConfig.model_validate(data)
     except PydanticValidationError as e:
@@ -269,12 +223,9 @@ def load_config(
         source = f"config file {str(config_path)!r}" if config_path else "configuration"
         raise ConfigError(f"{source}: {problems}") from e
 
-    if default_provider_override is not None:
-        config.default_provider = default_provider_override
-
     if config.providers:
         config.providers = [_with_environment(p) for p in config.providers]
     else:
-        config.providers = discover_providers(config.default_provider)
+        config.providers = discover_providers(default_provider_override or "openai")
 
     return config

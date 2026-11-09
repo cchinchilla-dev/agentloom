@@ -91,3 +91,19 @@ async def test_verify_skips_the_tools_of_a_live_step(tmp_path: Path) -> None:
     call = ToolCall(id="1", name="clock", arguments={})
 
     await replayer.capture("b", [(call, "13:00", True)])  # a different result, not checked
+
+
+async def test_unused_turns_finds_the_turns_of_a_subworkflow_step(tmp_path: Path) -> None:
+    turns = [{"content": "one"}, {"content": "two"}]
+    cut = _cut(tmp_path, {"sub/x": turns})
+
+    async def _child() -> None:
+        enter_step("sub")
+        enter_step("x")
+        await cut.route("x", _recorded, _live)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_child)
+
+    assert [c.step_id for c in cut.calls] == ["x"]
+    assert cut.unused_turns() == {"sub/x": (1, 2)}

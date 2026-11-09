@@ -97,6 +97,8 @@ class StreamResponse:
         # Set by the adapter once the response headers arrive.
         self.meta: ResponseMeta | None = None
         self.raw_response: dict[str, Any] = {}
+        # Set by the gateway, which waits for the first chunk before handing the stream over.
+        self.time_to_first_token_ms: float | None = None
         self._chunks: list[str] = []
         self._accumulated_bytes: int = 0
         self._iterator: AsyncIterator[str] | None = None

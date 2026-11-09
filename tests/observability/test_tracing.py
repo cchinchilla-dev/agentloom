@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from unittest.mock import MagicMock
 
 import anyio
 import pytest
 
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import (
+    AgentDefinition,
+    Condition,
     RetryConfig,
     StepDefinition,
     StepType,
@@ -103,6 +106,22 @@ class _HangingProvider(MockProvider):
     ) -> ProviderResponse:
         await anyio.Event().wait()
         raise AssertionError("unreachable")
+
+
+class _RaisingProvider(MockProvider):
+    """Fails every call."""
+
+    async def complete(self, *args: Any, **kwargs: Any) -> ProviderResponse:
+        raise RuntimeError("provider down")
+
+
+class _VersionedProvider(MockProvider):
+    """Answers with a dated model id, as real providers do for an alias."""
+
+    async def complete(self, *args: Any, **kwargs: Any) -> ProviderResponse:
+        response = await super().complete(*args, **kwargs)
+        response.model = "mock-model-2026-01-01"
+        return response
 
 
 class _SpendAfterWait(MockProvider):
@@ -346,3 +365,180 @@ class TestStoppedSteps:
         ]
         assert step.attributes[SpanAttr.STEP_STATUS] == "failed"
         assert step.attributes[SpanAttr.STEP_ERROR] == "engine bug"
+
+
+class TestSpanStatus:
+    def test_set_error_marks_the_span(self) -> None:
+        tracing, exporter = _in_memory_tracing()
+        span = tracing.start_span("s")
+        tracing.set_error(span, "boom")
+        tracing.end_span(span)
+        status = exporter.get_finished_spans()[0].status
+        assert status.status_code.name == "ERROR"
+        assert status.description == "boom"
+
+    def test_set_error_is_a_noop_without_otel(self) -> None:
+        span = MagicMock()
+        TracingManager(enabled=False).set_error(span, "boom")
+        span.set_status.assert_not_called()
+
+    async def test_a_failed_attempt_and_step_are_errors_in_the_trace(self) -> None:
+        tracing, exporter = _in_memory_tracing()
+        workflow = WorkflowDefinition(
+            name="broken",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            steps=[
+                StepDefinition(
+                    id="ask",
+                    type=StepType.LLM_CALL,
+                    prompt="hi",
+                    output="a",
+                    retry=RetryConfig(max_retries=0),
+                )
+            ],
+        )
+        gateway = ProviderGateway()
+        gateway.register(_RaisingProvider(), priority=0)
+        engine = WorkflowEngine(
+            workflow=workflow, provider_gateway=gateway, observer=WorkflowObserver(tracing=tracing)
+        )
+
+        assert (await engine.run()).status == WorkflowStatus.FAILED
+
+        spans = {s.name: s for s in exporter.get_finished_spans()}
+        assert spans[SpanName.STEP.format(step_id="ask")].status.status_code.name == "ERROR"
+        chat = SpanName.GEN_AI_INFERENCE.format(operation_name="chat", model="mock-model")
+        assert spans[chat].status.status_code.name == "ERROR"
+
+
+class TestCutCalls:
+    async def test_a_step_timeout_closes_its_chat_span(self) -> None:
+        tracing, exporter = _in_memory_tracing()
+        workflow = WorkflowDefinition(
+            name="cut",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            steps=[
+                StepDefinition(
+                    id="ask",
+                    type=StepType.LLM_CALL,
+                    prompt="hi",
+                    output="a",
+                    timeout=0.05,
+                    retry=RetryConfig(max_retries=0),
+                )
+            ],
+        )
+        gateway = ProviderGateway()
+        gateway.register(_HangingProvider(), priority=0)
+        engine = WorkflowEngine(
+            workflow=workflow, provider_gateway=gateway, observer=WorkflowObserver(tracing=tracing)
+        )
+
+        with anyio.fail_after(5):
+            result = await engine.run()
+
+        assert result.step_results["ask"].status == StepStatus.TIMEOUT
+        spans = {s.name: s for s in exporter.get_finished_spans()}
+        chat = spans[SpanName.GEN_AI_INFERENCE.format(operation_name="chat", model="mock-model")]
+        assert chat.attributes[SpanAttr.ERROR_TYPE] == anyio.get_cancelled_exc_class().__name__
+        assert chat.status.status_code.name == "ERROR"
+
+
+class TestRequestModel:
+    async def test_the_step_span_has_the_model_it_asked_for(self) -> None:
+        tracing, exporter = _in_memory_tracing()
+        workflow = WorkflowDefinition(
+            name="versioned",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            steps=[StepDefinition(id="ask", type=StepType.LLM_CALL, prompt="hi", output="a")],
+        )
+        gateway = ProviderGateway()
+        gateway.register(_VersionedProvider(), priority=0)
+        engine = WorkflowEngine(
+            workflow=workflow, provider_gateway=gateway, observer=WorkflowObserver(tracing=tracing)
+        )
+
+        assert (await engine.run()).status == WorkflowStatus.SUCCESS
+
+        spans = {s.name: s for s in exporter.get_finished_spans()}
+        step = spans[SpanName.STEP.format(step_id="ask")]
+        assert step.attributes[SpanAttr.GEN_AI_REQUEST_MODEL] == "mock-model"
+        chat = spans[SpanName.GEN_AI_INFERENCE.format(operation_name="chat", model="mock-model")]
+        assert chat.attributes[SpanAttr.GEN_AI_RESPONSE_MODEL] == "mock-model-2026-01-01"
+
+    def test_an_agent_step_asks_for_the_agents_model(self) -> None:
+        step = StepDefinition(
+            id="ask",
+            type=StepType.AGENT,
+            prompt="hi",
+            agent=AgentDefinition(name="helper", model="agent-model"),
+        )
+        workflow = WorkflowDefinition(
+            name="agent",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            steps=[step],
+        )
+        assert WorkflowEngine(workflow=workflow)._requested_model(step) == "agent-model"
+
+    async def test_a_step_without_a_model_has_none(self) -> None:
+        tracing, exporter = _in_memory_tracing()
+        workflow = WorkflowDefinition(
+            name="tooled",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={"x": 1},
+            steps=[
+                StepDefinition(
+                    id="route",
+                    type=StepType.ROUTER,
+                    conditions=[Condition(expression="state.x == 1", target="done")],
+                    default="done",
+                ),
+                StepDefinition(
+                    id="done",
+                    type=StepType.LLM_CALL,
+                    prompt="hi",
+                    output="a",
+                    depends_on=["route"],
+                ),
+            ],
+        )
+        gateway = ProviderGateway()
+        gateway.register(MockProvider(), priority=0)
+        engine = WorkflowEngine(
+            workflow=workflow, provider_gateway=gateway, observer=WorkflowObserver(tracing=tracing)
+        )
+
+        assert (await engine.run()).status == WorkflowStatus.SUCCESS
+
+        spans = {s.name: s for s in exporter.get_finished_spans()}
+        route = spans[SpanName.STEP.format(step_id="route")]
+        assert SpanAttr.GEN_AI_REQUEST_MODEL not in route.attributes
+
+
+class TestSubworkflowMetrics:
+    async def test_the_child_is_no_run_of_its_own(self) -> None:
+        metrics = MagicMock()
+        workflow = WorkflowDefinition(
+            name="parent",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            steps=[
+                StepDefinition(
+                    id="child", type=StepType.SUBWORKFLOW, workflow_inline=_localize("es")
+                ),
+            ],
+        )
+        gateway = ProviderGateway()
+        gateway.register(MockProvider(), priority=0)
+        engine = WorkflowEngine(
+            workflow=workflow,
+            provider_gateway=gateway,
+            observer=WorkflowObserver(metrics=metrics),
+            run_id="root",
+        )
+
+        result = await engine.run()
+
+        assert result.status == WorkflowStatus.SUCCESS
+        metrics.record_workflow_run.assert_called_once()
+        assert metrics.record_workflow_run.call_args.args[0] == "parent"
+        assert metrics.record_workflow_run.call_args.args[3] == pytest.approx(0.001)

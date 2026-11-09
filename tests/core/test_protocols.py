@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+from unittest.mock import MagicMock
+
+import pytest
+
 from agentloom.core.protocols import (
     CheckpointerProtocol,
     GatewayProtocol,
@@ -9,6 +14,7 @@ from agentloom.core.protocols import (
     StateManagerProtocol,
     StreamCallbackProtocol,
     ToolRegistryProtocol,
+    call_hook,
 )
 from agentloom.core.state import StateManager
 from agentloom.observability.noop import NoopObserver
@@ -52,3 +58,28 @@ class TestCheckpointerProtocolAllowsNone:
         from agentloom.checkpointing.file import FileCheckpointer
 
         assert isinstance(FileCheckpointer(checkpoint_dir=tmp_path), CheckpointerProtocol)
+
+
+class TestCallHook:
+    def test_passes_its_arguments(self) -> None:
+        observer = MagicMock()
+        call_hook(observer, "on_tokens", "p", "m", reasoning_tokens=2)
+        observer.on_tokens.assert_called_once_with("p", "m", reasoning_tokens=2)
+
+    def test_a_missing_hook_or_observer_is_skipped(self) -> None:
+        call_hook(object(), "on_tokens", "p")
+        call_hook(None, "on_tokens", "p")
+
+    def test_an_exception_is_logged_not_raised(self, caplog: pytest.LogCaptureFixture) -> None:
+        observer = MagicMock()
+        observer.on_step_end.side_effect = RuntimeError("hook bug")
+        with caplog.at_level(logging.WARNING, logger="agentloom.observability"):
+            call_hook(observer, "on_step_end", "s1")
+        assert "on_step_end" in caplog.text
+        assert "hook bug" in caplog.text
+
+    def test_a_cancellation_passes_through(self) -> None:
+        observer = MagicMock()
+        observer.on_step_end.side_effect = KeyboardInterrupt
+        with pytest.raises(KeyboardInterrupt):
+            call_hook(observer, "on_step_end", "s1")

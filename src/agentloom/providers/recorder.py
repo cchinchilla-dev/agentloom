@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import anyio
 
-from agentloom.core.attempts import AttemptLog, attempt_number
+from agentloom.core.attempts import AttemptLog, attempt_number, qualified_step
+from agentloom.core.redact import RedactionPolicy, redact_state
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
@@ -25,7 +26,13 @@ from agentloom.providers.base import (
     StreamResponse,
     ToolCall,
 )
-from agentloom.providers.mock import RECORDING_FORMAT_VERSION, UNHASHED_KWARGS, prompt_hash
+from agentloom.providers.mock import (
+    RECORDING_FORMAT_VERSION,
+    ROUTING_KWARGS,
+    UNHASHED_KWARGS,
+    embed_hash,
+    prompt_hash,
+)
 
 if TYPE_CHECKING:
     from agentloom.core.attempts import Attempt
@@ -54,6 +61,19 @@ def merge_into_recording(path: Path, update: Callable[[dict[str, Any]], None]) -
         path.write_text(json.dumps(merged, indent=2, default=str))
 
 
+class RunCaptures:
+    """What a run has recorded, shared by its recorders: a step can use several providers."""
+
+    def __init__(self) -> None:
+        self.recorded: dict[str, Any] = {}
+        # Captures per key in this run: a step's second capture turns its entry into a list.
+        self.counts: dict[str, int] = {}
+        # Captures of each step before an attempt first recorded it: a retry goes back there.
+        self.attempts = AttemptLog()
+        # Guards ``recorded`` and its flush: parallel calls would lose entries or resize mid-copy.
+        self.lock = anyio.Lock()
+
+
 @runtime_checkable
 class RecordingObserver(Protocol):
     """Minimal observer interface for RecordingProvider capture events."""
@@ -74,7 +94,11 @@ class RecordingProvider(BaseProvider):
     same ``step_id`` more than once (the turns of a tool loop), the entry
     becomes a list of turns in order, the form ``MockProvider`` replays with
     its per-step cursor. The first capture of a key in a run replaces whatever
-    an earlier run left under it, so runs never mix.
+    an earlier run left under it, so runs never mix. A subworkflow's step is
+    keyed by its path (``sub/step``), so it never shares an entry with a step
+    of the parent that has its id. ``redaction`` masks the arguments of the
+    tool calls an entry holds; ``request_hash`` is taken before, on the real
+    request.
     """
 
     # Captures are keyed by step id, so the gateway must forward it.
@@ -85,20 +109,21 @@ class RecordingProvider(BaseProvider):
         wrapped: BaseProvider,
         output_path: str | Path,
         observer: RecordingObserver | None = None,
+        redaction: RedactionPolicy | None = None,
+        captures: RunCaptures | None = None,
     ) -> None:
         super().__init__(api_key=wrapped.api_key, base_url=wrapped.base_url)
         self.name = wrapped.name
         self._wrapped = wrapped
         self.output_path = Path(output_path)
         self._observer = observer
-        # Only this recorder's captures: ``_flush_sync`` merges them over the file.
-        self._recorded: dict[str, Any] = {}
-        # Captures per key in this run: a step's second capture turns its entry into a list.
-        self._captures: dict[str, int] = {}
-        # Captures of each step before an attempt first recorded it: a retry goes back there.
-        self._attempts = AttemptLog()
-        # Guards ``_recorded`` and its flush: parallel calls would lose entries or resize mid-copy.
-        self._write_lock = anyio.Lock()
+        self._redaction = redaction
+        shared = captures or RunCaptures()
+        # Only this run's captures: ``_flush_sync`` merges them over the file.
+        self._recorded = shared.recorded
+        self._captures = shared.counts
+        self._attempts = shared.attempts
+        self._write_lock = shared.lock
 
     def _key(
         self,
@@ -110,18 +135,28 @@ class RecordingProvider(BaseProvider):
         extra: dict[str, Any] | None = None,
     ) -> str:
         if step_id:
-            return step_id
+            return qualified_step(step_id)
         return prompt_hash(messages, model, temperature, max_tokens, extra)
 
-    def _wrapped_kwargs(self, extra_kwargs: dict[str, Any], step_id: str | None) -> dict[str, Any]:
+    def _wrapped_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         """Build the kwargs forwarded to the wrapped provider.
 
-        ``step_id`` is added back only when the wrapped provider accepts
-        it (another mock or recorder).
+        ``step_id`` and ``requested_model`` go back only when the wrapped
+        provider accepts them (another mock or recorder).
         """
-        if step_id is not None and getattr(self._wrapped, "accepts_step_id", False):
-            return {**extra_kwargs, "step_id": step_id}
-        return dict(extra_kwargs)
+        forwarded = {k: v for k, v in kwargs.items() if k not in ROUTING_KWARGS}
+        if getattr(self._wrapped, "accepts_step_id", False):
+            forwarded |= {k: kwargs[k] for k in ROUTING_KWARGS if kwargs.get(k) is not None}
+        return forwarded
+
+    def _masked(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """*entry* with the redaction policy applied to the arguments of its tool calls."""
+        calls = entry.get("tool_calls")
+        if not self._redaction or not calls:
+            return entry
+        policy = self._redaction
+        masked = [{**c, "arguments": redact_state(c.get("arguments") or {}, policy)} for c in calls]
+        return {**entry, "tool_calls": masked}
 
     def _store(self, key: str, entry: dict[str, Any], by_step_id: bool) -> None:
         """Record ``entry`` under ``key``; call with ``_write_lock`` held.
@@ -129,6 +164,7 @@ class RecordingProvider(BaseProvider):
         Only step-id keys grow into lists: ``MockProvider`` reads the list
         form by step id, while a hash key names one exact request.
         """
+        entry = self._masked(entry)
         seen = self._captures.get(key, 0)
         if by_step_id:
             self._attempts.note(key, seen)
@@ -190,18 +226,19 @@ class RecordingProvider(BaseProvider):
     ) -> ProviderResponse:
         step_id = kwargs.get("step_id")
         extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
+        asked = kwargs.get("requested_model", model)
         start = time.perf_counter()
         response = await self._wrapped.complete(
             messages=messages,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
-            **self._wrapped_kwargs(extra_kwargs, step_id),
+            **self._wrapped_kwargs(kwargs),
         )
         latency_ms = (time.perf_counter() - start) * 1000.0
 
-        key = self._key(step_id, messages, model, temperature, max_tokens, extra_kwargs)
-        request_hash = prompt_hash(messages, model, temperature, max_tokens, extra_kwargs)
+        key = self._key(step_id, messages, asked, temperature, max_tokens, extra_kwargs)
+        request_hash = prompt_hash(messages, asked, temperature, max_tokens, extra_kwargs)
         entry = _replayed(response.raw_response, request_hash)
         if entry is None:
             entry = {
@@ -240,13 +277,14 @@ class RecordingProvider(BaseProvider):
     ) -> StreamResponse:
         step_id = kwargs.get("step_id")
         extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
+        asked = kwargs.get("requested_model", model)
         start = time.perf_counter()
         inner_sr = await self._wrapped.stream(
             messages=messages,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
-            **self._wrapped_kwargs(extra_kwargs, step_id),
+            **self._wrapped_kwargs(kwargs),
         )
 
         outer_sr = StreamResponse(model=inner_sr.model, provider=inner_sr.provider)
@@ -271,8 +309,8 @@ class RecordingProvider(BaseProvider):
                 outer_sr.meta = inner_sr.meta
 
             latency_ms = (time.perf_counter() - start) * 1000.0
-            key = recorder._key(step_id, messages, model, temperature, max_tokens, extra_kwargs)
-            request_hash = prompt_hash(messages, model, temperature, max_tokens, extra_kwargs)
+            key = recorder._key(step_id, messages, asked, temperature, max_tokens, extra_kwargs)
+            request_hash = prompt_hash(messages, asked, temperature, max_tokens, extra_kwargs)
             entry = _replayed(inner_sr.raw_response, request_hash)
             if entry is None:
                 entry = {
@@ -318,22 +356,15 @@ class RecordingProvider(BaseProvider):
             inputs=inputs,
             model=model,
             dimensions=dimensions,
-            **self._wrapped_kwargs(extra_kwargs, step_id),
+            **self._wrapped_kwargs(kwargs),
         )
         latency_ms = (time.perf_counter() - start) * 1000.0
 
-        # Without a step id, embed calls with the same inputs share one hash-keyed entry.
-        key = (
-            step_id
-            if step_id
-            else prompt_hash(
-                [{"embed_inputs": inputs, "model": model, "dimensions": dimensions}],
-                model,
-                None,
-                None,
-                extra_kwargs,
-            )
+        request_hash = embed_hash(
+            inputs, kwargs.get("requested_model", model), dimensions, extra_kwargs
         )
+        # Without a step id, embed calls with the same inputs share one hash-keyed entry.
+        key = qualified_step(step_id) if step_id else request_hash
         entry = {
             "embeddings": [list(v) for v in response.embeddings],
             "model": response.model,
@@ -341,6 +372,7 @@ class RecordingProvider(BaseProvider):
             "usage": response.usage.model_dump(),
             "cost_usd": response.cost_usd,
             "latency_ms": latency_ms,
+            "request_hash": request_hash,
         }
         async with self._write_lock:
             self._recorded[key] = entry

@@ -1,14 +1,15 @@
 {
   "_version": 2,
   "draft": [
-    {"fault": {"type": "http_error", "status_code": 429, "retry_after_s": 0.1}},
-    {"fault": {"type": "http_error", "status_code": 503, "body": "upstream overloaded"}},
+    {"fault": {"type": "http_error", "status_code": 429, "retry_after_s": 0.1}, "request_hash": "878755233f03067765286461be60366957c804f1f077da212483ec40411a44ba"},
+    {"fault": {"type": "http_error", "status_code": 503, "body": "upstream overloaded"}, "request_hash": "878755233f03067765286461be60366957c804f1f077da212483ec40411a44ba"},
     {
       "content": "Release 1.4 is in final testing and ships Thursday.",
       "model": "mock-model",
       "usage": {"prompt_tokens": 14, "completion_tokens": 11, "total_tokens": 25},
       "cost_usd": 0.0,
-      "finish_reason": "stop"
+      "finish_reason": "stop",
+      "request_hash": "878755233f03067765286461be60366957c804f1f077da212483ec40411a44ba"
     }
   ],
   "review": {
@@ -16,6 +17,7 @@
     "model": "mock-model",
     "usage": {"prompt_tokens": 22, "completion_tokens": 9, "total_tokens": 31},
     "cost_usd": 0.0,
-    "finish_reason": "stop"
+    "finish_reason": "stop",
+    "request_hash": "0d9c2e3049009fe01e8d7033a8fce9d34b20f75a6b40552b6e52e10429131ab4"
   }
 }

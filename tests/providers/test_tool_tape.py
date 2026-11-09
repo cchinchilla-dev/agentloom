@@ -7,9 +7,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import anyio
 import pytest
 
+from agentloom.core.attempts import enter_step
 from agentloom.core.engine import WorkflowEngine
+from agentloom.core.redact import RedactionPolicy, is_redacted
 from agentloom.core.results import StepStatus, WorkflowResult, WorkflowStatus
 from agentloom.exceptions import RecordingMismatchError
 from agentloom.providers.base import BaseProvider, ToolCall
@@ -166,3 +169,86 @@ async def test_rerecording_a_step_replaces_only_its_tool_calls(tmp_path: Path) -
     data = json.loads(path.read_text())
     assert data["llm"] == {"content": "x"}
     assert data["_tools"] == {"old": [_entry("1")], "s": [_entry("5"), _entry("boom", False)]}
+
+
+async def _in_step(*steps: str, call: Any) -> None:
+    """Run ``call`` as the innermost of ``steps``; its own task keeps the marks to itself."""
+
+    async def _run() -> None:
+        for step in steps:
+            enter_step(step)
+        await call()
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_run)
+
+
+class TestSubworkflowSteps:
+    async def test_a_child_step_records_under_its_path(self, tmp_path: Path) -> None:
+        path = tmp_path / "rec.json"
+        recorder = ToolRecorder(path)
+        await _in_step("sub", "ask", call=lambda: recorder.capture("ask", [(ADD, "5", True)]))
+        await _in_step("ask", call=lambda: recorder.capture("ask", [(ADD, "6", True)]))
+        tools = json.loads(path.read_text())["_tools"]
+        assert [e["result"] for e in tools["sub/ask"]] == ["5"]
+        assert [e["result"] for e in tools["ask"]] == ["6"]
+
+    async def test_a_child_step_is_served_from_its_path(self, tmp_path: Path) -> None:
+        path = _recording(tmp_path, {"sub/ask": [_entry("5")], "ask": [_entry("6")]})
+        replayer = ToolReplayer(path, ToolMode.REPLAY)
+        served: list[Any] = []
+
+        async def _serve() -> None:
+            served.extend(replayer.serve("ask", [ADD]))
+
+        await _in_step("sub", "ask", call=_serve)
+        await _in_step("ask", call=_serve)
+        assert served == [("5", True), ("6", True)]
+
+    async def test_a_recording_with_the_bare_id_still_serves_a_child_step(
+        self, tmp_path: Path
+    ) -> None:
+        path = _recording(tmp_path, {"ask": [_entry("5")]})
+        replayer = ToolReplayer(path, ToolMode.REPLAY)
+        served: list[Any] = []
+
+        async def _serve() -> None:
+            served.extend(replayer.serve("ask", [ADD]))
+
+        await _in_step("sub", "ask", call=_serve)
+        assert served == [("5", True)]
+
+
+class TestRedaction:
+    POLICY = RedactionPolicy(["*token*"])
+    CALL = ToolCall(id="c1", name="fetch", arguments={"api_token": "dummy-secret", "url": "u"})
+
+    async def _captured(self, tmp_path: Path, result: str) -> dict[str, Any]:
+        path = tmp_path / "rec.json"
+        recorder = ToolRecorder(path, redaction=self.POLICY)
+        await recorder.capture("ask", [(self.CALL, result, True)])
+        return json.loads(path.read_text())["_tools"]["ask"][0]
+
+    async def test_arguments_are_masked(self, tmp_path: Path) -> None:
+        entry = await self._captured(tmp_path, "done")
+        assert is_redacted(entry["arguments"]["api_token"])
+        assert entry["arguments"]["url"] == "u"
+        assert entry["result"] == "done"
+
+    async def test_a_json_result_is_masked(self, tmp_path: Path) -> None:
+        entry = await self._captured(tmp_path, json.dumps({"api_token": "dummy-secret"}))
+        assert "dummy-secret" not in entry["result"]
+
+    async def test_a_masked_call_is_served_on_replay(self, tmp_path: Path) -> None:
+        path = tmp_path / "rec.json"
+        await ToolRecorder(path, redaction=self.POLICY).capture("ask", [(self.CALL, "done", True)])
+        replayed_call = self.CALL.model_copy(
+            update={"arguments": json.loads(path.read_text())["_tools"]["ask"][0]["arguments"]}
+        )
+        replayer = ToolReplayer(path, ToolMode.REPLAY)
+        assert replayer.serve("ask", [replayed_call]) == [("done", True)]
+
+    async def test_without_a_policy_they_stay(self, tmp_path: Path) -> None:
+        path = tmp_path / "rec.json"
+        await ToolRecorder(path).capture("ask", [(self.CALL, "done", True)])
+        assert "dummy-secret" in path.read_text()

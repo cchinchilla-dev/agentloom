@@ -96,6 +96,13 @@ _MEDIA_TYPE_DEFAULTS: dict[str, str] = {
 }
 
 
+_MEDIA_TYPE_PREFIXES: dict[str, str] = {
+    "image": "image/",
+    "pdf": "application/pdf",
+    "audio": "audio/",
+}
+
+
 def detect_media_type(source: str, attachment_type: str = "image") -> str:
     """Auto-detect media type from a file path or URL.
 
@@ -295,7 +302,7 @@ def _validate_file_sandbox(file_path: str, sandbox: SandboxConfig) -> None:
     """
     if not sandbox.enabled:
         return
-    allowed = sandbox.readable_paths or sandbox.allowed_paths
+    allowed = sandbox.readable_paths + sandbox.allowed_paths
     # As for the file tools: an enabled sandbox with no paths reads nothing
     if not allowed:
         msg = (
@@ -314,10 +321,13 @@ def _validate_file_sandbox(file_path: str, sandbox: SandboxConfig) -> None:
     if str(resolved) != file_path:
         msg = (
             f"Attachment path '{file_path}' resolves to '{resolved}', which is "
-            f"not within sandbox readable_paths: {allowed}"
+            f"not within sandbox readable_paths or allowed_paths: {allowed}"
         )
     else:
-        msg = f"Attachment path '{file_path}' not within sandbox readable_paths: {allowed}"
+        msg = (
+            f"Attachment path '{file_path}' not within sandbox readable_paths "
+            f"or allowed_paths: {allowed}"
+        )
     raise PermissionError(msg)
 
 
@@ -407,6 +417,12 @@ async def _resolve_single(
     if not source or not source.strip():
         msg = "Attachment source must not be empty"
         raise ValueError(msg)
+    expected = _MEDIA_TYPE_PREFIXES.get(attachment.type, "")
+    if attachment.media_type and not attachment.media_type.lower().startswith(expected):
+        raise AttachmentResolutionError(
+            source[:60],
+            f"media_type {attachment.media_type!r} does not match type {attachment.type!r}",
+        )
     media_type = attachment.media_type or detect_media_type(source, attachment.type)
 
     if _is_data_url(source):
@@ -428,6 +444,7 @@ async def _resolve_single(
         return _make_block(attachment.type, encoded, media_type)
 
     if _is_base64(source):
+        _check_size(base64.b64decode(source), source[:60])
         return _make_block(attachment.type, source, media_type)
 
     resolved = str(Path(source).resolve())
@@ -456,10 +473,11 @@ async def resolve_attachments(
     * **Sandbox domain filtering** — when ``allowed_domains`` is non-empty,
       only those domains can be fetched.
     * **File path sandboxing** — when ``sandbox.enabled`` is True, file paths
-      are validated against ``readable_paths`` / ``allowed_paths``.  Symlinks
+      are validated against ``readable_paths`` + ``allowed_paths``.  Symlinks
       are resolved before validation to prevent traversal.
     * **Size limit** — downloads are streamed and aborted if they exceed
-      :data:`MAX_ATTACHMENT_BYTES` (20 MB), preventing OOM.
+      :data:`MAX_ATTACHMENT_BYTES` (20 MB), preventing OOM; files, ``data:``
+      URLs and raw base64 are held to the same limit.
     """
     cfg = sandbox or SandboxConfig()
     blocks: list[ContentBlock] = []

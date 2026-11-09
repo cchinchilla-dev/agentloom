@@ -2,17 +2,29 @@
 
 from __future__ import annotations
 
-from typing import Any
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, ClassVar
 
 import pytest
+import respx
 
-from agentloom.core.models import StepDefinition, StepType, WorkflowConfig
+from agentloom.checkpointing.file import FileCheckpointer
+from agentloom.core.models import SandboxConfig, StepDefinition, StepType, WorkflowConfig
+from agentloom.core.redact import RedactionPolicy, is_redacted
 from agentloom.core.results import StepResult, StepStatus
 from agentloom.core.state import StateManager
+from agentloom.exceptions import PauseRequestedError, SandboxViolationError, StepError
 from agentloom.providers.gateway import ProviderGateway
 from agentloom.steps.base import StepContext
-from agentloom.steps.subworkflow import SubworkflowStep
-from tests.conftest import MockProvider
+from agentloom.steps.subworkflow import SubworkflowStep, _child_registry, _effective_sandbox
+from agentloom.tools.base import BaseTool
+from agentloom.tools.builtins import ShellCommandTool, register_builtins
+from agentloom.tools.registry import ToolRegistry
+from agentloom.tools.sandbox import ToolSandbox
+from tests.conftest import MockProvider, MockTool
 
 
 class TestSubworkflowStep:
@@ -26,15 +38,9 @@ class TestSubworkflowStep:
         gw.register(MockProvider(), priority=0)
         return gw
 
-    async def test_no_path_or_inline_raises(self, step: SubworkflowStep) -> None:
-        ctx = StepContext(
-            step_definition=StepDefinition(id="sub", type=StepType.SUBWORKFLOW),
-            state_manager=StateManager(),
-            workflow_config=WorkflowConfig(),
-            workflow_model="mock-model",
-        )
-        with pytest.raises(Exception, match="requires 'workflow_path' or 'workflow_inline'"):
-            await step.execute(ctx)
+    def test_no_path_or_inline_raises(self) -> None:
+        with pytest.raises(ValueError, match="requires 'workflow_path' or 'workflow_inline'"):
+            StepDefinition(id="sub", type=StepType.SUBWORKFLOW)
 
     async def test_inline_subworkflow_executes(
         self, step: SubworkflowStep, gateway: ProviderGateway
@@ -230,7 +236,12 @@ class TestSubworkflowFailurePaths:
             "name": "broken-child",
             "config": {"provider": "mock", "model": "mock-model"},
             "steps": [
-                {"id": "r", "type": "router"},  # invalid: no conditions, no default
+                # Loads, and fails when it runs: nothing matches and there is no default.
+                {
+                    "id": "r",
+                    "type": "router",
+                    "conditions": [{"expression": "False", "target": "r"}],
+                },
             ],
         }
         ctx = StepContext(
@@ -375,6 +386,80 @@ class TestSubworkflowStateIsolation:
         assert result.output["child_only"] is True
         assert result.output["forwarded"] == "ok"
         assert result.output["leaf_out"] == "Mock response"
+
+    @staticmethod
+    def _inline(**fields: Any) -> dict[str, Any]:
+        return {
+            "name": "child",
+            "config": {"provider": "mock", "model": "mock-model"},
+            "steps": [{"id": "leaf", "type": "llm_call", "prompt": "ok", "output": "leaf_out"}],
+            **fields,
+        }
+
+    async def test_input_is_rendered_with_the_parents_state(self, gateway: ProviderGateway) -> None:
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="sub",
+                type=StepType.SUBWORKFLOW,
+                workflow_inline=self._inline(),
+                isolated_state=True,
+                input={
+                    "greeting": "hi {state.who}",
+                    "items": "state.items",
+                    "nested": {"names": ["{state.who}"]},
+                    "literal": {"value": "{state.who}", "template": False},
+                },
+                output="result",
+            ),
+            state_manager=StateManager(initial_state={"who": "ada", "items": [1, 2]}),
+            provider_gateway=gateway,
+            workflow_model="mock-model",
+        )
+        result = await SubworkflowStep().execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+        assert result.output["greeting"] == "hi ada"
+        assert result.output["items"] == [1, 2]
+        assert result.output["nested"] == {"names": ["ada"]}
+        assert result.output["literal"] == "{state.who}"
+
+    async def test_input_naming_a_missing_key_fails_for_good(
+        self, gateway: ProviderGateway
+    ) -> None:
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="sub",
+                type=StepType.SUBWORKFLOW,
+                workflow_inline=self._inline(),
+                isolated_state=True,
+                input={"topic": "state.absent"},
+            ),
+            state_manager=StateManager(initial_state={}),
+            provider_gateway=gateway,
+            workflow_model="mock-model",
+        )
+        with pytest.raises(StepError, match="input references 'state.absent'") as info:
+            await SubworkflowStep().execute(ctx)
+        assert info.value.is_retryable is False
+
+    async def test_child_state_seeds_defaults_under_the_parents_values(
+        self, gateway: ProviderGateway
+    ) -> None:
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="sub",
+                type=StepType.SUBWORKFLOW,
+                workflow_inline=self._inline(state={"own": "child", "shared": "child"}),
+                output="result",
+            ),
+            state_manager=StateManager(initial_state={"shared": "parent", "theirs": 1}),
+            provider_gateway=gateway,
+            workflow_model="mock-model",
+        )
+        result = await SubworkflowStep().execute(ctx)
+        assert result.status == StepStatus.SUCCESS
+        assert result.output["own"] == "child"
+        assert result.output["shared"] == "parent"
+        assert result.output["theirs"] == 1
 
     async def test_return_keys_filters_child_state_at_boundary(
         self, gateway: ProviderGateway
@@ -778,3 +863,488 @@ class TestSubworkflowFailedAttempt:
         assert "sub" not in failed.final_state.get("steps", {})
         # The child's final state, kept on the result only
         assert failed.step_results["sub"].output["first"] == "kept"
+
+
+def _shell_child(command: str, sandbox: dict[str, Any], cwd: str) -> dict[str, Any]:
+    return {
+        "name": "child",
+        "config": {"provider": "mock", "model": "x", "sandbox": sandbox},
+        "steps": [
+            {
+                "id": "run",
+                "type": "tool",
+                "tool_name": "shell_command",
+                "tool_args": {"command": command, "cwd": cwd},
+                "retry": {"max_retries": 0},
+                "output": "ran",
+            }
+        ],
+    }
+
+
+def _sandboxed_context(
+    inline: dict[str, Any], registry: ToolRegistry, parent: SandboxConfig | None = None
+) -> StepContext:
+    return StepContext(
+        step_definition=StepDefinition(id="sub", type=StepType.SUBWORKFLOW, workflow_inline=inline),
+        state_manager=StateManager(),
+        tool_registry=registry,
+        sandbox_config=parent or SandboxConfig(),
+    )
+
+
+def _builtins(sandbox: ToolSandbox | None = None) -> ToolRegistry:
+    registry = ToolRegistry()
+    register_builtins(registry, sandbox=sandbox)
+    return registry
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs sh")
+class TestChildSandboxReachesItsBuiltins:
+    async def test_child_sandbox_binds_under_a_parent_with_none(self, tmp_path: Path) -> None:
+        inline = _shell_child(
+            "echo SUBPROBE",
+            {"enabled": True, "allowed_commands": [], "allowed_paths": [str(tmp_path)]},
+            str(tmp_path),
+        )
+        result = await SubworkflowStep().execute(_sandboxed_context(inline, _builtins()))
+        assert result.status == StepStatus.FAILED, result.output
+        assert "SUBPROBE" not in str(result.output)
+        assert "not in allowlist" in (result.error or "")
+
+    async def test_child_cannot_loosen_an_enabled_parent(self, tmp_path: Path) -> None:
+        parent = SandboxConfig(
+            enabled=True, allowed_commands=["echo"], allowed_paths=[str(tmp_path)]
+        )
+        inline = _shell_child(
+            "ls .",
+            {"enabled": True, "allowed_commands": ["echo", "ls"], "allowed_paths": [str(tmp_path)]},
+            str(tmp_path),
+        )
+        registry = _builtins(ToolSandbox(**parent.model_dump()))
+        result = await SubworkflowStep().execute(_sandboxed_context(inline, registry, parent))
+        assert result.status == StepStatus.FAILED, result.output
+        assert "not in allowlist" in (result.error or "")
+
+    async def test_child_tightens_an_enabled_parent(self, tmp_path: Path) -> None:
+        parent = SandboxConfig(
+            enabled=True, allowed_commands=["echo", "ls"], allowed_paths=[str(tmp_path)]
+        )
+        inline = _shell_child(
+            "ls .",
+            {"enabled": True, "allowed_commands": ["echo"], "allowed_paths": [str(tmp_path)]},
+            str(tmp_path),
+        )
+        registry = _builtins(ToolSandbox(**parent.model_dump()))
+        result = await SubworkflowStep().execute(_sandboxed_context(inline, registry, parent))
+        assert result.status == StepStatus.FAILED, result.output
+        assert "not in allowlist" in (result.error or "")
+
+    async def test_child_without_a_sandbox_runs_under_the_parents(self, tmp_path: Path) -> None:
+        parent = SandboxConfig(
+            enabled=True, allowed_commands=["echo"], allowed_paths=[str(tmp_path)]
+        )
+        registry = _builtins(ToolSandbox(**parent.model_dump()))
+        allowed = await SubworkflowStep().execute(
+            _sandboxed_context(_shell_child("echo ok", {}, str(tmp_path)), registry, parent)
+        )
+        assert allowed.status == StepStatus.SUCCESS, allowed.error
+        refused = await SubworkflowStep().execute(
+            _sandboxed_context(_shell_child("ls .", {}, str(tmp_path)), registry, parent)
+        )
+        assert refused.status == StepStatus.FAILED
+
+    async def test_child_cannot_list_an_internal_host_the_parent_refuses(self) -> None:
+        parent = SandboxConfig(enabled=True)
+        url = "http://169.254.169.254/latest/meta-data/"
+        inline = {
+            "name": "child",
+            "config": {
+                "provider": "mock",
+                "model": "x",
+                "sandbox": {"enabled": True, "allowed_domains": ["169.254.169.254"]},
+            },
+            "steps": [
+                {
+                    "id": "fetch",
+                    "type": "tool",
+                    "tool_name": "http_request",
+                    "tool_args": {"url": url},
+                    "retry": {"max_retries": 0},
+                }
+            ],
+        }
+        registry = _builtins(ToolSandbox(**parent.model_dump()))
+        with respx.mock(assert_all_called=False) as router:
+            route = router.get(url).respond(200, text="dummy-credentials")
+            result = await SubworkflowStep().execute(_sandboxed_context(inline, registry, parent))
+        assert not route.called
+        assert result.status == StepStatus.FAILED
+        assert "internal" in (result.error or "")
+
+    async def test_the_parents_tools_stay_as_they_were(self, tmp_path: Path) -> None:
+        registry = _builtins()
+        inline = _shell_child(
+            "echo SUBPROBE",
+            {"enabled": True, "allowed_commands": [], "allowed_paths": [str(tmp_path)]},
+            str(tmp_path),
+        )
+        await SubworkflowStep().execute(_sandboxed_context(inline, registry))
+        outcome = await registry.get("shell_command").execute(command="echo still-free")
+        assert outcome["stdout"].strip() == "still-free"
+
+    async def test_a_resumed_child_gets_the_same_tools(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        inline = _shell_child(
+            "echo SUBPROBE",
+            {"enabled": True, "allowed_commands": [], "allowed_paths": [str(tmp_path)]},
+            str(tmp_path),
+        )
+        ctx = _sandboxed_context(inline, _builtins())
+        ctx.checkpointer = FileCheckpointer(checkpoint_dir=tmp_path / "checkpoints")
+        await ctx.state_manager.set_step_result(
+            "sub", StepResult(step_id="sub", status=StepStatus.PAUSED)
+        )
+
+        class StopError(Exception):
+            pass
+
+        seen: dict[str, Any] = {}
+
+        async def from_checkpoint(cls: Any, paused: Any, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            raise StopError
+
+        async def paused_child(*args: Any) -> Any:
+            return SimpleNamespace(spent_usd=0.0)
+
+        monkeypatch.setattr("agentloom.steps.subworkflow._paused_child", paused_child)
+        monkeypatch.setattr(
+            "agentloom.core.engine.WorkflowEngine.from_checkpoint",
+            classmethod(from_checkpoint),
+        )
+        with pytest.raises(StopError):
+            await SubworkflowStep().execute(ctx)
+        with pytest.raises(SandboxViolationError, match="not in allowlist"):
+            await (
+                seen["tool_registry"]
+                .get("shell_command")
+                .execute(command="echo SUBPROBE", cwd=str(tmp_path))
+            )
+
+
+class TestChildRegistry:
+    def _child(self, registry: ToolRegistry) -> ToolRegistry:
+        return _child_registry(
+            registry, SandboxConfig(), SandboxConfig(enabled=True, allowed_commands=[])
+        )
+
+    async def test_own_tools_and_tape_carry_over(self) -> None:
+        registry = _builtins()
+        own = MockTool()
+        registry.register(own)
+        registry.tape = object()  # type: ignore[assignment]
+        child = self._child(registry)
+        assert child.get("mock_tool") is own
+        assert child.tape is registry.tape
+
+    async def test_a_tool_of_your_own_under_a_builtin_name_is_left_alone(self) -> None:
+        class OwnShell(BaseTool):
+            name = "shell_command"
+
+            async def execute(self, **kwargs: Any) -> Any:
+                return "own"
+
+        registry = ToolRegistry()
+        own = OwnShell()
+        registry.register(own)
+        assert self._child(registry).get("shell_command") is own
+
+    async def test_a_subclass_of_a_builtin_is_rebound(self) -> None:
+        class Loud(ShellCommandTool):
+            pass
+
+        registry = ToolRegistry()
+        registry.register(Loud())
+        child = self._child(registry).get("shell_command")
+        assert isinstance(child, Loud)
+        with pytest.raises(SandboxViolationError):
+            await child.execute(command="echo hi")
+
+    def test_same_policy_keeps_the_parents_registry(self) -> None:
+        registry = _builtins()
+        policy = SandboxConfig(enabled=True, allowed_commands=["echo"])
+        assert _child_registry(registry, policy, policy) is registry
+
+    def test_a_disabled_policy_keeps_the_parents_registry(self) -> None:
+        registry = _builtins()
+        assert _child_registry(registry, SandboxConfig(), SandboxConfig(allow_network=False)) is (
+            registry
+        )
+
+    def test_a_registry_stand_in_passes_through(self) -> None:
+        stand_in = object()
+        result = _child_registry(stand_in, SandboxConfig(), SandboxConfig(enabled=True))
+        assert result is stand_in
+
+
+class TestEffectiveSandbox:
+    def _on(self, **fields: Any) -> SandboxConfig:
+        return SandboxConfig(enabled=True, **fields)
+
+    def test_neither_enabled_keeps_the_childs(self) -> None:
+        child = SandboxConfig(allow_network=False)
+        assert _effective_sandbox(SandboxConfig(), child) is child
+
+    def test_only_the_parent_enabled(self) -> None:
+        parent = self._on(allowed_commands=["echo"])
+        assert _effective_sandbox(parent, SandboxConfig()) is parent
+
+    def test_only_the_child_enabled(self) -> None:
+        child = self._on(allowed_commands=["echo"])
+        assert _effective_sandbox(SandboxConfig(), child) is child
+
+    def test_commands_and_opt_ins_intersect(self) -> None:
+        merged = _effective_sandbox(
+            self._on(allowed_commands=["echo", "ls"], danger_opt_in=["bash", "python"]),
+            self._on(allowed_commands=["ls", "cat"], danger_opt_in=["python"]),
+        )
+        assert merged.enabled is True
+        assert merged.allowed_commands == ["ls"]
+        assert merged.danger_opt_in == ["python"]
+
+    def test_an_empty_command_list_allows_none(self) -> None:
+        merged = _effective_sandbox(self._on(allowed_commands=["echo"]), self._on())
+        assert merged.allowed_commands == []
+
+    def test_permissive_booleans_need_both(self) -> None:
+        merged = _effective_sandbox(
+            self._on(allow_network=False, allow_internal_webhook_targets=True),
+            self._on(allow_network=True, allow_internal_webhook_targets=False),
+        )
+        assert merged.allow_network is False
+        assert merged.allow_internal_webhook_targets is False
+
+    def test_smaller_write_limit(self) -> None:
+        merged = _effective_sandbox(self._on(max_write_bytes=100), self._on(max_write_bytes=10))
+        assert merged.max_write_bytes == 10
+        one_sided = _effective_sandbox(self._on(), self._on(max_write_bytes=10))
+        assert one_sided.max_write_bytes == 10
+        assert _effective_sandbox(self._on(), self._on()).max_write_bytes is None
+
+    def test_a_domain_list_on_one_side_applies(self) -> None:
+        merged = _effective_sandbox(self._on(allowed_domains=["a.example"]), self._on())
+        assert merged.allowed_domains == ["a.example"]
+        assert merged.allow_network is True
+
+    def test_domains_intersect_ignoring_case(self) -> None:
+        merged = _effective_sandbox(
+            self._on(allowed_domains=["A.example", "b.example"]),
+            self._on(allowed_domains=["a.EXAMPLE"]),
+        )
+        assert merged.allowed_domains == ["a.example"]
+
+    def test_disjoint_domains_refuse_the_network(self) -> None:
+        # An empty allowed_domains means any domain: it must not stand for "none in common"
+        merged = _effective_sandbox(
+            self._on(allowed_domains=["a.example"]), self._on(allowed_domains=["b.example"])
+        )
+        assert merged.allow_network is False
+
+    def test_disjoint_schemes_refuse_the_network(self) -> None:
+        # An empty allowed_schemes falls back to http and https
+        merged = _effective_sandbox(
+            self._on(allowed_schemes=["http"]), self._on(allowed_schemes=["https"])
+        )
+        assert merged.allow_network is False
+
+    def test_schemes_intersect(self) -> None:
+        merged = _effective_sandbox(self._on(), self._on(allowed_schemes=["https"]))
+        assert merged.allowed_schemes == ["https"]
+
+    def test_of_nested_directories_the_deeper_one_applies(self, tmp_path: Path) -> None:
+        inner = tmp_path / "inner"
+        merged = _effective_sandbox(
+            self._on(allowed_paths=[str(tmp_path)]), self._on(allowed_paths=[str(inner)])
+        )
+        assert merged.readable_paths == [str(inner.resolve())]
+        assert merged.writable_paths == [str(inner.resolve())]
+        assert merged.allowed_paths == []
+
+    def test_read_only_on_one_side_stays_read_only(self, tmp_path: Path) -> None:
+        merged = _effective_sandbox(
+            self._on(allowed_paths=[str(tmp_path)]), self._on(readable_paths=[str(tmp_path)])
+        )
+        assert merged.readable_paths == [str(tmp_path.resolve())]
+        assert merged.writable_paths == []
+
+    def test_a_childs_domains_cannot_open_internal_hosts_the_parent_refuses(self) -> None:
+        merged = _effective_sandbox(self._on(), self._on(allowed_domains=["169.254.169.254"]))
+        assert merged.deny_internal_hosts is True
+        with pytest.raises(SandboxViolationError, match="internal"):
+            ToolSandbox(**merged.model_dump()).validate_network("http://169.254.169.254/latest/")
+
+    def test_a_host_both_list_stays_reachable(self) -> None:
+        merged = _effective_sandbox(
+            self._on(allowed_domains=["localhost"]), self._on(allowed_domains=["localhost"])
+        )
+        assert merged.deny_internal_hosts is False
+        ToolSandbox(**merged.model_dump()).validate_network("http://localhost/x")
+
+    def test_a_host_the_parent_lists_stays_reachable_from_a_child_with_no_list(self) -> None:
+        merged = _effective_sandbox(self._on(allowed_domains=["localhost"]), self._on())
+        assert merged.deny_internal_hosts is False
+
+    def test_the_refusal_reaches_a_grandchild(self) -> None:
+        child = _effective_sandbox(self._on(), self._on(allowed_domains=["localhost"]))
+        grandchild = _effective_sandbox(child, self._on())
+        assert grandchild.deny_internal_hosts is True
+
+    def test_no_domains_on_either_side_sets_nothing(self) -> None:
+        assert _effective_sandbox(self._on(), self._on()).deny_internal_hosts is False
+
+    def test_unrelated_directories_leave_nothing(self, tmp_path: Path) -> None:
+        merged = _effective_sandbox(
+            self._on(allowed_paths=[str(tmp_path / "a")]),
+            self._on(allowed_paths=[str(tmp_path / "b")]),
+        )
+        assert merged.readable_paths == []
+        assert merged.writable_paths == []
+
+
+class TestInputThatCarriesASecret:
+    """A redacted key handed over under another name stays redacted."""
+
+    SECRET = "dummy-secret-value"
+
+    def _context(
+        self, tmp_path: Path, inline: dict[str, Any], **step: Any
+    ) -> tuple[StepContext, MockTool]:
+        tool = MockTool()
+        registry = ToolRegistry()
+        registry.register(tool)
+        definition = StepDefinition(
+            id="sub",
+            type=StepType.SUBWORKFLOW,
+            workflow_inline=inline,
+            isolated_state=True,
+            input={"credential": "state.api_key", "topic": "state.topic"},
+            **step,
+        )
+        context = StepContext(
+            step_definition=definition,
+            state_manager=StateManager({"api_key": self.SECRET, "topic": "billing"}),
+            tool_registry=registry,
+            run_id="root",
+            redaction_policy=RedactionPolicy(["api_key"]),
+            checkpointer=FileCheckpointer(checkpoint_dir=tmp_path),
+        )
+        return context, tool
+
+    @staticmethod
+    def _child(*steps: dict[str, Any]) -> dict[str, Any]:
+        return {"name": "child", "config": {"provider": "mock", "model": "x"}, "steps": list(steps)}
+
+    async def test_the_childs_checkpoint_never_holds_it(self, tmp_path: Path) -> None:
+        inline = self._child({"id": "gate", "type": "approval_gate"})
+        context, _ = self._context(tmp_path, inline)
+        with pytest.raises(PauseRequestedError):
+            await SubworkflowStep().execute(context)
+        saved = (tmp_path / "root.sub.json").read_text(encoding="utf-8")
+        assert self.SECRET not in saved
+        assert "billing" in saved
+
+    async def test_a_template_counts_too(self, tmp_path: Path) -> None:
+        inline = self._child({"id": "gate", "type": "approval_gate"})
+        context, _ = self._context(tmp_path, inline)
+        context.step_definition.input["credential"] = "Bearer {state.api_key}"
+        with pytest.raises(PauseRequestedError):
+            await SubworkflowStep().execute(context)
+        assert self.SECRET not in (tmp_path / "root.sub.json").read_text(encoding="utf-8")
+
+    async def test_the_child_reads_it_and_the_parent_gets_it_back_masked(
+        self, tmp_path: Path
+    ) -> None:
+        inline = self._child(
+            {
+                "id": "use",
+                "type": "tool",
+                "tool_name": "mock_tool",
+                "tool_args": {"input": "state.credential"},
+            }
+        )
+        context, tool = self._context(tmp_path, inline, output="sub_out")
+        result = await SubworkflowStep().execute(context)
+        assert result.status == StepStatus.SUCCESS, result.error
+        assert tool.calls == [{"input": self.SECRET}]
+        assert is_redacted(result.output["credential"])
+        assert result.output["topic"] == "billing"
+        back = await context.state_manager.get("sub_out")
+        assert is_redacted(back["credential"])
+
+
+class TestRecordingKeys:
+    """A subworkflow's step records under its path, and older recordings still replay."""
+
+    WORKFLOW: ClassVar[dict[str, Any]] = {
+        "name": "parent",
+        "config": {"provider": "mock", "model": "m"},
+        "steps": [
+            {"id": "x", "type": "llm_call", "prompt": "parent", "output": "own"},
+            {
+                "id": "sub",
+                "type": "subworkflow",
+                "depends_on": ["x"],
+                "output": "sub",
+                "workflow_inline": {
+                    "name": "child",
+                    "config": {"provider": "mock", "model": "m"},
+                    "steps": [{"id": "x", "type": "llm_call", "prompt": "child", "output": "kid"}],
+                },
+            },
+        ],
+    }
+
+    async def _run(self, provider: Any) -> Any:
+        from agentloom.core.engine import WorkflowEngine
+        from agentloom.core.parser import WorkflowParser
+
+        gateway = ProviderGateway()
+        gateway.register(provider, priority=0)
+        workflow = WorkflowParser.from_dict(self.WORKFLOW)
+        result = await WorkflowEngine(workflow=workflow, provider_gateway=gateway).run()
+        await gateway.close()
+        return result
+
+    async def _record(self, tmp_path: Any) -> Any:
+        from agentloom.providers.mock import MockProvider as RecordedMock
+        from agentloom.providers.recorder import RecordingProvider
+
+        answers = tmp_path / "answers.json"
+        answers.write_text(json.dumps({"x": [{"content": "FIRST"}, {"content": "SECOND"}]}))
+        recording = tmp_path / "rec.json"
+        await self._run(RecordingProvider(RecordedMock(responses_file=answers), recording))
+        return recording
+
+    async def test_parent_and_child_with_one_id_get_their_own_entries(self, tmp_path: Any) -> None:
+        data = json.loads((await self._record(tmp_path)).read_text())
+        assert (data["x"]["content"], data["sub/x"]["content"]) == ("FIRST", "SECOND")
+        assert data["_version"] == 2
+
+    async def test_strict_replay_gives_each_its_own_answer(self, tmp_path: Any) -> None:
+        from agentloom.providers.mock import MockProvider as RecordedMock
+
+        recording = await self._record(tmp_path)
+        result = await self._run(RecordedMock(responses_file=recording, strict=True))
+        assert result.final_state["own"] == "FIRST"
+        assert result.final_state["sub"]["kid"] == "SECOND"
+
+    async def test_a_recording_with_the_bare_id_still_replays(self, tmp_path: Any) -> None:
+        from agentloom.providers.mock import MockProvider as RecordedMock
+
+        recording = tmp_path / "old.json"
+        recording.write_text(json.dumps({"x": [{"content": "FIRST"}, {"content": "SECOND"}]}))
+        result = await self._run(RecordedMock(responses_file=recording, strict=True))
+        assert result.final_state["own"] == "FIRST"
+        assert result.final_state["sub"]["kid"] == "SECOND"

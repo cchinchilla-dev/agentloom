@@ -10,6 +10,7 @@ import pytest
 from agentloom.config import (
     AgentLoomConfig,
     ProviderConfig,
+    default_model,
     load_config,
     resolve_config_path,
 )
@@ -18,16 +19,26 @@ from agentloom.exceptions import ConfigError
 
 class TestAgentLoomConfig:
     def test_defaults(self) -> None:
-        cfg = AgentLoomConfig()
-        assert cfg.default_provider == "openai"
-        assert cfg.log_level == "INFO"
-        assert cfg.budget_limit_usd is None
-        assert cfg.max_concurrent_steps == 10
+        assert AgentLoomConfig().providers == []
 
-    def test_custom_values(self) -> None:
-        cfg = AgentLoomConfig(budget_limit_usd=5.0, log_format="text")
-        assert cfg.budget_limit_usd == 5.0
-        assert cfg.log_format == "text"
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("log_level", "DEBUG"),
+            ("log_format", "text"),
+            ("default_provider", "ollama"),
+            ("observability_enabled", "true"),
+            ("max_concurrent_steps", "4"),
+            ("budget_limit_usd", "1.5"),
+            ("checkpoint_enabled", "true"),
+            ("checkpoint_dir", "somewhere"),
+        ],
+    )
+    def test_settings_nothing_reads_are_gone(self, field: str, value: str, tmp_path: Path) -> None:
+        path = tmp_path / "agentloom.yaml"
+        path.write_text(f"{field}: {value}\n")
+        with pytest.raises(ConfigError, match=f"{field}: Extra inputs"):
+            load_config(path)
 
 
 class TestProviderConfig:
@@ -35,7 +46,11 @@ class TestProviderConfig:
         pc = ProviderConfig(name="test")
         assert pc.api_key == ""
         assert pc.priority == 0
-        assert pc.timeout == 30.0
+
+    @pytest.mark.parametrize("field", ["timeout", "max_retries"])
+    def test_settings_nothing_reads_are_gone(self, field: str) -> None:
+        with pytest.raises(ValueError, match=field):
+            ProviderConfig(name="openai", **{field: 1})
 
     def test_custom_config(self) -> None:
         pc = ProviderConfig(name="openai", api_key="sk-xxx", priority=1)
@@ -47,28 +62,24 @@ class TestLoadConfig:
     def test_no_path_returns_defaults(self) -> None:
         cfg = load_config(None)
         assert isinstance(cfg, AgentLoomConfig)
-        assert cfg.default_provider == "openai"
 
     def test_load_from_yaml(self) -> None:
         yaml_content = """\
-log_level: DEBUG
-default_provider: ollama
-budget_limit_usd: 1.5
+providers:
+  - name: ollama
 """
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             f.write(yaml_content)
             f.flush()
             cfg = load_config(f.name)
-        assert cfg.log_level == "DEBUG"
-        assert cfg.default_provider == "ollama"
-        assert cfg.budget_limit_usd == 1.5
+        assert [p.name for p in cfg.providers] == ["ollama"]
 
     @pytest.mark.usefixtures("latin1_locale")
     def test_a_config_file_is_read_as_utf8_whatever_the_locale(self, tmp_path: Path) -> None:
         path = tmp_path / "agentloom.yaml"
-        path.write_text("# configuración — local\nlog_level: DEBUG\n", encoding="utf-8")
+        path.write_text("# configuración — local\nproviders:\n  - name: ollama\n", encoding="utf-8")
 
-        assert load_config(str(path)).log_level == "DEBUG"
+        assert [p.name for p in load_config(str(path)).providers] == ["ollama"]
 
     def test_load_empty_yaml_returns_defaults(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
@@ -80,54 +91,27 @@ budget_limit_usd: 1.5
     def test_default_provider_override_param(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         cfg = load_config(default_provider_override="anthropic")
-        assert cfg.default_provider == "anthropic"
+        openai_cfg = next(p for p in cfg.providers if p.name == "openai")
+        assert openai_cfg.priority > 0
 
 
 class TestEnvVarOverrides:
-    def test_log_level_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("AGENTLOOM_LOG_LEVEL", "DEBUG")
-        cfg = load_config()
-        assert cfg.log_level == "DEBUG"
-
-    def test_default_provider_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("AGENTLOOM_DEFAULT_PROVIDER", "anthropic")
-        cfg = load_config()
-        assert cfg.default_provider == "anthropic"
-
-    def test_budget_limit_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("AGENTLOOM_BUDGET_LIMIT", "2.5")
-        cfg = load_config()
-        assert cfg.budget_limit_usd == 2.5
-
-    def test_bool_coercion_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("AGENTLOOM_CHECKPOINT", "true")
-        cfg = load_config()
-        assert cfg.checkpoint_enabled is True
-
-    def test_bool_coercion_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("AGENTLOOM_CHECKPOINT", "no")
-        cfg = load_config()
-        assert cfg.checkpoint_enabled is False
-
-    def test_bool_coercion_invalid_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("AGENTLOOM_CHECKPOINT", "treu")
-        with pytest.raises(ValueError, match="Invalid boolean value"):
-            load_config()
-
-    def test_env_overrides_yaml(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Env vars take precedence over YAML file values."""
-        yaml_content = "log_level: WARNING\n"
-        monkeypatch.setenv("AGENTLOOM_LOG_LEVEL", "ERROR")
-        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
-            f.write(yaml_content)
-            f.flush()
-            cfg = load_config(f.name)
-        assert cfg.log_level == "ERROR"
-
-    def test_max_concurrent_steps_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("AGENTLOOM_MAX_CONCURRENT_STEPS", "20")
-        cfg = load_config()
-        assert cfg.max_concurrent_steps == 20
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "DEFAULT_PROVIDER",
+            "OBSERVABILITY",
+            "MAX_CONCURRENT_STEPS",
+            "BUDGET_LIMIT",
+            "CHECKPOINT",
+            "CHECKPOINT_DIR",
+        ],
+    )
+    def test_removed_variables_are_ignored(
+        self, name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(f"AGENTLOOM_{name}", "not-a-valid-value")
+        assert isinstance(load_config(), AgentLoomConfig)
 
 
 class TestProviderDiscovery:
@@ -213,8 +197,7 @@ providers:
 
     def test_non_default_gets_higher_priority(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.setenv("AGENTLOOM_DEFAULT_PROVIDER", "anthropic")
-        cfg = load_config()
+        cfg = load_config(default_provider_override="anthropic")
         openai_cfg = next(p for p in cfg.providers if p.name == "openai")
         assert openai_cfg.priority > 0
 
@@ -357,3 +340,39 @@ class TestResolveConfigPath:
             monkeypatch.setenv("AGENTLOOM_CONFIG", str(missing))
         with pytest.raises(ConfigError, match="not found"):
             resolve_config_path(None if via_env else missing)
+
+
+class TestModelAliases:
+    def test_a_config_file_sets_them(self, tmp_path: Path) -> None:
+        path = tmp_path / "agentloom.yaml"
+        path.write_text(
+            "providers:\n"
+            "  - name: anthropic\n"
+            "    model_aliases:\n"
+            "      gpt-4o: claude-haiku-4-5-20251001\n",
+            encoding="utf-8",
+        )
+
+        provider = load_config(path).providers[0]
+
+        assert provider.model_aliases == {"gpt-4o": "claude-haiku-4-5-20251001"}
+
+    def test_none_by_default(self) -> None:
+        assert ProviderConfig(name="openai").model_aliases == {}
+
+
+class TestDefaultModel:
+    @pytest.mark.parametrize(
+        ("provider", "model"),
+        [
+            ("openai", "gpt-4o-mini"),
+            ("anthropic", "claude-haiku-4-5-20251001"),
+            ("google", "gemini-2.5-flash"),
+        ],
+    )
+    def test_a_provider_with_a_table_entry(self, provider: str, model: str) -> None:
+        assert default_model(provider) == model
+
+    @pytest.mark.parametrize("provider", ["ollama", "generic_openai", "mock", "nope"])
+    def test_a_provider_without_one(self, provider: str) -> None:
+        assert default_model(provider) is None

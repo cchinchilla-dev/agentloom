@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import TYPE_CHECKING
 
 from agentloom.observability.logging import JSONFormatter, TextFormatter, setup_logging
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class TestJSONFormatter:
@@ -98,3 +102,12 @@ class TestSetupLogging:
         logger = setup_logging(logger_name="test.replace")
         setup_logging(logger_name="test.replace")
         assert len(logger.handlers) == 1
+
+    def test_records_go_to_stderr_and_never_to_stdout(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        logger = setup_logging(level="INFO", format="json", logger_name="test.stderr")
+        logger.info("to stderr")
+        captured = capsys.readouterr()
+        assert "to stderr" in captured.err
+        assert captured.out == ""

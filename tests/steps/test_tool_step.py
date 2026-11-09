@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from agentloom.core.models import StepDefinition, StepType, WorkflowConfig
 from agentloom.core.results import StepStatus
 from agentloom.core.state import StateManager
+from agentloom.exceptions import StepError
 from agentloom.steps.base import StepContext
 from agentloom.steps.tool_step import ToolStep
+from agentloom.tools.base import BaseTool
 from agentloom.tools.registry import ToolRegistry
 from tests.conftest import MockTool
 
@@ -86,14 +89,9 @@ class TestToolStep:
         with pytest.raises(Exception, match="No tool registry"):
             await step.execute(ctx)
 
-    async def test_no_tool_name_raises(self, step: ToolStep) -> None:
-        registry = ToolRegistry()
-        ctx = self._make_context(
-            StepDefinition(id="s", type=StepType.TOOL),
-            registry=registry,
-        )
-        with pytest.raises(Exception, match="requires a 'tool_name'"):
-            await step.execute(ctx)
+    def test_no_tool_name_raises(self) -> None:
+        with pytest.raises(ValueError, match="requires 'tool_name'"):
+            StepDefinition(id="s", type=StepType.TOOL)
 
     async def test_missing_tool_raises(self, step: ToolStep) -> None:
         registry = ToolRegistry()
@@ -316,3 +314,95 @@ class TestPlaceholderTriggerNarrowed:
         css = ".x { color: red; padding: 0; }"
         result = ToolStep._resolve_args({"style": css}, {}, "s")
         assert result == {"style": css}
+
+
+class TestResolveArgsNested:
+    """A nested string follows the same rules as a top-level one."""
+
+    def test_placeholder_in_a_nested_mapping(self) -> None:
+        result = ToolStep._resolve_args(
+            {"headers": {"Authorization": "Bearer {state.token}"}}, {"token": "dummy-token"}, "s"
+        )
+        assert result == {"headers": {"Authorization": "Bearer dummy-token"}}
+
+    def test_placeholder_in_a_list(self) -> None:
+        result = ToolStep._resolve_args(
+            {"args": ["--name", "{state.name}", {"deep": ["{state.name}"]}]}, {"name": "x"}, "s"
+        )
+        assert result == {"args": ["--name", "x", {"deep": ["x"]}]}
+
+    def test_whole_value_keeps_its_type_when_nested(self) -> None:
+        result = ToolStep._resolve_args({"body": {"items": "state.items"}}, {"items": [1, 2]}, "s")
+        assert result == {"body": {"items": [1, 2]}}
+
+    def test_missing_whole_value_fails_when_nested(self) -> None:
+        with pytest.raises(StepError, match="state.missing"):
+            ToolStep._resolve_args({"body": ["state.missing"]}, {}, "s")
+
+    def test_escape_hatch_works_when_nested(self) -> None:
+        result = ToolStep._resolve_args(
+            {"body": {"q": {"value": "{state.q}", "template": False}}}, {"q": "x"}, "s"
+        )
+        assert result == {"body": {"q": "{state.q}"}}
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            {"feature": {"template": False, "value": 10, "name": "beta"}},
+            {"body": {"feature": {"template": False, "value": 10, "name": "beta"}}},
+        ],
+    )
+    def test_a_payload_with_more_keys_is_not_the_escape_hatch(self, args: dict[str, Any]) -> None:
+        assert ToolStep._resolve_args(args, {}, "s") == args
+
+    def test_nested_literals_pass_through(self) -> None:
+        args = {"body": {"n": 1, "css": ".x { color: red; }", "list": [True, None]}}
+        assert ToolStep._resolve_args(args, {}, "s") == args
+
+
+class TestToolStepObserver:
+    def _context(self, tool: BaseTool, observer: Any) -> StepContext:
+        registry = ToolRegistry()
+        registry.register(tool)
+        return StepContext(
+            step_definition=StepDefinition(
+                id="t", type=StepType.TOOL, tool_name=tool.name, tool_args={"input": "x"}
+            ),
+            state_manager=StateManager(),
+            tool_registry=registry,
+            observer=observer,
+        )
+
+    async def test_a_tool_step_reports_its_call(self) -> None:
+        observer = MagicMock()
+        await ToolStep().execute(self._context(MockTool(result={"data": 1}), observer))
+        observer.on_tool_call.assert_called_once()
+        kwargs = observer.on_tool_call.call_args.kwargs
+        assert kwargs["step_id"] == "t"
+        assert kwargs["call_id"] == "t"
+        assert kwargs["tool_name"] == "mock_tool"
+        assert kwargs["success"] is True
+        # The arguments and the result reach the observer only as hashes
+        assert len(kwargs["args_hash"]) == 16
+        assert len(kwargs["result_hash"]) == 16
+        assert kwargs["duration_ms"] >= 0.0
+
+    async def test_a_failing_tool_reports_failure(self) -> None:
+        class Failing(MockTool):
+            async def execute(self, **kwargs: Any) -> Any:
+                raise RuntimeError("boom")
+
+        observer = MagicMock()
+        result = await ToolStep().execute(self._context(Failing(), observer))
+        assert result.status == StepStatus.FAILED
+        assert observer.on_tool_call.call_args.kwargs["success"] is False
+
+    async def test_a_failing_hook_does_not_fail_the_step(self) -> None:
+        observer = MagicMock()
+        observer.on_tool_call.side_effect = RuntimeError("hook")
+        result = await ToolStep().execute(self._context(MockTool(), observer))
+        assert result.status == StepStatus.SUCCESS
+
+    async def test_an_observer_without_the_hook_is_fine(self) -> None:
+        result = await ToolStep().execute(self._context(MockTool(), object()))
+        assert result.status == StepStatus.SUCCESS

@@ -24,12 +24,12 @@ async def _runs_async(checkpoint_dir: str, output_json: bool) -> None:
     checkpointer = FileCheckpointer(checkpoint_dir=checkpoint_dir)
     entries = await checkpointer.list_runs()
 
-    if not entries:
-        typer.echo("No checkpoint runs found.")
-        return
-
     if output_json:
         typer.echo(json.dumps([e.model_dump() for e in entries], indent=2, default=str))
+        return
+
+    if not entries:
+        typer.echo("No checkpoint runs found.")
         return
 
     # Table output

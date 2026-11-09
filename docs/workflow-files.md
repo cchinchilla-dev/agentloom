@@ -41,7 +41,7 @@ steps:                        # required: the graph
 
 ### Unknown keys
 
-AgentLoom checks every key when the file loads. A misspelled key at the top level, in `config` or in a step stops the load, and the error names it:
+AgentLoom checks every key when the file loads. A misspelled key at the top level, in `config`, in a step or in a nested block such as `retry`, `sandbox`, `tools` or `attachments` stops the load, and the error names it:
 
 ```text
 Validation FAILED:
@@ -49,8 +49,6 @@ Invalid workflow definition: 1 validation error for WorkflowDefinition
 steps.0.promt
   Extra inputs are not permitted [type=extra_forbidden, input_value='Summarize…', input_type=str]
 ```
-
-Nested blocks are looser. Inside `retry`, `sandbox`, `notify`, `thinking`, `attachments`, `tools` and a router's `conditions`, an unknown key is ignored: `sandbox: {allowed_domain: [...]}` loads without an error, and the setting is lost. Check the spelling of those against their reference.
 
 A field of another step type is accepted too, and ignored: a `prompt` on a router does nothing.
 
@@ -60,8 +58,8 @@ Every key is optional.
 
 | Key | Default | What it sets |
 |-----|---------|--------------|
-| `provider` | `openai` | The provider tried first; with a [config file](providers.md#config-file), `priority` decides instead. The model name decides which providers can serve a call; see [Providers](providers.md). |
-| `model` | `gpt-4o-mini` | The model of every step that doesn't name its own. |
+| `provider` | `openai` | The provider tried first, for any model it can serve. The model name decides which others can serve a call; see [Providers](providers.md). |
+| `model` | `gpt-4o-mini` | The model of every step that doesn't name its own. Without it, the [provider's default](providers.md#which-provider-answers); `ollama` and `generic_openai` have none: the workflow fails at load if an `llm_call`, `embed` or `agent` step names no model of its own. |
 | `base_url` | none | The endpoint of `provider: generic_openai`. Required there, and refused with any other provider. |
 | `api_key_env` | none | The environment variable that holds the key for `generic_openai`. Without it, requests carry no key. |
 | `budget_usd` | no limit | The most the run may spend, in US dollars. See [Reliability](reliability.md). |
@@ -72,7 +70,7 @@ Every key is optional.
 | `strict_outputs` | `false` | Refuse the file, rather than warn, when steps that can run in parallel write the same `output` key. See [Parallel writes](#parallel-writes-to-one-key). |
 | `sandbox` | disabled | Limits on what the built-in tools may run, read, write and reach, and on webhook destinations. See [Tools & sandbox](tools-and-sandbox.md). |
 | `capture_prompts` | `false` | Add each rendered prompt and system prompt to the trace of its `llm_call`. See [Observability](observability.md). |
-| `responses_file` | none | The recording that `provider: mock` replays. See [Testing & Replay](testing-and-replay.md). |
+| `responses_file` | none | The recording that `provider: mock` replays, relative to the working directory. A file that doesn't exist stops the run. See [Testing & Replay](testing-and-replay.md). |
 | `latency_model` | `constant` | How the `mock` provider simulates latency: `constant`, `normal` or `replay`. |
 | `latency_ms` | `0` | The `mock` provider's simulated latency per call. |
 | `max_retries` | `3` | Retries for each step whose `retry` doesn't set `max_retries`. A subworkflow's steps take the child's value. |
@@ -114,7 +112,7 @@ Workflow 'support-triage' is valid.
 **Checked when the file loads,** by `validate` and before every run:
 
 - YAML syntax, the required keys (`name`, `steps`, and each step's `id` and `type`) and the type of every value.
-- Unknown keys at the top level, in `config` and in steps.
+- Unknown keys at the top level, in `config`, in steps and in their nested blocks.
 - Duplicate step ids.
 - `depends_on` entries and router targets (`target` and `default`) that name no step.
 - Cycles in `depends_on`.
@@ -122,16 +120,19 @@ Workflow 'support-triage' is valid.
 - `generic_openai` without `base_url`, or `base_url` and `api_key_env` with any other provider.
 - `tools` and `response_schema` on the same `llm_call`.
 - Agent steps without an `agent`, or with a setting that comes from the agent's definition.
+- A router with neither `conditions` nor `default`, a `tool` step without `tool_name`, a subworkflow with neither `workflow_path` nor `workflow_inline`, an `embed` step without `inputs`, and an `llm_call` with neither `prompt` nor `conversation`.
+- `additionalProperties: true` anywhere in a `json_schema` response schema.
+- A `speaker` with anything but letters, digits, `_` and `-`, or over 64 characters.
+- Two steps of one layer on one `conversation`, unless they are branches of one router.
 - Bounds: `max_concurrent_steps` from 1 to 1024, a `timeout` of 0 or more, `max_tool_iterations` and `dimensions` of 1 or more.
 - Steps that can run in parallel and write the same `output` key: a warning, or an error with `strict_outputs`.
 
 **Checked only when the step runs,** so `validate` passes them:
 
-- A router with neither `conditions` nor `default`, and the router's expressions themselves.
-- A `tool` step without `tool_name`, or naming a tool that isn't registered.
-- A subworkflow with neither `workflow_path` nor `workflow_inline`, and the child workflow's own contents.
-- An `embed` step without `inputs`.
-- An `llm_call` with neither `prompt` nor `conversation`.
+- A router's expressions.
+- A `tool` step naming a tool that isn't registered.
+- A child workflow's own contents.
+- An `agent` step with neither `prompt` nor `conversation`.
 
 A file that fails to load makes `validate` exit with code 1 and print the reason.
 

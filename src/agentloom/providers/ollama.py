@@ -12,7 +12,13 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError, UnsupportedRequestError
-from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
+from agentloom.providers._http import (
+    format_http_error,
+    json_body,
+    raise_for_status,
+    validate_extra_kwargs,
+    wrap_stream_errors,
+)
 from agentloom.providers._meta import response_meta
 from agentloom.providers.base import (
     BaseProvider,
@@ -173,6 +179,9 @@ class OllamaProvider(BaseProvider):
         turns carry the speaker inline (``"[<name>] …"``) so the model
         still sees who's talking; the field is silently dropped otherwise.
         """
+        from agentloom.steps._tools import wire_seeded_tool_turns
+
+        messages = wire_seeded_tool_turns("ollama", messages)
         formatted: list[dict[str, Any]] = []
         for msg in messages:
             # Tool-loop messages already use the OpenAI-compatible wire shape: pass them through.
@@ -266,7 +275,7 @@ class OllamaProvider(BaseProvider):
 
         raise_for_status("ollama", response)
 
-        data = response.json()
+        data = json_body("ollama", response)
         message = data.get("message", {})
         content = message.get("content", "")
         # The trace comes in ``message.thinking`` (0.9+ with ``think``) or inline <think> tags,
@@ -392,7 +401,7 @@ class OllamaProvider(BaseProvider):
                 if tail:
                     yield tail
 
-        sr._set_iterator(_generate())
+        sr._set_iterator(wrap_stream_errors("ollama", _generate()))
         return sr
 
     async def embed(
@@ -405,12 +414,14 @@ class OllamaProvider(BaseProvider):
         kwargs.pop("agentloom_step_id", None)
         # /api/embed (0.1.29+) takes a list; an older server fails loudly, no single-input fallback.
         payload: dict[str, Any] = {"model": model, "input": inputs}
+        if dimensions is not None:
+            payload["dimensions"] = dimensions
         try:
             response = await self._client.post("/api/embed", json=payload)
         except httpx.HTTPError as e:
             raise ProviderError("ollama", format_http_error(e)) from e
         raise_for_status("ollama", response)
-        data = response.json()
+        data = json_body("ollama", response)
         vectors: list[list[float]] = data.get("embeddings") or []
         prompt_tokens = data.get("prompt_eval_count", 0)
         return EmbeddingResponse(

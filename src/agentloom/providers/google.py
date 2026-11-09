@@ -12,7 +12,13 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError, UnsupportedRequestError
-from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
+from agentloom.providers._http import (
+    format_http_error,
+    json_body,
+    raise_for_status,
+    validate_extra_kwargs,
+    wrap_stream_errors,
+)
 from agentloom.providers._meta import response_meta
 from agentloom.providers.base import (
     BaseProvider,
@@ -143,6 +149,9 @@ class GoogleProvider(BaseProvider):
         prepended to the turn's leading text part as ``"[<name>] …"`` so
         the model still sees who spoke.
         """
+        from agentloom.steps._tools import wire_seeded_tool_turns
+
+        messages = wire_seeded_tool_turns("google", messages)
         # Every system turn applies, in order: a speaker's prompt and a conversation summary both
         systems: list[str] = []
         contents: list[dict[str, Any]] = []
@@ -252,7 +261,7 @@ class GoogleProvider(BaseProvider):
 
         raise_for_status("google", response)
 
-        data = response.json()
+        data = json_body("google", response)
 
         candidates = data.get("candidates", [])
         content = ""
@@ -425,7 +434,7 @@ class GoogleProvider(BaseProvider):
                     model,
                 )
 
-        sr._set_iterator(_generate())
+        sr._set_iterator(wrap_stream_errors("google", _generate()))
         return sr
 
     async def embed(
@@ -457,7 +466,7 @@ class GoogleProvider(BaseProvider):
         except httpx.HTTPError as e:
             raise ProviderError("google", format_http_error(e)) from e
         raise_for_status("google", response)
-        data = response.json()
+        data = json_body("google", response)
         vectors = [entry["values"] for entry in data.get("embeddings", [])]
         # batchEmbedContents returns no usage: ~1.3 tokens/word biases cost and rate limits high
         approx_tokens = int(sum(len(t.split()) for t in inputs) * 1.3)

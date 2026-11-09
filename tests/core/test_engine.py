@@ -229,15 +229,21 @@ class TestJitteredBackoff:
     def test_jitter_bounded_within_range(self) -> None:
         from agentloom.resilience.retry import compute_backoff
 
-        # base=2.0, attempt=3 => raw=8.0, jitter window = [6.0, 10.0]
+        # base=2.0, attempt=3 => raw=16.0, jitter window = [12.0, 20.0]
         for _ in range(100):
             d = compute_backoff(2.0, 3, 60.0, jitter=True)
-            assert 6.0 <= d <= 10.0
+            assert 12.0 <= d <= 20.0
 
     def test_no_jitter_is_deterministic(self) -> None:
         from agentloom.resilience.retry import compute_backoff
 
-        assert compute_backoff(2.0, 3, 60.0, jitter=False) == 8.0
+        assert compute_backoff(2.0, 3, 60.0, jitter=False) == 16.0
+
+    @pytest.mark.parametrize(("base", "first"), [(2.0, 2.0), (5.0, 5.0), (0.5, 0.5), (0.0, 0.0)])
+    def test_first_wait_is_the_base(self, base: float, first: float) -> None:
+        from agentloom.resilience.retry import compute_backoff
+
+        assert compute_backoff(base, 0, 60.0, jitter=False) == first
 
     def test_backoff_capped_at_maximum(self) -> None:
         from agentloom.resilience.retry import compute_backoff
@@ -415,6 +421,98 @@ class TestRetryableStatusCodes:
         result = await engine.run()
         assert result.status == WorkflowStatus.FAILED
         assert len(attempts) == 3, f"429 should be retried, got {len(attempts)} attempts"
+
+
+class _OrderedSiblings(MockProvider):
+    """Finishes ``a`` or ``b`` first; the other one waits until ``c`` has made its call."""
+
+    def __init__(self, first: str) -> None:
+        super().__init__()
+        self.first = first
+        self.c_called = anyio.Event()
+        self.c_prompt: str | None = None
+
+    async def complete(self, messages, model, *args, **kwargs):  # type: ignore[no-untyped-def]
+        prompt = messages[-1]["content"]
+        if prompt.startswith("c:"):
+            self.c_prompt = prompt
+            self.c_called.set()
+        elif prompt != self.first:
+            await self.c_called.wait()
+        return await super().complete(messages, model, *args, **kwargs)
+
+
+class TestLayerSnapshot:
+    """The steps of a layer read the state as the layer started, whatever the concurrency."""
+
+    @staticmethod
+    async def _c_prompt(first: str) -> str | None:
+        provider = _OrderedSiblings(first)
+        gateway = ProviderGateway()
+        gateway.register(provider, priority=0)
+        workflow = WorkflowDefinition(
+            name="siblings",
+            config=WorkflowConfig(provider="mock", model="m", max_concurrent_steps=2),
+            state={"seed": "s"},
+            steps=[
+                StepDefinition(id="a", type=StepType.LLM_CALL, prompt="a", output="from_a"),
+                StepDefinition(id="b", type=StepType.LLM_CALL, prompt="b", output="from_b"),
+                StepDefinition(
+                    id="c",
+                    type=StepType.LLM_CALL,
+                    prompt="c:{state.seed}:{state.from_a}:{state.from_b}",
+                ),
+            ],
+        )
+        result = await WorkflowEngine(workflow=workflow, provider_gateway=gateway).run()
+        assert result.status == WorkflowStatus.SUCCESS
+        return provider.c_prompt
+
+    @pytest.mark.parametrize("first", ["a", "b"])
+    async def test_a_step_waiting_for_a_slot_does_not_see_its_siblings(self, first: str) -> None:
+        assert await self._c_prompt(first) == "c:s::"
+
+    async def test_the_next_layer_sees_the_writes(self) -> None:
+        workflow = WorkflowDefinition(
+            name="next-layer",
+            config=WorkflowConfig(provider="mock", model="m", max_concurrent_steps=1),
+            steps=[
+                StepDefinition(id="a", type=StepType.LLM_CALL, prompt="a", output="from_a"),
+                StepDefinition(
+                    id="b", type=StepType.LLM_CALL, prompt="{state.from_a}", depends_on=["a"]
+                ),
+            ],
+        )
+        provider = MockProvider()
+        gateway = ProviderGateway()
+        gateway.register(provider, priority=0)
+        await WorkflowEngine(workflow=workflow, provider_gateway=gateway).run()
+
+        assert provider.calls[1]["messages"][-1]["content"] == "Mock response"
+
+    async def test_a_step_reads_what_it_wrote_itself(self, mock_gateway: ProviderGateway) -> None:
+        from agentloom.steps.base import BaseStep
+
+        seen: list[object] = []
+
+        class Writes(BaseStep):
+            async def execute(self, ctx) -> StepResult:  # type: ignore[no-untyped-def]
+                await ctx.state_manager.set("mine", 1)
+                seen.append(await ctx.state_manager.get("mine"))
+                seen.append((await ctx.state_manager.get_state_snapshot())["mine"])
+                return StepResult(step_id="s", status=StepStatus.SUCCESS)
+
+        workflow = WorkflowDefinition(
+            name="own-writes",
+            config=WorkflowConfig(provider="mock", model="m"),
+            steps=[StepDefinition(id="s", type=StepType.LLM_CALL, prompt="x")],
+        )
+        engine = WorkflowEngine(workflow=workflow, provider_gateway=mock_gateway)
+        engine.step_registry.register(StepType.LLM_CALL, Writes)
+        result = await engine.run()
+
+        assert seen == [1, 1]
+        assert result.final_state["mine"] == 1
 
 
 class TestRouterSkipCascade:
@@ -686,6 +784,45 @@ class TestFailureCascade:
         # Loose on purpose: ``analyse`` may succeed or fail, but it is not cascade-skipped.
         assert result.step_results["analyse"].status != StepStatus.SKIPPED
 
+    async def test_continue_skips_the_branches_of_a_failed_router(
+        self, mock_gateway: ProviderGateway
+    ) -> None:
+        """A router that failed chose no branch, so none of them runs under ``continue``."""
+        from agentloom.core.models import (
+            Condition,
+            StepDefinition,
+            StepType,
+            WorkflowConfig,
+            WorkflowDefinition,
+        )
+
+        llm = {"type": StepType.LLM_CALL, "prompt": "go"}
+        workflow = WorkflowDefinition(
+            name="failed-router",
+            config=WorkflowConfig(provider="mock", model="mock-model", on_step_failure="continue"),
+            state={},
+            steps=[
+                StepDefinition(
+                    id="route",
+                    type=StepType.ROUTER,
+                    conditions=[Condition(expression="state.absent > 1", target="a")],
+                    default="b",
+                ),
+                StepDefinition(id="a", depends_on=["route"], **llm),
+                StepDefinition(id="b", depends_on=["route"], **llm),
+                StepDefinition(id="a_after", depends_on=["a"], **llm),
+                StepDefinition(id="unrelated", **llm),
+            ],
+        )
+        result = await WorkflowEngine(workflow=workflow, provider_gateway=mock_gateway).run()
+
+        assert result.status == WorkflowStatus.FAILED
+        assert result.step_results["route"].status == StepStatus.FAILED
+        for skipped in ("a", "b", "a_after"):
+            assert result.step_results[skipped].status == StepStatus.SKIPPED
+            assert result.step_results[skipped].error == "skipped due to upstream failure: route"
+        assert result.step_results["unrelated"].status == StepStatus.SUCCESS
+
     async def test_cascade_skip_revisits_already_skipped_descendant(
         self, mock_gateway: ProviderGateway
     ) -> None:
@@ -808,6 +945,37 @@ class TestTimeouts:
 
         assert result.status == WorkflowStatus.FAILED
         assert result.step_results["send"].status == StepStatus.SUCCESS
+
+    async def test_a_timed_out_step_is_transient(self) -> None:
+        result = await self._engine([self._step("draft", "hang", timeout=0.01)]).run()
+
+        assert result.step_results["draft"].error_classification == "transient"
+
+    async def test_steps_the_workflow_timeout_cuts_are_transient(self) -> None:
+        # The second never starts: the limiter holds it until the deadline
+        steps = [self._step("one", "hang"), self._step("two", "hang")]
+        result = await self._engine(steps, timeout=0.05, max_concurrent_steps=1).run()
+
+        for step_id in ("one", "two"):
+            assert result.step_results[step_id].status == StepStatus.TIMEOUT
+            assert result.step_results[step_id].error_classification == "transient"
+
+    async def test_a_step_cut_by_its_siblings_breach_is_transient(self) -> None:
+        from agentloom.exceptions import BudgetExceededError
+        from agentloom.steps.base import BaseStep
+
+        class Breaches(BaseStep):
+            async def execute(self, ctx) -> StepResult:  # type: ignore[no-untyped-def]
+                if ctx.step_definition.id == "hangs":
+                    await anyio.sleep_forever()
+                await anyio.lowlevel.checkpoint()
+                raise BudgetExceededError(1.0, 2.0)
+
+        engine = self._engine([self._step("hangs", "x"), self._step("breaches", "y")])
+        engine.step_registry.register(StepType.LLM_CALL, Breaches)
+        await engine.run()
+
+        assert engine._cut["hangs"].error_classification == "transient"
 
     async def test_a_subworkflow_fails_when_its_child_times_out(self) -> None:
         child = {

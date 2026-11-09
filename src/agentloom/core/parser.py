@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import warnings
 from pathlib import Path
@@ -10,10 +11,12 @@ from typing import Any
 import yaml
 
 from agentloom.core.dag import DAG
-from agentloom.core.models import WorkflowDefinition
+from agentloom.core.models import StepType, WorkflowDefinition
 from agentloom.exceptions import ValidationError
 
 logger = logging.getLogger("agentloom.parser")
+
+_MAX_FILE_NAME = 255
 
 
 class WorkflowParser:
@@ -23,11 +26,14 @@ class WorkflowParser:
     def from_yaml(path_or_str: str | Path) -> WorkflowDefinition:
         """Parse a workflow from a YAML file path or YAML string.
 
+        A string with no file behind it is read as YAML, unless it looks like a
+        path: one non-empty line without a ``:``.
+
         Raises:
-            ValidationError: If the YAML is invalid or the workflow is malformed.
+            ValidationError: If the file is missing, the YAML is invalid or the
+                workflow is malformed.
         """
-        path = Path(path_or_str)
-        text = path.read_text(encoding="utf-8") if path.exists() else str(path_or_str)
+        text = WorkflowParser._read_source(path_or_str)
 
         try:
             raw = yaml.safe_load(text)
@@ -38,6 +44,27 @@ class WorkflowParser:
             raise ValidationError("Workflow YAML must be a mapping at the top level")
 
         return WorkflowParser.from_dict(raw)
+
+    @staticmethod
+    def _read_source(path_or_str: str | Path) -> str:
+        """Return the YAML text behind *path_or_str*."""
+        text = str(path_or_str)
+        path = Path(path_or_str)
+        # A name over the OS limit: Python 3.14 answers False, earlier versions raise
+        try:
+            is_file = path.is_file()
+        except OSError as e:
+            if e.errno != errno.ENAMETOOLONG:
+                raise
+            is_file = False
+        if is_file:
+            return path.read_text(encoding="utf-8")
+        stripped = text.strip()
+        one_line = bool(stripped) and "\n" not in stripped and ":" not in text
+        nameable = all(len(part) <= _MAX_FILE_NAME for part in path.parts)
+        if isinstance(path_or_str, Path) or (one_line and nameable):
+            raise ValidationError(f"Workflow file not found: {text}")
+        return text
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> WorkflowDefinition:
@@ -62,6 +89,7 @@ class WorkflowParser:
             )
 
         WorkflowParser._validate_output_collisions(workflow, dag)
+        WorkflowParser._validate_shared_conversations(workflow, dag)
 
         return workflow
 
@@ -163,6 +191,55 @@ class WorkflowParser:
             raise ValidationError(msg)
         warnings.warn(msg, UserWarning, stacklevel=3)
         logger.warning(msg)
+
+    @staticmethod
+    def _validate_shared_conversations(workflow: WorkflowDefinition, dag: DAG) -> None:
+        """Refuse two steps of one layer on one conversation; parallel writes lose turns.
+
+        Each step loads the whole conversation and writes it back, so the last
+        to finish erases the other's turns. Branches of one router are exempt:
+        only one of them runs.
+        """
+        routers = [s.id for s in workflow.steps if s.type == StepType.ROUTER]
+        branches = {
+            router: {child: dag.transitive_successors({child}) for child in dag.successors(router)}
+            for router in routers
+        }
+
+        def _exclusive(a: str, b: str) -> bool:
+            for subtrees in branches.values():
+                of_a = {child for child, nodes in subtrees.items() if a in nodes}
+                of_b = {child for child, nodes in subtrees.items() if b in nodes}
+                # Different children of the router: taking one skips the other's whole subtree
+                if of_a and of_b and len(of_a | of_b) > 1:
+                    return True
+            return False
+
+        errors: list[str] = []
+        for layer in dag.execution_layers():
+            sharing: dict[str, list[str]] = {}
+            for step_id in layer:
+                step = workflow.get_step(step_id)
+                if step is not None and step.conversation:
+                    sharing.setdefault(step.conversation.removeprefix("state."), []).append(step_id)
+            for key, owners in sharing.items():
+                racing = sorted(
+                    {
+                        step_id
+                        for i, a in enumerate(owners)
+                        for b in owners[i + 1 :]
+                        if not _exclusive(a, b)
+                        for step_id in (a, b)
+                    }
+                )
+                if racing:
+                    errors.append(f"conversation {key!r} is used by steps {racing}")
+
+        if errors:
+            raise ValidationError(
+                "Steps in the same layer share a conversation and would lose each "
+                f"other's turns: {'; '.join(errors)}. Chain them with depends_on."
+            )
 
     @staticmethod
     def build_dag(workflow: WorkflowDefinition) -> DAG:

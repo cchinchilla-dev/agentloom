@@ -36,11 +36,11 @@ The extra installs the OpenTelemetry API, SDK and OTLP exporters, and `prometheu
 | `verify-determinism` | Never. |
 | Python | Only with an `observer`; see [From Python](#from-python). |
 
-Without the extra nothing is sent, and nothing says so: `agentloom info` shows whether OpenTelemetry is installed. `AGENTLOOM_OBSERVABILITY` has no effect.
+Without the extra nothing is sent, and nothing says so: `agentloom info` shows whether OpenTelemetry is installed.
 
 - **The endpoint** is `OTEL_EXPORTER_OTLP_ENDPOINT`, `http://localhost:4317` by default, for traces and metrics alike; AgentLoom reads no other OpenTelemetry variable. The Docker image sets it to `http://otel-collector:4317`.
 - **The protocol** is OTLP over gRPC only: an HTTP endpoint, such as port 4318, doesn't work.
-- **Traces** carry `service.name` `agentloom`; metrics carry the SDK's default, `unknown_service:python3.14`. **Metrics** are pushed every 5 seconds and when the run ends. No AgentLoom process serves `/metrics`: a short-lived command can't be scraped, so the collector exposes the metrics to Prometheus.
+- **Traces and metrics** carry `service.name` `agentloom`. **Metrics** are pushed every 5 seconds and when the run ends. No AgentLoom process serves `/metrics`: a short-lived command can't be scraped, so the collector exposes the metrics to Prometheus.
 
 A run whose export fails still succeeds.
 
@@ -52,19 +52,20 @@ A run produces this tree of spans:
 workflow:<workflow name>
 ├── step:<step id>
 │   ├── chat <model>              one per provider attempt
-│   ├── execute_tool <tool>       one per tool call the model made
+│   ├── embeddings <model>        the same, for an embed step
+│   ├── execute_tool <tool>       one per tool call, a model's or a tool step's
 │   └── workflow:<child>          a subworkflow, with its own steps
 └── step:<step id>
 quality:<target>                  a trace of its own, from result.annotate()
 ```
 
 - **Retries and fallbacks** are sibling `chat` spans under their step. `agentloom.provider.attempt` numbers the fallback candidates, so every retry with a single provider carries `0`. An attempt that an open circuit skips has no span.
-- **`chat` names every provider call,** an `embed` step's included, with the model the step asked for.
-- **Tool spans** last no time: they are written once the tool returned, with its duration in `tool.duration_ms`, beside the `chat` spans. A `tool` step has none, and an agent used as a tool has its `chat` spans under the step, not under its tool span.
+- **`chat` names a model call and `embeddings` an `embed` step's call,** with the model the step asked for.
+- **Tool spans** last no time: they are written once the tool returned, with its duration in `tool.duration_ms`, beside the `chat` spans. An agent used as a tool has its `chat` spans under the step, not under its tool span.
 - **Skipped steps** have no span.
 - **A resumed run** starts a new trace, with the same `workflow.run_id`.
-- **Errors aren't span statuses:** a failed step or attempt shows in `step.error`, `error.type` and `agentloom.provider.attempt_outcome`, not in Jaeger's error filter.
-- **A call cut short** by a timeout leaves its `chat` span unfinished, so it never reaches the collector.
+- **Errors are span statuses:** a failed step or attempt has status `ERROR`, so Jaeger's error filter finds it, and `step.error`, `error.type` and `agentloom.provider.attempt_outcome` say why. A step cancelled with its layer isn't an error.
+- **A call cut short** by a timeout or a cancel still ends its span, with status `ERROR` and the cancellation's class, such as `CancelledError`, in `error.type`.
 
 ### Span attributes
 
@@ -78,7 +79,7 @@ quality:<target>                  a trace of its own, from result.annotate()
 | `step.status`, `step.duration_ms`, `step.cost_usd` | Set when it ends. The duration is the last attempt's. |
 | `step.error` | Why it failed, timed out or broke the budget. |
 | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.reasoning.output_tokens` | The step's tokens, when it succeeded. |
-| `gen_ai.request.model`, `gen_ai.provider.name` | The model that answered and its provider, when it succeeded. On a replay, the recorded provider. |
+| `gen_ai.request.model`, `gen_ai.provider.name` | The model the step asked for and the provider that answered, when it succeeded. On a replay, the recorded provider. |
 | `gen_ai.operation.name` | `chat` for an `llm_call`, `invoke_agent` for an `agent`. |
 | `gen_ai.response.finish_reasons` | The provider's finish reason, as it sent it. |
 | `gen_ai.response.time_to_first_chunk` | For a streamed step, in seconds. |
@@ -90,7 +91,7 @@ quality:<target>                  a trace of its own, from result.annotate()
 | `agentloom.mock.matched_by`, `agentloom.mock.step_id`, `agentloom.mock.fault_type` | How a recording answered. See [Testing & replay](testing-and-replay.md#metrics). |
 | `agentloom.recording.provider`, `.model`, `.latency_s` | A call recorded with `--record`. |
 
-**`chat <model>`**: `gen_ai.operation.name` (`chat`), `gen_ai.provider.name` (the provider called, `mock` on a replay), `gen_ai.request.model`, `gen_ai.request.temperature` and `gen_ai.request.max_tokens` when set, `gen_ai.request.stream` and `agentloom.provider.attempt`; at the end, `gen_ai.response.model`, the token counts, `gen_ai.response.finish_reasons` and `agentloom.provider.attempt_outcome` (`ok` or `error`), with `error.type`, the error's class, on a failure.
+**`chat <model>`, `embeddings <model>`**: `gen_ai.operation.name` (`chat` or `embeddings`), `gen_ai.provider.name` (the provider called, `mock` on a replay), `gen_ai.request.model`, `gen_ai.request.temperature` and `gen_ai.request.max_tokens` when set, `gen_ai.request.stream` and `agentloom.provider.attempt`; at the end, `gen_ai.response.model`, the token counts, `gen_ai.response.finish_reasons` and `agentloom.provider.attempt_outcome` (`ok` or `error`), with `error.type`, the error's class, on a failure.
 
 **`execute_tool <name>`**: `tool.name`, `tool.call_id`, `tool.duration_ms`, `tool.success`, and hashes of the arguments and the result, `tool.args_hash` and `tool.result_hash`. The arguments and the result themselves never reach the trace.
 
@@ -111,9 +112,9 @@ The collector turns metric names into Prometheus names: dots become underscores,
 
 | Metric | Type | Labels | Counts |
 |--------|------|--------|--------|
-| `agentloom_workflow_runs_total` | Counter | `workflow`, `status` | Runs, each subworkflow and each resume included. |
+| `agentloom_workflow_runs_total` | Counter | `workflow`, `status` | Runs, each resume included. A subworkflow is a step of its parent's run and isn't counted. |
 | `agentloom_workflow_duration_seconds` | Histogram | `workflow`, `status` | Run durations. |
-| `agentloom_cost_usd_total` | Counter | `workflow`, `provider` (`total`) | Cost. A subworkflow's cost is counted twice: by the child run and in its parent's total. |
+| `agentloom_cost_usd_total` | Counter | `workflow`, `provider` (`total`) | Cost of each run, its subworkflows' included. |
 | `agentloom_step_executions_total` | Counter | `step_type`, `status`, `stream` | Steps that ended, whatever their status; skipped steps aren't counted. |
 | `agentloom_step_duration_seconds` | Histogram | `step_type`, `stream` | The last attempt of each step: retries and their waits aren't included. |
 | `agentloom_attachments_total` | Counter | `step_type` | Attachments sent. |
@@ -131,13 +132,13 @@ The collector turns metric names into Prometheus names: dots become underscores,
 | `agentloom_embedding_calls_total` | Counter | `provider`, `model` | `embed` steps that succeeded. |
 | `agentloom_embedding_dimensions` | Histogram | `provider`, `model` | The length of the vectors returned. |
 
-`gen_ai.operation.name` is `chat` for every call, embeddings included.
+`gen_ai.operation.name` is `embeddings` for the calls and tokens of an `embed` step, and `chat` for the others.
 
 ### Tools, agents and conversations
 
 | Metric | Type | Labels | Counts |
 |--------|------|--------|--------|
-| `agentloom_tool_calls_total` | Counter | `tool_name`, `status` | Tool calls the model made, replayed ones included. |
+| `agentloom_tool_calls_total` | Counter | `tool_name`, `status` | Tool calls by a model, replayed ones included, and by `tool` steps. |
 | `agentloom_tool_call_duration_seconds` | Histogram | `tool_name` | Their durations. |
 | `agentloom_agent_invocations_total` | Counter | `name`, `status` | Agent turns, agents used as tools included. |
 | `agentloom_agent_iterations` | Histogram | `name` | Model calls per turn. |
@@ -163,13 +164,13 @@ The collector turns metric names into Prometheus names: dots become underscores,
 | `agentloom_circuit_breaker_state` | `provider` | `0` closed, `1` open, `2` half open. |
 | `agentloom_budget_remaining_usd` | `workflow` | What the budget has left, for runs with `budget_usd`. |
 
-- **The circuit breaker gauge** is reported only when a circuit changes state. A run whose circuits stay closed reports nothing, so an open circuit reported by an earlier run stays on the dashboard until the bundled collector drops it, after 30 minutes.
-- **The budget gauge** updates after each step that succeeds, so a run that breaks its budget leaves the last value before the breach.
+- **The circuit breaker gauge** is reported on each provider call and when a circuit changes state. A circuit left open by a process that has ended stays on the dashboard until the bundled collector drops its series, after 30 minutes.
+- **The budget gauge** updates each time the run is charged, so a run that breaks its budget reports `0`.
 - `AGENTLOOM_METRICS_MAX_KEYS`, 1024 by default, caps how many providers and workflows each gauge tracks.
 
 ### Reading the numbers
 
-- **Histograms use the SDK's default buckets,** whose first one ends at 5: every latency under 5 seconds falls in it, so a replay that takes 0.4 seconds shows a median of 2.5.
+- **Histograms have explicit buckets,** the same over OTLP and with `prometheus-client`: `agentloom_step_duration_seconds` ends at 60 seconds, for instance, and `gen_ai.client.operation.duration` at 30. `agentloom_workflow_duration_seconds` and `gen_ai.client.token.usage` keep the SDK's default buckets, whose first one ends at 5.
 - **Each `agentloom` process exports series of its own,** told apart by a `service_instance_id` label, so totals are sums over series, as the dashboard's are. The bundled collector stops exporting a series 30 minutes after its process last reported: those totals cover about the last half hour of runs, while [run history](#run-history) counts every run.
 - There are no metrics for rate-limit waits, routers, checkpoints or the sandbox.
 
@@ -225,7 +226,9 @@ The record holds no state and no prompts. [`agentloom history`](cli.md#history) 
 
 ## Logs
 
-The CLI configures no logging: warnings and errors print on stderr as plain lines, such as `Step 'draft' failed (attempt 1/3), retrying in 0.2s: …`, and lower levels don't show. `AGENTLOOM_LOG_LEVEL` and `AGENTLOOM_LOG_FORMAT` have no effect.
+By default, warnings and errors print on stderr as plain lines, such as `Step 'draft' failed (attempt 1/3), retrying in 0.2s: …`, and lower levels don't show.
+
+`AGENTLOOM_LOG_LEVEL` sets the level, `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, and `agentloom --log-level LEVEL COMMAND` overrides it. `AGENTLOOM_LOG_FORMAT` sets the format, `json` or `text`. With any of them set, the `agentloom` logs go to stderr, at `INFO` and as JSON unless told otherwise. Any other value is a usage error, exit `2`. Stdout never gets a log line, so `--json` stays parseable. A config file can't set them: `log_level` or `log_format` in it stops the load.
 
 From Python, `setup_logging(level="INFO", format="json")`, from `agentloom.observability`, sends the `agentloom` logs to stderr, one JSON object per line, with `timestamp`, `level`, `logger` and `message`.
 
@@ -252,10 +255,9 @@ finally:
 
 The managers set the process's global OpenTelemetry tracer and meter providers, and `shutdown()` flushes and shuts them down. Pass the observer to `WorkflowEngine` rather than setting `engine.observer` later: only the constructor connects it to the gateway, which reports the provider spans and metrics.
 
-**An observer of your own** implements the hooks it needs. The engine calls six on every observer: `on_workflow_start`, `on_workflow_end`, `on_step_start`, `on_step_end`, `on_tokens` and `on_stream_response`, as `ObserverProtocol` in `agentloom.core.protocols` declares. The others, for provider calls, tools, agents, conversations, gates and replays, are called when they exist. Subclass `NoopObserver`, from `agentloom.observability.noop`, which has them all, and accept `**kwargs`, as hooks may gain arguments.
+**An observer of your own** implements the hooks it needs, and one it lacks is skipped. `ObserverProtocol`, in `agentloom.core.protocols`, declares the six a run always calls: `on_workflow_start`, `on_workflow_end`, `on_step_start`, `on_step_end`, `on_tokens` and `on_stream_response`. The others are for provider calls, tools, agents, conversations, gates and replays. Subclass `NoopObserver`, from `agentloom.observability.noop`, which has them all, and accept `**kwargs`, as hooks may gain arguments.
 
-- **`on_webhook_delivery`** is required once an approval gate sends notifications: without it, the gate step fails.
-- **A hook that raises** inside the engine or the gateway fails the step's attempt, which is retried, provider call included.
+**A hook that raises** doesn't affect the run: the step goes on, and its provider call isn't repeated. The engine and the gateway log a warning.
 
 ## What's next
 

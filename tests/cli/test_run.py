@@ -13,6 +13,7 @@ import pytest
 from typer.testing import CliRunner
 
 from agentloom.cli.main import app
+from agentloom.exceptions import ConfigError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -45,7 +46,7 @@ class TestRunCommand:
             f.write(SIMPLE_YAML)
             f.flush()
             result = runner.invoke(app, ["run", f.name, "--state", "bad_format"])
-        assert result.exit_code != 0
+        assert result.exit_code == 2
         assert "key=value" in (result.output + (result.stderr or ""))
 
     def test_generic_openai_key_variable_not_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -293,6 +294,96 @@ class TestPrintResult:
         )
         _print_result(result)
 
+    def test_a_timed_out_step_shows_as_timeout(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from agentloom.cli.run import _print_result
+        from agentloom.core.results import StepResult, StepStatus, WorkflowResult, WorkflowStatus
+
+        result = WorkflowResult(
+            workflow_name="test",
+            status=WorkflowStatus.FAILED,
+            step_results={
+                "slow": StepResult(step_id="slow", status=StepStatus.TIMEOUT, duration_ms=5.0),
+                "bad": StepResult(step_id="bad", status=StepStatus.FAILED),
+            },
+            final_state={},
+        )
+        _print_result(result)
+        out = capsys.readouterr().out
+        assert "[TIMEOUT] slow" in out
+        assert "[FAIL] bad" in out
+
+
+APPROVAL_YAML = """\
+name: gated
+config: {provider: mock, model: m}
+steps:
+  - {id: gate, type: approval_gate, output: decision}
+"""
+
+
+class TestApprovalHint:
+    def test_without_a_checkpoint_no_resume_command_is_offered(self, tmp_path: Path) -> None:
+        wf = tmp_path / "wf.yaml"
+        wf.write_text(APPROVAL_YAML)
+        result = runner.invoke(app, ["run", str(wf), "--lite"])
+        assert result.exit_code == 0, result.output
+        assert "[APPROVAL REQUIRED] Step 'gate'" in result.output
+        assert "agentloom resume" not in result.output
+
+    def test_with_a_checkpoint_the_commands_name_the_run(self, tmp_path: Path) -> None:
+        wf = tmp_path / "wf.yaml"
+        wf.write_text(APPROVAL_YAML)
+        result = runner.invoke(
+            app, ["run", str(wf), "--lite", "--checkpoint", "--checkpoint-dir", str(tmp_path)]
+        )
+        assert result.exit_code == 0, result.output
+        run_id = result.output.split("Run ID: ")[1].split()[0]
+        assert f"agentloom resume {run_id} --approve" in result.output
+        assert f"agentloom resume {run_id} --reject" in result.output
+
+
+class TestMockIsNotRateLimited:
+    async def test_the_mock_serves_more_calls_than_a_providers_minute(self) -> None:
+        import anyio
+
+        from agentloom.cli.run import _setup_mock
+        from agentloom.core.models import WorkflowConfig
+        from agentloom.providers.gateway import ProviderGateway
+
+        gateway = ProviderGateway()
+        _setup_mock(gateway, WorkflowConfig(provider="mock", model="m"), None, "wf")
+        with anyio.fail_after(5):
+            for _ in range(120):
+                await gateway.complete([{"role": "user", "content": "hi"}], model="m")
+
+    @pytest.mark.parametrize("command", ["run", "replay", "verify-determinism"])
+    def test_every_command_that_sets_up_a_recording_lifts_the_limit(
+        self, command: str, tmp_path: Path
+    ) -> None:
+        import json
+
+        from agentloom.providers.gateway import ProviderGateway
+
+        wf = tmp_path / "wf.yaml"
+        wf.write_text(SIMPLE_YAML)
+        rec = tmp_path / "rec.json"
+        rec.write_text(json.dumps({"answer": {"content": "42"}}))
+        argv = {
+            "run": ["run", str(wf), "--lite", "--mock-responses", str(rec)],
+            "replay": ["replay", str(wf), "--recording", str(rec)],
+            "verify-determinism": ["verify-determinism", str(wf), "--recording", str(rec)],
+        }[command]
+
+        original = ProviderGateway.register
+        with patch.object(
+            ProviderGateway, "register", autospec=True, side_effect=original
+        ) as register:
+            result = runner.invoke(app, argv)
+
+        assert result.exit_code == 0, result.output
+        assert register.call_args_list
+        assert all(call.kwargs["max_rpm"] > 60 for call in register.call_args_list)
+
 
 class TestRunRecordAndReplay:
     def test_record_and_mock_mutually_exclusive(self) -> None:
@@ -307,7 +398,7 @@ class TestRunRecordAndReplay:
                     "--record",
                     "/tmp/rec.json",
                     "--mock-responses",
-                    "/tmp/rec.json",
+                    f.name,
                 ],
             )
         assert result.exit_code != 0
@@ -335,6 +426,63 @@ class TestRunRecordAndReplay:
             result = runner.invoke(app, ["run", f.name, "--record-tools"])
         assert result.exit_code == 2
         assert "--record-tools needs --record" in (result.output + (result.stderr or ""))
+
+    def test_record_replaces_a_file_left_by_an_earlier_run(self, tmp_path: Path) -> None:
+        import json
+
+        from agentloom.providers.mock import MockProvider
+
+        def _wire(gw: Any, default: str, config_path: object = None) -> None:
+            gw.register(MockProvider(default_response="new"), priority=0)
+            gw.register(MockProvider(default_response="unused"), priority=1)
+
+        workflow = tmp_path / "wf.yaml"
+        workflow.write_text(SIMPLE_YAML.replace("provider: mock", "provider: openai"))
+        recording = tmp_path / "rec.json"
+        recording.write_text(
+            json.dumps(
+                {
+                    "_version": 2,
+                    "gone": {"content": "from an earlier run"},
+                    "_inter_agent_events": [],
+                    "_tools": {"gone": []},
+                }
+            )
+        )
+        with patch("agentloom.cli.run._setup_providers", side_effect=_wire):
+            result = runner.invoke(
+                app, ["run", str(workflow), "--record", str(recording), "--lite"]
+            )
+        assert result.exit_code == 0, result.output
+        data = json.loads(recording.read_text())
+        assert data["answer"]["content"] == "new"
+        assert "gone" not in data
+        assert "_tools" not in data
+        assert data["_inter_agent_events"]
+
+    def test_a_run_that_never_starts_keeps_the_old_recording(self, tmp_path: Path) -> None:
+        workflow = tmp_path / "wf.yaml"
+        workflow.write_text(SIMPLE_YAML.replace("provider: mock", "provider: openai"))
+        recording = tmp_path / "rec.json"
+        recording.write_text('{"answer": {"content": "kept"}}')
+        with patch(
+            "agentloom.cli.run._setup_providers", side_effect=ConfigError("bad config file")
+        ):
+            result = runner.invoke(
+                app, ["run", str(workflow), "--record", str(recording), "--lite"]
+            )
+        assert result.exit_code == 1
+        assert "kept" in recording.read_text()
+
+    def test_mock_responses_file_must_exist(self, tmp_path: Path) -> None:
+        workflow = tmp_path / "wf.yaml"
+        workflow.write_text(SIMPLE_YAML)
+        missing = tmp_path / "nope.json"
+        result = runner.invoke(
+            app, ["run", str(workflow), "--mock-responses", str(missing), "--lite"]
+        )
+        assert result.exit_code == 2
+        assert "Running workflow" not in result.output
 
     def test_mock_responses_invalid_file_exits_with_error(self) -> None:
         # A malformed recording is a startup error (exit 1), not a run on an empty fixture.
@@ -650,6 +798,30 @@ class TestSigtermAsInterrupt:
             signal.signal(signal.SIGINT, previous)
         assert received == [signal.SIGINT]
 
+    def test_a_sigint_left_ignored_gets_a_handler_for_the_run(self) -> None:
+        from agentloom.cli.run import _sigterm_as_interrupt
+
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            with _sigterm_as_interrupt():
+                assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+            assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
+        finally:
+            signal.signal(signal.SIGINT, previous)
+
+    def test_a_sigint_handler_of_the_caller_stays(self) -> None:
+        from agentloom.cli.run import _sigterm_as_interrupt
+
+        def _own(signum: int, frame: object) -> None: ...
+
+        previous = signal.signal(signal.SIGINT, _own)
+        try:
+            with _sigterm_as_interrupt():
+                assert signal.getsignal(signal.SIGINT) is _own
+            assert signal.getsignal(signal.SIGINT) is _own
+        finally:
+            signal.signal(signal.SIGINT, previous)
+
     @pytest.mark.parametrize("command", ["run", "resume"])
     def test_run_and_resume_go_through_it(self, command: str, tmp_path: Path) -> None:
         from contextlib import contextmanager
@@ -668,3 +840,229 @@ class TestSigtermAsInterrupt:
         with patch("agentloom.cli.run._sigterm_as_interrupt", _spy):
             runner.invoke(app, [command, *args, "--lite", *flags])
         assert entered == [True]
+
+
+NO_MODEL_YAML = """\
+name: no-model
+state:
+  q: hi
+steps:
+  - id: answer
+    type: llm_call
+    prompt: "{state.q}"
+    output: a
+"""
+
+
+class TestProviderOverrideAndModel:
+    def _run(self, tmp_path: Path, text: str, *flags: str) -> tuple[Any, list[str]]:
+        from tests.conftest import MockProvider
+
+        path = tmp_path / "w.yaml"
+        path.write_text(text, encoding="utf-8")
+        provider = MockProvider()
+
+        def _wire(gw: Any, default: str, config_path: object = None) -> None:
+            gw.register(provider, priority=0)
+
+        with patch("agentloom.cli.run._setup_providers", side_effect=_wire):
+            result = runner.invoke(app, ["run", str(path), "--lite", *flags])
+        return result, [c["model"] for c in provider.calls]
+
+    def test_a_provider_flag_brings_its_default_model(self, tmp_path: Path) -> None:
+        result, models = self._run(tmp_path, NO_MODEL_YAML, "--provider", "anthropic")
+        assert result.exit_code == 0, result.output
+        assert models == ["claude-haiku-4-5-20251001"]
+
+    def test_a_model_in_the_file_stays(self, tmp_path: Path) -> None:
+        text = NO_MODEL_YAML.replace("state:", "config:\n  model: gpt-4o\nstate:", 1)
+        result, models = self._run(tmp_path, text, "--provider", "anthropic")
+        assert result.exit_code == 0, result.output
+        assert models == ["gpt-4o"]
+
+    def test_a_provider_without_a_default_needs_a_model(self, tmp_path: Path) -> None:
+        result, models = self._run(tmp_path, NO_MODEL_YAML, "--provider", "ollama")
+        assert result.exit_code == 2
+        assert "no default model" in (result.output + (result.stderr or ""))
+        assert models == []
+
+    def test_a_provider_without_a_default_takes_steps_that_name_theirs(
+        self, tmp_path: Path
+    ) -> None:
+        text = NO_MODEL_YAML.replace("    output: a\n", "    output: a\n    model: phi4\n", 1)
+        result, models = self._run(tmp_path, text, "--provider", "ollama")
+        assert result.exit_code == 0, result.output
+        assert models == ["phi4"]
+
+    def test_the_model_flag_covers_a_provider_without_a_default(self, tmp_path: Path) -> None:
+        result, models = self._run(
+            tmp_path, NO_MODEL_YAML, "--provider", "ollama", "--model", "phi4"
+        )
+        assert result.exit_code == 0, result.output
+        assert models == ["phi4"]
+
+
+class TestSetupProvidersPrimaryAndAliases:
+    @pytest.mark.usefixtures("no_provider_env")
+    def test_the_workflow_provider_is_the_primary_of_a_config_file(self, tmp_path: Path) -> None:
+        from agentloom.cli.run import _setup_providers
+        from agentloom.providers.gateway import ProviderGateway
+
+        path = tmp_path / "agentloom.yaml"
+        path.write_text(
+            "providers:\n  - name: ollama\n    priority: 0\n  - name: openai\n    priority: 50\n",
+            encoding="utf-8",
+        )
+        gw = ProviderGateway()
+        _setup_providers(gw, "openai", path)
+
+        assert [e.provider.name for e in gw._get_candidates("gpt-4o")] == ["openai", "ollama"]
+
+    @pytest.mark.usefixtures("no_provider_env")
+    def test_a_discovered_primary_goes_ahead_of_a_listed_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agentloom.cli.run import _setup_providers
+        from agentloom.providers.gateway import ProviderGateway
+
+        monkeypatch.setenv("OPENAI_API_KEY", "dummy-key")
+        gw = ProviderGateway()
+        _setup_providers(gw, "ollama")
+
+        assert [e.provider.name for e in gw._get_candidates("gpt-4o-mini")] == ["ollama", "openai"]
+
+    @pytest.mark.usefixtures("no_provider_env")
+    def test_a_primary_that_does_not_serve_the_name_stays_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agentloom.cli.run import _setup_providers
+        from agentloom.providers.gateway import ProviderGateway
+
+        monkeypatch.setenv("OPENAI_API_KEY", "dummy-key")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-key")
+        gw = ProviderGateway()
+        _setup_providers(gw, "anthropic")
+
+        assert [e.provider.name for e in gw._get_candidates("gpt-4o-mini")] == ["openai"]
+        assert [e.provider.name for e in gw._get_candidates("gpt-5.5")] == ["openai"]
+
+    @pytest.mark.usefixtures("no_provider_env")
+    def test_aliases_reach_the_gateway(self, tmp_path: Path) -> None:
+        from agentloom.cli.run import _setup_providers
+        from agentloom.providers.gateway import ProviderGateway
+
+        path = tmp_path / "agentloom.yaml"
+        path.write_text(
+            "providers:\n  - name: ollama\n    model_aliases:\n      gpt-4o: phi4\n",
+            encoding="utf-8",
+        )
+        gw = ProviderGateway()
+        _setup_providers(gw, "ollama", path)
+
+        assert gw._providers[0].model_id("gpt-4o") == "phi4"
+
+
+class TestProviderFlagDropsBaseUrl:
+    @staticmethod
+    def _workflow(config: dict[str, Any]) -> Any:
+        from agentloom.core.models import WorkflowDefinition
+
+        llm_call = {"id": "s", "type": "llm_call", "prompt": "hi"}
+        return WorkflowDefinition.model_validate(
+            {"name": "w", "config": config, "steps": [llm_call]}
+        )
+
+    def test_it_warns_and_drops_it(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from agentloom.cli.run import _switch_provider
+
+        workflow = self._workflow(
+            {"provider": "generic_openai", "base_url": "http://x", "model": "m"}
+        )
+        _switch_provider(workflow, "openai")
+
+        err = capsys.readouterr().err
+        assert "base_url" in err
+        assert "openai" in err
+        assert workflow.config.base_url is None
+
+    def test_generic_openai_itself_does_not_warn(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from agentloom.cli.run import _switch_provider
+
+        workflow = self._workflow(
+            {"provider": "generic_openai", "base_url": "http://x", "model": "m"}
+        )
+        _switch_provider(workflow, "generic_openai")
+
+        assert capsys.readouterr().err == ""
+        assert workflow.config.base_url == "http://x"
+
+    def test_a_workflow_without_a_base_url_does_not_warn(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from agentloom.cli.run import _switch_provider
+
+        _switch_provider(self._workflow({"provider": "openai"}), "anthropic")
+
+        assert capsys.readouterr().err == ""
+
+
+FALLOVER_YAML = """\
+name: fallover
+config: {provider: openai, model: gpt-4o-mini}
+steps:
+  - id: ask
+    type: llm_call
+    prompt: read it
+    tools:
+      - name: file_read
+        description: Read a file.
+        parameters: {type: object, properties: {path: {type: string}}, required: [path]}
+    output: answer
+"""
+
+
+class TestRecordAcrossProviders:
+    def test_a_tool_loop_that_falls_over_keeps_its_turns_and_replays(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+
+        import httpx
+        import respx
+
+        monkeypatch.setenv("OPENAI_API_KEY", "dummy-key")
+        monkeypatch.setenv("AGENTLOOM_OLLAMA_FALLBACK", "1")
+        target = tmp_path / "data.txt"
+        target.write_text("contents")
+        workflow = tmp_path / "wf.yaml"
+        workflow.write_text(FALLOVER_YAML)
+        recording = tmp_path / "rec.json"
+        call = {
+            "id": "c1",
+            "type": "function",
+            "function": {"name": "file_read", "arguments": json.dumps({"path": str(target)})},
+        }
+        tool_turn = {
+            "choices": [
+                {"message": {"content": None, "tool_calls": [call]}, "finish_reason": "tool_calls"}
+            ],
+            "model": "gpt-4o-mini",
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        final = {"model": "m", "message": {"role": "assistant", "content": "done"}, "done": True}
+        with respx.mock:
+            respx.post("https://api.openai.com/v1/chat/completions").mock(
+                side_effect=[httpx.Response(200, json=tool_turn), httpx.Response(500, text="down")]
+            )
+            respx.post("http://localhost:11434/api/chat").mock(
+                return_value=httpx.Response(200, json=final)
+            )
+            recorded = runner.invoke(
+                app, ["run", str(workflow), "--record", str(recording), "--lite"]
+            )
+
+        assert recorded.exit_code == 0, recorded.output
+        turns = json.loads(recording.read_text())["ask"]
+        assert [turn["provider"] for turn in turns] == ["openai", "ollama"]
+        replayed = runner.invoke(app, ["replay", str(workflow), "-r", str(recording)])
+        assert replayed.exit_code == 0, replayed.output

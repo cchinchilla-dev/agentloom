@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from agentloom.core.results import StepResult, StepStatus, TokenUsage
-from agentloom.core.state import StateManager
+from agentloom.core.state import LayerStateView, StateManager
 
 
 class TestGetSet:
@@ -456,3 +456,21 @@ class TestDottedScalarOverwriteRefused:
         msg = str(exc_info.value)
         assert "users" in msg and "list" in msg
         assert await sm.get("users") == [{"id": 1}]
+
+
+class TestLayerStateView:
+    """A step reads the state as its layer started, plus what it wrote itself."""
+
+    async def test_its_own_update_is_visible_to_it(self) -> None:
+        run = StateManager({"n": 1})
+        view = LayerStateView(run, await run.get_state_snapshot())
+        assert await view.update("n", lambda current: current + 1) == 2
+        assert await view.get("n") == 2
+        assert (await view.get_state_snapshot())["n"] == 2
+        assert await run.get("n") == 2
+
+    async def test_a_siblings_write_stays_out(self) -> None:
+        run = StateManager({"n": 1})
+        view = LayerStateView(run, await run.get_state_snapshot())
+        await run.set("n", 5)
+        assert await view.get("n") == 1

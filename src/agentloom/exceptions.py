@@ -220,6 +220,8 @@ class StateWriteError(AgentLoomError):
     is a list — the caller meant ``users[0].name``).
     """
 
+    is_retryable = False
+
 
 class WorkflowTimeoutError(AgentLoomError):
     """Workflow exceeded its maximum execution time."""

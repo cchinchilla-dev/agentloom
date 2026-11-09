@@ -34,8 +34,9 @@ from agentloom.core.attempts import (
 )
 from agentloom.core.dag import DAG
 from agentloom.core.inter_agent import active_log
-from agentloom.core.models import StepDefinition, StepType, WorkflowDefinition
+from agentloom.core.models import RetryConfig, StepDefinition, StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
+from agentloom.core.protocols import call_hook
 from agentloom.core.redact import RedactionPolicy, is_redacted, redact_model, redact_state
 from agentloom.core.results import (
     StepResult,
@@ -43,7 +44,7 @@ from agentloom.core.results import (
     WorkflowResult,
     WorkflowStatus,
 )
-from agentloom.core.state import StateManager
+from agentloom.core.state import LayerStateView, StateManager
 from agentloom.exceptions import (
     BudgetExceededError,
     CheckpointSchemaError,
@@ -51,6 +52,7 @@ from agentloom.exceptions import (
     WorkflowError,
     WorkflowTimeoutError,
 )
+from agentloom.observability.schema import GenAIOperationName
 from agentloom.resilience.budget import BudgetEnforcer
 from agentloom.resilience.retry import (
     compute_backoff,
@@ -122,6 +124,13 @@ def _extract_budget_error(exc: BaseException) -> BudgetExceededError | None:
     return None
 
 
+def _retry_wait(retry: RetryConfig, attempt: int) -> float:
+    """The wait before a retry: the backoff, or the provider's ``Retry-After`` when longer."""
+    backoff = compute_backoff(retry.backoff_base, attempt, retry.backoff_max, retry.jitter)
+    asked = attempt_spend().retry_after_s
+    return backoff if asked is None else min(max(backoff, asked), retry.backoff_max)
+
+
 def _spend_of(result: StepResult) -> Spend:
     """What the running attempt spent: the calls the gateway saw, or ``result``'s when more.
 
@@ -179,6 +188,7 @@ class WorkflowEngine:
         self._deadline = math.inf
         # The steps cut short with no result: what they spent counts in the run's totals
         self._cut: dict[str, StepResult] = {}
+        self._layer_start: dict[str, Any] = {}
 
         self._checkpointer = checkpointer
         # Always set, checkpointed or not: trace consumers match traces to runs by its value
@@ -286,6 +296,9 @@ class WorkflowEngine:
             parse_as={"workflow_inline": WorkflowDefinition},
             opaque=_SCHEMA_FIELDS,
         )
+        if "model" not in self.workflow.config.model_fields_set:
+            # Derived from the provider: left out, so ``resume --provider`` can replace it
+            workflow_dump["config"].pop("model", None)
         step_results_dump = {k: self._redacted_result(k, v) for k, v in step_results.items()}
 
         data = CheckpointData(
@@ -316,9 +329,20 @@ class WorkflowEngine:
     def _redacted_result(self, step_id: str, result: StepResult) -> dict[str, Any]:
         """*result*, dumped with its data redacted: its output as the state redacts its key."""
         dumped = redact_model(result.model_dump(), StepResult, self._redaction_policy)
-        key = next((s.output for s in self.workflow.steps if s.id == step_id and s.output), None)
+        # Not a router's: its output is the id of the step a resume has to activate
+        key = next(
+            (
+                s.output
+                for s in self.workflow.steps
+                if s.id == step_id and s.output and s.type != StepType.ROUTER
+            ),
+            None,
+        )
         if key is not None and self._redaction_policy:
             dumped["output"] = redact_state({key: result.output}, self._redaction_policy)[key]
+            if result.reasoning_content is not None:  # it can say what the answer says
+                text = {key: result.reasoning_content}
+                dumped["reasoning_content"] = redact_state(text, self._redaction_policy)[key]
         return dumped
 
     @classmethod
@@ -436,7 +460,7 @@ class WorkflowEngine:
         logger.info("Starting workflow: %s", workflow_name)
 
         if self.observer:
-            self.observer.on_workflow_start(workflow_name, run_id=self.run_id)
+            call_hook(self.observer, "on_workflow_start", workflow_name, run_id=self.run_id)
 
         dag = WorkflowParser.build_dag(self.workflow)
         layers = dag.execution_layers()
@@ -458,6 +482,7 @@ class WorkflowEngine:
                 logger.debug("Executing layer %d: %s", layer_idx, layer)
 
                 active_steps = []
+                restored_routers: dict[str, str] = {}
                 for step_id in layer:
                     # Skip steps already completed in a previous run (resume)
                     if step_id in self._completed_steps:
@@ -473,6 +498,7 @@ class WorkflowEngine:
                             ):
                                 activated_targets = activated_targets or set()
                                 activated_targets.add(step_res.output)
+                                restored_routers[step_id] = step_res.output
                         continue
 
                     if step_id in skipped_steps:
@@ -505,10 +531,23 @@ class WorkflowEngine:
                     active_steps.append(step_id)
 
                 if not active_steps:
+                    # As when a router runs: the subtree of a branch not taken stays out, joins too
+                    skipped_steps.update(
+                        dag.transitive_successors(
+                            {
+                                child
+                                for router in restored_routers
+                                for child in dag.successors(router)
+                                if child not in restored_routers.values()
+                            }
+                        )
+                    )
                     continue
 
                 max_concurrent = self.workflow.config.max_concurrent_steps
                 limiter = anyio.CapacityLimiter(max_concurrent)
+                # Here, or a step the limiter holds back would see what its siblings wrote
+                self._layer_start = await self.state.get_state_snapshot()
 
                 # A resumed step keeps its previous run's result until it records a new one
                 previous = {sid: await self.state.get_step_result(sid) for sid in active_steps}
@@ -522,7 +561,10 @@ class WorkflowEngine:
                         before = previous[step_id]
                         if await self.state.get_step_result(step_id) is before:
                             cut = StepResult(
-                                step_id=step_id, status=StepStatus.TIMEOUT, error=message
+                                step_id=step_id,
+                                status=StepStatus.TIMEOUT,
+                                error=message,
+                                error_classification="transient",
                             )
                             if before is not None:  # never started: keeps what it spent before
                                 cut.cost_usd, cut.token_usage = before.cost_usd, before.token_usage
@@ -544,29 +586,34 @@ class WorkflowEngine:
                     raise PauseRequestedError(paused_step_id)
 
                 # A failed step's dependents would burn tokens, firing side effects on partial state
-                if self.workflow.config.on_step_failure == "skip_downstream":
-                    failed_in_layer: set[str] = set()
-                    for step_id in active_steps:
-                        step_result = await self.state.get_step_result(step_id)
-                        if step_result and step_result.status in _FAILED:
+                failed_in_layer: set[str] = set()
+                for step_id in active_steps:
+                    step_result = await self.state.get_step_result(step_id)
+                    if step_result and step_result.status in _FAILED:
+                        step_def = self.workflow.get_step(step_id)
+                        # A router that failed chose no branch, so ``continue`` runs none of them
+                        if self.workflow.config.on_step_failure == "skip_downstream" or (
+                            step_def and step_def.type == StepType.ROUTER
+                        ):
                             failed_in_layer.add(step_id)
-                    if failed_in_layer:
-                        direct_children: set[str] = set()
-                        for fid in failed_in_layer:
-                            direct_children.update(dag.successors(fid))
-                        for descendant in dag.transitive_successors(direct_children):
-                            if descendant in skipped_steps:
-                                continue
-                            skipped_steps.add(descendant)
-                            # Name the nearest failure: a descendant can sit several hops below it
-                            upstream = _closest_failed_ancestor(descendant, failed_in_layer, dag)
-                            skip_reasons.setdefault(
-                                descendant,
-                                f"skipped due to upstream failure: "
-                                f"{upstream or ', '.join(sorted(failed_in_layer))}",
-                            )
+                if failed_in_layer:
+                    direct_children: set[str] = set()
+                    for fid in failed_in_layer:
+                        direct_children.update(dag.successors(fid))
+                    for descendant in dag.transitive_successors(direct_children):
+                        if descendant in skipped_steps:
+                            continue
+                        skipped_steps.add(descendant)
+                        # Name the nearest failure: a descendant can sit several hops below it
+                        upstream = _closest_failed_ancestor(descendant, failed_in_layer, dag)
+                        skip_reasons.setdefault(
+                            descendant,
+                            f"skipped due to upstream failure: "
+                            f"{upstream or ', '.join(sorted(failed_in_layer))}",
+                        )
 
-                activated_targets_for_next = set()
+                # A finished router's target stays active next to a router that ran again
+                activated_targets_for_next = set(restored_routers.values())
                 for step_id in active_steps:
                     step_def = self.workflow.get_step(step_id)
                     if step_def and step_def.type == StepType.ROUTER:
@@ -578,7 +625,7 @@ class WorkflowEngine:
                     activated_targets = activated_targets_for_next
                     # Skip the whole subtree of a branch not taken, joins too: they'd miss an input
                     non_activated_children: set[str] = set()
-                    for step_id in active_steps:
+                    for step_id in (*active_steps, *restored_routers):
                         step_def = self.workflow.get_step(step_id)
                         if step_def and step_def.type == StepType.ROUTER:
                             for child in dag.successors(step_id):
@@ -612,8 +659,14 @@ class WorkflowEngine:
             await self._finalize_result(result, workflow_name)
 
             if self.observer:
-                self.observer.on_workflow_end(
-                    workflow_name, status.value, duration, total_tokens, total_cost
+                call_hook(
+                    self.observer,
+                    "on_workflow_end",
+                    workflow_name,
+                    status.value,
+                    duration,
+                    total_tokens,
+                    total_cost,
                 )
 
             logger.info(
@@ -644,8 +697,14 @@ class WorkflowEngine:
                 final_state = await self.state.get_state_snapshot()
                 total_tokens, total_cost = self._totals(step_results)
                 if self.observer:
-                    self.observer.on_workflow_end(
-                        workflow_name, "paused", duration, total_tokens, total_cost
+                    call_hook(
+                        self.observer,
+                        "on_workflow_end",
+                        workflow_name,
+                        "paused",
+                        duration,
+                        total_tokens,
+                        total_cost,
                     )
                 logger.info(
                     "Workflow '%s' paused at step '%s'",
@@ -671,8 +730,14 @@ class WorkflowEngine:
                 step_results = await self.state.all_step_results()
                 total_tokens, total_cost = self._totals(step_results)
                 if self.observer:
-                    self.observer.on_workflow_end(
-                        workflow_name, "budget_exceeded", duration, total_tokens, total_cost
+                    call_hook(
+                        self.observer,
+                        "on_workflow_end",
+                        workflow_name,
+                        "budget_exceeded",
+                        duration,
+                        total_tokens,
+                        total_cost,
                     )
                 result = WorkflowResult(
                     workflow_name=workflow_name,
@@ -692,8 +757,14 @@ class WorkflowEngine:
                 step_results = await self.state.all_step_results()
                 total_tokens, total_cost = self._totals(step_results)
                 if self.observer:
-                    self.observer.on_workflow_end(
-                        workflow_name, "timeout", duration, total_tokens, total_cost
+                    call_hook(
+                        self.observer,
+                        "on_workflow_end",
+                        workflow_name,
+                        "timeout",
+                        duration,
+                        total_tokens,
+                        total_cost,
                     )
                 logger.error("Workflow '%s' timed out: %s", workflow_name, e)
                 result = WorkflowResult(
@@ -713,8 +784,14 @@ class WorkflowEngine:
             step_results = await self.state.all_step_results()
             total_tokens, total_cost = self._totals(step_results)
             if self.observer:
-                self.observer.on_workflow_end(
-                    workflow_name, "failed", duration, total_tokens, total_cost
+                call_hook(
+                    self.observer,
+                    "on_workflow_end",
+                    workflow_name,
+                    "failed",
+                    duration,
+                    total_tokens,
+                    total_cost,
                 )
             logger.error("Workflow '%s' failed: %s", workflow_name, e)
             result = WorkflowResult(
@@ -740,7 +817,9 @@ class WorkflowEngine:
             if self.observer:
                 with anyio.CancelScope(shield=True):
                     total_tokens, total_cost = self._totals(await self.state.all_step_results())
-                self.observer.on_workflow_end(
+                call_hook(
+                    self.observer,
+                    "on_workflow_end",
                     workflow_name,
                     "cancelled",
                     (time.monotonic() - start) * 1000,
@@ -801,7 +880,9 @@ class WorkflowEngine:
         )
 
         if self.observer:
-            self.observer.on_step_start(step_id, step_def.type.value, stream=should_stream)
+            call_hook(
+                self.observer, "on_step_start", step_id, step_def.type.value, stream=should_stream
+            )
         started = time.monotonic()
         failed = Spend()  # what the attempts that failed spent: charged as they fail
         before = await self.state.get_step_result(step_id)
@@ -841,12 +922,14 @@ class WorkflowEngine:
                             "prompt_tokens": done.token_usage.prompt_tokens,
                             "completion_tokens": done.token_usage.completion_tokens,
                             "reasoning_tokens": done.token_usage.reasoning_tokens,
-                            "model": done.model,
+                            "model": self._requested_model(step_def) if done.model else None,
                             "provider": done.provider,
                         }
                 else:
                     status = "failed"
-                self.observer.on_step_end(
+                call_hook(
+                    self.observer,
+                    "on_step_end",
                     step_id,
                     step_def.type.value,
                     status,
@@ -864,19 +947,39 @@ class WorkflowEngine:
             for run in _RUNS.get():
                 if run._budget is self._budget:  # this run, and the runs it shares its budget with
                     run._charged += cost_usd
-            await self._budget.charge(cost_usd)
+            try:
+                await self._budget.charge(cost_usd)
+            finally:  # a breach raises from the charge, and the gauge has to show it
+                if self._budget.has_limit():
+                    call_hook(
+                        self.observer,
+                        "on_budget_remaining",
+                        self.workflow.name,
+                        self._budget.remaining or 0.0,
+                    )
 
-    def _emit_tokens(self, spend: Spend) -> None:
+    def _requested_model(self, step_def: StepDefinition) -> str:
+        """The model *step_def* asks for, resolved as its executor does."""
+        own = step_def.agent.model if step_def.agent is not None else step_def.model
+        return own or self.workflow.config.model
+
+    def _emit_tokens(self, step_id: str, spend: Spend) -> None:
         """Each model's tokens under it; a subworkflow's steps emit their own."""
         if self.observer:
+            step_def = self.workflow.get_step(step_id)
+            embeds = step_def is not None and step_def.type == StepType.EMBED
+            operation = GenAIOperationName.EMBEDDINGS if embeds else GenAIOperationName.CHAT
             for (provider, model), usage in spend.by_model.items():
                 if provider and model and usage.total_tokens > 0:
-                    self.observer.on_tokens(
+                    call_hook(
+                        self.observer,
+                        "on_tokens",
                         provider,
                         model,
                         usage.prompt_tokens,
                         usage.completion_tokens,
                         reasoning_tokens=usage.reasoning_tokens,
+                        operation=operation.value,
                     )
 
     async def _charge_failure(self, step_id: str, result: StepResult, failed: Spend) -> None:
@@ -888,7 +991,7 @@ class WorkflowEngine:
         spend = _spend_of(result)
         failed.absorb(spend)
         result.cost_usd, result.token_usage = failed.cost_usd, failed.usage
-        self._emit_tokens(spend)
+        self._emit_tokens(step_id, spend)
         try:
             await self._charge(spend.cost_usd)
         except BudgetExceededError:
@@ -905,7 +1008,7 @@ class WorkflowEngine:
         """
         spend = attempt_spend()
         failed.absorb(spend)
-        self._emit_tokens(spend)
+        self._emit_tokens(step_id, spend)
         with contextlib.suppress(BudgetExceededError):
             await self._charge(spend.cost_usd)
         cut = StepResult(
@@ -913,6 +1016,7 @@ class WorkflowEngine:
             status=StepStatus.TIMEOUT,
             cost_usd=failed.cost_usd,
             token_usage=failed.usage,
+            error_classification="transient",
         )
         if anyio.current_time() >= self._deadline:
             cut.error = f"Workflow timed out after {self.workflow.config.timeout}s"
@@ -930,7 +1034,7 @@ class WorkflowEngine:
 
         context = StepContext(
             step_definition=step_def,
-            state_manager=self.state,
+            state_manager=LayerStateView(self.state, self._layer_start),
             provider_gateway=self.provider_gateway,
             tool_registry=self.tool_registry,
             run_id=self.run_id,
@@ -983,21 +1087,16 @@ class WorkflowEngine:
                     await self.state.set_step_result(step_id, result)
                     if (log := active_log()) is not None:
                         log.finish_step(running_steps(), result.output)
-                    self._emit_tokens(spend)  # before a charge that may break the budget
+                    self._emit_tokens(step_id, spend)  # before a charge that may break the budget
 
                     # The enforcer's lock serializes parallel charges; the breach raises from it
                     await self._charge(spend.cost_usd)
-                    if self.observer and self._budget.has_limit():
-                        hook = getattr(self.observer, "on_budget_remaining", None)
-                        if hook:
-                            hook(
-                                self.workflow.name,
-                                self._budget.remaining or 0.0,
-                            )
 
                     if self.observer:
                         pmeta = result.prompt_metadata
-                        self.observer.on_step_end(
+                        call_hook(
+                            self.observer,
+                            "on_step_end",
                             step_id,
                             step_def.type.value,
                             "success",
@@ -1009,7 +1108,7 @@ class WorkflowEngine:
                             prompt_tokens=result.token_usage.prompt_tokens,
                             completion_tokens=result.token_usage.completion_tokens,
                             reasoning_tokens=result.token_usage.reasoning_tokens,
-                            model=result.model,
+                            model=self._requested_model(step_def) if result.model else None,
                             provider=result.provider,
                             finish_reason=(pmeta.finish_reason if pmeta else None),
                             prompt_hash=(pmeta.hash if pmeta else None),
@@ -1019,7 +1118,9 @@ class WorkflowEngine:
                         )
                         if result.provider and result.model:
                             if result.time_to_first_token_ms is not None:
-                                self.observer.on_stream_response(
+                                call_hook(
+                                    self.observer,
+                                    "on_stream_response",
                                     result.provider,
                                     result.model,
                                     result.time_to_first_token_ms / 1000.0,
@@ -1045,12 +1146,7 @@ class WorkflowEngine:
                     )
                     break
                 if attempt < max_retries:
-                    backoff = compute_backoff(
-                        step_def.retry.backoff_base,
-                        attempt,
-                        step_def.retry.backoff_max,
-                        step_def.retry.jitter,
-                    )
+                    backoff = _retry_wait(step_def.retry, attempt)
                     logger.warning(
                         "Step '%s' failed (attempt %d/%d), retrying in %.1fs: %s",
                         step_id,
@@ -1066,16 +1162,12 @@ class WorkflowEngine:
                     step_id=step_id,
                     status=StepStatus.TIMEOUT,
                     error=f"Step timed out after {step_def.timeout}s",
+                    error_classification="transient",
                 )
                 await self._charge_failure(step_id, last_result, failed)
                 # Timeouts are transient: retry while attempts remain, no status-code filter
                 if attempt < max_retries:
-                    backoff = compute_backoff(
-                        step_def.retry.backoff_base,
-                        attempt,
-                        step_def.retry.backoff_max,
-                        step_def.retry.jitter,
-                    )
+                    backoff = _retry_wait(step_def.retry, attempt)
                     await anyio.sleep(backoff)
                     continue
                 break
@@ -1085,7 +1177,7 @@ class WorkflowEngine:
                     # A subworkflow sharing the budget broke it: record what the attempts spent
                     spend = attempt_spend()
                     failed.absorb(spend)
-                    self._emit_tokens(spend)
+                    self._emit_tokens(step_id, spend)
                     with contextlib.suppress(BudgetExceededError):
                         await self._charge(spend.cost_usd)
                     breached = StepResult(
@@ -1111,7 +1203,7 @@ class WorkflowEngine:
                 # What the step spent before its gate is charged, a breach giving way to the pause
                 spend = attempt_spend()
                 failed.absorb(spend)
-                self._emit_tokens(spend)
+                self._emit_tokens(step_id, spend)
                 with contextlib.suppress(BudgetExceededError):
                     await self._charge(spend.cost_usd)
                 paused_result = StepResult(
@@ -1123,7 +1215,9 @@ class WorkflowEngine:
                 )
                 await self.state.set_step_result(step_id, paused_result)
                 if self.observer:
-                    self.observer.on_step_end(
+                    call_hook(
+                        self.observer,
+                        "on_step_end",
                         step_id,
                         step_def.type.value,
                         "paused",
@@ -1151,12 +1245,7 @@ class WorkflowEngine:
                     )
                     break
                 if attempt < max_retries:
-                    backoff = compute_backoff(
-                        step_def.retry.backoff_base,
-                        attempt,
-                        step_def.retry.backoff_max,
-                        step_def.retry.jitter,
-                    )
+                    backoff = _retry_wait(step_def.retry, attempt)
                     await anyio.sleep(backoff)
                     continue
                 break
@@ -1165,7 +1254,9 @@ class WorkflowEngine:
             await self.state.set_step_result(step_id, last_result)
 
             if self.observer:
-                self.observer.on_step_end(
+                call_hook(
+                    self.observer,
+                    "on_step_end",
                     step_id,
                     step_def.type.value,
                     last_result.status.value,

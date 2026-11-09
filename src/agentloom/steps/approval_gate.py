@@ -6,6 +6,7 @@ import logging
 import time
 from datetime import UTC, datetime, timedelta
 
+from agentloom.core.protocols import call_hook
 from agentloom.core.results import StepResult, StepStatus
 from agentloom.exceptions import PauseRequestedError, StepError
 from agentloom.steps.base import BaseStep, StepContext
@@ -67,10 +68,9 @@ class ApprovalGateStep(BaseStep):
             if step.notify:
                 await self._send_notification(context)
 
-            if context.observer:
-                hook = getattr(context.observer, "on_approval_gate", None)
-                if hook:
-                    hook(step.id, context.workflow_name, "pending")
+            call_hook(
+                context.observer, "on_approval_gate", step.id, context.workflow_name, "pending"
+            )
 
             raise PauseRequestedError(
                 step.id, f"Approval required at step '{step.id}'", expires_at=expires_at
@@ -83,10 +83,7 @@ class ApprovalGateStep(BaseStep):
                 is_retryable=False,
             )
 
-        if context.observer:
-            hook = getattr(context.observer, "on_approval_gate", None)
-            if hook:
-                hook(step.id, context.workflow_name, decision)
+        call_hook(context.observer, "on_approval_gate", step.id, context.workflow_name, decision)
 
         duration = (time.monotonic() - start) * 1000
 
@@ -103,10 +100,7 @@ class ApprovalGateStep(BaseStep):
     def _expired(self, context: StepContext, expires_at: str, start: float) -> StepResult:
         """The result of a gate that ran out of time with no ``on_timeout``: no retry decides it."""
         step = context.step_definition
-        if context.observer:
-            hook = getattr(context.observer, "on_approval_gate", None)
-            if hook:
-                hook(step.id, context.workflow_name, "timeout")
+        call_hook(context.observer, "on_approval_gate", step.id, context.workflow_name, "timeout")
         return StepResult(
             step_id=step.id,
             status=StepStatus.TIMEOUT,
@@ -132,6 +126,7 @@ class ApprovalGateStep(BaseStep):
             step_id=step.id,
             workflow_name=context.workflow_name,
             state=state_snapshot,
+            callback_base_url=notify.callback_base_url,
             redaction_policy=context.redaction_policy,
         )
 

@@ -79,7 +79,7 @@ End-to-end claims adjudication. Extracts structured data, runs 3 parallel valida
 tracks via subworkflows (coverage verification with payout calculation, fraud detection
 with pattern analysis, medical necessity review), aggregates results, routes to
 auto-approve (with payment authorization subworkflow), adjuster assignment, or denial.
-Demonstrates: 4 subworkflows, 6 layers, 21 total steps. The most complex example.
+Demonstrates: 3 subworkflows, 6 layers, 18 total steps. The most complex example.
 
 ---
 
@@ -245,7 +245,8 @@ agentloom run examples/31_record_and_replay.yaml --mock-responses recordings/run
 
 ### 32 — YAML-configured MockProvider
 Same workflow as 31 with `provider: mock` and `responses_file` in the YAML, so a
-plain `agentloom run` replays the recording you captured with 31.
+plain `agentloom run` replays the recording you captured with 31. Without that
+recording the run stops with an error.
 Demonstrates: `provider: mock`, `responses_file`, `latency_model: replay`.
 
 ### 35–39 — Tool calling, structured output, embeddings, conversations (0.5.0, unreleased)

@@ -28,6 +28,7 @@ steps:
 
   - id: write_output
     type: tool
+    depends_on: [safe_echo]
     tool_name: file_write
     tool_args:
       path: "/tmp/agentloom/output.txt"

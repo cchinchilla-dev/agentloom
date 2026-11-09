@@ -16,6 +16,18 @@ if TYPE_CHECKING:
     from agentloom.core.models import StepDefinition, WorkflowDefinition
 
 
+def _mermaid_label(text: str) -> str:
+    """Escape special characters in a Mermaid label."""
+    return (
+        text.replace('"', "#quot;")
+        .replace("|", "#vert;")
+        .replace("[", "#lsqb;")
+        .replace("]", "#rsqb;")
+        .replace("{", "#lbrace;")
+        .replace("}", "#rbrace;")
+    )
+
+
 class GraphNode(BaseModel):
     """Immutable representation of a single node in the workflow graph."""
 
@@ -378,21 +390,19 @@ class WorkflowGraph:
             """Sanitize a node ID for Mermaid (alphanumeric + underscore only)."""
             return "".join(c if c.isalnum() or c == "_" else "_" for c in text)
 
-        def _mermaid_label(text: str) -> str:
-            """Escape special characters in a Mermaid label."""
-            return (
-                text.replace('"', "#quot;")
-                .replace("|", "#vert;")
-                .replace("[", "#lsqb;")
-                .replace("]", "#rsqb;")
-                .replace("{", "#lbrace;")
-                .replace("}", "#rbrace;")
-            )
+        ids: dict[str, str] = {}
+        for node in self.nodes:
+            base = nid = _mermaid_id(node.id)
+            suffix = 1
+            while nid in ids.values():
+                suffix += 1
+                nid = f"{base}_{suffix}"
+            ids[node.id] = nid
 
         lines: list[str] = ["graph TD"]
 
         for node in self.nodes:
-            nid = _mermaid_id(node.id)
+            nid = ids[node.id]
             lbl = _mermaid_label(node.label)
             if node.type == StepType.ROUTER:
                 lines.append(f"    {nid}{{{lbl}}}")
@@ -404,8 +414,8 @@ class WorkflowGraph:
                 lines.append(f'    {nid}["{lbl}"]')
 
         for edge in self.edges:
-            src = _mermaid_id(edge.source)
-            tgt = _mermaid_id(edge.target)
+            src = ids.get(edge.source, _mermaid_id(edge.source))
+            tgt = ids.get(edge.target, _mermaid_id(edge.target))
             if edge.label:
                 safe_lbl = _mermaid_label(edge.label)
                 lines.append(f"    {src} -->|{safe_lbl}| {tgt}")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any
 
 import pytest
@@ -11,7 +12,9 @@ from agentloom.core.models import StepDefinition, WorkflowDefinition
 from agentloom.core.redact import (
     ENV_VAR,
     RedactionPolicy,
+    carries_sentinel,
     is_redacted,
+    redact_json_text,
     redact_model,
     redact_state,
 )
@@ -472,3 +475,79 @@ class TestRedactModel:
     def test_no_policy_returns_the_dump(self) -> None:
         data = {"api_key": "sk"}
         assert redact_model(data, _Outer, RedactionPolicy()) is data
+
+
+class _Credentials(BaseModel):
+    api_secret: str
+    host: str = "example.test"
+
+
+class _Envelope(BaseModel):
+    credentials: _Credentials
+
+
+class TestPydanticValues:
+    """A model kept in the state is redacted like the dict it dumps to."""
+
+    POLICY = RedactionPolicy(["*secret*"])
+
+    def test_a_field_of_a_model_is_redacted(self) -> None:
+        out = redact_state({"creds": _Credentials(api_secret="dummy-plain")}, self.POLICY)
+
+        assert is_redacted(out["creds"]["api_secret"])
+        assert out["creds"]["host"] == "example.test"
+
+    def test_models_inside_containers_and_models_are_redacted(self) -> None:
+        inner = _Credentials(api_secret="dummy-plain")
+        out = redact_state(
+            {"listed": [inner], "nested": {"env": _Envelope(credentials=inner)}}, self.POLICY
+        )
+
+        assert is_redacted(out["listed"][0]["api_secret"])
+        assert is_redacted(out["nested"]["env"]["credentials"]["api_secret"])
+
+    def test_a_dotted_pattern_reaches_into_the_model(self) -> None:
+        out = redact_state(
+            {"creds": _Credentials(api_secret="dummy-plain")},
+            RedactionPolicy(["creds.host"]),
+        )
+
+        assert is_redacted(out["creds"]["host"])
+        assert out["creds"]["api_secret"] == "dummy-plain"
+
+    def test_a_model_under_a_matching_key_is_replaced_whole(self) -> None:
+        out = redact_state({"my_secret": _Credentials(api_secret="dummy-plain")}, self.POLICY)
+
+        assert is_redacted(out["my_secret"])
+
+
+class TestRedactJsonText:
+    POLICY = RedactionPolicy(["*token*"])
+
+    def test_a_json_object_gets_its_keys_masked(self) -> None:
+        text = json.dumps({"api_token": "dummy-secret", "page": 1})
+        masked = json.loads(redact_json_text(text, self.POLICY))
+        assert is_redacted(masked["api_token"])
+        assert masked["page"] == 1
+
+    def test_a_json_list_is_walked(self) -> None:
+        text = json.dumps([{"api_token": "dummy-secret"}])
+        assert "dummy-secret" not in redact_json_text(text, self.POLICY)
+
+    def test_text_with_no_sensitive_key_is_returned_as_it_was(self) -> None:
+        text = '{ "page":   1 }'
+        assert redact_json_text(text, self.POLICY) == text
+
+    @pytest.mark.parametrize("text", ["plain text", "12", '"a string"', "{broken"])
+    def test_anything_else_has_no_keys_to_mask(self, text: str) -> None:
+        assert redact_json_text(text, self.POLICY) == text
+
+    def test_an_empty_policy_changes_nothing(self) -> None:
+        text = json.dumps({"api_token": "dummy-secret"})
+        assert redact_json_text(text, RedactionPolicy()) == text
+
+
+def test_carries_sentinel_finds_one_at_any_depth() -> None:
+    masked = redact_state({"api_token": "dummy-secret"}, RedactionPolicy(["*token*"]))
+    assert carries_sentinel([{"tool_calls": [{"arguments": json.dumps(masked)}]}])
+    assert not carries_sentinel([{"content": "plain"}])

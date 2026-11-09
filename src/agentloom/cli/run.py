@@ -25,11 +25,16 @@ from agentloom.exceptions import ConfigError, ProviderError
 if TYPE_CHECKING:
     from agentloom.core.inter_agent import EventLog
     from agentloom.core.models import WorkflowConfig, WorkflowDefinition
+    from agentloom.core.redact import RedactionPolicy
     from agentloom.observability.observer import WorkflowObserver
+    from agentloom.providers.base import BaseProvider
     from agentloom.providers.gateway import ProviderGateway
     from agentloom.providers.mock import MockProvider
     from agentloom.providers.replay_or_live import ReplayCut
     from agentloom.tools.registry import ToolRegistry
+
+
+_NO_RATE_LIMIT = 10**9  # a bucket this deep never runs dry
 
 
 def _parse_state_value(raw: str) -> Any:
@@ -79,7 +84,11 @@ def run(
         ".agentloom/checkpoints", "--checkpoint-dir", help="Checkpoint storage directory."
     ),
     mock_responses: Path | None = typer.Option(
-        None, "--mock-responses", help="Replay responses from a JSON file via MockProvider."
+        None,
+        "--mock-responses",
+        help="Replay responses from a JSON file via MockProvider.",
+        exists=True,
+        dir_okay=False,
     ),
     record: Path | None = typer.Option(
         None, "--record", help="Record provider responses to a JSON file for later replay."
@@ -138,10 +147,16 @@ def _sigterm_as_interrupt() -> Iterator[None]:
         yield
         return
     previous = signal.signal(signal.SIGTERM, _forward_to_sigint)
+    # A background job of a shell inherits SIGINT ignored: the forwarded signal would vanish
+    sigint_ignored = signal.getsignal(signal.SIGINT) == signal.SIG_IGN
+    if sigint_ignored:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
     try:
         yield
     finally:
         signal.signal(signal.SIGTERM, previous)
+        if sigint_ignored:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 def _forward_to_sigint(signum: int, frame: FrameType | None) -> None:
@@ -180,10 +195,11 @@ async def _run_async(
         typer.echo(f"Error loading workflow: {e}", err=True)
         raise typer.Exit(1)
 
-    if provider_override:
-        workflow.config.provider = provider_override
+    # The model goes first: a provider without a default model accepts a workflow that has one.
     if model_override:
         workflow.config.model = model_override
+    if provider_override:
+        _switch_provider(workflow, provider_override)
     if budget is not None:
         workflow.config.budget_usd = budget
     if stream:
@@ -196,6 +212,9 @@ async def _run_async(
 
     state_manager = StateManager(initial_state=_initial_state(workflow, state_args))
 
+    from agentloom.core.redact import RedactionPolicy
+
+    redaction = RedactionPolicy(workflow.redaction_patterns()).merge(RedactionPolicy.from_env())
     gateway = ProviderGateway()
     # Early, so providers can hook into the observer
     observer = _setup_observer(lite)
@@ -207,7 +226,7 @@ async def _run_async(
         live = live_from is not None or bool(force_live)  # a cut keeps the workflow's providers
         if not live:
             # In the checkpoint too, so `resume` replays the same recording
-            workflow.config.provider = "mock"
+            workflow.use_provider("mock")
             workflow.config.responses_file = str(mock_responses.resolve())
         try:
             mock = MockProvider(
@@ -216,27 +235,23 @@ async def _run_async(
                 workflow_name=workflow.name,
                 strict=mock_strict,
             )
-        except ValueError as e:
+        except (OSError, ValueError) as e:
             # A malformed recording fails at startup, not as a green run against an empty fixture.
             typer.echo(f"Error: {e}", err=True)
             raise typer.Exit(1) from e
         if live:
             cut = _setup_cut(gateway, workflow, mock, live_from, force_live or [], config_path)
             if record is not None:
-                from agentloom.providers.recorder import RecordingProvider
-
                 # Outermost, so a step's replayed and live turns land in one list, in order.
-                gateway.wrap_providers(lambda p: RecordingProvider(p, record, observer=observer))
+                _record_to(gateway, record, observer, redaction)
         else:
-            gateway.register(mock, priority=0)
+            _register_mock(gateway, mock)
     elif workflow.config.provider == "mock":
         _setup_mock(gateway, workflow.config, observer, workflow.name)
     else:
         _setup_live(gateway, workflow.config, config_path)
         if record is not None:
-            from agentloom.providers.recorder import RecordingProvider
-
-            gateway.wrap_providers(lambda p: RecordingProvider(p, record, observer=observer))
+            _record_to(gateway, record, observer, redaction)
 
     tool_registry = _tool_registry(workflow)
     replayer = None
@@ -252,7 +267,7 @@ async def _run_async(
     if record is not None and record_tools:
         from agentloom.providers.tool_tape import ToolRecorder
 
-        tool_registry.tape = ToolRecorder(record, serve_from=replayer)
+        tool_registry.tape = ToolRecorder(record, serve_from=replayer, redaction=redaction)
     elif replayer is not None:
         tool_registry.tape = replayer
 
@@ -280,10 +295,14 @@ async def _run_async(
         checkpointer=checkpointer,
     )
 
-    typer.echo(f"Running workflow: {workflow.name}")
+    if record is not None and cut is None:
+        _discard_recording(record)
+
+    # On stderr with --json, so stdout parses whole.
+    typer.echo(f"Running workflow: {workflow.name}", err=output_json)
     # Shown only with checkpoints: the run id matters to the operator only for ``resume``.
     if checkpointer is not None:
-        typer.echo(f"Run ID: {engine.run_id}")
+        typer.echo(f"Run ID: {engine.run_id}", err=output_json)
     from agentloom.core.inter_agent import EventLog, recording_events
 
     events = EventLog() if record is not None else None
@@ -301,7 +320,7 @@ async def _run_async(
     elif output_json:
         typer.echo(result.model_dump_json(indent=2))
     else:
-        _print_result(result, run_id=engine.run_id)
+        _print_result(result, run_id=engine.run_id if checkpointer is not None else None)
         if cut is not None:
             typer.echo("Calls (replay up to the cut, live after it):")
             typer.echo("\n".join(cut.summary()))
@@ -312,6 +331,38 @@ async def _run_async(
 
     if result.status not in (WorkflowStatus.SUCCESS, WorkflowStatus.PAUSED):
         raise typer.Exit(1)
+
+
+def _switch_provider(workflow: WorkflowDefinition, provider: str) -> None:
+    """Apply ``--provider``: a model the workflow didn't name follows it, an endpoint is dropped."""
+    if workflow.config.base_url and provider != "generic_openai":
+        typer.echo(
+            f"Warning: provider {provider!r} doesn't use the workflow's "
+            "config.base_url, which is dropped.",
+            err=True,
+        )
+    try:
+        workflow.use_provider(provider)
+    except ValueError as e:
+        typer.echo(f"Error: {e}, or pass --model", err=True)
+        raise typer.Exit(2) from e
+
+
+def _record_to(
+    gateway: ProviderGateway,
+    path: Path,
+    observer: WorkflowObserver | None,
+    redaction: RedactionPolicy,
+) -> None:
+    """Record every provider of the run to *path*."""
+    from agentloom.providers.recorder import RecordingProvider, RunCaptures
+
+    captures = RunCaptures()
+    gateway.wrap_providers(
+        lambda p: RecordingProvider(
+            p, path, observer=observer, redaction=redaction, captures=captures
+        )
+    )
 
 
 def _setup_observer(lite: bool) -> WorkflowObserver | None:
@@ -355,16 +406,23 @@ def _setup_mock(
     """Register ``provider: mock`` from the workflow's own ``config:``."""
     from agentloom.providers.mock import MockProvider
 
-    gateway.register(
-        MockProvider(
+    try:
+        mock = MockProvider(
             responses_file=config.responses_file,
             latency_model=config.latency_model,
             latency_ms=config.latency_ms,
             observer=observer,
             workflow_name=workflow_name,
-        ),
-        priority=0,
-    )
+        )
+    except (OSError, ValueError) as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e
+    _register_mock(gateway, mock)
+
+
+def _register_mock(gateway: ProviderGateway, mock: MockProvider) -> None:
+    """Register *mock* without the rate limits that pace calls to a real API."""
+    gateway.register(mock, priority=0, max_rpm=_NO_RATE_LIMIT, max_tpm=_NO_RATE_LIMIT)
 
 
 def _setup_live(
@@ -399,15 +457,28 @@ def _setup_cut(
     config_path: Path | None = None,
 ) -> ReplayCut:
     """Serve the recording through the workflow's own providers, live from the cut on."""
-    from agentloom.providers.replay_or_live import ReplayCut, ReplayOrLiveProvider, cut_steps
+    from agentloom.providers.replay_or_live import (
+        NoLiveProvider,
+        ReplayCut,
+        ReplayOrLiveProvider,
+        cut_steps,
+    )
 
     try:
         cut = ReplayCut(recording, cut_steps(workflow, live_from, force_live))
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1) from e
+        raise typer.Exit(2) from e
     _setup_live(gateway, workflow.config, config_path)
-    gateway.wrap_providers(lambda provider: ReplayOrLiveProvider(provider, cut))
+    live: list[BaseProvider] = []
+
+    def _wrap(provider: BaseProvider) -> BaseProvider:
+        live.append(provider)
+        return ReplayOrLiveProvider(provider, cut)
+
+    gateway.wrap_providers(_wrap)
+    # So the replayed steps of a model no provider serves need no key; last in line, as a backstop.
+    gateway.register(ReplayOrLiveProvider(NoLiveProvider(live), cut), priority=sys.maxsize)
     return cut
 
 
@@ -427,16 +498,21 @@ def _setup_generic_openai(gateway: ProviderGateway, config: WorkflowConfig) -> N
     gateway.register(GenericOpenAIProvider(base_url=config.base_url, api_key=api_key), priority=0)
 
 
-def _initial_state(workflow: WorkflowDefinition, state_args: list[str]) -> dict[str, Any]:
-    """The workflow's state with the ``--state key=value`` pairs applied."""
-    initial_state = dict(workflow.state)
+def _state_overrides(state_args: list[str]) -> dict[str, Any]:
+    """The ``--state key=value`` pairs, with their values parsed."""
+    overrides: dict[str, Any] = {}
     for item in state_args:
         if "=" not in item:
             typer.echo(f"Invalid state format '{item}'. Use key=value.", err=True)
-            raise typer.Exit(1)
+            raise typer.Exit(2)
         key, _, raw = item.partition("=")
-        initial_state[key] = _parse_state_value(raw)
-    return initial_state
+        overrides[key] = _parse_state_value(raw)
+    return overrides
+
+
+def _initial_state(workflow: WorkflowDefinition, state_args: list[str]) -> dict[str, Any]:
+    """The workflow's state with the ``--state key=value`` pairs applied."""
+    return {**workflow.state, **_state_overrides(state_args)}
 
 
 def _import_from_cwd() -> None:
@@ -467,10 +543,20 @@ def _tool_registry(workflow: WorkflowDefinition) -> ToolRegistry:
         max_write_bytes=sandbox_cfg.max_write_bytes,
         danger_opt_in=sandbox_cfg.danger_opt_in,
         allow_internal_webhook_targets=sandbox_cfg.allow_internal_webhook_targets,
+        deny_internal_hosts=sandbox_cfg.deny_internal_hosts,
     )
     tool_registry = ToolRegistry()
     register_builtins(tool_registry, sandbox=sandbox)
     return tool_registry
+
+
+def _discard_recording(path: Path) -> None:
+    """Clear the file a full run records to: entries of another run would not match this one."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as e:
+        typer.echo(f"Error: cannot replace {path}: {e}", err=True)
+        raise typer.Exit(1) from e
 
 
 def _record_events(path: Path, events: EventLog) -> None:
@@ -522,6 +608,8 @@ def _setup_providers(
             priority=pc.priority,
             is_fallback=pc.is_fallback,
             models=pc.models if pc.models else None,
+            is_primary=pc.name == default_provider,
+            model_aliases=pc.model_aliases,
         )
 
 
@@ -555,6 +643,7 @@ def _print_result(result: object, *, run_id: str | None = None) -> None:
             StepStatus.SUCCESS: "[OK]",
             StepStatus.SKIPPED: "[SKIP]",
             StepStatus.PAUSED: "[PAUSED]",
+            StepStatus.TIMEOUT: "[TIMEOUT]",
         }
         icon = step_icons.get(sr.status, "[FAIL]")
         line = f"  {icon} {step_id} ({sr.duration_ms:.0f}ms)"
@@ -573,11 +662,12 @@ def _print_result(result: object, *, run_id: str | None = None) -> None:
     ]
     if paused_steps:
         typer.echo("")
-        run_label = run_id or "<run_id>"
         for step_id in paused_steps:
-            # ``resume`` reads the paused step from the checkpoint: it has no ``--step`` option.
             typer.echo(f"[APPROVAL REQUIRED] Step '{step_id}' is waiting for a decision.")
-            typer.echo(f"  Approve: agentloom resume {run_label} --approve")
-            typer.echo(f"  Reject:  agentloom resume {run_label} --reject")
+            # No run id means no checkpoint, so nothing to resume.
+            if run_id:
+                # ``resume`` reads the paused step from the checkpoint: it has no ``--step`` option.
+                typer.echo(f"  Approve: agentloom resume {run_id} --approve")
+                typer.echo(f"  Reject:  agentloom resume {run_id} --reject")
 
     typer.echo(f"{'=' * 60}")

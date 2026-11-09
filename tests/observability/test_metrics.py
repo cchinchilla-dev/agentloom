@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from agentloom.observability import metrics as metrics_module
 from agentloom.observability.metrics import (
     _HAS_OTEL_METRICS,
     _HAS_PROM,
@@ -322,3 +323,73 @@ class TestMetricsOTelSetup:
         assert mm._workflow_histogram is not None
         assert mm._cost_counter is not None
         mm.shutdown()
+
+
+class TestOTelExport:
+    """What the OTel backend is configured with, on stubbed SDK modules."""
+
+    @staticmethod
+    def _stubbed(monkeypatch: pytest.MonkeyPatch) -> tuple[MetricsManager, MagicMock, MagicMock]:
+        sdk, api, resources = MagicMock(), MagicMock(), MagicMock()
+        monkeypatch.setattr(metrics_module, "_HAS_OTEL_METRICS", True)
+        monkeypatch.setattr(metrics_module, "otel_metrics", sdk)
+        monkeypatch.setattr(metrics_module, "otel_metric_exporter", MagicMock())
+        monkeypatch.setattr(metrics_module, "otel_api_metrics", api)
+        monkeypatch.setattr(metrics_module, "otel_sdk_resources", resources, raising=False)
+        return MetricsManager(enabled=True), sdk, api
+
+    def test_the_meter_provider_names_the_service(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _, sdk, _ = self._stubbed(monkeypatch)
+        resource = metrics_module.otel_sdk_resources.Resource
+        resource.create.assert_called_once_with({"service.name": "agentloom"})
+        assert sdk.MeterProvider.call_args.kwargs["resource"] is resource.create.return_value
+
+    def test_histograms_use_the_buckets_of_the_prometheus_exporter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, _, api = self._stubbed(monkeypatch)
+        create = api.get_meter.return_value.create_histogram
+        otel = {
+            c.args[0]: c.kwargs.get("explicit_bucket_boundaries_advisory")
+            for c in create.call_args_list
+        }
+
+        prom = MagicMock()
+        monkeypatch.setattr(metrics_module, "prom", prom)
+        monkeypatch.setattr(metrics_module, "_HAS_OTEL_METRICS", False)
+        monkeypatch.setattr(metrics_module, "_HAS_PROM", True)
+        MetricsManager(enabled=True)
+        exported = {
+            c.args[0]: c.kwargs["buckets"]
+            for c in prom.Histogram.call_args_list
+            if "buckets" in c.kwargs
+        }
+
+        assert len(exported) == 9
+        assert otel["agentloom_step_duration_seconds"] == [0.1, 0.5, 1, 2, 5, 10, 30, 60]
+        for name, buckets in otel.items():
+            prom_name = name.replace(".", "_")
+            if prom_name.startswith("gen_ai_client_operation"):
+                prom_name += "_seconds"
+            if prom_name in exported:
+                assert buckets == exported[prom_name], name
+
+    def test_provider_latency_is_labelled_with_the_operation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mm, _, _ = self._stubbed(monkeypatch)
+        mm.record_provider_call("openai", "embed-3", 0.5, operation="embeddings")
+        labels = mm._operation_duration_histogram.record.call_args.args[1]
+        assert labels["gen_ai.operation.name"] == "embeddings"
+
+    def test_tokens_are_labelled_with_the_operation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mm, _, _ = self._stubbed(monkeypatch)
+        mm.record_tokens("openai", "embed-3", 7, 0, operation="embeddings")
+        labels = mm._token_histogram.record.call_args.args[1]
+        assert labels["gen_ai.operation.name"] == "embeddings"
+
+    def test_a_chat_call_stays_chat(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mm, _, _ = self._stubbed(monkeypatch)
+        mm.record_provider_call("openai", "gpt-4o-mini", 0.5)
+        labels = mm._operation_duration_histogram.record.call_args.args[1]
+        assert labels["gen_ai.operation.name"] == "chat"

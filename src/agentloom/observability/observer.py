@@ -21,6 +21,9 @@ from agentloom.observability.schema import (
 
 logger = logging.getLogger("agentloom.observability")
 
+# The values of the ``agentloom_circuit_breaker_state`` gauge.
+_CIRCUIT_GAUGE = {"closed": 0, "open": 1, "half_open": 2}
+
 
 @dataclass
 class _RunScope:
@@ -99,6 +102,12 @@ class WorkflowObserver:
         """
         return self._tracing
 
+    def _set_error(self, span: Any, description: str) -> None:
+        # A tracing manager of the caller's may have no status to set.
+        set_error = getattr(self._tracing, "set_error", None)
+        if set_error:
+            set_error(span, description)
+
     def on_workflow_start(self, workflow_name: str, *, run_id: str = "", **kwargs: Any) -> None:
         _CURRENT_RUN.set(_RunScope(owner=self, parent=_CURRENT_RUN.get(), run_id=run_id))
         if self._tracing:
@@ -119,7 +128,9 @@ class WorkflowObserver:
         total_cost: float,
         **kwargs: Any,
     ) -> None:
-        if self._metrics:
+        # A subworkflow is a step of its parent's run, and its cost is in that run's total.
+        parent = self._scope().parent
+        if self._metrics and (parent is None or parent.owner is not self):
             self._metrics.record_workflow_run(
                 workflow_name, status, duration_ms / 1000.0, total_cost
             )
@@ -248,6 +259,7 @@ class WorkflowObserver:
                 span.set_attribute(SpanAttr.PROMPT_TEMPLATE_VARS, prompt_template_vars)
             if error:
                 span.set_attribute(SpanAttr.STEP_ERROR, error)
+                self._set_error(span, error)
             if self._tracing:
                 self._tracing.end_span(span)
             else:
@@ -265,6 +277,7 @@ class WorkflowObserver:
         temperature: float | None = None,
         max_tokens: int | None = None,
         stream: bool = False,
+        operation: str = GenAIOperationName.CHAT.value,
         **kwargs: Any,
     ) -> None:
         """Open a child span around a provider HTTP call.
@@ -279,7 +292,6 @@ class WorkflowObserver:
         if not self._tracing:
             return
         # Provider spans are the GenAI inference spans, named and tagged per the OTel conventions.
-        operation = GenAIOperationName.CHAT.value
         attrs: dict[str, Any] = {
             SpanAttr.GEN_AI_OPERATION_NAME: operation,
             SpanAttr.GEN_AI_PROVIDER_NAME: to_genai_provider_name(provider),
@@ -314,10 +326,13 @@ class WorkflowObserver:
         finish_reason: str | None = None,
         stream: bool = False,
         error: str | None = None,
+        operation: str = GenAIOperationName.CHAT.value,
         **kwargs: Any,
     ) -> None:
         if self._metrics:
-            self._metrics.record_provider_call(provider, model, latency_s, stream=stream)
+            self._metrics.record_provider_call(
+                provider, model, latency_s, stream=stream, operation=operation
+            )
         span = self._provider_spans.pop((step_id, attempt), None)
         if span is None:
             return
@@ -334,6 +349,7 @@ class WorkflowObserver:
             # The OTel general-conventions key for errored spans, beside ``step.error``.
             span.set_attribute(SpanAttr.ERROR_TYPE, error)
             span.set_attribute(SpanAttr.PROVIDER_ATTEMPT_OUTCOME, "error")
+            self._set_error(span, error)
         else:
             span.set_attribute(SpanAttr.PROVIDER_ATTEMPT_OUTCOME, "ok")
         if self._tracing:
@@ -353,7 +369,7 @@ class WorkflowObserver:
         success: bool,
         **kwargs: Any,
     ) -> None:
-        """Record a model-dispatched tool call.
+        """Record a tool call, from a model or a ``tool`` step.
 
         Emits a child span under the active step span carrying the canonical
         ``execute_tool {name}`` name plus tool attrs, and records the
@@ -480,6 +496,7 @@ class WorkflowObserver:
                 if span is not None:
                     span.set_attribute(SpanAttr.STEP_ERROR, error_type)
                     span.set_attribute(SpanAttr.ERROR_TYPE, error_type)
+                    self._set_error(span, error_type)
                     if self._tracing:
                         self._tracing.end_span(span)
                     else:
@@ -498,6 +515,7 @@ class WorkflowObserver:
         completion_tokens: int,
         *,
         reasoning_tokens: int = 0,
+        operation: str = GenAIOperationName.CHAT.value,
         **kwargs: Any,
     ) -> None:
         if self._metrics:
@@ -507,6 +525,7 @@ class WorkflowObserver:
                 prompt_tokens,
                 completion_tokens,
                 reasoning_tokens=reasoning_tokens,
+                operation=operation,
             )
 
     # Circuit breaker events (called from gateway via callback)
@@ -514,8 +533,7 @@ class WorkflowObserver:
     def on_circuit_state_change(
         self, provider: str, old_state: str, new_state: str, **kwargs: Any
     ) -> None:
-        state_map = {"closed": 0, "open": 1, "half_open": 2}
-        state_int = state_map.get(str(new_state), 0)
+        state_int = _CIRCUIT_GAUGE.get(str(new_state), 0)
         logger.info(
             "Circuit breaker '%s': %s -> %s",
             provider,
@@ -524,6 +542,11 @@ class WorkflowObserver:
         )
         if self._metrics:
             self._metrics.set_circuit_state(provider, state_int)
+
+    def on_circuit_state(self, provider: str, state: str, **kwargs: Any) -> None:
+        """Refresh the circuit gauge on a provider call, whether or not the state changed."""
+        if self._metrics:
+            self._metrics.set_circuit_state(provider, _CIRCUIT_GAUGE.get(str(state), 0))
 
     def on_approval_gate(
         self, step_id: str, workflow_name: str, decision: str, **kwargs: Any

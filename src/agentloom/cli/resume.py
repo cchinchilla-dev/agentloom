@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import anyio
 import typer
@@ -19,6 +20,15 @@ def resume(
         None, "--provider", "-p", help="Override default provider."
     ),
     model: str | None = typer.Option(None, "--model", "-m", help="Override default model."),
+    state: list[str] = typer.Option(
+        [],
+        "--state",
+        "-s",
+        help="State variables as key=value pairs, such as a key redacted from the checkpoint.",
+    ),
+    budget: float | None = typer.Option(
+        None, "--budget", "-b", help="Maximum budget in USD, what the run has spent included."
+    ),
     approve: bool = typer.Option(False, "--approve", help="Approve a pending approval gate."),
     reject: bool = typer.Option(False, "--reject", help="Reject a pending approval gate."),
     lite: bool = typer.Option(False, "--lite", help="Run in lite mode (no observability)."),
@@ -38,10 +48,11 @@ def resume(
     """Resume a paused or failed workflow from its last checkpoint."""
     if approve and reject:
         typer.echo("Cannot use --approve and --reject together.", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(2)
 
-    from agentloom.cli.run import _config_file, _sigterm_as_interrupt
+    from agentloom.cli.run import _config_file, _sigterm_as_interrupt, _state_overrides
 
+    state_overrides = _state_overrides(state)
     decision: str | None = None
     if approve:
         decision = "approved"
@@ -59,6 +70,8 @@ def resume(
             lite,
             output_json,
             stream,
+            state_overrides,
+            budget,
             _config_file(config_file),
         )
 
@@ -72,6 +85,8 @@ async def _resume_async(
     lite: bool,
     output_json: bool,
     stream: bool,
+    state_overrides: dict[str, Any],
+    budget: float | None,
     config_path: Path | None = None,
 ) -> None:
     from agentloom.checkpointing.file import FileCheckpointer
@@ -81,6 +96,7 @@ async def _resume_async(
         _setup_live,
         _setup_mock,
         _setup_observer,
+        _switch_provider,
     )
     from agentloom.core.engine import WorkflowEngine
     from agentloom.providers.gateway import ProviderGateway
@@ -100,6 +116,12 @@ async def _resume_async(
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
 
+    # ``run.step`` is a subworkflow's own checkpoint: resuming it would strand its parent
+    if "." in run_id:
+        root = run_id.partition(".")[0]
+        typer.echo(f"Run '{run_id}' is part of run '{root}': resume '{root}'.", err=True)
+        raise typer.Exit(2)
+
     approval_decisions: dict[str, str] = {}
     if decision:
         if checkpoint_data.status != "paused" or not checkpoint_data.paused_step_id:
@@ -118,16 +140,24 @@ async def _resume_async(
             err=True,
         )
 
+    # On stderr with --json, so stdout parses whole.
     if decision:
         typer.echo(
             f"Resuming workflow '{checkpoint_data.workflow_name}' "
-            f"(run {run_id}, decision={decision} for step '{checkpoint_data.paused_step_id}')"
+            f"(run {run_id}, decision={decision} for step '{checkpoint_data.paused_step_id}')",
+            err=output_json,
         )
     else:
         typer.echo(
             f"Resuming workflow '{checkpoint_data.workflow_name}' "
-            f"(run {run_id}, status={checkpoint_data.status})"
+            f"(run {run_id}, status={checkpoint_data.status})",
+            err=output_json,
         )
+
+    # In the checkpoint, not on the engine: it sets up its budget from the definition.
+    checkpoint_data.state.update(state_overrides)
+    if budget is not None:
+        checkpoint_data.workflow_definition.setdefault("config", {})["budget_usd"] = budget
 
     engine = await WorkflowEngine.from_checkpoint(
         checkpoint_data=checkpoint_data,
@@ -135,10 +165,11 @@ async def _resume_async(
         approval_decisions=approval_decisions or None,
     )
 
-    if provider_override:
-        engine.workflow.config.provider = provider_override
+    # The model goes first, as in ``run``.
     if model_override:
         engine.workflow.config.model = model_override
+    if provider_override:
+        _switch_provider(engine.workflow, provider_override)
     if stream:
         engine.workflow.config.stream = True
 
@@ -163,6 +194,7 @@ async def _resume_async(
         max_write_bytes=sandbox_cfg.max_write_bytes,
         danger_opt_in=sandbox_cfg.danger_opt_in,
         allow_internal_webhook_targets=sandbox_cfg.allow_internal_webhook_targets,
+        deny_internal_hosts=sandbox_cfg.deny_internal_hosts,
     )
     tool_registry = ToolRegistry()
     register_builtins(tool_registry, sandbox=sandbox)

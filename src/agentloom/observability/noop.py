@@ -170,6 +170,9 @@ class NoopObserver:
     ) -> None:
         pass
 
+    def on_circuit_state(self, provider: str, state: str, **kwargs: Any) -> None:
+        pass
+
     def on_approval_gate(
         self, step_id: str, workflow_name: str, decision: str, **kwargs: Any
     ) -> None:

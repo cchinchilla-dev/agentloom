@@ -18,6 +18,7 @@ from agentloom.core.inter_agent import (
     order_events,
     recording_events,
 )
+from agentloom.core.results import WorkflowStatus
 from agentloom.providers.tool_tape import ToolMode
 
 if TYPE_CHECKING:
@@ -42,6 +43,15 @@ def verify_determinism(
     events_out: Path | None = typer.Option(
         None, "--events-out", help="Write the event log of the first replay as JSONL."
     ),
+    allow_failed: bool = typer.Option(
+        False, "--allow-failed", help="Accept replays that agree without succeeding."
+    ),
+    provider: str | None = typer.Option(
+        None, "--provider", "-p", help="Override default provider, as the recorded run did."
+    ),
+    model: str | None = typer.Option(
+        None, "--model", "-m", help="Override default model, as the recorded run did."
+    ),
 ) -> None:
     """Replay a recording several times and check that every replay gives the same result.
 
@@ -49,7 +59,8 @@ def verify_determinism(
     their status, each step's status, output and error, the final state and
     the inter-agent event log, leaving out run ids, durations and timestamps;
     the event log is also compared with the one in the recording, when it has
-    one. On a difference, the exit code is 1 and a unified diff goes to stderr.
+    one. On a difference, the exit code is 1 and a unified diff goes to stderr. So
+    is a replay that doesn't end in ``success``, unless ``--allow-failed`` is passed.
     """
     try:
         recorded = json.loads(recording.read_text(encoding="utf-8"))
@@ -59,7 +70,10 @@ def verify_determinism(
         typer.echo(f"Error: {recording} is not a recording with a valid event log: {e}", err=True)
         raise typer.Exit(1) from e
 
-    replays = [anyio.run(_replay, workflow_path, recording, state, tools) for _ in range(runs)]
+    replays = [
+        anyio.run(_replay, workflow_path, recording, state, tools, provider, model)
+        for _ in range(runs)
+    ]
     first, events = replays[0]
     if events_out is not None:
         lines = (json.dumps(event) for event in dump_events(events))
@@ -71,6 +85,13 @@ def verify_determinism(
             typer.echo(f"Replay {number} differs from replay 1:", err=True)
             typer.echo(diff, err=True)
             raise typer.Exit(1)
+    if first.status is not WorkflowStatus.SUCCESS and not allow_failed:
+        typer.echo(
+            f"Error: every replay ended {first.status.value}: {first.error}. "
+            f"Pass --allow-failed to accept a stable failure.",
+            err=True,
+        )
+        raise typer.Exit(1)
     if expected is not None:
         want, got = _event_lines(expected), _event_lines(events)
         if diff := _diff(want, got, "recorded events", "replayed events"):
@@ -86,10 +107,21 @@ def verify_determinism(
 
 
 async def _replay(
-    workflow_path: Path, recording: Path, state_args: list[str], tools: ToolMode
+    workflow_path: Path,
+    recording: Path,
+    state_args: list[str],
+    tools: ToolMode,
+    provider: str | None,
+    model: str | None,
 ) -> tuple[WorkflowResult, list[InterAgentEvent]]:
     """One strict replay of ``recording``, with a fresh engine, mock and tools."""
-    from agentloom.cli.run import _import_from_cwd, _initial_state, _tool_registry
+    from agentloom.cli.run import (
+        _import_from_cwd,
+        _initial_state,
+        _register_mock,
+        _switch_provider,
+        _tool_registry,
+    )
     from agentloom.core.engine import WorkflowEngine
     from agentloom.core.parser import WorkflowParser
     from agentloom.core.state import StateManager
@@ -104,9 +136,13 @@ async def _replay(
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1) from e
+    if model:
+        workflow.config.model = model
+    if provider:
+        _switch_provider(workflow, provider)
     workflow.config.provider = "mock"
     gateway = ProviderGateway()
-    gateway.register(mock, priority=0)
+    _register_mock(gateway, mock)
     tool_registry = _tool_registry(workflow)
     if tools is not ToolMode.LIVE:
         tool_registry.tape = ToolReplayer(recording, tools, strict=True)

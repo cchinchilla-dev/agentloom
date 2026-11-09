@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError as PydanticValidationError
 
 from agentloom.core.models import (
     Attachment,
@@ -20,6 +21,7 @@ from agentloom.core.models import (
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.results import StepStatus, TokenUsage
 from agentloom.core.state import StateManager, _json_default
+from agentloom.exceptions import ValidationError
 from agentloom.observability.metrics import MetricsManager
 from agentloom.observability.observer import WorkflowObserver
 from agentloom.observability.schema import SpanAttr
@@ -171,6 +173,33 @@ class TestTrimmingPolicies:
         result = apply_trim_policy(convo, model="mock-model")
         assert result.trimmed_count >= 1
 
+    def test_drop_pairs_stops_when_the_pinned_prefix_reaches_the_budget(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        kept = [
+            Message(role="system", content="s " * 100),
+            Message(role="user", content="q"),
+            Message(role="assistant", content="a"),
+        ]
+        convo = self._make(list(kept), token_budget=5, trim_policy="drop_pairs")
+
+        with caplog.at_level("WARNING", logger="agentloom.steps.conversation"):
+            result = apply_trim_policy(convo, model="mock-model")
+
+        assert convo.messages == kept
+        assert result.trimmed_count == 0
+        assert "nothing to drop" in caplog.text
+
+    def test_drop_pairs_stops_when_the_summary_reaches_the_budget(self) -> None:
+        kept = [Message(role="user", content="q"), Message(role="assistant", content="a")]
+        convo = self._make(list(kept), token_budget=5, trim_policy="drop_pairs")
+        convo.summary = "earlier " * 50
+
+        result = apply_trim_policy(convo, model="mock-model")
+
+        assert convo.messages == kept
+        assert result.trimmed_count == 0
+
     def test_summarize_oldest_produces_summary_and_shortens_list(self) -> None:
         convo = self._make(
             [
@@ -299,6 +328,47 @@ class TestTrimmingPolicies:
         )
         apply_trim_policy(convo, model="mock-model")
         assert (convo.summary or "").startswith("prev summary line")
+
+
+class TestSummaryCountsInTheBudget:
+    """The summary reaches the provider, so it takes up budget like any other turn."""
+
+    SUMMARY = "s" * 400
+
+    def test_token_count_includes_the_summary(self) -> None:
+        messages = [Message(role="user", content="hi")]
+        bare = Conversation(messages=messages).token_count()
+        with_summary = Conversation(messages=messages, summary=self.SUMMARY).token_count()
+        assert with_summary == bare + Message(role="system", content=self.SUMMARY).token_count()
+
+    def test_no_summary_adds_nothing(self) -> None:
+        messages = [Message(role="user", content="hi")]
+        assert Conversation(messages=messages).token_count() == messages[0].token_count()
+
+    @pytest.mark.parametrize("policy", ["drop_oldest", "drop_pairs", "summarize_oldest"])
+    def test_a_summary_pushes_the_oldest_turns_out(self, policy: Any) -> None:
+        turns = [Message(role="user", content="q" * 80), Message(role="assistant", content="a")]
+        budget = sum(m.token_count() for m in turns) + 1
+        convo = Conversation(
+            messages=[*turns, Message(role="user", content="now")],
+            token_budget=budget + 5,
+            trim_policy=policy,
+            summary=self.SUMMARY[:80],
+        )
+        result = apply_trim_policy(convo, "mock-model")
+        assert result.trimmed_count > 0
+        assert convo.messages[-1].content == "now"
+
+    @pytest.mark.parametrize("policy", ["drop_oldest", "summarize_oldest"])
+    def test_a_summary_over_the_budget_never_costs_the_current_turn(self, policy: Any) -> None:
+        convo = Conversation(
+            messages=[Message(role="user", content="now")],
+            token_budget=10,
+            trim_policy=policy,
+            summary=self.SUMMARY,
+        )
+        apply_trim_policy(convo, "mock-model")
+        assert [m.content for m in convo.messages] == ["now"]
 
 
 class TestLoadAndProviderShape:
@@ -609,12 +679,9 @@ class TestLLMCallWithConversation:
         with pytest.raises(StepError, match="malformed"):
             await LLMCallStep().execute(ctx)
 
-    async def test_no_prompt_no_conversation_still_raises(self) -> None:
-        gw = ProviderGateway()
-        gw.register(MockProvider(), models=["mock-model"])
-        ctx = _make_context(StepDefinition(id="s", type=StepType.LLM_CALL), gateway=gw)
-        with pytest.raises(Exception, match="requires a 'prompt'"):
-            await LLMCallStep().execute(ctx)
+    def test_no_prompt_no_conversation_still_raises(self) -> None:
+        with pytest.raises(ValueError, match="requires 'prompt' or 'conversation'"):
+            StepDefinition(id="s", type=StepType.LLM_CALL)
 
 
 # ---- Provider name propagation ---------------------------------------------
@@ -769,6 +836,87 @@ steps:
         )
         wf = WorkflowParser.from_dict(raw)
         assert wf.steps[0].conversation == "state.chat"
+
+    @staticmethod
+    def _turn(step_id: str, *depends_on: str, conversation: str = "state.chat") -> dict[str, Any]:
+        return {
+            "id": step_id,
+            "type": "llm_call",
+            "prompt": "p",
+            "conversation": conversation,
+            "depends_on": list(depends_on),
+        }
+
+    @staticmethod
+    def _router(step_id: str, *targets: str) -> dict[str, Any]:
+        conditions = [{"expression": "state.x", "target": t} for t in targets]
+        return {"id": step_id, "type": "router", "conditions": conditions}
+
+    @staticmethod
+    def _load(*steps: dict[str, Any]) -> WorkflowDefinition:
+        return WorkflowParser.from_dict({"name": "w", "steps": list(steps)})
+
+    def test_two_turns_in_one_layer_on_one_conversation_are_refused(self) -> None:
+        with pytest.raises(ValidationError, match=r"'chat'.*\['a', 'b'\]"):
+            self._load(self._turn("a"), self._turn("b"))
+
+    def test_with_or_without_the_state_prefix_is_one_conversation(self) -> None:
+        with pytest.raises(ValidationError, match="'chat'"):
+            self._load(self._turn("a"), self._turn("b", conversation="chat"))
+
+    def test_an_agent_step_counts(self) -> None:
+        agent = {"id": "b", "type": "agent", "agent": {"name": "x"}, "conversation": "state.chat"}
+        with pytest.raises(ValidationError, match="'chat'"):
+            self._load(self._turn("a"), agent)
+
+    def test_a_chain_is_accepted(self) -> None:
+        assert len(self._load(self._turn("a"), self._turn("b", "a")).steps) == 2
+
+    def test_other_conversations_are_accepted(self) -> None:
+        turns = (self._turn("a"), self._turn("b", conversation="state.other"))
+        assert len(self._load(*turns).steps) == 2
+
+    def test_different_layers_are_accepted_without_a_dependency(self) -> None:
+        # Layers run one after the other: ``b`` waits for ``x``, in the layer ``a`` has finished.
+        x = {"id": "x", "type": "tool", "tool_name": "t"}
+        assert len(self._load(self._turn("a"), x, self._turn("b", "x")).steps) == 3
+
+    def test_branches_of_one_router_are_accepted(self) -> None:
+        # Only one target runs, so two branches never write together.
+        steps = (self._router("r", "a", "b"), self._turn("a", "r"), self._turn("b", "r"))
+        assert len(self._load(*steps).steps) == 3
+
+    def test_deeper_steps_of_two_branches_are_accepted(self) -> None:
+        steps = (
+            self._router("r", "a", "b"),
+            self._turn("a", "r"),
+            self._turn("b", "r"),
+            self._turn("a2", "a"),
+            self._turn("b2", "b"),
+        )
+        assert len(self._load(*steps).steps) == 5
+
+    def test_a_branch_and_an_unrelated_step_are_refused(self) -> None:
+        x = {"id": "x", "type": "tool", "tool_name": "t"}
+        steps = (
+            self._router("r", "a", "other"),
+            x,
+            self._turn("a", "r"),
+            {"id": "other", "type": "tool", "tool_name": "t", "depends_on": ["r"]},
+            self._turn("c", "x"),
+        )
+        with pytest.raises(ValidationError, match=r"\['a', 'c'\]"):
+            self._load(*steps)
+
+    @pytest.mark.parametrize("speaker", ["alice", "a_b-C9", "x" * 64])
+    def test_speaker_accepted(self, speaker: str) -> None:
+        step = StepDefinition(id="s", type=StepType.LLM_CALL, prompt="p", speaker=speaker)
+        assert step.speaker == speaker
+
+    @pytest.mark.parametrize("speaker", ["al ice", "", "x" * 65, "a.b", "ana\n"])
+    def test_speaker_refused(self, speaker: str) -> None:
+        with pytest.raises(PydanticValidationError, match="speaker"):
+            StepDefinition(id="s", type=StepType.LLM_CALL, prompt="p", speaker=speaker)
 
     def test_state_conversation_shape_survives_workflow_definition(self) -> None:
         wf = WorkflowDefinition(

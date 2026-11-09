@@ -25,6 +25,12 @@ def replay(
     state: list[str] = typer.Option(
         [], "--state", "-s", help="State variables as key=value pairs."
     ),
+    provider: str | None = typer.Option(
+        None, "--provider", "-p", help="Override default provider, as the recorded run did."
+    ),
+    model: str | None = typer.Option(
+        None, "--model", "-m", help="Override default model, as the recorded run did."
+    ),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     observability: bool = typer.Option(
         False, "--observability", help="Enable observability (disabled by default in replay)."
@@ -97,16 +103,16 @@ def replay(
             "--force-live, which run a step that misses the recording live.",
             err=True,
         )
-        raise typer.Exit(1)
+        raise typer.Exit(2)
     if problem := _record_problem(recording, record, record_tools, live_from, force_live):
         typer.echo(f"Error: {problem}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(2)
     anyio.run(
         partial(_run_async, config_path=_config_file(config_file)),
         workflow_path,
         state,
-        None,  # provider_override
-        None,  # model_override
+        provider,
+        model,
         None,  # budget
         not observability,  # lite
         output_json,

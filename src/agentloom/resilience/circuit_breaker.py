@@ -7,6 +7,8 @@ from collections.abc import Callable, Coroutine
 from enum import StrEnum
 from typing import Any, TypeVar
 
+import anyio
+
 from agentloom.exceptions import CircuitOpenError
 
 T = TypeVar("T")
@@ -116,8 +118,8 @@ class CircuitBreaker:
             result = await coro_factory()
             self._on_success()
             return result
-        except exclude:
-            # Excluded: propagate uncharged, and free the half-open slot this call took.
+        except (*exclude, anyio.get_cancelled_exc_class()):
+            # Excluded or cancelled: propagate uncharged, and free the half-open slot it took.
             if current_state == CircuitState.HALF_OPEN and self._half_open_calls > 0:
                 self._half_open_calls -= 1
             raise

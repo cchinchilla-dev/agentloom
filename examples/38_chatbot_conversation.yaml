@@ -25,9 +25,7 @@ config:
 
 state:
   chat:
-    messages:
-      - role: system
-        content: "You are a concise, cheerful assistant."
+    messages: []
     token_budget: 800
     trim_policy: drop_pairs
 

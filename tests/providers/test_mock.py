@@ -286,3 +286,80 @@ class TestRecordingSchemaValidation:
             messages=[{"role": "user", "content": "hi"}], model="m", step_id="s"
         )
         assert r.content == "DEFAULT"
+
+
+class TestNamedResponsesFile:
+    def test_a_file_that_does_not_exist_is_an_error(self, tmp_path) -> None:
+        with pytest.raises(FileNotFoundError, match="missing.json"):
+            MockProvider(responses_file=tmp_path / "missing.json")
+
+    def test_no_file_named_is_not_an_error(self) -> None:
+        assert MockProvider().responses_file is None
+
+    def test_a_relative_path_starts_at_the_working_directory(self, tmp_path, monkeypatch) -> None:
+        (tmp_path / "rec.json").write_text(json.dumps({"s": {"content": "x"}}))
+        monkeypatch.chdir(tmp_path)
+        assert MockProvider(responses_file="rec.json").recorded_turns("s") == 1
+
+
+HI = [{"role": "user", "content": "hi"}]
+
+
+class TestTurnsRunningOut:
+    def _provider(self, tmp_path, strict: bool) -> MockProvider:
+        path = tmp_path / "rec.json"
+        path.write_text(json.dumps({"loop": [{"content": "one"}, {"content": "two"}]}))
+        return MockProvider(responses_file=path, strict=strict)
+
+    async def _call(self, provider: MockProvider) -> str:
+        response = await provider.complete(messages=HI, model="m", step_id="loop")
+        return response.content
+
+    async def test_strict_raises_past_the_last_turn_of_a_list_without_hashes(self, tmp_path):
+        from agentloom.exceptions import RecordingMismatchError
+
+        provider = self._provider(tmp_path, strict=True)
+        assert [await self._call(provider), await self._call(provider)] == ["one", "two"]
+        with pytest.raises(RecordingMismatchError, match="holds 2 turns"):
+            await self._call(provider)
+
+    async def test_lenient_repeats_the_last_turn(self, tmp_path):
+        provider = self._provider(tmp_path, strict=False)
+        served = [await self._call(provider) for _ in range(3)]
+        assert served == ["one", "two", "two"]
+
+
+EDITED = [{"role": "user", "content": "edited"}]
+
+
+class TestLenientReplayWarnsOnDrift:
+    def _provider(self, tmp_path, value) -> MockProvider:
+        path = tmp_path / "rec.json"
+        path.write_text(json.dumps({"s": value}))
+        return MockProvider(responses_file=path)
+
+    def _entry(self) -> dict[str, str]:
+        return {"content": "old", "request_hash": prompt_hash(HI, "m", None, None, {})}
+
+    @pytest.mark.parametrize("as_list", [False, True], ids=["entry", "turn"])
+    async def test_a_changed_request_warns_and_keeps_the_recorded_answer(
+        self, tmp_path, caplog, as_list: bool
+    ) -> None:
+        value = [self._entry()] if as_list else self._entry()
+        provider = self._provider(tmp_path, value)
+        r = await provider.complete(messages=EDITED, model="m", step_id="s")
+        assert r.content == "old"
+        assert any("changed since the recording" in rec.getMessage() for rec in caplog.records)
+
+    async def test_an_unchanged_request_does_not_warn(self, tmp_path, caplog) -> None:
+        provider = self._provider(tmp_path, self._entry())
+        await provider.complete(messages=HI, model="m", step_id="s")
+        assert not [rec for rec in caplog.records if rec.levelname == "WARNING"]
+
+
+def test_a_list_under_a_hash_key_is_refused_at_load(tmp_path) -> None:
+    path = tmp_path / "rec.json"
+    key = prompt_hash([{"role": "user", "content": "x"}], "m")
+    path.write_text(json.dumps({key: [{"content": "a"}]}))
+    with pytest.raises(ValueError, match="one exact request"):
+        MockProvider(responses_file=path)

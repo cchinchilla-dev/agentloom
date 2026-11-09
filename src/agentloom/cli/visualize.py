@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 
+from agentloom.core.graph import _mermaid_label
 from agentloom.core.models import StepType
 from agentloom.core.parser import WorkflowParser
 from agentloom.exceptions import ValidationError
@@ -115,7 +116,7 @@ def _print_mermaid(workflow: object, dag: object) -> None:
             if dep_step and dep_step.type == StepType.ROUTER:
                 for cond in dep_step.conditions:
                     if cond.target == step.id:
-                        label = cond.expression[:20]
+                        label = _mermaid_label(cond.expression)
                         typer.echo(f"    {dep} -->|{label}| {step.id}")
                         break
                 else:

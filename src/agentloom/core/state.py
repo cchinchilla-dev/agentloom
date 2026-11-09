@@ -291,3 +291,32 @@ class StateManager:
                     f"index to traverse a list, or rebuild the parent path first."
                 )
             current[last] = value
+
+
+class LayerStateView:
+    """What one step of a layer reads: the state as the layer started, plus its own writes.
+
+    Writes go to the run's :class:`StateManager`, and anything else is answered by it.
+    """
+
+    def __init__(self, run_state: StateManager, at_layer_start: dict[str, Any]) -> None:
+        self._run_state = run_state
+        self._seen = copy.deepcopy(at_layer_start)
+
+    async def get(self, key: str, default: Any = None) -> Any:
+        return StateManager._resolve_key(self._seen, key, default)
+
+    async def get_state_snapshot(self) -> dict[str, Any]:
+        return copy.deepcopy(self._seen)
+
+    async def set(self, key: str, value: Any) -> None:
+        await self._run_state.set(key, value)
+        StateManager._set_nested(self._seen, key, value)
+
+    async def update(self, key: str, fn: Callable[[Any], Any]) -> Any:
+        value = await self._run_state.update(key, fn)
+        StateManager._set_nested(self._seen, key, value)
+        return value
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._run_state, name)

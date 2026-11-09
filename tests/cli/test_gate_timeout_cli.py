@@ -47,10 +47,10 @@ def _wired() -> Iterator[None]:
     callback_server._resuming.clear()
 
 
-def _workflow() -> WorkflowDefinition:
+def _workflow(provider: str = "mock") -> WorkflowDefinition:
     return WorkflowDefinition(
         name="timeout-cb",
-        config=WorkflowConfig(provider="mock", model="mock-model"),
+        config=WorkflowConfig(provider=provider, model="mock-model"),
         steps=[
             StepDefinition(
                 id="gate",
@@ -63,8 +63,10 @@ def _workflow() -> WorkflowDefinition:
     )
 
 
-def _write(cp_dir: Path, run_id: str, deadline: datetime | None = DEADLINE) -> None:
-    wf = _workflow()
+def _write(
+    cp_dir: Path, run_id: str, deadline: datetime | None = DEADLINE, provider: str = "mock"
+) -> None:
+    wf = _workflow(provider)
     data = CheckpointData(
         workflow_name=wf.name,
         run_id=run_id,
@@ -152,7 +154,7 @@ class TestDecisions:
     ) -> None:
         from agentloom.exceptions import ConfigError
 
-        _write(tmp_path, "run-broken")
+        _write(tmp_path, "run-broken", provider="openai")
         with patch("agentloom.cli.run._setup_providers", side_effect=ConfigError("bad")):
             stream = await _decide(tmp_path, "run-broken")
         assert stream.sent == [(500, {"error": "bad"})]
@@ -208,7 +210,7 @@ class TestSweep:
     ) -> None:
         from agentloom.exceptions import ConfigError
 
-        _write(tmp_path, "run-fails")
+        _write(tmp_path, "run-fails", provider="openai")
         now[0] = DEADLINE
         with (
             patch("agentloom.cli.run._setup_providers", side_effect=ConfigError("bad")),

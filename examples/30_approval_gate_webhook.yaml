@@ -7,6 +7,8 @@ description: >
 config:
   provider: openai
   model: gpt-4o-mini
+  sandbox:
+    allow_internal_webhook_targets: true  # the notify URL below is a local receiver
 
 state:
   topic: quarterly budget review

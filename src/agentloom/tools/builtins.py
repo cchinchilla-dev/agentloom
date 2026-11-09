@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import os
 import signal
 from pathlib import Path
@@ -12,6 +13,7 @@ import anyio
 import httpx
 
 from agentloom.tools.base import BaseTool
+from agentloom.tools.registry import ToolRegistry
 from agentloom.tools.sandbox import ToolSandbox, send_pinned
 
 # Credential-bearing header names: the result reaches the model, state, checkpoints, recordings
@@ -44,7 +46,10 @@ class HttpRequestTool(BaseTool):
 
     async def execute(self, **kwargs: Any) -> Any:
         url = kwargs["url"]
-        method = kwargs.get("method", "GET")
+        method = str(kwargs.get("method", "GET")).upper()
+        allowed_methods = self.parameters_schema["properties"]["method"]["enum"]
+        if method not in allowed_methods:
+            raise ValueError(f"Unsupported HTTP method {method!r}: use one of {allowed_methods}")
         headers = kwargs.get("headers", {})
         body = kwargs.get("body", "")
         timeout = kwargs.get("timeout", 30)
@@ -52,13 +57,11 @@ class HttpRequestTool(BaseTool):
         # The internal-host check resolves the name, which blocks: off the event loop
         addresses = await anyio.to_thread.run_sync(self._sandbox.validate_network, url)
 
+        payload: dict[str, Any] = (
+            {"json": body} if isinstance(body, dict) else {"content": body if body else None}
+        )
         async with httpx.AsyncClient(timeout=timeout) as client:
-            request = client.build_request(
-                method=method,
-                url=url,
-                headers=headers,
-                content=body if body else None,
-            )
+            request = client.build_request(method=method, url=url, headers=headers, **payload)
             response = await send_pinned(client, request, addresses)
             return {
                 "status_code": response.status_code,
@@ -98,7 +101,9 @@ class ShellCommandTool(BaseTool):
         self._sandbox.validate_command(command, cwd=cwd)
 
         try:
-            returncode, stdout, stderr = await _run_shell(command, cwd, timeout)
+            returncode, stdout, stderr = await _run_shell(
+                command, cwd, timeout, env=self._sandbox.command_env()
+            )
         except TimeoutError:
             return {"returncode": -1, "stdout": "", "stderr": "Command timed out"}
         return {
@@ -108,7 +113,9 @@ class ShellCommandTool(BaseTool):
         }
 
 
-async def _run_shell(command: str, cwd: str, timeout: float) -> tuple[int | None, bytes, bytes]:
+async def _run_shell(
+    command: str, cwd: str, timeout: float, *, env: dict[str, str] | None = None
+) -> tuple[int | None, bytes, bytes]:
     """Run *command* under ``sh -c``; past *timeout* or on cancellation, kill all it started.
 
     Killing only the shell would leave its children running, so the shell
@@ -121,7 +128,7 @@ async def _run_shell(command: str, cwd: str, timeout: float) -> tuple[int | None
             output[name].extend(chunk)
 
     async with await anyio.open_process(
-        ["sh", "-c", command], cwd=cwd, start_new_session=True
+        ["sh", "-c", command], cwd=cwd, env=env, start_new_session=True
     ) as process:
         try:
             with anyio.fail_after(timeout):
@@ -190,12 +197,16 @@ class FileWriteTool(BaseTool):
         encoding = kwargs.get("encoding", "utf-8")
 
         self._sandbox.validate_path(path_str, writable=True, tool_name="file_write")
-        self._sandbox.validate_write_size(len(content.encode(encoding)), tool_name="file_write")
+        written = len(content.encode(encoding))
+        self._sandbox.validate_write_size(written, tool_name="file_write")
 
         path = Path(path_str)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding=encoding)
-        return {"written": len(content), "path": str(path)}
+        return {"written": written, "path": str(path)}
+
+
+_BUILTINS = (HttpRequestTool, ShellCommandTool, FileReadTool, FileWriteTool)
 
 
 def register_builtins(registry: Any, sandbox: ToolSandbox | None = None) -> None:
@@ -203,7 +214,21 @@ def register_builtins(registry: Any, sandbox: ToolSandbox | None = None) -> None
 
     With *sandbox*, the tools validate each operation before executing.
     """
-    registry.register(HttpRequestTool(sandbox=sandbox))
-    registry.register(ShellCommandTool(sandbox=sandbox))
-    registry.register(FileReadTool(sandbox=sandbox))
-    registry.register(FileWriteTool(sandbox=sandbox))
+    for builtin in _BUILTINS:
+        registry.register(builtin(sandbox=sandbox))
+
+
+def with_sandbox(registry: ToolRegistry, sandbox: ToolSandbox) -> ToolRegistry:
+    """Copy *registry* with its built-in tools checking against *sandbox*.
+
+    Tools of your own and the tape carry over; *registry* itself is unchanged.
+    """
+    scoped = ToolRegistry()
+    scoped.tape = registry.tape
+    for info in registry.list():
+        tool = registry.get(info.name)
+        if isinstance(tool, _BUILTINS):
+            tool = copy.copy(tool)
+            tool._sandbox = sandbox
+        scoped.register(tool)
+    return scoped

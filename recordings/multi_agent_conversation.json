@@ -6,7 +6,8 @@
     "provider": "openai",
     "usage": {"prompt_tokens": 42, "completion_tokens": 28, "total_tokens": 70},
     "cost_usd": 0.0000112,
-    "finish_reason": "stop"
+    "finish_reason": "stop",
+    "request_hash": "3a30e2cc656ed12b8d682a3d4dd444420062f939dda554773611bd0f49bf3984"
   },
   "bob_critiques": {
     "content": "Skipping a live traffic-mirror phase risks silent data loss during cutover.",
@@ -14,7 +15,8 @@
     "provider": "openai",
     "usage": {"prompt_tokens": 84, "completion_tokens": 20, "total_tokens": 104},
     "cost_usd": 0.0000116,
-    "finish_reason": "stop"
+    "finish_reason": "stop",
+    "request_hash": "b841930a7eb93cba8d8e68c6cc1b9bdd2aea2da69127da26fb1add3ace3dae40"
   },
   "alice_revises": {
     "content": "- audit express routes\n- port handlers to fastapi endpoints\n- run shadow-mode traffic mirroring for one week before cutover\n- rerun parity tests continuously",
@@ -22,6 +24,7 @@
     "provider": "openai",
     "usage": {"prompt_tokens": 128, "completion_tokens": 36, "total_tokens": 164},
     "cost_usd": 0.0000148,
-    "finish_reason": "stop"
+    "finish_reason": "stop",
+    "request_hash": "3e13ef59170f921f57c5187780ec270a6a789eeb11c2d2dc19f4149bb69436de"
   }
 }

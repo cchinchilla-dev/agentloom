@@ -1251,11 +1251,11 @@ class TestNestedAgents:
         )
         assert len(provider.calls) == 2
 
-    async def test_a_cap_a_nested_agent_broke_in_the_last_call_fails_the_turn(self) -> None:
+    async def test_a_cap_a_nested_agent_broke_fails_the_turn(self) -> None:
         """Under warn_and_return too: the nested turn's error went back to the model."""
         support = {
             **self._support(),
-            "loop_policy": {"max_iterations": 1, "on_max_iterations": "warn_and_return"},
+            "loop_policy": {"max_iterations": 2, "on_max_iterations": "warn_and_return"},
             "constraints": {"max_cost_usd": 0.5},
         }
         provider = _Scripted(

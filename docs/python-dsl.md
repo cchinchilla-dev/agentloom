@@ -40,10 +40,14 @@ wf = (
 | Method | What it adds |
 |--------|--------------|
 | `set_state(**values)` | Keys of the initial state. Several calls add up. |
+| `set_state_schema(schema)` | Per-key [state settings](state-and-templates.md#redaction), such as `{"api_key": {"redact": True}}`. Keys may be globs. Several calls add up. |
 | `add_llm_step(step_id, prompt, system_prompt=None, model=None, output=None, depends_on=None, attachments=None, stream=None, **fields)` | An [`llm_call`](llm-calls.md). `**fields` takes any other field of the step: `temperature`, `max_tokens`, `timeout`, `retry`, `thinking`, `tools`, `tool_choice`, `response_schema`, `conversation`, `speaker`. |
 | `add_tool_step(step_id, tool_name, tool_args=None, output=None, depends_on=None)` | A [`tool`](tools-and-sandbox.md#the-tool-step) step. |
 | `add_router_step(step_id, conditions, default=None, depends_on=None)` | A [`router`](steps.md#router). `conditions` is a list of `(expression, target)` pairs. |
 | `add_subworkflow_step(step_id, workflow_path=None, workflow_inline=None, output=None, depends_on=None)` | A [`subworkflow`](steps.md#subworkflow). |
+| `add_embed_step(step_id, inputs, model=None, dimensions=None, output=None, depends_on=None)` | An `embed` step. `inputs` is a state path. |
+| `add_approval_gate_step(step_id, timeout_seconds=None, on_timeout=None, notify=None, output=None, depends_on=None)` | An `approval_gate` step. |
+| `add_agent_step(step_id, agent, prompt=None, conversation=None, output=None, depends_on=None, attachments=None)` | An [`agent`](agents.md) step. `agent` is an `AgentDefinition` or the path of its YAML file. |
 
 ```python
 .add_router_step(
@@ -62,9 +66,8 @@ wf = (
 
 ### What the builder doesn't cover
 
-- There are no methods for `embed`, `approval_gate` or `agent` steps.
-- `version` and `state_schema` can't be set.
-- Only `add_llm_step` takes extra fields: tool, router and subworkflow steps get no `timeout` or `retry`, and a subworkflow no `isolated_state`, `input` or `return_keys`.
+- `version` can't be set.
+- Only `add_llm_step` takes extra fields: the other steps get no `timeout` or `retry`, and a subworkflow no `isolated_state`, `input` or `return_keys`.
 
 For those, write the workflow as a dictionary, the same shape as the YAML file, and load it with `WorkflowParser.from_dict`. Or add to a build and validate the whole again:
 
@@ -73,17 +76,18 @@ from agentloom.core.models import WorkflowDefinition
 
 wf = WorkflowDefinition(**{
     **wf.model_dump(),
-    "state_schema": {"api_key": {"redact": True}},
+    "version": "2.0",
     "steps": [*wf.model_dump()["steps"],
-              {"id": "approve", "type": "approval_gate", "depends_on": ["reply"]}],
+              {"id": "ping", "type": "tool", "tool_name": "http_request", "depends_on": ["reply"],
+               "retry": {"max_retries": 0}}],
 })
 ```
 
 ### Validating a build
 
-`build()` checks each field and that step ids are unique, and nothing more. Dependencies on steps that don't exist, cycles, router targets that don't exist, subworkflow files and parallel steps writing one key aren't checked, and show up only when the workflow runs, in confusing ways: a cycle raises from `run()`, a missing dependency fails the run with `unhandled errors in a TaskGroup`, and a missing router target skips the steps after the router without an error.
+`build()` checks each field, that step ids are unique, that dependencies, router targets and subworkflow files exist, that there are no cycles, and that steps of one layer don't share a conversation. It raises `ValidationError`. Only parallel steps writing one `output` key aren't checked.
 
-Run the checks that `agentloom validate` runs before running a build:
+To get that warning too, run the checks that `agentloom validate` runs:
 
 ```python
 from agentloom.core.parser import WorkflowParser
@@ -102,7 +106,7 @@ wf = WorkflowParser.from_dict({"name": "inline", "steps": [...]})
 
 Both run every check that `agentloom validate` runs, and raise `agentloom.exceptions.ValidationError`.
 
-`from_yaml` takes a path or YAML text: when no file exists at the given path, it reads the argument as YAML. A misspelled path therefore fails with `Workflow YAML must be a mapping at the top level` rather than a missing file, and YAML text with a line over 255 characters can fail with `File name too long`. To load YAML text, use `yaml.safe_load` and `from_dict`.
+`from_yaml` takes a path or YAML text. A string with no file behind it is read as YAML, unless it looks like a path, one line without a `:`, which fails with `Workflow file not found`. A `Path` is always a path. Text too long to be a file name is read as YAML.
 
 ## Running a workflow
 
@@ -147,10 +151,13 @@ anyio.run(main)
 ```python
 gateway.register(provider, priority=0, is_fallback=False, models=None,
                  max_rpm=60, max_tpm=100_000,
-                 circuit_fail_threshold=5, circuit_reset_timeout=60.0)
+                 circuit_fail_threshold=5, circuit_reset_timeout=60.0,
+                 is_primary=False, model_aliases=None)
 ```
 
-- A model goes to the providers that list it in `models`, and only to them. A model no provider lists goes to every provider that serves it by name, then to those registered with `is_fallback=True`; `priority` orders each group, lowest first.
+- A model goes to the providers that list it in `models`, or, if no provider lists it, to every provider that serves it by name; then to those registered with `is_fallback=True`. `priority` orders each group, lowest first.
+- `is_primary=True` puts the provider ahead of the rest for any model it can serve. `model_aliases` maps a requested model name to this provider's own, and makes it a candidate for the requested one.
+- A streamed call waits for the first chunk inside `gateway.stream()`, so a provider that fails before sending one is replaced by the next. Iterate the stream it returns, as an abandoned one holds its connection open.
 - `max_rpm` and `max_tpm` set the provider's rate limits, and `circuit_fail_threshold` and `circuit_reset_timeout` its circuit breaker. See [Provider failures](reliability.md#provider-failures).
 
 | Provider | Import from | Models it serves by name |
@@ -191,7 +198,7 @@ Without an `api_key`, OpenAI, Anthropic and Google read `OPENAI_API_KEY`, `ANTHR
 - `await state.update("counter", lambda n: (n or 0) + 1)` reads and writes under one lock, and returns the new value. A `get` followed by a `set` doesn't: fifty parallel increments written that way leave `1`, while fifty `update` calls leave `50`.
 - `await state.get_state_snapshot()` returns a copy of the whole state.
 
-A write that the rules refuse raises `StateWriteError`, from `agentloom.exceptions`. When it comes from a step's `output`, the step fails once its retries are spent, running again on each attempt, model call included.
+A write that the rules refuse raises `StateWriteError`, from `agentloom.exceptions`. When it comes from a step's `output`, the step fails at once, without retries: the same write would be refused again.
 
 ## Imports
 

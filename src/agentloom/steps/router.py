@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import time
+from collections.abc import Callable
 from typing import Any
 
 from agentloom.core.results import StepResult, StepStatus
@@ -224,8 +225,10 @@ def evaluate_expression(expr_str: str, namespace: dict[str, Any]) -> Any:
     ``namespace`` holds the names it can use besides the safe builtins.
     """
     tree = _validate_expression(expr_str)
-    code = compile(tree, "<router_expression>", "eval")
-    safe_globals: dict[str, Any] = {"__builtins__": {}}
+    code = compile(
+        ast.fix_missing_locations(_ReaderCalls().visit(tree)), "<router_expression>", "eval"
+    )
+    safe_globals: dict[str, Any] = {"__builtins__": {}, _READER: _reader}
     safe_globals.update(_SAFE_BUILTINS)
     safe_globals.update(namespace)
     return eval(code, safe_globals)
@@ -244,8 +247,50 @@ def _wrap(value: Any) -> Any:
     return value
 
 
+def _plain(value: Any) -> Any:
+    """The container behind a proxy, for comparing it with a native one."""
+    return value._data if isinstance(value, _DictProxy | _ListProxy) else value
+
+
+_DICT_READERS: dict[str, Callable[[dict[Any, Any]], Callable[..., Any]]] = {
+    "get": lambda data: lambda key, default=None: _wrap(data.get(key, default)),
+    "keys": lambda data: lambda: list(data),
+    "values": lambda data: lambda: [_wrap(v) for v in data.values()],
+    "items": lambda data: lambda: [(k, _wrap(v)) for k, v in data.items()],
+}
+
+
+# Injected after validation, which refuses any name that starts with ``_`` in an expression
+_READER = "_reader"
+
+
+class _ReaderCalls(ast.NodeTransformer):
+    """Send ``x.items()`` through :func:`_reader`: a bare ``x.items`` stays a read of that key."""
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in _DICT_READERS:
+            reader = ast.Name(_READER, ast.Load())
+            node.func = ast.Call(reader, [func.value, ast.Constant(func.attr)], [])
+        return node
+
+
+def _reader(receiver: Any, name: str) -> Any:
+    """The method a call of ``receiver.name`` runs; on a proxy, a key of that name wins."""
+    if isinstance(receiver, _DictProxy | _StateProxy) and name not in receiver._data:
+        # Without the ``_`` keys, which attribute and subscript access refuse
+        public = {
+            k: v
+            for k, v in receiver._data.items()
+            if not (isinstance(k, str) and k.startswith("_"))
+        }
+        return _DICT_READERS[name](public)
+    return getattr(receiver, name)
+
+
 class _DictProxy:
-    """Proxy supporting both ``proxy.key`` and ``proxy['key']``."""
+    """Proxy supporting both ``proxy.key`` and ``proxy['key']``, and the read-only dict methods."""
 
     __slots__ = ("_data",)
     _data: dict[Any, Any]
@@ -261,6 +306,9 @@ class _DictProxy:
             return _wrap(self._data.get(key))
         return _wrap(self._data[key])
 
+    def __eq__(self, other: object) -> bool:
+        return bool(self._data == _plain(other))
+
     def __len__(self) -> int:
         return len(self._data)
 
@@ -273,7 +321,7 @@ class _DictProxy:
 
 
 class _ListProxy:
-    """Proxy supporting ``proxy[i]`` and ``proxy[i:j]``."""
+    """Proxy supporting ``proxy[i]``, ``proxy[i:j]`` and the read-only list methods."""
 
     __slots__ = ("_data",)
     _data: list[Any]
@@ -293,23 +341,40 @@ class _ListProxy:
     def __iter__(self) -> Any:
         return iter(_wrap(v) for v in self._data)
 
+    def __eq__(self, other: object) -> bool:
+        return bool(self._data == _plain(other))
+
+    def count(self, value: Any) -> int:
+        return self._data.count(_plain(value))
+
+    def index(self, value: Any) -> int:
+        return self._data.index(_plain(value))
+
+
+class _StateProxy:
+    """The ``state`` of an expression: reads like a :class:`_DictProxy`, but isn't a container."""
+
+    __slots__ = ("_data",)
+    _data: dict[Any, Any]
+
+    def __init__(self, data: dict[Any, Any]) -> None:
+        object.__setattr__(self, "_data", data)
+
+    def __getattr__(self, name: str) -> Any:
+        return _wrap(self._data.get(name))
+
+    def __getitem__(self, key: Any) -> Any:
+        if isinstance(key, str):
+            return _wrap(self._data.get(key))
+        return _wrap(self._data[key])
+
 
 def _build_state_proxy(state_snapshot: dict[Any, Any]) -> Any:
     """Build the ``state`` proxy the router namespace exposes.
 
     Module-level so tests can build the proxy without ``RouterStep.execute``.
     """
-
-    class _StateProxy:
-        def __getattr__(self, name: str) -> Any:
-            return _wrap(state_snapshot.get(name))
-
-        def __getitem__(self, key: Any) -> Any:
-            if isinstance(key, str):
-                return _wrap(state_snapshot.get(key))
-            return _wrap(state_snapshot[key])
-
-    return _StateProxy()
+    return _StateProxy(state_snapshot)
 
 
 class RouterStep(BaseStep):
@@ -318,11 +383,6 @@ class RouterStep(BaseStep):
     async def execute(self, context: StepContext) -> StepResult:
         step = context.step_definition
         start = time.monotonic()
-
-        if not step.conditions and not step.default:
-            raise StepError(
-                step.id, "Router step requires 'conditions' or 'default'", is_retryable=False
-            )
 
         state_snapshot = await context.state_manager.get_state_snapshot()
 
@@ -340,7 +400,7 @@ class RouterStep(BaseStep):
 
                     class _Inner:
                         def __getattr__(self2, k: str) -> Any:
-                            return step_data.get(k)
+                            return _wrap(step_data.get(k))
 
                     return _Inner()
                 return step_data

@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
-from agentloom.core.models import Attachment, StepDefinition, StepType, WorkflowConfig
+from agentloom.core.models import (
+    Attachment,
+    StepDefinition,
+    StepType,
+    ThinkingConfig,
+    WorkflowConfig,
+)
 from agentloom.core.results import StepStatus
 from agentloom.core.state import StateManager
 from agentloom.core.templates import DotAccessDict, DotAccessList, SafeFormatDict
+from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.gateway import ProviderGateway
 from agentloom.steps.base import StepContext
 from agentloom.steps.llm_call import LLMCallStep
@@ -147,17 +156,9 @@ class TestLLMCallStep:
         with pytest.raises(Exception, match="No provider gateway"):
             await step.execute(ctx)
 
-    async def test_no_prompt_raises(self, step: LLMCallStep) -> None:
-        from agentloom.exceptions import StepError
-
-        gw = ProviderGateway()
-        ctx = self._make_context(
-            StepDefinition(id="s", type=StepType.LLM_CALL),
-            gateway=gw,
-        )
-        with pytest.raises(StepError, match="requires a 'prompt'") as raised:
-            await step.execute(ctx)
-        assert raised.value.is_retryable is False  # the same step lacks it on every attempt
+    def test_no_prompt_raises(self) -> None:
+        with pytest.raises(ValueError, match="requires 'prompt' or 'conversation'"):
+            StepDefinition(id="s", type=StepType.LLM_CALL)
 
     async def test_template_rendering(self, step: LLMCallStep) -> None:
         vars_ = step._build_template_vars({"question": "What?"})
@@ -594,3 +595,79 @@ steps:
         assert s.thinking.budget_tokens == 4096
         assert s.thinking.level == "high"
         assert s.thinking.capture_reasoning is True
+
+
+class _Reasoner(BaseProvider):
+    """Answers with a reasoning trace, on ``complete()`` and on ``stream()``."""
+
+    name = "reasoner"
+
+    async def complete(self, messages: Any, model: str, **_kw: Any) -> ProviderResponse:
+        return ProviderResponse(
+            content="answer", model=model, provider=self.name, reasoning_content="because"
+        )
+
+
+class TestReasoningContent:
+    @staticmethod
+    def _step(thinking: ThinkingConfig | None) -> StepDefinition:
+        return StepDefinition(id="s", type=StepType.LLM_CALL, prompt="hi", thinking=thinking)
+
+    @staticmethod
+    def _context(step: StepDefinition, stream: bool) -> StepContext:
+        gateway = ProviderGateway()
+        gateway.register(_Reasoner())
+        return StepContext(
+            step_definition=step,
+            state_manager=StateManager(initial_state={}),
+            provider_gateway=gateway,
+            workflow_model="m",
+            stream=stream,
+        )
+
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_the_text_reaches_the_result(self, stream: bool) -> None:
+        step = self._step(ThinkingConfig(enabled=True))
+        result = await LLMCallStep().execute(self._context(step, stream))
+        assert result.status == StepStatus.SUCCESS
+        assert result.reasoning_content == "because"
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize(
+        "thinking",
+        [
+            None,
+            ThinkingConfig(enabled=False),
+            ThinkingConfig(enabled=True, capture_reasoning=False),
+        ],
+    )
+    async def test_not_asked_for_it_stays_out(
+        self, stream: bool, thinking: ThinkingConfig | None
+    ) -> None:
+        result = await LLMCallStep().execute(self._context(self._step(thinking), stream))
+        assert result.status == StepStatus.SUCCESS
+        assert result.reasoning_content is None
+
+
+class TestStreamedTimeToFirstToken:
+    async def test_the_gateway_measure_reaches_the_result(self) -> None:
+        sr = StreamResponse(model="m", provider="p")
+
+        async def _chunks() -> AsyncIterator[str]:
+            yield "a"
+
+        sr._set_iterator(_chunks())
+        sr.time_to_first_token_ms = 123.0
+        gateway = AsyncMock()
+        gateway.stream.return_value = sr
+        ctx = StepContext(
+            step_definition=StepDefinition(id="s", type=StepType.LLM_CALL, prompt="hi"),
+            state_manager=StateManager(initial_state={}),
+            provider_gateway=gateway,
+            workflow_model="m",
+            stream=True,
+        )
+
+        result = await LLMCallStep().execute(ctx)
+
+        assert result.time_to_first_token_ms == 123.0

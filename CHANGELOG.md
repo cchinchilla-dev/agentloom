@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Source distribution and package checks (#190). A release publishes an sdist next to the wheel, holding the package, its tests, examples (with the recordings they replay) and scripts, the Helm chart those tests read, the README, the license and the changelog. `scripts/check_dist.sh` runs `twine check --strict`, checks that both carry the expected version and installs each into a fresh environment, where `agentloom info` must report that version, `agentloom.contracts` must import and the pricing table must load; `release.yml` runs it with the tag's version before it publishes, and a `Package` job of CI runs it on every change. The GitHub release's notes are the version's section of this changelog.
 - Python 3.14 (#192): tested in CI and declared in the classifiers. CI also runs the suite on macOS and Windows, with the lowest dependency versions `pyproject.toml` allows, and checks the documentation on every pull request. Python 3.15 waits for PyYAML, which publishes no wheels for it and whose source build fails.
 - Config file for the CLI (#212). `run`, `resume`, `replay` and `callback-server` take `--config FILE`, else read the file `AGENTLOOM_CONFIG` names, else `./agentloom.yaml` when it exists. Its `providers:` block replaces provider discovery: each entry sets `name`, `models`, `priority`, `base_url` and `is_fallback`, and takes its API key from the usual environment variable. An `api_key` in the file, an unknown provider or key, or a file that does not parse stops the command with a one-line error; `callback-server` reads the file once, at start.
+- `agentloom replay` and `verify-determinism` take `--provider` and `--model`, as `agentloom run` does, so a recording made with them replays.
 
 ### Changed
 
@@ -59,13 +60,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unknown keys in `StepDefinition` and `WorkflowConfig` are refused at parse time (`extra="forbid"`). A typo like `workflow:` for `workflow_inline:` now fails at `agentloom validate` with the offending field named, instead of being silently dropped and surfacing a cryptic run-time error. Workflows that carried comment-like extra keys under `config:` or a step must remove them. The half-supported `config.responses:` field is rejected by the same rule — mock responses are configured via `responses_file`.
 - The default Docker image (`production` stage) now ships the `[observability]` extra. A container that sets `OTEL_EXPORTER_OTLP_ENDPOINT` exports traces out of the box; pre-0.5.0 the default build omitted OpenTelemetry and Prometheus, so observability was a silent no-op. The image is ~30 MB larger. Build `--target production-lite` for the smaller image without observability. The bundled `docker-compose.yml` no longer needs the `BUILD_OBSERVABILITY` build arg.
 - The Docker images have no pip (#219). An image built `FROM` them that installs packages must bring its own installer, such as `uv` (`COPY --from=ghcr.io/astral-sh/uv`).
+- A step missing what its type needs now fails when the workflow loads instead of when it runs: a `router` with neither `conditions` nor `default`, a `tool` without `tool_name`, a `subworkflow` with neither `workflow_path` nor `workflow_inline`, an `embed` without `inputs` and an `llm_call` with neither `prompt` nor `conversation`.
+- Unknown keys are refused at load in `retry`, `sandbox`, `notify`, `thinking`, a router's `conditions`, `tool_choice`, `response_schema` and `state_schema`, so a misspelled setting no longer disappears silently.
+- `additionalProperties: true` is refused at every level of a `json_schema` response schema, not only at its root; the error names where.
+- Two steps of one layer on one `conversation` are refused at load, since parallel writes lose turns; branches of one router are exempt because only one of them runs.
+- `speaker` must match `^[A-Za-z0-9_-]{1,64}$`, the names OpenAI accepts.
+- A conversation's `summary` counts in `token_count` and in `token_budget`, so trimming starts earlier once a summary exists.
+- `WorkflowBuilder.build()` raises `ValidationError` for missing dependencies, router targets and subworkflow files, for cycles and for steps of one layer sharing a conversation.
+- `WorkflowParser.from_yaml` reports a missing file as `Workflow file not found` when the argument looks like a path (a `Path`, or one line without a `:`) instead of failing with `must be a mapping`.
+- An attachment file is readable under `allowed_paths` as well as `readable_paths` when both are set, as for the file tools.
+- An attachment whose `media_type` contradicts its `type` is refused with `AttachmentResolutionError`.
+- `http_request` refuses a method outside `GET`, `POST`, `PUT` and `DELETE` before connecting.
+- `file_write` reports `written` in bytes, not characters.
+- Template rendering in `tool_args` reaches strings inside nested mappings and lists, with the same rules as top-level values. `{value: ..., template: false}` is the escape hatch only with exactly those two keys, so a payload that merely holds them passes through.
+- Unknown keys in a step's `tools` and `attachments` entries are refused at load. `ToolDefinition` and `Attachment` themselves keep ignoring them for Python callers.
+- A subworkflow's `input` is rendered with the parent's state, like a tool step's `tool_args`: `"{state.topic}"` is a template, `"state.items"` hands over the value and fails the step when the key is missing, and `{value: ..., template: false}` keeps a string as written. A key filled from a redacted key stays redacted whatever its name: in the child's checkpoints and in what comes back under `output`.
+- A child's own `state:` seeds its state in the default mode too, as defaults under the parent's values.
+- The first retry waits `backoff_base` seconds instead of always 1: the waits are `backoff_base ** (attempt + 1)`, about 2, 4 and 8 seconds by default.
+- `tool_choice: required` and `{name: ...}` force the first model call of a tool loop only; the later calls use `auto`, so the model can answer.
+- The tools asked for by the reply that reaches `max_tool_iterations` no longer run, since no call would read their results. With `max_tool_iterations: 1` no tool runs.
+- A named `tool_choice` that ends the loop without an answer reports `max_tool_iterations_no_answer`, as `required` does.
+- A streamed reply that fails structured-output validation fails the step without a retry, as a reply that doesn't stream does.
+- A failed router skips its branches under `on_step_failure: continue` too.
+- The steps of a layer all read the state as the layer started, so a step held back by `max_concurrent_steps` no longer sees what its siblings wrote. A step still reads what it wrote itself, through `update` too.
+- `drop_pairs` stops and lets the request go over the budget when the system messages and the summary reach it, as `drop_oldest` does, instead of emptying the conversation.
+- `config.provider` and `--provider` now pick the primary provider: it goes first for any model it can serve, whatever its `priority`, and models listed under another provider included. The other providers that serve the name follow as fallbacks.
+- A workflow without `model` takes its provider's default (`gpt-4o-mini`, `claude-haiku-4-5-20251001`, `gemini-2.5-flash`), and `--provider`, on `run` and on `resume`, brings the new provider's. `ollama` and `generic_openai` have no default: a workflow on them without `model` fails at load if an `llm_call`, `embed` or `agent` step names no model of its own.
+- Models listed in a provider's `models`, and the built-in names such as `gpt-4o-mini`, now fall back to `is_fallback` providers when the provider that lists them fails.
+- OpenAI reasoning models (o-series and GPT-5, `gpt-5-chat` apart) send `max_completion_tokens` instead of `max_tokens`, and no `temperature`.
+- A step on a Claude model with `thinking` enabled and no `budget_tokens`, or whose `max_tokens` isn't above `thinking.budget_tokens`, fails at load.
+- A `responses_file` or `--mock-responses` file that doesn't exist is now an error instead of a green run on placeholders: `--mock-responses` exits with `2`, `provider: mock` with `1`. Relative paths stay relative to the working directory. `examples/32_yaml_mock.yaml` needs the recording that example 31 makes.
+- Strict replay of a list of turns without hashes raises `RecordingMismatchError` once the list runs out, instead of repeating its last turn. Lenient replay still repeats it.
+- `verify-determinism` exits with `1` when a replay doesn't end in `success`; `--allow-failed` accepts a stable failure.
+- Misuse exits with `2` in every command: conflicting options in `replay` and `resume`, a `--live-from` or `--force-live` step the workflow doesn't have, and `resume` of a subworkflow's own checkpoint, which names the run to resume.
+- `run --record` on an existing file replaces it. A cut (`replay --record`) still merges into the file.
+- A subworkflow's steps are recorded under their path (`sub/step`), LLM entries and `_tools`. Recordings holding them under the bare id still replay.
+- Recordings mask the keys of the run's redaction policy in tool call arguments and in tool results that are JSON objects or arrays. `request_hash` still covers the real request, so a later turn that holds a masked value is served in order, unchecked.
+- Embedding calls report `gen_ai.operation.name` `embeddings`: their spans are named `embeddings <model>` instead of `chat <model>`, and the `chat` series of `gen_ai.client.operation.duration` and `gen_ai.client.token.usage` lose those samples.
+- Failed steps and provider attempts set the span status to `ERROR`, so Jaeger's error filter and status queries now find them.
+- `gen_ai.request.model` on a step span is the model the step asked for, not the id the provider answered with.
+- A subworkflow no longer counts as a run of its own: `agentloom_workflow_runs_total`, `agentloom_workflow_duration_seconds` and `agentloom_cost_usd_total` record only the outermost run, so a subworkflow's cost is no longer counted twice.
+- OTLP metrics carry `service.name` `agentloom` instead of `unknown_service`.
+- OTLP histograms use the explicit buckets of the Prometheus exporter, per instrument, so their `le` series and percentiles change; `agentloom_workflow_duration_seconds` and `gen_ai.client.token.usage` keep the SDK's defaults.
+- Removed configuration that nothing read: the `AGENTLOOM_OBSERVABILITY`, `AGENTLOOM_MAX_CONCURRENT_STEPS`, `AGENTLOOM_BUDGET_LIMIT`, `AGENTLOOM_CHECKPOINT` and `AGENTLOOM_CHECKPOINT_DIR` variables, their keys in the config file (`observability_enabled`, `max_concurrent_steps`, `budget_limit_usd`, `checkpoint_enabled`, `checkpoint_dir`), and `timeout` and `max_retries` on a provider entry. A config file that still sets one of those keys fails at load. `AGENTLOOM_DEFAULT_PROVIDER` and the file keys `default_provider`, `log_level` and `log_format` go too.
+- Removed `retry_with_policy` and `RetryPolicy` from `agentloom.resilience`; the engine used neither.
+- `--json` prints only JSON on stdout: `Running workflow:`, `Run ID:` and `Resuming workflow` lines go to stderr with it.
+- `runs --json` and `history --json` print `[]` when they find nothing, instead of a sentence.
+- `--state` without `=` exits 2, not 1.
+- `history --since` and `--until` read a time without an offset as UTC, not local time.
 
 ### Fixed
 
 - `agentloom resume` reports an invalid run id or an unreadable checkpoint in one line and exits 1, instead of a traceback, and a resumed run that pauses at a later approval gate prints its own run id in the approve and reject commands, not `<run_id>` (#215).
 - A streamed Ollama reply drops the inline `<think>` trace of a reasoning model, tags split across chunks included, and with `capture_reasoning` keeps it as `reasoning_content`, as a complete reply does (#214). In both, a `<think>` still open when the reply ends counts as trace.
 - The deploy manifests work as shipped (#216). The Argo CD Application gives the Helm chart a workflow, the `agentloom-workflows` ConfigMap, without which the chart refused to render; the six Jobs in `deploy/k8s/examples/` set what the `restricted` Pod Security Standard of the `agentloom` namespace requires, which refused them; and the chart's Ollama gets a 10Gi memory limit, which fits its default `phi4`.
-- An interrupted run saves a checkpoint. Ctrl-C, or SIGTERM outside Windows, as Kubernetes sends to stop a Job, ends a run with `--checkpoint` by saving it with status `cancelled`, which `agentloom resume` continues after the steps that finished; it used to save nothing, and SIGTERM ended the process at once, with exit code 143 instead of 130. A subworkflow cut short with its parent leaves the checkpoint to the parent. A process killed with SIGKILL still saves nothing.
+- An interrupted run saves a checkpoint. Ctrl-C, or SIGTERM outside Windows, as Kubernetes sends to stop a Job, ends a run with `--checkpoint` by saving it with status `cancelled`, which `agentloom resume` continues after the steps that finished; it used to save nothing, and SIGTERM ended the process at once, with exit code 143 instead of 130. It works too in a run a script started in the background, which inherits SIGINT ignored. A subworkflow cut short with its parent leaves the checkpoint to the parent. A process killed with SIGKILL still saves nothing.
 - A failure that can't pass on a later attempt fails its step at once, instead of spending every retry and its waits: any router failure, a sandbox refusal of a tool or an attachment, tool arguments, attachment templates or a conversation that can't be used, an `embed` input that is missing or of the wrong type, an invalid approval decision, a subworkflow that can't be loaded, and a model or request no provider can serve. That last case raises `UnsupportedRequestError`, a `ProviderError`; the call still moves on to the next provider, and a request a provider can't take no longer counts against its circuit breaker.
 - Redaction patterns no longer match AgentLoom's own fields. A pattern written for state keys was applied to everything a run saves: `*token*` turned `max_tokens` and `token_usage` into strings, so every run failed, even one whose steps all succeeded, and its checkpoint could not be resumed; `*key*` renamed a `generic_openai` workflow's `api_key_env`. Patterns now match the workflow's data in the saved definition and step results (its `state:` block, `tool_args`, `input`, webhook headers, step outputs), never a field of the models, and JSON schemas stay as written. A step whose `output` key matches has its output redacted in the step results too, as the state already had it.
 - An approval gate's `timeout_seconds` and `on_timeout` are enforced (#210). The gate's first pause records when it expires, in the checkpoint; the first resume after that takes `on_timeout`, whatever decision it carries, or, without `on_timeout`, ends the gate as `timeout`, without retries, and fails the run. `agentloom callback-server` resumes runs whose gate expired without a request, checking at least every 30 seconds; it answers a decision for an expired gate with `202` and `expired_at`, and a second decision for a run it is already resuming with `409`, where both used to resume it. `agentloom runs` and `GET /pending` show when a paused gate expires. `timeout_seconds` must be positive, and `on_timeout` needs it. A subworkflow's gate no longer takes the decision of a parent gate with the same id.
@@ -141,6 +190,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The docs promise only what the code does (#213). The dashboard guide names the `gen_ai.*` metrics and counts the panels the dashboard has, and the README's quickstart no longer needs Ollama.
 - `agentloom history --help` says that `--until` excludes its day, as the filter does, and `agentloom replay --help` says that a cut replay calls the providers (#213).
 - `scripts/validate_mock_provider.py` and its Kubernetes Job skip a recording's `_version` key, and `scripts/validate_webhook.py` and its Job allow the loopback capture server (#213). Both failed on every run.
+- `WorkflowParser.from_yaml` reads text too long to be a file name as YAML instead of raising `File name too long`.
+- `StateWriteError` is no longer retried: the step fails at once rather than repeating its model call.
+- The builder gains `add_embed_step`, `add_approval_gate_step`, `add_agent_step` and `set_state_schema`.
+- A raw base64 attachment is held to the 20 MB limit, like files, downloads and `data:` URLs.
+- An `http_request` with a mapping `body` is sent as JSON instead of failing with a `TypeError`.
+- An `llm_call` tool declared without `parameters` is sent with the registered tool's schema instead of an empty one.
+- A `tool` step emits the `execute_tool` span and the `agentloom_tool_calls_total` and `agentloom_tool_call_duration_seconds` metrics, as a model's tool call does.
+- A provider's `Retry-After` is honoured: a step waits the longer of it and its backoff, up to `backoff_max`.
+- Router expressions compare state lists and dictionaries with `==` and can call their read-only methods: `get`, `keys`, `values`, `items`, `count` and `index`. Only a call reaches a method: `state.items` with no such key still reads as `None`. `steps.<id>.output` reads through the same proxies, so its `_` keys stay out of reach.
+- `notify.callback_base_url` puts `approve_url` and `reject_url` in an approval gate's default webhook body. For a gate inside a subworkflow they name the run at the top and the gate's path, so one POST resumes the parent and the child. The callback server refuses a child's own run id, naming the run to decide on, and answers `409` to a link for a gate the run isn't paused at.
+- Resuming past a finished router keeps the whole branch it didn't take skipped, not only the first step of it. A checkpoint keeps a router's target in the clear, as it is a step id, so a redaction pattern that matches its `output` key can't lose the branch on a resume.
+- Redaction reaches the fields of Pydantic instances in the state.
+- A conversation stored with `tool_calls` and `tool` turns reaches each provider in that provider's wire format.
+- Steps that time out carry `error_classification: transient`.
+- Resuming a layer with two routers, one finished and one that runs again, no longer skips the finished router's target, nor a child they share that the second one chooses.
+- A streamed call now falls back to the next provider when one fails before its first chunk; after the first chunk there is still no fallback.
+- A 429 during a stream no longer counts against the circuit breaker.
+- A replay that misses its recording, and a streamed request over `max_tpm`, no longer count against the circuit breaker, and give back its half-open slot. A stale recording could open the mock's circuit and fail the steps that still matched.
+- `ProviderConfig.model_aliases`, settable from the config file, maps a requested model name to a provider's own, so a fallback can receive the name it knows.
+- `StepResult.reasoning_content` keeps the reasoning text when `capture_reasoning` is on, for streamed Anthropic calls too.
+- OpenAI reasoning models receive `thinking.level` as `reasoning_effort`, except `o1-mini`, which doesn't take it.
+- Without `max_tokens`, Anthropic requests with a thinking budget send the budget plus 4096, so they leave room for the reply.
+- Network errors inside a stream, and 200 responses whose body isn't JSON, raise `ProviderError` without a status.
+- Ollama embeddings send `dimensions`.
+- `--provider` over a `generic_openai` workflow warns that `base_url` is dropped, and drops it, so the checkpoint of that run, or of one with `--mock-responses`, can be resumed.
+- An `error` event inside an Anthropic stream, such as `overloaded_error`, raises a `ProviderError` instead of ending as an empty reply.
+- A streamed Anthropic call that fails after `message_start` counts its input tokens and their cost.
+- A step replayed by a cut no longer needs a live provider or key; a step that has to run live on a model with no provider fails, naming the model.
+- Lenient replay warns when a request changed since the recording.
+- Embeddings record `request_hash` and strict replay checks it; a different number of inputs is a `RecordingMismatchError` at once, not a retried provider error.
+- A recording hashes the model the step asked for, so a step answered through a `model_aliases` entry replays strictly.
+- A list of turns under a request-hash key is refused when the recording loads, instead of failing the step with an `AttributeError`.
+- `provider: mock` with a malformed recording exits with `1` and a message instead of a traceback.
+- The example recordings carry a `request_hash`, so a strict replay of them detects a changed prompt; `recordings/tool_calling.json` doesn't, as its second request holds a live tool result.
+- `--record` forwards the step id that names an inline `response_schema`, so a schema without `name` no longer reaches OpenAI with an empty name.
+- A tool loop that falls over to another provider keeps all its turns in the recording, in order. Each provider's recorder kept its own, and the file was left with one of them, which strict replay refused.
+- A provider call cut by a timeout or a cancel closes its span, in error, instead of leaving it unfinished, and a stream cut after its first chunk no longer reports `ok`.
+- An exception from an observer hook, `attach_step_event` and `on_approval_gate` included, no longer fails the step's attempt and repeats its paid provider call.
+- Observer hooks are optional for the engine and the gateway: an observer that lacks one no longer fails the step.
+- `on_webhook_delivery` is optional, and one that raises no longer sends the notification again.
+- `agentloom_budget_remaining_usd` updates on every charge, a budget breach included, and `agentloom_circuit_breaker_state` on each provider call as well as on a state change.
+- `callback-server` connects its observer to the gateway, so resumed runs report provider spans and metrics.
+- A call cancelled while its circuit is half open gives its probe slot back, so the circuit no longer stays stuck refusing calls.
+- An embedding attempt refused by its circuit breaker closes its span instead of leaving it unfinished.
+- `agentloom --version` prints the version, and `-h` works on the root and on every command.
+- `AGENTLOOM_LOG_LEVEL` and `AGENTLOOM_LOG_FORMAT` take effect in the CLI, and a new `agentloom --log-level` overrides the variable. Logs go to stderr only; with nothing set, the output is as before.
+- `resume` gains `--state`, parsed as in `run`, which puts back keys redacted from the checkpoint, and `--budget`, which can raise the limit of a run that went over it.
+- `run` without `--checkpoint` no longer prints `resume` commands for a paused run: there is nothing to resume.
+- The `mock` provider set up by the CLI is no longer held to the 60-requests-a-minute limit.
+- The run summary marks a timed-out step `[TIMEOUT]`, not `[FAIL]`.
+- `callback-server` resumes `provider: mock` workflows against their recording; a recording that doesn't load answers 500.
+- `agentloom info` lists `jsonschema` among the core dependencies.
+- `WorkflowGraph.to_mermaid` keeps steps apart whose ids sanitise alike, such as `a-b` and `a_b`; ids don't change in a graph without such a collision.
+- `visualize --format mermaid` prints the whole router condition, escaped, instead of its first 20 characters.
+- Examples 16, 17, 18, 30 and 38 now show what they describe, and the README counts example 11 correctly.
 
 ### Security
 
@@ -169,6 +273,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Behavior change:** a sandboxed workflow whose `http_request` calls reach an internal service must list that host in `allowed_domains`, and one that attaches files must set `readable_paths` or `allowed_paths`; any workflow that read a credential header from `http_request`'s result no longer finds it.
 - `http_request`, approval-gate webhooks and URL attachments connect to the addresses their internal-host check resolved, instead of resolving the name again (#220). A DNS answer that changes between the check and the connection (DNS rebinding) can no longer reach an internal host. The request keeps the host name in its `Host` header and TLS server name, so the certificate is still checked against that name; the addresses are tried in order while the connection fails. Attachments follow redirects one hop at a time, checking and pinning each. When a proxy from the environment carries the request, the proxy resolves the name and no address is pinned.
   - **Behavior change:** where the internal-host check runs, a host that does not resolve is refused, as attachments already were: `http_request` raises a sandbox violation and the webhook is reported as `sandbox_blocked`, instead of the request failing to connect.
+- A sandboxed `shell_command` is refused when the command contains anything the shell would expand: `$`, `~`, `*`, `?`, `[` or a brace list such as `{a,b}`, even inside quotes. These reached paths outside `allowed_paths` after the check.
+- A sandboxed `shell_command` runs with only `PATH`, `HOME`, `LANG`, `LC_ALL` and `TZ` in its environment, so a command can no longer read provider keys from it.
+- A command given as a path to a sandboxed `shell_command` must be the file its allowlisted name resolves to on `PATH`; another file with that name is refused.
+- A subworkflow's own `sandbox` applies to its built-in tools. A child runs under the strictest of its sandbox and its parent's: commands and opt-ins on both lists, directories both reach, permissions both grant, the smaller `max_write_bytes`, and no network when two `allowed_domains` or `allowed_schemes` lists share nothing. A child without an enabled sandbox inherits the parent's. A child's `allowed_domains` can't open the internal hosts its parent refuses: the new `sandbox.deny_internal_hosts`, set on such a child's sandbox, outlasts a listed host.
+- The sandbox checks a path attached to a short flag (`grep -f/etc/shadow`), a path containing `=` and a bare name that is a symbolic link, which passed `shell_command` unchecked.
+- `find` joins the programs a sandboxed `shell_command` refuses unless `danger_opt_in` lists it: its `-exec` runs anything.
 
 ## [0.4.0] - 2026-04-15
 

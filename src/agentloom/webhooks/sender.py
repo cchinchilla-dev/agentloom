@@ -6,10 +6,12 @@ import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import urlencode
 
 import httpx
 
 from agentloom.core.models import WebhookConfig
+from agentloom.core.protocols import call_hook
 from agentloom.core.redact import RedactionPolicy, redact_state
 from agentloom.core.templates import SafeFormatDict, build_template_vars
 from agentloom.exceptions import SandboxViolationError
@@ -85,8 +87,11 @@ def _build_payload(config: WebhookConfig, context: WebhookContext) -> str:
     }
     if context.callback_base_url:
         base = context.callback_base_url.rstrip("/")
-        payload["approve_url"] = f"{base}/approve/{context.run_id}"
-        payload["reject_url"] = f"{base}/reject/{context.run_id}"
+        # A child's own checkpoint resumes only the child: the links name the run above it
+        root, nested, path = context.run_id.partition(".")
+        target = f"{root}?{urlencode({'gate': f'{path}.{context.step_id}'})}" if nested else root
+        payload["approve_url"] = f"{base}/approve/{target}"
+        payload["reject_url"] = f"{base}/reject/{target}"
     return json.dumps(payload)
 
 
@@ -137,10 +142,14 @@ async def send_webhook(
             context.step_id,
             context.run_id,
         )
-        if observer:
-            observer.on_webhook_delivery(
-                context.step_id, context.workflow_name, "sandbox_blocked", 0.0
-            )
+        call_hook(
+            observer,
+            "on_webhook_delivery",
+            context.step_id,
+            context.workflow_name,
+            "sandbox_blocked",
+            0.0,
+        )
         return
 
     async def _inner() -> None:
@@ -163,10 +172,14 @@ async def send_webhook(
                     context.step_id,
                     context.run_id,
                 )
-                if observer:
-                    observer.on_webhook_delivery(
-                        context.step_id, context.workflow_name, "success", latency
-                    )
+                call_hook(
+                    observer,
+                    "on_webhook_delivery",
+                    context.step_id,
+                    context.workflow_name,
+                    "success",
+                    latency,
+                )
                 return
             except Exception as exc:
                 if attempt < _MAX_RETRIES:
@@ -190,10 +203,14 @@ async def send_webhook(
                         exc,
                     )
                     logger.debug("Webhook final failure traceback", exc_info=True)
-                    if observer:
-                        observer.on_webhook_delivery(
-                            context.step_id, context.workflow_name, "failed", latency
-                        )
+                    call_hook(
+                        observer,
+                        "on_webhook_delivery",
+                        context.step_id,
+                        context.workflow_name,
+                        "failed",
+                        latency,
+                    )
 
     t_outer = time.monotonic()
     try:
@@ -208,5 +225,11 @@ async def send_webhook(
             context.step_id,
             context.run_id,
         )
-        if observer:
-            observer.on_webhook_delivery(context.step_id, context.workflow_name, "timeout", latency)
+        call_hook(
+            observer,
+            "on_webhook_delivery",
+            context.step_id,
+            context.workflow_name,
+            "timeout",
+            latency,
+        )

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 import pytest
 import respx
 
+from agentloom.core.models import ThinkingConfig
 from agentloom.exceptions import ProviderError, UnsupportedRequestError
 from agentloom.providers.anthropic import AnthropicProvider
 
@@ -407,3 +409,176 @@ class TestAnthropicReasoning:
         assert r.reasoning_content is None
         assert r.content == "The answer is 42."
         await provider.close()
+
+
+_CLAUDE = "claude-haiku-4-5-20251001"
+_ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+_HI = [{"role": "user", "content": "hi"}]
+
+
+class TestMaxTokensWithThinking:
+    """The request shape only: what the live API accepts is checked elsewhere."""
+
+    @respx.mock
+    async def test_unset_max_tokens_leaves_room_above_the_budget(self) -> None:
+        route = respx.post(_ANTHROPIC_URL).mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = AnthropicProvider(api_key="dummy-key")
+        await provider.complete(
+            _HI, _CLAUDE, thinking_config=ThinkingConfig(enabled=True, budget_tokens=10_000)
+        )
+        assert json.loads(route.calls[0].request.content)["max_tokens"] == 14_096
+        await provider.close()
+
+    @respx.mock
+    async def test_a_raw_thinking_budget_counts_too(self) -> None:
+        route = respx.post(_ANTHROPIC_URL).mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = AnthropicProvider(api_key="dummy-key")
+        await provider.complete(_HI, _CLAUDE, thinking={"type": "enabled", "budget_tokens": 5000})
+        assert json.loads(route.calls[0].request.content)["max_tokens"] == 9096
+        await provider.close()
+
+    @respx.mock
+    async def test_a_stream_does_the_same(self) -> None:
+        route = respx.post(_ANTHROPIC_URL).mock(return_value=httpx.Response(200, content=b""))
+        provider = AnthropicProvider(api_key="dummy-key")
+        sr = await provider.stream(
+            _HI, _CLAUDE, thinking_config=ThinkingConfig(enabled=True, budget_tokens=2000)
+        )
+        [c async for c in sr]
+        assert json.loads(route.calls[0].request.content)["max_tokens"] == 6096
+        await provider.close()
+
+    @respx.mock
+    async def test_an_explicit_max_tokens_is_left_alone(self) -> None:
+        route = respx.post(_ANTHROPIC_URL).mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = AnthropicProvider(api_key="dummy-key")
+        await provider.complete(
+            _HI,
+            _CLAUDE,
+            max_tokens=8000,
+            thinking_config=ThinkingConfig(enabled=True, budget_tokens=4000),
+        )
+        assert json.loads(route.calls[0].request.content)["max_tokens"] == 8000
+        await provider.close()
+
+    @respx.mock
+    async def test_without_thinking_the_default_stays(self) -> None:
+        route = respx.post(_ANTHROPIC_URL).mock(
+            return_value=httpx.Response(200, json=MOCK_RESPONSE)
+        )
+        provider = AnthropicProvider(api_key="dummy-key")
+        await provider.complete(_HI, _CLAUDE)
+        assert json.loads(route.calls[0].request.content)["max_tokens"] == 4096
+        await provider.close()
+
+
+def _sse(*events: dict[str, Any]) -> bytes:
+    return "".join(f"data: {json.dumps(e)}\n\n" for e in events).encode()
+
+
+_THINKING_THEN_TEXT = _sse(
+    {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "Let me "}},
+    {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "see."}},
+    {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Done"}},
+)
+
+
+class TestStreamedThinking:
+    @respx.mock
+    async def test_a_stream_keeps_its_thinking_text(self) -> None:
+        respx.post(_ANTHROPIC_URL).mock(
+            return_value=httpx.Response(200, content=_THINKING_THEN_TEXT)
+        )
+        provider = AnthropicProvider(api_key="dummy-key")
+        sr = await provider.stream(_HI, _CLAUDE)
+        assert [c async for c in sr] == ["Done"]
+        assert sr.reasoning_content == "Let me see."
+        await provider.close()
+
+    @respx.mock
+    async def test_capture_off_drops_it(self) -> None:
+        respx.post(_ANTHROPIC_URL).mock(
+            return_value=httpx.Response(200, content=_THINKING_THEN_TEXT)
+        )
+        provider = AnthropicProvider(api_key="dummy-key")
+        sr = await provider.stream(
+            _HI,
+            _CLAUDE,
+            thinking_config=ThinkingConfig(
+                enabled=True, budget_tokens=1024, capture_reasoning=False
+            ),
+        )
+        assert [c async for c in sr] == ["Done"]
+        assert sr.reasoning_content is None
+        await provider.close()
+
+
+class TestWireFailures:
+    @respx.mock
+    async def test_a_200_that_is_not_json_is_a_provider_error(self) -> None:
+        respx.post(_ANTHROPIC_URL).mock(return_value=httpx.Response(200, text="<html/>"))
+        provider = AnthropicProvider(api_key="dummy-key")
+        with pytest.raises(ProviderError, match="not valid JSON") as exc:
+            await provider.complete(_HI, _CLAUDE)
+        assert exc.value.status_code is None
+        await provider.close()
+
+    @respx.mock
+    async def test_a_network_error_in_a_stream_is_a_provider_error(self) -> None:
+        respx.post(_ANTHROPIC_URL).mock(side_effect=httpx.ReadTimeout("slow"))
+        provider = AnthropicProvider(api_key="dummy-key")
+        sr = await provider.stream(_HI, _CLAUDE)
+        with pytest.raises(ProviderError, match="ReadTimeout") as exc:
+            [c async for c in sr]
+        assert exc.value.status_code is None
+        await provider.close()
+
+
+class TestStreamErrorEvent:
+    @respx.mock
+    async def test_stream_raises_on_an_error_event(self) -> None:
+        # The API can report a failure as an event after answering 200
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(
+                200,
+                content=_sse(
+                    {"type": "message_start", "message": {"usage": {"input_tokens": 3}}},
+                    {
+                        "type": "error",
+                        "error": {"type": "overloaded_error", "message": "Overloaded"},
+                    },
+                ),
+            )
+        )
+        provider = AnthropicProvider(api_key="dummy-key")
+        sr = await provider.stream([{"role": "user", "content": "hi"}], "claude-haiku-4-5-20251001")
+        with pytest.raises(ProviderError, match="Overloaded") as raised:
+            async for _ in sr:
+                pass
+        assert raised.value.status_code is None
+
+    @respx.mock
+    async def test_the_input_billed_before_the_failure_is_counted(self) -> None:
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(
+                200,
+                content=_sse(
+                    {"type": "message_start", "message": {"usage": {"input_tokens": 1000}}},
+                    {"type": "error", "error": {"type": "overloaded_error", "message": "Busy"}},
+                ),
+            )
+        )
+        provider = AnthropicProvider(api_key="dummy-key")
+        sr = await provider.stream([{"role": "user", "content": "hi"}], "claude-haiku-4-5-20251001")
+        with pytest.raises(ProviderError, match="Busy"):
+            async for _ in sr:
+                pass
+        assert sr.usage.prompt_tokens == 1000
+        assert sr.usage.total_tokens == 1000
+        assert sr.cost_usd > 0

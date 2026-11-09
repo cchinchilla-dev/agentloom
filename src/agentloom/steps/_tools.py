@@ -228,6 +228,56 @@ class DeclaredTools:
         return self._registry.get(name)
 
 
+def fill_tool_parameters(tools: list[ToolDefinition], registry: Any) -> list[ToolDefinition]:
+    """*tools* with the registered tool's schema where a step declares no ``parameters``."""
+    filled: list[ToolDefinition] = []
+    for tool in tools:
+        schema = None if tool.parameters else _registered_schema(tool.name, registry)
+        filled.append(tool.model_copy(update={"parameters": schema}) if schema else tool)
+    return filled
+
+
+def _registered_schema(name: str, registry: Any) -> dict[str, Any] | None:
+    if registry is None:
+        return None
+    try:
+        schema = getattr(registry.get(name), "parameters_schema", None)
+    except KeyError:
+        return None  # dispatch reports the unknown tool to the model
+    return schema if isinstance(schema, dict) else None
+
+
+def report_tool_call(
+    observer: Any | None,
+    *,
+    step_id: str,
+    call_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    result: Any,
+    duration_ms: float,
+    success: bool,
+) -> None:
+    """Fire ``on_tool_call`` with hashes of the arguments and the result, never them."""
+    hook = getattr(observer, "on_tool_call", None)
+    if not callable(hook):
+        return
+    # Best-effort: an observer failure must not abort the dispatch and fail the step
+    try:
+        text = result if isinstance(result, str) else json.dumps(result, default=str)
+        hook(
+            step_id=step_id,
+            call_id=call_id,
+            tool_name=tool_name,
+            args_hash=_hash_text(json.dumps(arguments, sort_keys=True, default=str)),
+            result_hash=_hash_text(text),
+            duration_ms=duration_ms,
+            success=success,
+        )
+    except Exception:
+        logger.debug("on_tool_call hook failed", exc_info=True)
+
+
 async def dispatch_tool_calls(
     calls: list[ToolCall],
     tool_registry: Any,
@@ -254,24 +304,16 @@ async def dispatch_tool_calls(
         recorded = served[idx]
         text, success = recorded if recorded is not None else await _execute(call, tool_registry)
         results[idx] = (call, text, success)
-        if observer is not None:
-            hook = getattr(observer, "on_tool_call", None)
-            if callable(hook):
-                # Best-effort: an observer failure must not abort the dispatch and fail the step
-                try:
-                    hook(
-                        step_id=step_id,
-                        call_id=call.id,
-                        tool_name=call.name,
-                        args_hash=_hash_text(
-                            json.dumps(call.arguments, sort_keys=True, default=str)
-                        ),
-                        result_hash=_hash_text(text),
-                        duration_ms=(time.monotonic() - start) * 1000.0,
-                        success=success,
-                    )
-                except Exception:
-                    logger.debug("on_tool_call hook failed", exc_info=True)
+        report_tool_call(
+            observer,
+            step_id=step_id,
+            call_id=call.id,
+            tool_name=call.name,
+            arguments=call.arguments,
+            result=text,
+            duration_ms=(time.monotonic() - start) * 1000.0,
+            success=success,
+        )
 
     try:
         async with anyio.create_task_group() as tg:
@@ -351,6 +393,36 @@ def build_assistant_message_with_tool_calls(
             for c in calls
         ],
     }
+
+
+def wire_seeded_tool_turns(provider: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Put a stored conversation's tool turns in *provider*'s shape; the tool loop's already are."""
+    wired: list[dict[str, Any]] = []
+    seeded: dict[str, ToolCall] = {}
+    results: list[tuple[ToolCall, str, bool]] = []
+
+    def flush_results() -> None:
+        if results:  # together: a provider may want them in a single turn
+            wired.extend(build_tool_result_messages(provider, results))
+            results.clear()
+
+    for msg in messages:
+        call = seeded.get(msg.get("tool_call_id", "")) if msg.get("role") == "tool" else None
+        if call is not None:
+            results.append((call, msg.get("content") or "", True))
+            continue
+        flush_results()
+        calls = msg.get("tool_calls")
+        if calls and "name" in calls[0]:  # dumped from a ``Message``: on the wire it's nested
+            parsed = [ToolCall.model_validate(c) for c in calls]
+            seeded.update((c.id, c) for c in parsed)
+            wired.append(
+                build_assistant_message_with_tool_calls(provider, msg.get("content") or "", parsed)
+            )
+        else:
+            wired.append(msg)
+    flush_results()
+    return wired
 
 
 def build_tool_result_messages(

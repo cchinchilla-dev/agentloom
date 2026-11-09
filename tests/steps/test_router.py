@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import pytest
 
+from agentloom.core.models import StepDefinition, StepType
+from agentloom.core.state import StateManager
 from agentloom.exceptions import SecurityError
-from agentloom.steps.router import evaluate_expression
+from agentloom.steps.base import StepContext
+from agentloom.steps.router import RouterStep, _build_state_proxy, evaluate_expression
 
 
 class TestExpressionEvaluation:
@@ -143,3 +146,119 @@ class TestSafeEvalRestrictions:
         # Dunder names are rejected at validation, before evaluation reaches the empty __builtins__.
         with pytest.raises(SecurityError):
             evaluate_expression("__builtins__", {})
+
+
+class TestStateContainers:
+    """A router reads the state's lists and dicts as it would the native ones."""
+
+    STATE = {
+        "tags": ["a", "b", "a"],
+        "meta": {"k": [1], "name": "x"},
+        "again": {"k": [1]},
+        "order": {"items": [7], "get": "field", "values": 3},
+        "matrix": [[1], [2]],
+    }
+
+    def _eval(self, expression: str) -> object:
+        return evaluate_expression(expression, {"state": _build_state_proxy(self.STATE)})
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "state.tags == ['a', 'b', 'a']",
+            "['a', 'b', 'a'] == state.tags",
+            "state.tags != ['a']",
+            "state.meta == {'k': [1], 'name': 'x'}",
+            "state.meta.k == [1]",
+            "state.meta.k == state.again.k",
+            "state.matrix[0] == [1]",
+            "state.tags.count('a') == 2",
+            "state.tags.index('b') == 1",
+            "state.matrix.count([2]) == 1",
+            "state.matrix.index(state.again.k) == 0",
+            "state.meta.get('name') == 'x'",
+            "state.meta.get('k') == [1]",
+            "state.meta.get('absent') is None",
+            "state.meta.get('absent', 'fallback') == 'fallback'",
+            "'k' in state.meta.keys()",
+            "[1] in state.meta.values()",
+            "('k', [1]) in state.meta.items()",
+            "state.get('meta').get('k')[0] == 1",
+            "'tags' in state.keys()",
+            "state.get('absent', 5) == 5",
+        ],
+    )
+    def test_reads_like_the_native_containers(self, expression: str) -> None:
+        assert self._eval(expression) is True
+
+    @pytest.mark.parametrize(
+        "expression",
+        ["state.tags == ['a']", "state.meta == {'k': [1]}", "state.tags == 'a'"],
+    )
+    def test_different_containers_are_not_equal(self, expression: str) -> None:
+        assert self._eval(expression) is False
+
+    @pytest.mark.parametrize(
+        "expression",
+        ["state.order.items == [7]", "state.order.get == 'field'", "state.order.values == 3"],
+    )
+    def test_a_key_wins_over_the_method_of_the_same_name(self, expression: str) -> None:
+        assert self._eval(expression) is True
+
+    def test_a_read_never_hands_out_the_state_itself(self) -> None:
+        state = {"meta": {"inner": ["x"]}}
+        proxy = _build_state_proxy(state)
+        values = evaluate_expression("state.meta.values()", {"state": proxy})
+        assert values == [["x"]]
+        assert not isinstance(values[0], list)
+
+
+class TestMissingKeyNamedLikeAMethod:
+    """``state.items`` with no such key is ``None``; only a call reaches the method."""
+
+    STATE = {"order": {"id": 1}}
+
+    def _eval(self, expression: str) -> object:
+        return evaluate_expression(expression, {"state": _build_state_proxy(self.STATE)})
+
+    @pytest.mark.parametrize("name", ["items", "values", "keys", "get"])
+    @pytest.mark.parametrize("receiver", ["state", "state.order"])
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "{path} is None",
+            "{path} == None",
+            "not {path}",
+            "bool({path}) == False",
+            "str({path}) == 'None'",
+            "({path} or 'absent') == 'absent'",
+            "('set' if {path} else 'absent') == 'absent'",
+            "isinstance({path}, int) == False",
+        ],
+    )
+    def test_it_is_none_in_every_expression(self, receiver: str, name: str, template: str) -> None:
+        assert self._eval(template.format(path=f"{receiver}.{name}")) is True
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "state.keys() == ['order']",
+            "state.order.keys() == ['id']",
+            "state.order.values() == [1]",
+            "state.order.items() == [('id', 1)]",
+            "state.order.get('id') == 1",
+            "state.get('order').get('id') == 1",
+        ],
+    )
+    def test_the_call_still_reaches_the_method(self, expression: str) -> None:
+        assert self._eval(expression) is True
+
+    async def test_a_router_on_the_missing_key_takes_the_default(self) -> None:
+        step = StepDefinition(
+            id="r",
+            type=StepType.ROUTER,
+            conditions=[{"expression": "state.items", "target": "has_items"}],
+            default="empty",
+        )
+        context = StepContext(step_definition=step, state_manager=StateManager())
+        assert (await RouterStep().execute(context)).output == "empty"

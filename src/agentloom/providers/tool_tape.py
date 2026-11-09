@@ -22,7 +22,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import anyio
 
-from agentloom.core.attempts import AttemptLog
+from agentloom.core.attempts import AttemptLog, qualified_step
+from agentloom.core.redact import RedactionPolicy, redact_json_text, redact_state
 from agentloom.exceptions import RecordingMismatchError
 from agentloom.providers.mock import validate_recording_schema
 from agentloom.providers.recorder import merge_into_recording
@@ -73,12 +74,20 @@ class ToolRecorder:
     drops the calls of the attempt that failed, a subworkflow's included,
     so the recording holds the calls of the attempt that finished. With
     ``serve_from``, a cut replay serves or checks the calls from its
-    source recording as that replayer says, and records them all.
+    source recording as that replayer says, and records them all. A
+    subworkflow's step is keyed by its path, and ``redaction`` masks what the
+    file keeps of each call's arguments and result.
     """
 
-    def __init__(self, path: str | Path, serve_from: ToolReplayer | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        serve_from: ToolReplayer | None = None,
+        redaction: RedactionPolicy | None = None,
+    ) -> None:
         self.path = Path(path)
         self._source = serve_from
+        self._redaction = redaction or RedactionPolicy()
         self._steps: dict[str, list[dict[str, Any]]] = {}
         # Calls of each step before an attempt first recorded it: a retry goes back there.
         self._attempts = AttemptLog()
@@ -104,10 +113,16 @@ class ToolRecorder:
     async def capture(self, step_id: str, results: list[tuple[ToolCall, str, bool]]) -> None:
         if self._source is not None:
             await self._source.capture(step_id, results)
+        key = qualified_step(step_id)
         async with self._lock:
-            self._attempts.note(step_id, len(self._steps.get(step_id, [])))
-            self._steps.setdefault(step_id, []).extend(
-                {"name": call.name, "arguments": call.arguments, "result": text, "success": ok}
+            self._attempts.note(key, len(self._steps.get(key, [])))
+            self._steps.setdefault(key, []).extend(
+                {
+                    "name": call.name,
+                    "arguments": redact_state(call.arguments, self._redaction),
+                    "result": redact_json_text(text, self._redaction),
+                    "success": ok,
+                }
                 for call, text, ok in results
             )
             await self._flush()
@@ -166,13 +181,16 @@ class ToolReplayer:
         number = self._numbers.get(step_id, 0) + 1
         self._numbers[step_id] = number
         where = f"Step {step_id!r}: tool call #{number} {call.name!r}"
-        entries = self._recorded.get(step_id, [])
+        # A recording may hold a subworkflow's step under its bare id.
+        qualified = qualified_step(step_id)
+        key = qualified if qualified in self._recorded else step_id
+        entries = self._recorded.get(key, [])
         arguments = _canonical(call.arguments)
-        for i in range(self._cursor.get(step_id, 0), len(entries)):
+        for i in range(self._cursor.get(key, 0), len(entries)):
             entry = entries[i]
             if entry["name"] == call.name and _canonical(entry["arguments"]) == arguments:
-                self._attempts.note(step_id, self._cursor.get(step_id, 0))
-                self._cursor[step_id] = i + 1
+                self._attempts.note(key, self._cursor.get(key, 0))
+                self._cursor[key] = i + 1
                 return where, entry
         return where, None
 

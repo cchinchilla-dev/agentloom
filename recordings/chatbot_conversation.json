@@ -6,7 +6,8 @@
     "provider": "openai",
     "usage": {"prompt_tokens": 28, "completion_tokens": 24, "total_tokens": 52},
     "cost_usd": 0.0000094,
-    "finish_reason": "stop"
+    "finish_reason": "stop",
+    "request_hash": "f5f6d0a12384b4c72dcf018fedee2b4244c58176b155ae445a1f5c9b08c88235"
   },
   "turn_2": {
     "content": "For larger apps, click is a solid runner-up with a wider ecosystem of plugins.",
@@ -14,7 +15,8 @@
     "provider": "openai",
     "usage": {"prompt_tokens": 64, "completion_tokens": 22, "total_tokens": 86},
     "cost_usd": 0.0000104,
-    "finish_reason": "stop"
+    "finish_reason": "stop",
+    "request_hash": "3eba8252377ab7f71de55728aeb914e006a9360bebcf5c7dc6119b30c934ae20"
   },
   "turn_3": {
     "content": "You're welcome — happy building!",
@@ -22,6 +24,7 @@
     "provider": "openai",
     "usage": {"prompt_tokens": 96, "completion_tokens": 8, "total_tokens": 104},
     "cost_usd": 0.0000096,
-    "finish_reason": "stop"
+    "finish_reason": "stop",
+    "request_hash": "8d91fcce7ec28ddaf8eb48bdf594c8961c238e4bfe77fff6baede8ae76ae8027"
   }
 }

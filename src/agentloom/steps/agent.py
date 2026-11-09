@@ -85,6 +85,12 @@ class AgentStep(LLMCallStep):
                 duration_ms=(time.monotonic() - start) * 1000,
                 error_classification="permanent",
             )
+        # Checked here, not at load: the llm_call the turn runs as would refuse it mid-run
+        if not step.prompt and not step.conversation:
+            self._observe(context, StepStatus.FAILED.value, gateway)
+            raise StepError(
+                step.id, "Agent step requires 'prompt' or 'conversation'", is_retryable=False
+            )
         tools = [
             ToolDefinition(name=t.name, description=t.description, parameters=t.schema)
             for t in registry.list()

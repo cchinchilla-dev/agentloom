@@ -22,7 +22,7 @@ Without a [config file](#config-file), `agentloom run` sets up a provider for ea
 | `generic_openai` | The workflow says `provider: generic_openai` | The variable `api_key_env` names | `base_url` |
 | `mock` | The workflow says `provider: mock`, or the run passes `--mock-responses` | none | none |
 
-**The model name picks the provider,** not `provider`:
+**`config.provider`, or `--provider`, goes first** for any model it can serve. The other providers that serve the model's name follow it, as fallbacks:
 
 | Provider | Serves |
 |----------|--------|
@@ -31,9 +31,16 @@ Without a [config file](#config-file), `agentloom run` sets up a provider for ea
 | Google | Names that contain `gemini`, and names that start with `embedding-`. |
 | Ollama, `generic_openai`, `mock` | Any name. |
 
-`config.provider`, or `--provider`, only puts that provider first among those that serve the model. So `provider: anthropic` with the default model, `gpt-4o-mini`, still needs OpenAI: set `model` along with `provider`. An unknown `provider` name is accepted without an error, and changes nothing.
+A provider that can't serve the name is left out, even when `provider` names it: under `provider: anthropic`, a step on `gpt-4o` goes to OpenAI. An unknown `provider` name is accepted without an error, and changes nothing.
 
-Each step runs `config.model` unless it names its own `model`. `--model` changes `config.model`, so a step's own `model` wins over it.
+Each step runs `config.model` unless it names its own `model`. `--model` changes `config.model`, so a step's own `model` wins over it. Without a `model`, `config.model` is the provider's default, and `--provider` brings its own:
+
+| `provider` | Default model |
+|------------|---------------|
+| `openai`, or none | `gpt-4o-mini` |
+| `anthropic` | `claude-haiku-4-5-20251001` |
+| `google` | `gemini-2.5-flash` |
+| `ollama`, `generic_openai` | None: the workflow must set `model`, or name one on every step that calls a model. Otherwise it fails at load. |
 
 A model that no provider serves fails with `No provider registered for model 'llama3.2'`, without a retry.
 
@@ -47,21 +54,20 @@ Pin dated model IDs rather than aliases: a dated ID behaves as it did when you t
 | Google | `gemini-2.5-flash` | Not `gemini-2.0-flash`, which returns a 404 for new users. |
 | OpenAI | `gpt-4o-mini`, `gpt-4o` | |
 
-Six names belong to their provider: `gpt-4o-mini`, `gpt-4o`, `gpt-4.1`, `o4-mini`, `claude-haiku-4-5-20251001` and `gemini-2.5-flash` go only to it, and never to a fallback.
+Six names belong to their provider: `gpt-4o-mini`, `gpt-4o`, `gpt-4.1`, `o4-mini`, `claude-haiku-4-5-20251001` and `gemini-2.5-flash` go to it, to `config.provider` if that can serve them, and to the fallback providers.
 
 ### Fallback
 
-When a provider fails, the attempt moves on to the next one that can serve the model: first the providers that serve its name, by priority, then Ollama when it is a fallback. A few limits:
+When a provider fails, the attempt moves on to the next one that can serve the model: `config.provider` first, then the providers that serve its name, by priority, then Ollama when it is a fallback. A few limits:
 
-- **Every provider receives the same model name.** Anthropic can't answer for `gpt-4o`, so a fallback is useful only towards a provider that takes any name, Ollama or `generic_openai`, and only if it serves a model of that exact name.
-- **The six names above never fall back.**
-- **A [streamed](llm-calls.md#streaming) call doesn't fall back:** a provider error fails the attempt.
+- **Every provider receives the model name as requested,** unless its [`model_aliases`](#config-file) translates it. Without an alias, Anthropic can't answer for `gpt-4o`, so a fallback is useful only towards a provider that takes any name, and only if it serves a model of that exact name.
+- **A [streamed](llm-calls.md#streaming) call falls back only before its first chunk.** After that, a provider error fails the attempt.
 
 When every provider fails, the error starts with `All providers failed for model`. [Reliability](reliability.md#provider-failures) covers how fallback, circuit breakers and rate limits combine with retries.
 
 ### Using Ollama
 
-- `provider: ollama` sets up Ollama and tries it first for every model but the six names above: with an OpenAI key set, a name like `o3` goes to Ollama before OpenAI.
+- `provider: ollama` sets up Ollama and tries it first for every model: with an OpenAI key set, `o3` or `gpt-4o-mini` go to Ollama before OpenAI. It has no default model, so the workflow must set `model`, or name one on every step that calls a model.
 - `AGENTLOOM_OLLAMA_FALLBACK=1`, or `true`, `yes` or `on`, sets up Ollama as a fallback, tried after the others. Any other value leaves it off, without a warning.
 - AgentLoom doesn't look for a running Ollama: without one of the two, it isn't used.
 - Ollama costs 0, and its requests time out after 120 seconds.
@@ -77,6 +83,8 @@ providers:
     models: [gpt-4o, gpt-4o-mini]
   - name: anthropic
     priority: 10
+    model_aliases:
+      gpt-4o: claude-haiku-4-5-20251001
   - name: ollama
     base_url: http://gpu-box:11434
     priority: 100
@@ -85,17 +93,18 @@ providers:
 | Key | What it does |
 |-----|--------------|
 | `name` | `openai`, `anthropic`, `google` or `ollama`. Any other name, `mock` and `generic_openai` included, stops the command. |
-| `models` | Names that go only to the providers that list them, by priority, and never to a fallback. |
+| `models` | Names that go to the providers that list them, by priority, besides `config.provider` and the fallback providers. |
+| `model_aliases` | A requested model name and this provider's name for it. The provider receives its own name, and is tried for the requested one even if it wouldn't serve it. |
 | `priority` | The order among the providers that serve a model, lowest first. `0` by default; a tie keeps the file's order. |
 | `base_url` | The endpoint. Without it, the provider's `*_BASE_URL` variable, then its default. See [Endpoints](#endpoints). |
 | `is_fallback` | Also tries the provider for names it doesn't serve, after the others. |
 
 - **Keys stay in the environment.** Each provider reads its usual variable, and an `api_key` in the file stops the command, so the file can be committed. A provider listed without its key is set up all the same, and its calls fail with the provider's `401`.
 - **Ollama serves any name,** so it is a candidate for every model that `models` doesn't pin: give it a higher `priority` than the others, or it is tried first. It needs no `AGENTLOOM_OLLAMA_FALLBACK`, and the file must list it, even for a workflow that says `provider: ollama`.
-- **Only `models` pins a name:** the six names above go to fallbacks like any other.
-- **`config.provider` and `--provider` don't change the order;** `priority` does.
-- **`is_fallback` adds little:** every provider receives the same name, and Ollama, which serves any name, is a candidate already.
-- **Besides `providers`,** the file accepts `log_level`, `log_format`, `observability_enabled`, `default_provider`, `max_concurrent_steps`, `budget_limit_usd`, `checkpoint_enabled` and `checkpoint_dir`, which change nothing. Any other key, or a file that doesn't parse, stops the command with a one-line error and exit `1`.
+- **Only `models` pins a name:** with a file, the six names above are names like any other.
+- **`config.provider` and `--provider` go first,** when they can serve the model, whatever their `priority`; `priority` orders the rest.
+- **A fallback gets the name as requested,** unless `model_aliases` translates it.
+- **`providers` is the only key.** Any other, or a file that doesn't parse, stops the command with a one-line error and exit `1`.
 
 `run`, `resume`, `replay` (for the steps a cut runs live) and `callback-server` read the file that `--config` names, else the one `AGENTLOOM_CONFIG` names, else `agentloom.yaml` in the current directory, when there is one. A `--config` or `AGENTLOOM_CONFIG` that names a missing file stops the command. `callback-server` reads the file when it starts, and stops if it doesn't load. A workflow with `provider: mock` or `provider: generic_openai` doesn't use it.
 
@@ -131,7 +140,7 @@ config:
 - It is the only provider of the run: every model goes to it, and other keys and `AGENTLOOM_OLLAMA_FALLBACK` are ignored.
 - It supports what OpenAI does: streaming, tools, structured output, attachments in OpenAI's format and embeddings, as far as the server does. Streaming sends `stream_options`, which some servers refuse.
 - Its cost comes from the price table, by model name: a model named like a cloud model is priced like it, and other names cost 0.
-- `--provider generic_openai` works only on a file that sets `generic_openai` already, and `--provider` with any other provider drops the file's `base_url`.
+- `--provider generic_openai` works only on a file that sets `generic_openai` already, and `--provider` with any other provider drops the file's `base_url`, with a warning.
 
 ## Capabilities
 
@@ -143,9 +152,9 @@ config:
 | [Images](llm-calls.md#attachments) | Yes, by URL too | Yes, by URL too | Yes | Yes |
 | PDF | No | Yes | Yes | No |
 | Audio | WAV and MP3 | No | Yes | No |
-| [Reasoning](llm-calls.md#reasoning) | Built into the model | Yes | Yes | Yes |
+| [Reasoning](llm-calls.md#reasoning) | Built into the model, `level` only | Yes | Yes | Yes |
 | Reasoning tokens reported | Yes | In the reply's tokens | Yes | In the reply's tokens |
-| [Embeddings](steps.md#embed) | Yes | No | Yes | Yes, without `dimensions` |
+| [Embeddings](steps.md#embed) | Yes | No | Yes | Yes |
 | Cost | Price table | Price table | Price table | 0 |
 
 [Prices](reliability.md#prices) covers the price table and how to add models to it.
@@ -153,14 +162,14 @@ config:
 ### OpenAI
 
 - Chat Completions, at `{base_url}/chat/completions`. Requests time out after 60 seconds.
-- `temperature` and `max_tokens` are sent as given, so leave them unset for reasoning models; `max_completion_tokens` and `reasoning_effort` can't be sent.
+- Reasoning models, the names that start with `o1`, `o3`, `o4` or `gpt-5` except `gpt-5-chat`, get `max_tokens` as `max_completion_tokens`, no `temperature`, and `thinking.level` as `reasoning_effort`, which `o1-mini` doesn't take. Other models get `temperature` and `max_tokens` as given.
 - Reasoning tokens are reported apart from the reply's.
 - Embeddings go in batches of 100, with `dimensions`.
 
 ### Anthropic
 
 - The Messages API, at `{base_url}/messages`, with `anthropic-version: 2023-06-01`. Requests time out after 60 seconds.
-- `max_tokens` is required by the API: AgentLoom sends 4096 when it is unset, so raise it above a reasoning budget.
+- `max_tokens` is required by the API: AgentLoom sends 4096 when it is unset, plus the reasoning budget if there is one. A step on a Claude model with `thinking` and no `budget_tokens`, or whose `max_tokens` isn't above its budget, fails at load.
 - All system messages are joined into one.
 - No embeddings: an `embed` step skips Anthropic and goes to the next provider.
 
@@ -174,15 +183,16 @@ config:
 
 - `{base_url}/api/chat`. Requests time out after 120 seconds.
 - `<think>` blocks are removed from replies.
-- Embeddings ignore `dimensions`.
+- Embeddings send `dimensions`, as far as the server takes it.
 
 ## Errors
 
 | The provider returns | What AgentLoom raises | Retried |
 |----------------------|-----------------------|---------|
-| 429 | `RateLimitError`, with the status | Yes, with the step's own waits: `Retry-After` isn't followed. |
+| 429 | `RateLimitError`, with the status | Yes. The step waits at least what `Retry-After` asks, up to `backoff_max`. See [Retries](reliability.md#retries). |
 | Any other error status | `ProviderError`, with the status and the provider's message | When the status is in [`retryable_status_codes`](reliability.md#retries). |
-| No answer: a refused connection, a timeout | An error without a status | Yes. |
+| No answer: a refused connection, a timeout, on a stream too | `ProviderError`, without a status | Yes. |
+| A 200 whose body isn't JSON | `ProviderError`, without a status | Yes. |
 | An attachment it can't take | `UnsupportedRequestError`, before any request | No, once no provider can take it. See [Attachments](llm-calls.md#attachments). |
 
 When every provider fails, the gateway's error keeps a status only if they all returned the same one. [What is retried](reliability.md#what-is-retried) covers the rest.
@@ -218,9 +228,7 @@ From Python, a provider's `ProviderResponse.meta` adds what the call sent and go
 | The variable `api_key_env` names | The key of a `generic_openai` server. |
 | `AGENTLOOM_PRICING_FILE` | A price table that replaces the bundled one. See [Prices](reliability.md#prices). |
 | `AGENTLOOM_CANDIDATE_CACHE_MAX` | How many model names the gateway remembers the providers of. 1024 by default. |
-
-> [!WARNING]
-> `AGENTLOOM_LOG_LEVEL`, `AGENTLOOM_LOG_FORMAT`, `AGENTLOOM_OBSERVABILITY`, `AGENTLOOM_DEFAULT_PROVIDER`, `AGENTLOOM_MAX_CONCURRENT_STEPS`, `AGENTLOOM_BUDGET_LIMIT`, `AGENTLOOM_CHECKPOINT` and `AGENTLOOM_CHECKPOINT_DIR` are read but change nothing. An invalid value in one of them, such as `AGENTLOOM_CHECKPOINT=maybe`, stops every run with a traceback: unset them.
+| `AGENTLOOM_LOG_LEVEL`, `AGENTLOOM_LOG_FORMAT` | The level and format of the CLI's logs. See [Logs](observability.md#logs). |
 
 ## From Python
 
