@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from agentloom.core.results import TokenUsage
-from agentloom.exceptions import ProviderError
+from agentloom.exceptions import ProviderError, UnsupportedRequestError
 from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
 from agentloom.providers._meta import response_meta
 from agentloom.providers.base import (
@@ -193,12 +193,12 @@ class OllamaProvider(BaseProvider):
                     elif isinstance(block, ImageBlock):
                         images.append(block.data)
                     elif isinstance(block, (DocumentBlock, AudioBlock)):
-                        raise ProviderError(
+                        raise UnsupportedRequestError(
                             "ollama",
                             f"Ollama does not support {block.type} attachments.",
                         )
                     elif isinstance(block, ImageURLBlock):
-                        raise ProviderError(
+                        raise UnsupportedRequestError(
                             "ollama",
                             "Ollama does not support URL passthrough for images. "
                             "Use fetch: local instead.",

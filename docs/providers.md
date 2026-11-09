@@ -35,7 +35,7 @@ Without a [config file](#config-file), `agentloom run` sets up a provider for ea
 
 Each step runs `config.model` unless it names its own `model`. `--model` changes `config.model`, so a step's own `model` wins over it.
 
-A model that no provider serves fails with `No provider registered for model 'llama3.2'`, after the step's retries.
+A model that no provider serves fails with `No provider registered for model 'llama3.2'`, without a retry.
 
 ### Recommended model IDs
 
@@ -183,7 +183,7 @@ config:
 | 429 | `RateLimitError`, with the status | Yes, with the step's own waits: `Retry-After` isn't followed. |
 | Any other error status | `ProviderError`, with the status and the provider's message | When the status is in [`retryable_status_codes`](reliability.md#retries). |
 | No answer: a refused connection, a timeout | An error without a status | Yes. |
-| An attachment it can't take | `ProviderError`, before any request | Yes. See [Attachments](llm-calls.md#attachments). |
+| An attachment it can't take | `UnsupportedRequestError`, before any request | No, once no provider can take it. See [Attachments](llm-calls.md#attachments). |
 
 When every provider fails, the gateway's error keeps a status only if they all returned the same one. [What is retried](reliability.md#what-is-retried) covers the rest.
 

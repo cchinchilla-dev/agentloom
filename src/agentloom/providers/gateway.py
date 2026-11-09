@@ -16,6 +16,7 @@ from agentloom.exceptions import (
     ProviderError,
     RateLimitError,
     RecordingMismatchError,
+    UnsupportedRequestError,
 )
 from agentloom.providers.base import (
     BaseProvider,
@@ -61,18 +62,23 @@ class _Failures:
         self._messages: list[str] = []
         self._statuses: set[int | None] = set()
         self._last: BaseException | None = None
+        self._unsupported = True
 
     def add(self, message: str, exc: BaseException | None = None) -> None:
         self._messages.append(message)
         self._statuses.add(None if exc is None else extract_status_code(exc))
         self._last = exc
+        self._unsupported = self._unsupported and isinstance(
+            exc, (UnsupportedRequestError, NotImplementedError)
+        )
 
     def raise_all(self, summary: str) -> NoReturn:
-        """Raise the gateway's error: a status every candidate failed with, or none."""
+        """Raise the gateway's error: permanent if no candidate can serve it, else by status."""
+        detail = f"{summary}: " + "; ".join(self._messages)
+        if self._unsupported:
+            raise UnsupportedRequestError("gateway", detail)
         status = next(iter(self._statuses)) if len(self._statuses) == 1 else None
-        error = ProviderError(
-            "gateway", f"{summary}: " + "; ".join(self._messages), status_code=status
-        )
+        error = ProviderError("gateway", detail, status_code=status)
         # Chain only on a shared status: a permanent last failure must not block another's retries.
         raise error from (self._last if status is not None else None)
 
@@ -180,7 +186,7 @@ class ProviderGateway:
         candidates = self._get_candidates(model)
 
         if not candidates:
-            raise ProviderError(
+            raise UnsupportedRequestError(
                 "gateway",
                 f"No provider registered for model '{model}'",
             )
@@ -232,7 +238,9 @@ class ProviderGateway:
                         **call_kwargs,
                     )
 
-                response = await entry.circuit_breaker.call(_call, exclude=(RateLimitError,))
+                response = await entry.circuit_breaker.call(
+                    _call, exclude=(RateLimitError, UnsupportedRequestError)
+                )
 
                 if entry.rate_limiter and response.usage.completion_tokens:
                     resp_tokens = response.usage.completion_tokens
@@ -327,7 +335,7 @@ class ProviderGateway:
         candidates = self._get_candidates(model)
 
         if not candidates:
-            raise ProviderError(
+            raise UnsupportedRequestError(
                 "gateway",
                 f"No provider registered for model '{model}'",
             )
@@ -504,7 +512,11 @@ class ProviderGateway:
 
             except Exception as e:
                 # Setup failures feed the breaker: allow_request() already took a half-open slot.
-                entry.circuit_breaker.record_failure()
+                cb = entry.circuit_breaker
+                if not isinstance(e, UnsupportedRequestError):
+                    cb.record_failure()
+                elif cb.state == CircuitState.HALF_OPEN and cb._half_open_calls > 0:
+                    cb._half_open_calls -= 1
                 if attempt_started and self._observer:
                     end_hook = getattr(self._observer, "on_provider_call_end", None)
                     if end_hook:
@@ -549,7 +561,7 @@ class ProviderGateway:
         step_id: str | None = kwargs.pop("step_id", None)
         candidates = self._get_candidates(model)
         if not candidates:
-            raise ProviderError("gateway", f"No provider registered for model '{model}'")
+            raise UnsupportedRequestError("gateway", f"No provider registered for model '{model}'")
 
         failures = _Failures()
         for attempt_idx, entry in enumerate(candidates):
@@ -634,7 +646,7 @@ class ProviderGateway:
             except NotImplementedError as e:
                 # A missing capability, not a fault: no breaker hit, no ``on_provider_error``.
                 msg = f"Provider '{entry.provider.name}' has no embeddings: {e}"
-                failures.add(msg)  # a skip, like an open circuit: no status of its own
+                failures.add(msg, e)
                 logger.debug(msg)
                 if attempt_started and self._observer:
                     end_hook = getattr(self._observer, "on_provider_call_end", None)

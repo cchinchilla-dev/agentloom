@@ -100,7 +100,7 @@ How the `source` is read:
 | Google | Yes | No | Yes | Yes |
 | Ollama | Yes | No | No | No |
 
-An attachment the provider can't take, such as a PDF for OpenAI, fails before any request is sent. That failure is retried like a transient error, so it uses up the step's retries and counts against the provider's circuit breaker: pick the provider for the attachment, rather than relying on the error.
+An attachment the provider can't take, such as a PDF for OpenAI, fails before any request is sent. The call moves on to the next provider for the model, and the step fails without a retry when none can take it.
 
 In a [conversation](#conversations), attachments go with this step's user turn only and aren't stored in the conversation. A conversation step without a `prompt` has no user turn, and sends no attachments.
 

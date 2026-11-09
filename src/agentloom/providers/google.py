@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from agentloom.core.results import TokenUsage
-from agentloom.exceptions import ProviderError
+from agentloom.exceptions import ProviderError, UnsupportedRequestError
 from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
 from agentloom.providers._meta import response_meta
 from agentloom.providers.base import (
@@ -176,7 +176,7 @@ class GoogleProvider(BaseProvider):
                             }
                         )
                     elif isinstance(block, ImageURLBlock):
-                        raise ProviderError(
+                        raise UnsupportedRequestError(
                             "google",
                             "Google Gemini does not support URL passthrough for images. "
                             "Use fetch: local instead.",

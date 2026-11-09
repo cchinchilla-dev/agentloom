@@ -71,7 +71,7 @@ class AgentStep(LLMCallStep):
         start = time.monotonic()
 
         if context.provider_gateway is None:
-            raise StepError(step.id, "No provider gateway configured")
+            raise StepError(step.id, "No provider gateway configured", is_retryable=False)
         gateway = _MeteredGateway(context.provider_gateway, step.id, agent)
         self._gateway = gateway
         try:

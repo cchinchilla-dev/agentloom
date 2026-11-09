@@ -229,6 +229,7 @@ class LLMCallStep(BaseStep):
                     raise StepError(
                         step.id,
                         "Tool registry required for tools= declaration but not configured.",
+                        is_retryable=False,
                     )
                 results = await dispatch_tool_calls(
                     pending,
@@ -552,7 +553,9 @@ class LLMCallStep(BaseStep):
 
     async def execute(self, context: StepContext) -> StepResult:
         if context.provider_gateway is None:
-            raise StepError(context.step_definition.id, "No provider gateway configured")
+            raise StepError(
+                context.step_definition.id, "No provider gateway configured", is_retryable=False
+            )
         tally = _Tally(context.provider_gateway)
         result = await self._execute(context.model_copy(update={"provider_gateway": tally}))
         # Every call the step made, failed or not, its summaries and re-asks included: a
@@ -627,13 +630,20 @@ class LLMCallStep(BaseStep):
                     for att in step.attachments
                 ]
             except (KeyError, ValueError) as e:
-                raise StepError(step.id, f"Attachment template error: {e}") from e
+                raise StepError(
+                    step.id, f"Attachment template error: {e}", is_retryable=False
+                ) from e
             try:
                 content_blocks = await resolve_attachments(
                     resolved_attachments, sandbox=context.sandbox_config
                 )
             except Exception as e:
-                raise StepError(step.id, f"Attachment resolution error: {e}") from e
+                raise StepError(
+                    step.id,
+                    f"Attachment resolution error: {e}",
+                    is_retryable=not isinstance(e, PermissionError)
+                    and classify_failure(e, step.retry.retryable_status_codes) == "transient",
+                ) from e
 
         conversation: Conversation | None = None
         trim_result: TrimResult | None = None
@@ -642,13 +652,17 @@ class LLMCallStep(BaseStep):
                 raw_convo = self._resolve_path(state_snapshot, step.conversation)
             except (KeyError, ValueError) as e:
                 raise StepError(
-                    step.id, f"Conversation path {step.conversation!r} unreadable: {e}"
+                    step.id,
+                    f"Conversation path {step.conversation!r} unreadable: {e}",
+                    is_retryable=False,
                 ) from e
             try:
                 conversation = load_conversation(raw_convo)
             except (TypeError, ValueError) as e:
                 raise StepError(
-                    step.id, f"Conversation at {step.conversation!r} malformed: {e}"
+                    step.id,
+                    f"Conversation at {step.conversation!r} malformed: {e}",
+                    is_retryable=False,
                 ) from e
 
         messages: list[dict[str, Any]] = []
@@ -679,6 +693,7 @@ class LLMCallStep(BaseStep):
                         "(last non-system role: "
                         f"{last_answerable.role if last_answerable else 'none'}). "
                         "Set 'prompt' or ensure the conversation ends with a user turn.",
+                        is_retryable=False,
                     )
                 answered = last_answerable
             stored = (conversation.token_budget, conversation.trim_policy)

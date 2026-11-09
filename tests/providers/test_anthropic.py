@@ -8,7 +8,7 @@ import httpx
 import pytest
 import respx
 
-from agentloom.exceptions import ProviderError
+from agentloom.exceptions import ProviderError, UnsupportedRequestError
 from agentloom.providers.anthropic import AnthropicProvider
 
 MOCK_RESPONSE = {
@@ -176,7 +176,7 @@ class TestAnthropicProvider:
         from agentloom.providers.multimodal import AudioBlock, TextBlock
 
         provider = AnthropicProvider(api_key="test-key")
-        with pytest.raises(ProviderError, match="does not support audio"):
+        with pytest.raises(UnsupportedRequestError, match="does not support audio"):
             provider._format_messages(
                 [
                     {

@@ -75,6 +75,12 @@ class RateLimitError(ProviderError):
         super().__init__(provider, f"Rate limit exceeded{suffix}", status_code=429)
 
 
+class UnsupportedRequestError(ProviderError):
+    """A request no retry can serve: no provider for the model, or a capability it lacks."""
+
+    is_retryable = False
+
+
 class BudgetExceededError(AgentLoomError):
     """Workflow budget has been exceeded.
 

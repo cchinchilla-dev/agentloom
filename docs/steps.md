@@ -85,7 +85,7 @@ Anything else, from imports and assignments to other functions and attributes th
 
 ### When a router fails
 
-A router fails when an expression raises, or when nothing matches and there is no `default`. That failure is retried like any other step's, with the router's `retry`, although evaluating the same state again gives the same result. Setting `retry: {max_retries: 0}` on a router makes it fail at once. Expressions are only evaluated when the router runs, so `agentloom validate` doesn't catch their mistakes.
+A router fails when an expression raises, or when nothing matches and there is no `default`. That failure isn't retried: evaluating the same state again gives the same result. Expressions are only evaluated when the router runs, so `agentloom validate` doesn't catch their mistakes.
 
 ## `subworkflow`
 
