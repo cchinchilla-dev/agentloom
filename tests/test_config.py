@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from agentloom.config import AgentLoomConfig, ProviderConfig, load_config
+from agentloom.config import (
+    AgentLoomConfig,
+    ProviderConfig,
+    load_config,
+    resolve_config_path,
+)
+from agentloom.exceptions import ConfigError
 
 
 class TestAgentLoomConfig:
@@ -212,17 +218,142 @@ providers:
         openai_cfg = next(p for p in cfg.providers if p.name == "openai")
         assert openai_cfg.priority > 0
 
-    def test_yaml_providers_skip_discovery(self) -> None:
+    def test_yaml_providers_skip_discovery(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """When providers are in the config file, auto-discovery is skipped."""
-        yaml_content = """\
-providers:
-  - name: custom
-    api_key: sk-custom
-    models: ["my-model"]
-"""
-        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
-            f.write(yaml_content)
-            f.flush()
-            cfg = load_config(f.name)
-        assert len(cfg.providers) == 1
-        assert cfg.providers[0].name == "custom"
+        monkeypatch.setenv("OPENAI_API_KEY", "from-env-openai")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env-anthropic")
+        path = tmp_path / "agentloom.yaml"
+        path.write_text("providers:\n  - name: anthropic\n    models: [my-model]\n")
+        cfg = load_config(path)
+        assert [p.name for p in cfg.providers] == ["anthropic"]
+        assert cfg.providers[0].models == ["my-model"]
+        # The key comes from the provider's usual variable, never from the file
+        assert cfg.providers[0].api_key == "from-env-anthropic"
+
+
+def _config(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "agentloom.yaml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+class TestConfigFile:
+    """The ``providers:`` block of ``agentloom.yaml``: what it takes and what it refuses."""
+
+    def test_base_url_from_the_file_then_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.internal:11434")
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        path = _config(
+            tmp_path,
+            "providers:\n"
+            "  - {name: openai, base_url: 'https://proxy.example/v1'}\n"
+            "  - {name: ollama}\n"
+            "  - {name: google}\n",
+        )
+        urls = {p.name: p.base_url for p in load_config(path).providers}
+        assert urls == {
+            "openai": "https://proxy.example/v1",
+            "ollama": "http://ollama.internal:11434",
+            "google": "",
+        }
+
+    def test_listed_ollama_needs_no_opt_in_and_unlisted_stays_out(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("AGENTLOOM_OLLAMA_FALLBACK", "1")
+        listed = load_config(_config(tmp_path, "providers: [{name: ollama, priority: 5}]\n"))
+        assert [(p.name, p.priority, p.api_key) for p in listed.providers] == [("ollama", 5, "")]
+        unlisted = load_config(_config(tmp_path, "providers: [{name: openai}]\n"))
+        assert [p.name for p in unlisted.providers] == ["openai"]
+
+    @pytest.mark.parametrize(
+        ("name", "hint"),
+        [("anthropic", "set ANTHROPIC_API_KEY instead"), ("ollama", "Ollama takes none")],
+    )
+    def test_api_key_in_the_file_is_refused(self, tmp_path: Path, name: str, hint: str) -> None:
+        path = _config(tmp_path, f"providers:\n  - {{name: {name}, api_key: YOUR_KEY_HERE}}\n")
+        with pytest.raises(ConfigError, match=hint):
+            load_config(path)
+
+    @pytest.mark.parametrize("entry", ["{name: opneai}", "{models: [x]}", "just-a-string"])
+    def test_unknown_provider_is_refused(self, tmp_path: Path, entry: str) -> None:
+        path = _config(tmp_path, f"providers:\n  - {entry}\n")
+        with pytest.raises(ConfigError, match="not one of anthropic, google, ollama, openai"):
+            load_config(path)
+
+    @pytest.mark.parametrize(
+        ("text", "field"),
+        [
+            ("providers: [{name: openai, modles: [x]}]\n", "providers.0.modles"),
+            ("provders: []\n", "provders"),
+        ],
+    )
+    def test_unknown_key_is_refused(self, tmp_path: Path, text: str, field: str) -> None:
+        with pytest.raises(ConfigError, match=field):
+            load_config(_config(tmp_path, text))
+
+    @pytest.mark.parametrize(
+        ("text", "message"),
+        [
+            ("providers: [{name: openai\n", "while parsing"),
+            ("- a list\n", "must hold a mapping"),
+            ("providers: {name: openai}\n", "providers must be a list"),
+        ],
+    )
+    def test_unreadable_file_is_refused_in_one_line(
+        self, tmp_path: Path, text: str, message: str
+    ) -> None:
+        with pytest.raises(ConfigError, match=message) as exc_info:
+            load_config(_config(tmp_path, text))
+        assert "\n" not in str(exc_info.value)
+
+
+class TestResolveConfigPath:
+    """``--config`` wins, then ``AGENTLOOM_CONFIG``, then ``./agentloom.yaml``."""
+
+    @pytest.fixture(autouse=True)
+    def _in_tmp(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("AGENTLOOM_CONFIG", raising=False)
+
+    def test_nothing_to_read(self) -> None:
+        assert resolve_config_path() is None
+
+    def test_agentloom_yaml_in_the_working_directory(self, tmp_path: Path) -> None:
+        (tmp_path / "agentloom.yaml").write_text("providers: []\n")
+        assert resolve_config_path() == (tmp_path / "agentloom.yaml").resolve()
+
+    def test_env_var_wins_over_the_working_directory(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        (tmp_path / "agentloom.yaml").write_text("providers: []\n")
+        other = tmp_path / "other.yaml"
+        other.write_text("providers: []\n")
+        monkeypatch.setenv("AGENTLOOM_CONFIG", str(other))
+        assert resolve_config_path() == other.resolve()
+
+    def test_explicit_path_wins_over_the_env_var(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        flag = tmp_path / "flag.yaml"
+        flag.write_text("providers: []\n")
+        monkeypatch.setenv("AGENTLOOM_CONFIG", str(tmp_path / "env.yaml"))
+        assert resolve_config_path(flag) == flag.resolve()
+
+    def test_empty_env_var_counts_as_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AGENTLOOM_CONFIG", "")
+        assert resolve_config_path() is None
+
+    @pytest.mark.parametrize("via_env", [True, False])
+    def test_missing_file_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, via_env: bool
+    ) -> None:
+        missing = tmp_path / "gone.yaml"
+        if via_env:
+            monkeypatch.setenv("AGENTLOOM_CONFIG", str(missing))
+        with pytest.raises(ConfigError, match="not found"):
+            resolve_config_path(None if via_env else missing)

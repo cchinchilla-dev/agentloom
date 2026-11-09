@@ -40,7 +40,7 @@ def _answers(path: Path, version: str) -> Path:
 def _providers(answers: Path, asked: list[str] | None = None) -> Any:
     """Stand in for the workflow's providers, as `MockProvider` with fixed answers."""
 
-    def _wire(gateway: Any, default: str) -> None:
+    def _wire(gateway: Any, default: str, config_path: object = None) -> None:
         if asked is not None:
             asked.append(default)
         gateway.register(MockProvider(responses_file=answers), priority=0)

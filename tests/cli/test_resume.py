@@ -105,7 +105,7 @@ class TestResumeCommand:
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
             from tests.conftest import MockProvider
 
-            def _wire_providers(gw: object, default: str) -> None:
+            def _wire_providers(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)
@@ -129,7 +129,7 @@ class TestResumeCommand:
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
             from tests.conftest import MockProvider
 
-            def _wire_providers(gw: object, default: str) -> None:
+            def _wire_providers(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)
@@ -164,7 +164,7 @@ class TestResumeCommand:
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
             from tests.conftest import MockProvider
 
-            def _wire_providers(gw: object, default: str) -> None:
+            def _wire_providers(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)
@@ -193,7 +193,7 @@ class TestResumeCommand:
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
             from tests.conftest import MockProvider
 
-            def _wire_providers(gw: object, default: str) -> None:
+            def _wire_providers(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)
@@ -229,7 +229,7 @@ class TestResumeCommand:
                 async def complete(self, *args, **kwargs):  # type: ignore[override]
                     raise RuntimeError("provider error")
 
-            def _wire_providers(gw: object, default: str) -> None:
+            def _wire_providers(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)
@@ -336,7 +336,7 @@ class TestResumeApproval:
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
             from tests.conftest import MockProvider
 
-            def _wire(gw: object, default: str) -> None:
+            def _wire(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)
@@ -383,7 +383,7 @@ class TestResumeApproval:
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
             from tests.conftest import MockProvider
 
-            def _wire(gw: object, default: str) -> None:
+            def _wire(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)
@@ -471,7 +471,7 @@ class TestResumeApproval:
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
             from tests.conftest import MockProvider
 
-            def _wire(gw: object, default: str) -> None:
+            def _wire(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)

@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ValidationError as PydanticValidationError
+
+from agentloom.exceptions import ConfigError
+
+CONFIG_ENV = "AGENTLOOM_CONFIG"
+DEFAULT_CONFIG_FILE = "agentloom.yaml"
 
 
 class ProviderConfig(BaseModel):
     """Configuration for a single LLM provider."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     api_key: str = ""
@@ -44,6 +53,8 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, object]] = {
 
 class AgentLoomConfig(BaseModel):
     """Global configuration, loaded from env vars or config file."""
+
+    model_config = ConfigDict(extra="forbid")
 
     log_level: str = "INFO"
     log_format: str = "json"  # "json" or "text"
@@ -161,8 +172,70 @@ def discover_providers(default_provider: str) -> list[ProviderConfig]:
     return providers
 
 
+def resolve_config_path(explicit: str | Path | None = None) -> Path | None:
+    """Return the config file to load, as an absolute path, or ``None``.
+
+    *explicit* (``--config``) wins, then the ``AGENTLOOM_CONFIG`` env var, then
+    ``./agentloom.yaml`` when it exists.
+
+    Raises:
+        ConfigError: If *explicit* or the env var names a file that does not exist.
+    """
+    chosen = explicit if explicit is not None else os.environ.get(CONFIG_ENV) or None
+    if chosen is not None:
+        path = Path(chosen).expanduser()
+        if not path.is_file():
+            raise ConfigError(f"config file {str(path)!r} not found")
+        return path.resolve()
+    default = Path(DEFAULT_CONFIG_FILE)
+    return default.resolve() if default.is_file() else None
+
+
+def _read_config_file(path: str | Path) -> dict[str, object]:
+    """The file's mapping, with each provider entry checked before validation."""
+    import yaml
+
+    try:
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as e:
+        raise ConfigError(f"config file {str(path)!r}: {' '.join(str(e).split())}") from e
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"config file {str(path)!r} must hold a mapping")
+    providers = raw.get("providers") or []
+    if not isinstance(providers, list):
+        raise ConfigError(f"config file {str(path)!r}: providers must be a list")
+    for i, entry in enumerate(providers):
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if not isinstance(name, str) or name not in _PROVIDER_DEFAULTS:
+            known = ", ".join(sorted(_PROVIDER_DEFAULTS))
+            raise ConfigError(
+                f"config file {str(path)!r}: providers[{i}] names {name!r}, not one of {known}"
+            )
+        if isinstance(entry, dict) and "api_key" in entry:
+            env_key = _PROVIDER_DEFAULTS[name].get("env_key")
+            where = "Ollama takes none" if name == "ollama" else f"set {env_key} instead"
+            raise ConfigError(
+                f"config file {str(path)!r}: providers[{i}] sets api_key, which is read "
+                f"from the environment only: {where}"
+            )
+    return raw
+
+
+def _with_environment(provider: ProviderConfig) -> ProviderConfig:
+    """A provider from the file, with its key and default base URL from the environment."""
+    defaults = _PROVIDER_DEFAULTS[provider.name]
+    env_key = str(defaults.get("env_key", ""))
+    api_key = "" if provider.name == "ollama" else os.environ.get(env_key, "")
+    base_url = provider.base_url or os.environ.get(
+        f"{provider.name.upper()}_BASE_URL", str(defaults.get("base_url", ""))
+    )
+    return provider.model_copy(update={"api_key": api_key, "base_url": base_url})
+
+
 def load_config(
-    config_path: str | None = None,
+    config_path: str | Path | None = None,
     default_provider_override: str | None = None,
 ) -> AgentLoomConfig:
     """Load configuration with env var overrides and provider auto-discovery.
@@ -173,27 +246,35 @@ def load_config(
       3. ``AGENTLOOM_*`` environment variables
       4. ``default_provider_override`` (if given)
 
-    Providers are auto-discovered from API-key env vars when no
-    providers are defined in the config file.
+    A ``providers:`` block in the file replaces auto-discovery; each provider
+    takes its API key from its usual environment variable, never from the
+    file. Without the block, providers are discovered from those variables.
+
+    Raises:
+        ConfigError: If the file cannot be read, or holds an unknown key or
+            provider, or an ``api_key``.
     """
     data: dict[str, object] = {}
 
     if config_path is not None:
-        from pathlib import Path
-
-        import yaml
-
-        raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
-        if raw:
-            data = raw
+        data = _read_config_file(config_path)
 
     data = _apply_env_overrides(data)
-    config = AgentLoomConfig.model_validate(data)
+    try:
+        config = AgentLoomConfig.model_validate(data)
+    except PydanticValidationError as e:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}" for err in e.errors()
+        )
+        source = f"config file {str(config_path)!r}" if config_path else "configuration"
+        raise ConfigError(f"{source}: {problems}") from e
 
     if default_provider_override is not None:
         config.default_provider = default_provider_override
 
-    if not config.providers:
+    if config.providers:
+        config.providers = [_with_environment(p) for p in config.providers]
+    else:
         config.providers = discover_providers(config.default_provider)
 
     return config

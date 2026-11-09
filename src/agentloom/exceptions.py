@@ -126,6 +126,12 @@ class ValidationError(AgentLoomError):
     is_retryable = False
 
 
+class ConfigError(AgentLoomError, ValueError):
+    """The ``agentloom.yaml`` config file is missing, unreadable or invalid."""
+
+    is_retryable = False
+
+
 class AttachmentResolutionError(AgentLoomError, ValueError):
     """Attachment resolution refused for a deterministic reason.
 

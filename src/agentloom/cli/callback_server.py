@@ -6,6 +6,7 @@ import hmac
 import ipaddress
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -34,13 +35,45 @@ def callback_server(
             "in depth for a server reachable beyond loopback."
         ),
     ),
+    config_file: Path | None = typer.Option(
+        None,
+        "--config",
+        help=(
+            "Config file with a providers: block, checked at start. Default: "
+            "$AGENTLOOM_CONFIG, then ./agentloom.yaml when it exists."
+        ),
+        exists=True,
+        dir_okay=False,
+    ),
 ) -> None:
     """Start an HTTP server that accepts approve/reject callbacks."""
-    anyio.run(_serve, checkpoint_dir, host, port, lite, token)  # pragma: no cover
+    config_path = _checked_config_file(config_file)
+    anyio.run(_serve, checkpoint_dir, host, port, lite, token, config_path)  # pragma: no cover
+
+
+def _checked_config_file(explicit: Path | None) -> Path | None:
+    """The config file, loaded once now: a broken one stops the server before it listens."""
+    from agentloom.cli.run import _config_file
+    from agentloom.config import load_config
+    from agentloom.exceptions import ConfigError
+
+    path = _config_file(explicit)
+    if path is not None:
+        try:
+            load_config(path)
+        except ConfigError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1) from e
+    return path
 
 
 async def _serve(  # pragma: no cover
-    checkpoint_dir: str, host: str, port: int, lite: bool, token: str | None = None
+    checkpoint_dir: str,
+    host: str,
+    port: int,
+    lite: bool,
+    token: str | None = None,
+    config_path: Path | None = None,
 ) -> None:
     listener = await anyio.create_tcp_listener(local_host=host, local_port=port)
     # Resolve actual port (may differ from requested when port=0)
@@ -62,7 +95,7 @@ async def _serve(  # pragma: no cover
 
         async def _handle_conn(stream: anyio.abc.SocketStream) -> None:
             try:
-                await _handle_request(stream, checkpoint_dir, lite, token)
+                await _handle_request(stream, checkpoint_dir, lite, token, config_path)
             except Exception:
                 logger.warning("Error handling request", exc_info=True)
             finally:
@@ -116,6 +149,7 @@ async def _handle_request(
     checkpoint_dir: str,
     lite: bool,
     token: str | None = None,
+    config_path: Path | None = None,
 ) -> None:
     """Parse a raw HTTP/1.1 request and route it."""
     data = await stream.receive(8192)
@@ -194,6 +228,7 @@ async def _handle_request(
             "approved",
             provided_token=headers.get("x-agentloom-token"),
             expected_token=token,
+            config_path=config_path,
         )
     elif method == "POST" and path.startswith("/reject/"):
         run_id = path[len("/reject/") :]
@@ -205,6 +240,7 @@ async def _handle_request(
             "rejected",
             provided_token=headers.get("x-agentloom-token"),
             expected_token=token,
+            config_path=config_path,
         )
     else:
         await _send_response(stream, 404, {"error": "not found"})
@@ -268,11 +304,12 @@ async def _handle_decision(
     *,
     provided_token: str | None = None,
     expected_token: str | None = None,
+    config_path: Path | None = None,
 ) -> None:
     from agentloom.checkpointing.file import FileCheckpointer
     from agentloom.cli.run import _setup_generic_openai, _setup_observer, _setup_providers
     from agentloom.core.engine import WorkflowEngine
-    from agentloom.exceptions import ProviderError
+    from agentloom.exceptions import ConfigError, ProviderError
     from agentloom.providers.gateway import ProviderGateway
     from agentloom.tools.builtins import register_builtins
     from agentloom.tools.registry import ToolRegistry
@@ -318,10 +355,10 @@ async def _handle_decision(
     gateway = ProviderGateway()
     try:
         _setup_generic_openai(gateway, engine.workflow.config)
-    except ProviderError as e:
+        _setup_providers(gateway, engine.workflow.config.provider, config_path)
+    except (ProviderError, ConfigError) as e:
         await _send_response(stream, 500, {"error": str(e)})
         return
-    _setup_providers(gateway, engine.workflow.config.provider)
     engine.provider_gateway = gateway
 
     sandbox_cfg = engine.workflow.config.sandbox

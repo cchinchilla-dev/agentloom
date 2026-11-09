@@ -242,7 +242,7 @@ class TestReplayTools:
         workflow.write_text(TOOL_YAML)
         recording = tmp_path / "rec.json"
 
-        def _wire(gw: Any, default: str) -> None:
+        def _wire(gw: Any, default: str, config_path: object = None) -> None:
             gw.register(MockProvider(responses_file=src), priority=0)
 
         page = AsyncMock(return_value=("<html>", True))

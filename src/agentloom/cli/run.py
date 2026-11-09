@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import nullcontext
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,7 +15,7 @@ import typer
 from agentloom.core.parser import WorkflowParser
 from agentloom.core.results import WorkflowStatus
 from agentloom.core.state import StateManager
-from agentloom.exceptions import ProviderError
+from agentloom.exceptions import ConfigError, ProviderError
 
 if TYPE_CHECKING:
     from agentloom.core.inter_agent import EventLog
@@ -83,6 +84,16 @@ def run(
         "--record-tools",
         help="With --record, also record tool results so `replay --tools` can use them.",
     ),
+    config_file: Path | None = typer.Option(
+        None,
+        "--config",
+        help=(
+            "Config file with a providers: block. Default: $AGENTLOOM_CONFIG, "
+            "then ./agentloom.yaml when it exists."
+        ),
+        exists=True,
+        dir_okay=False,
+    ),
 ) -> None:
     """Execute a workflow from a YAML definition file."""
     if mock_responses is not None and record is not None:
@@ -92,7 +103,7 @@ def run(
         typer.echo("Error: --record-tools needs --record.", err=True)
         raise typer.Exit(2)
     anyio.run(
-        _run_async,
+        partial(_run_async, config_path=_config_file(config_file)),
         workflow_path,
         state,
         provider,
@@ -128,6 +139,7 @@ async def _run_async(
     tool_mode: str = "live",
     live_from: str | None = None,
     force_live: list[str] | None = None,
+    config_path: Path | None = None,
 ) -> None:
     """Async implementation of ``run``, shared with ``replay``."""
     from agentloom.core.engine import WorkflowEngine
@@ -182,7 +194,7 @@ async def _run_async(
             typer.echo(f"Error: {e}", err=True)
             raise typer.Exit(1) from e
         if live:
-            cut = _setup_cut(gateway, workflow, mock, live_from, force_live or [])
+            cut = _setup_cut(gateway, workflow, mock, live_from, force_live or [], config_path)
             if record is not None:
                 from agentloom.providers.recorder import RecordingProvider
 
@@ -193,7 +205,7 @@ async def _run_async(
     elif workflow.config.provider == "mock":
         _setup_mock(gateway, workflow.config, observer, workflow.name)
     else:
-        _setup_live(gateway, workflow.config)
+        _setup_live(gateway, workflow.config, config_path)
         if record is not None:
             from agentloom.providers.recorder import RecordingProvider
 
@@ -328,14 +340,27 @@ def _setup_mock(
     )
 
 
-def _setup_live(gateway: ProviderGateway, config: WorkflowConfig) -> None:
+def _setup_live(
+    gateway: ProviderGateway, config: WorkflowConfig, config_path: Path | None = None
+) -> None:
     """Register the workflow's own providers."""
     try:
         _setup_generic_openai(gateway, config)
-    except ProviderError as e:
+        _setup_providers(gateway, config.provider, config_path)
+    except (ProviderError, ConfigError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1) from e
-    _setup_providers(gateway, config.provider)
+
+
+def _config_file(explicit: Path | None) -> Path | None:
+    """The config file to read: ``--config``, ``$AGENTLOOM_CONFIG`` or ``./agentloom.yaml``."""
+    from agentloom.config import resolve_config_path
+
+    try:
+        return resolve_config_path(explicit)
+    except ConfigError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e
 
 
 def _setup_cut(
@@ -344,6 +369,7 @@ def _setup_cut(
     recording: MockProvider,
     live_from: str | None,
     force_live: list[str],
+    config_path: Path | None = None,
 ) -> ReplayCut:
     """Serve the recording through the workflow's own providers, live from the cut on."""
     from agentloom.providers.replay_or_live import ReplayCut, ReplayOrLiveProvider, cut_steps
@@ -353,7 +379,7 @@ def _setup_cut(
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1) from e
-    _setup_live(gateway, workflow.config)
+    _setup_live(gateway, workflow.config, config_path)
     gateway.wrap_providers(lambda provider: ReplayOrLiveProvider(provider, cut))
     return cut
 
@@ -429,8 +455,10 @@ def _record_events(path: Path, events: EventLog) -> None:
     merge_into_recording(path, lambda recording: recording.__setitem__(EVENTS_KEY, logged))
 
 
-def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
-    """Set up providers from config-driven discovery."""
+def _setup_providers(
+    gateway: ProviderGateway, default_provider: str, config_path: Path | None = None
+) -> None:
+    """Register the providers of *config_path*'s ``providers:`` block, or the discovered ones."""
     # The endpoint is the only route: a discovered provider would take mapped models or fallbacks
     if default_provider == "generic_openai":
         return
@@ -439,7 +467,7 @@ def _setup_providers(gateway: ProviderGateway, default_provider: str) -> None:
 
     from agentloom.config import load_config
 
-    config = load_config(default_provider_override=default_provider)
+    config = load_config(config_path, default_provider_override=default_provider)
 
     _PROVIDER_CLASSES: dict[str, tuple[str, str]] = {
         "openai": ("agentloom.providers.openai", "OpenAIProvider"),

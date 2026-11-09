@@ -11,7 +11,7 @@ AgentLoom calls OpenAI, Anthropic, Google and Ollama over their HTTP APIs, any O
 
 ## Which provider answers
 
-`agentloom run` sets up a provider for each key it finds in the environment:
+Without a [config file](#config-file), `agentloom run` sets up a provider for each key it finds in the environment:
 
 | Provider | Set up when | Key | Endpoint |
 |----------|-------------|-----|----------|
@@ -65,6 +65,39 @@ When every provider fails, the error starts with `All providers failed for model
 - `AGENTLOOM_OLLAMA_FALLBACK=1`, or `true`, `yes` or `on`, sets up Ollama as a fallback, tried after the others. Any other value leaves it off, without a warning.
 - AgentLoom doesn't look for a running Ollama: without one of the two, it isn't used.
 - Ollama costs 0, and its requests time out after 120 seconds.
+
+## Config file
+
+A `providers:` block in a config file replaces the discovery above: the CLI sets up the providers it lists, and only those.
+
+```yaml
+# agentloom.yaml
+providers:
+  - name: openai
+    models: [gpt-4o, gpt-4o-mini]
+  - name: anthropic
+    priority: 10
+  - name: ollama
+    base_url: http://gpu-box:11434
+    priority: 100
+```
+
+| Key | What it does |
+|-----|--------------|
+| `name` | `openai`, `anthropic`, `google` or `ollama`. Any other name, `mock` and `generic_openai` included, stops the command. |
+| `models` | Names that go only to the providers that list them, by priority, and never to a fallback. |
+| `priority` | The order among the providers that serve a model, lowest first. `0` by default; a tie keeps the file's order. |
+| `base_url` | The endpoint. Without it, the provider's `*_BASE_URL` variable, then its default. See [Endpoints](#endpoints). |
+| `is_fallback` | Also tries the provider for names it doesn't serve, after the others. |
+
+- **Keys stay in the environment.** Each provider reads its usual variable, and an `api_key` in the file stops the command, so the file can be committed. A provider listed without its key is set up all the same, and its calls fail with the provider's `401`.
+- **Ollama serves any name,** so it is a candidate for every model that `models` doesn't pin: give it a higher `priority` than the others, or it is tried first. It needs no `AGENTLOOM_OLLAMA_FALLBACK`, and the file must list it, even for a workflow that says `provider: ollama`.
+- **Only `models` pins a name:** the six names above go to fallbacks like any other.
+- **`config.provider` and `--provider` don't change the order;** `priority` does.
+- **`is_fallback` adds little:** every provider receives the same name, and Ollama, which serves any name, is a candidate already.
+- **Besides `providers`,** the file accepts `log_level`, `log_format`, `observability_enabled`, `default_provider`, `max_concurrent_steps`, `budget_limit_usd`, `checkpoint_enabled` and `checkpoint_dir`, which change nothing. Any other key, or a file that doesn't parse, stops the command with a one-line error and exit `1`.
+
+`run`, `resume`, `replay` (for the steps a cut runs live) and `callback-server` read the file that `--config` names, else the one `AGENTLOOM_CONFIG` names, else `agentloom.yaml` in the current directory, when there is one. A `--config` or `AGENTLOOM_CONFIG` that names a missing file stops the command. `callback-server` reads the file when it starts, and stops if it doesn't load. A workflow with `provider: mock` or `provider: generic_openai` doesn't use it.
 
 ## Endpoints
 
@@ -181,6 +214,7 @@ From Python, a provider's `ProviderResponse.meta` adds what the call sent and go
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | Set up the provider, with that key. AgentLoom reads no `.env` file. |
 | `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GOOGLE_BASE_URL`, `OLLAMA_BASE_URL` | The provider's endpoint. See [Endpoints](#endpoints). |
 | `AGENTLOOM_OLLAMA_FALLBACK` | `1`, `true`, `yes` or `on` sets up Ollama as a fallback. |
+| `AGENTLOOM_CONFIG` | The [config file](#config-file), when the command has no `--config`. |
 | The variable `api_key_env` names | The key of a `generic_openai` server. |
 | `AGENTLOOM_PRICING_FILE` | A price table that replaces the bundled one. See [Prices](reliability.md#prices). |
 | `AGENTLOOM_CANDIDATE_CACHE_MAX` | How many model names the gateway remembers the providers of. 1024 by default. |
