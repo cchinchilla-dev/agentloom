@@ -1,456 +1,268 @@
+---
+title: "Observability"
+description: "The OpenTelemetry traces and metrics AgentLoom sends, the bundled Grafana dashboard, the run history records and the logs."
+order: 16
+section: "Operations"
+---
+
 # Observability
 
-Every workflow step emits OpenTelemetry traces and Prometheus metrics out of the box. No external SaaS required — the full stack runs alongside your workloads.
+With the `observability` extra installed, a run sends OpenTelemetry traces and metrics to a collector: a span per step and per provider call, and counters and histograms of runs, steps, tokens and cost. Every run, with or without the extra, also writes a history record.
 
 ## Quick start
 
 ```bash
-# Start the observability stack
-cd deploy && docker compose up -d
-
-# Run a workflow (metrics are emitted automatically)
-agentloom run examples/01_simple_qa.yaml
-
-# Access dashboards
-open http://localhost:3000    # Grafana (admin/admin)
-open http://localhost:9090    # Prometheus
-open http://localhost:16686   # Jaeger
+cd deploy
+docker compose up -d
+docker compose run --rm agentloom run /workflows/40_fault_replay.yaml
 ```
 
-## Stack architecture
+The stack runs an OTel Collector, Jaeger, Prometheus and Grafana, and the run replays a recording, with no key needed. Then open:
 
+- **Grafana** on `http://localhost:3000`, dashboard `AgentLoom`;
+- **Jaeger** on `http://localhost:16686`, service `agentloom`;
+- **Prometheus** on `http://localhost:9090`.
+
+A run on your machine reports to the same stack: with `pip install "agentloom[observability]"`, `agentloom run examples/40_fault_replay.yaml`, from a clone of the repository, sends to `http://localhost:4317`, the collector's port. [Deployment](deployment.md#docker-compose) describes each service of the stack.
+
+## Turning it on
+
+The extra installs the OpenTelemetry API, SDK and OTLP exporters, and `prometheus-client`. The default Docker image includes it; `production-lite` doesn't.
+
+| Command | Sends traces and metrics |
+|---------|--------------------------|
+| `run`, `resume`, `callback-server` | When the extra is installed, unless `--lite` is passed. |
+| `replay` | Only with `--observability`. |
+| `verify-determinism` | Never. |
+| Python | Only with an `observer`; see [From Python](#from-python). |
+
+Without the extra nothing is sent, and nothing says so: `agentloom info` shows whether OpenTelemetry is installed. `AGENTLOOM_OBSERVABILITY` has no effect.
+
+- **The endpoint** is `OTEL_EXPORTER_OTLP_ENDPOINT`, `http://localhost:4317` by default, for traces and metrics alike; AgentLoom reads no other OpenTelemetry variable. The Docker image sets it to `http://otel-collector:4317`.
+- **The protocol** is OTLP over gRPC only: an HTTP endpoint, such as port 4318, doesn't work.
+- **Traces** carry `service.name` `agentloom`; metrics carry the SDK's default, `unknown_service:python3.14`. **Metrics** are pushed every 5 seconds and when the run ends. No AgentLoom process serves `/metrics`: a short-lived command can't be scraped, so the collector exposes the metrics to Prometheus.
+
+A run whose export fails still succeeds.
+
+## Traces
+
+A run produces this tree of spans:
+
+```text
+workflow:<workflow name>
+├── step:<step id>
+│   ├── chat <model>              one per provider attempt
+│   ├── execute_tool <tool>       one per tool call the model made
+│   └── workflow:<child>          a subworkflow, with its own steps
+└── step:<step id>
+quality:<target>                  a trace of its own, from result.annotate()
 ```
-CLI (agentloom run)
-  |
-  +-- OTel SDK --> OTel Collector (:4317 gRPC)
-  |                    |
-  |                    +-- Prometheus exporter (:8889) --> Prometheus (:9090)
-  |                    +-- OTLP exporter --> Jaeger (:16686)
-  |
-  +-- Observer --> MetricsManager --> OTel gauges / counters / histograms
-```
 
-Each CLI invocation is an ephemeral process that creates its own `MeterProvider`. The OTel Collector aggregates metrics and exposes them to Prometheus with a 30-minute expiration window (`metric_expiration: 30m`), so data remains visible after the CLI exits.
+- **Retries and fallbacks** are sibling `chat` spans under their step. `agentloom.provider.attempt` numbers the fallback candidates, so every retry with a single provider carries `0`. An attempt that an open circuit skips has no span.
+- **`chat` names every provider call,** an `embed` step's included, with the model the step asked for.
+- **Tool spans** last no time: they are written once the tool returned, with its duration in `tool.duration_ms`, beside the `chat` spans. A `tool` step has none, and an agent used as a tool has its `chat` spans under the step, not under its tool span.
+- **Skipped steps** have no span.
+- **A resumed run** starts a new trace, with the same `workflow.run_id`.
+- **Errors aren't span statuses:** a failed step or attempt shows in `step.error`, `error.type` and `agentloom.provider.attempt_outcome`, not in Jaeger's error filter.
+- **A call cut short** by a timeout leaves its `chat` span unfinished, so it never reaches the collector.
 
-| Component | Port | Purpose |
-|-----------|------|---------|
-| OTel Collector | 4317 (gRPC), 8889 (Prometheus) | Receives OTel data, exports to Prometheus + Jaeger |
-| Prometheus | 9090 | Time-series storage, PromQL queries |
-| Jaeger | 16686 | Distributed tracing UI |
-| Grafana | 3000 | Dashboard visualization |
+### Span attributes
 
----
+**`workflow:<name>`**: `workflow.name` and `workflow.run_id`, then at the end `workflow.status`, `workflow.duration_ms`, `workflow.total_tokens` and `workflow.total_cost_usd`. A run id is 12 hex characters; a subworkflow's is `<parent run id>.<step id>`.
 
-## Grafana dashboard
+**`step:<id>`**:
 
-The dashboard is auto-provisioned at startup. Navigate to **Dashboards > AgentLoom** or go directly to `http://localhost:3000/d/agentloom-main`.
+| Attribute | What it holds |
+|-----------|---------------|
+| `step.id`, `step.type`, `step.stream`, `workflow.run_id` | Set when the step starts. |
+| `step.status`, `step.duration_ms`, `step.cost_usd` | Set when it ends. The duration is the last attempt's. |
+| `step.error` | Why it failed, timed out or broke the budget. |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.reasoning.output_tokens` | The step's tokens, when it succeeded. |
+| `gen_ai.request.model`, `gen_ai.provider.name` | The model that answered and its provider, when it succeeded. On a replay, the recorded provider. |
+| `gen_ai.operation.name` | `chat` for an `llm_call`, `invoke_agent` for an `agent`. |
+| `gen_ai.response.finish_reasons` | The provider's finish reason, as it sent it. |
+| `gen_ai.response.time_to_first_chunk` | For a streamed step, in seconds. |
+| `agentloom.prompt.hash`, `.length_chars`, `.template_id`, `.template_vars` | The rendered prompt's hash and length, `<workflow>:<step>`, and the state keys it used. |
+| `agentloom.conversation.turn_count`, `.token_count`, `.trimmed_messages` | For a step with a conversation. |
+| `gen_ai.agent.name`, `agent.iterations`, `agent.tool_calls`, `agent.cost_usd`, `agent.output_valid` | For an `agent` step. |
+| `agentloom.approval_gate.decision` | `pending`, `approved` or `rejected`. |
+| `agentloom.webhook.status`, `agentloom.webhook.latency_s` | A gate's notification: `success`, `failed`, `timeout` or `sandbox_blocked`. |
+| `agentloom.mock.matched_by`, `agentloom.mock.step_id`, `agentloom.mock.fault_type` | How a recording answered. See [Testing & replay](testing-and-replay.md#metrics). |
+| `agentloom.recording.provider`, `.model`, `.latency_s` | A call recorded with `--record`. |
 
-### Dashboard variables
+**`chat <model>`**: `gen_ai.operation.name` (`chat`), `gen_ai.provider.name` (the provider called, `mock` on a replay), `gen_ai.request.model`, `gen_ai.request.temperature` and `gen_ai.request.max_tokens` when set, `gen_ai.request.stream` and `agentloom.provider.attempt`; at the end, `gen_ai.response.model`, the token counts, `gen_ai.response.finish_reasons` and `agentloom.provider.attempt_outcome` (`ok` or `error`), with `error.type`, the error's class, on a failure.
 
-Use the dropdown selectors at the top of the dashboard to filter:
+**`execute_tool <name>`**: `tool.name`, `tool.call_id`, `tool.duration_ms`, `tool.success`, and hashes of the arguments and the result, `tool.args_hash` and `tool.result_hash`. The arguments and the result themselves never reach the trace.
 
-| Variable | Label | Default | Description |
-|----------|-------|---------|-------------|
-| `$workflow` | Workflow | `.*` | Filter panels by workflow name |
-| `$provider` | Provider | `.*` | Filter panels by provider |
+**`quality:<target>`**: `agentloom.quality.score`, `.source`, `.target` and `agentloom.quality.metadata.<key>` for each metadata value, from `result.annotate(target, quality_score=…, source=…, **metadata)` on the result of a run that had an observer.
 
-### Row 1 — Overview
+Provider names follow the OpenTelemetry registry: `google` is `gcp.gemini`.
 
-Eight panels showing high-level aggregates:
+### Span events
 
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Total Runs** | stat | Total workflow executions across all workflows |
-| **Success Rate** | gauge | Percentage of successful runs (green >= 95%, orange >= 80%, red < 80%) |
-| **Failed** | stat | Count of failed workflow runs |
-| **Total Tokens** | stat | Sum of all tokens consumed (input + output) |
-| **Reasoning Tokens** | stat | Reasoning tokens reported by the providers, billed at the output rate |
-| **Est. Cost** | stat | Estimated total cost in USD |
-| **Providers** | stat | Number of distinct providers that have handled requests |
-| **Step Types** | stat | Number of distinct step types executed |
-
-### Row 2 — Workflow Performance
-
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Workflow Runs** | timeseries | Cumulative success vs failed runs over time |
-| **Workflow Duration (p50/p95/p99)** | timeseries | Latency percentiles per workflow |
-
-### Row 3 — Step Analysis
-
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Step Executions** | timeseries | Cumulative step success vs failure count over time |
-| **Step Duration (p50/p95/p99)** | timeseries | Per-step-type latency percentiles |
-
-### Row 4 — Token Economics
-
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Tokens (input · output · reasoning)** | timeseries | Cumulative token count per provider/model, by token type |
-| **Tokens by Provider** | bar gauge | Horizontal bars showing total tokens per provider/model |
-| **Token Split** | pie chart | Ratio of prompt tokens to completion tokens |
-
-### Row 5 — Provider Performance
-
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Provider Latency (p50/p95/p99)** | timeseries | Per-provider response time percentiles |
-| **Provider Calls** | timeseries | Cumulative call count per provider |
-
-### Row 6 — Provider Reliability
-
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Provider Errors** | timeseries | Cumulative error count per provider |
-| **Provider Availability** | gauge | Uptime percentage over last hour (green >= 99%, orange >= 95%, red < 95%) |
-| **Circuit Breaker** | stat | Current circuit breaker state per provider |
-
-??? info "Circuit breaker state values"
-
-    | Value | Label | Color | Meaning |
-    |-------|-------|-------|---------|
-    | 0 | CLOSED | Green | Normal — requests pass through |
-    | 1 | OPEN | Red | Tripped — requests rejected immediately |
-    | 2 | HALF-OPEN | Yellow | Recovery probe — one test request allowed |
-
-    State transitions: CLOSED -> OPEN after 5 consecutive failures. OPEN -> HALF-OPEN after 60s timeout. HALF-OPEN -> CLOSED on success, back to OPEN on failure.
-
-### Row 7 — Detailed Breakdown
-
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Workflow Runs Summary** | table | Per-workflow, per-status run counts |
-| **Provider Call Details** | table | Per-provider, per-model call counts |
-
-### Row 8 — Cost Analysis
-
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Cumulative Cost** | timeseries | Running total cost in USD |
-| **Cost per workflow** | timeseries | Cumulative cost of each workflow |
-| **Budget Remaining** | timeseries | Remaining budget per workflow (green line) |
-| **Avg Cost/Run** | stat | Mean cost per workflow execution |
-| **Avg Tokens/Run** | stat | Mean token consumption per workflow execution |
-| **Avg Duration/Run** | stat | Mean wall-clock time per workflow execution |
-| **Token Input/Output Ratio** | stat | Ratio of output tokens to input tokens |
-
-### Row 9 — Multi-modal
-
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Attachments Processed** | timeseries | Attachments by step type over time |
-| **Total Attachments** | stat | All attachments sent to providers |
-| **Attachments by Step Type** | pie chart | Share of attachments per step type |
-
-### Row 10 — Human-in-the-Loop (collapsed)
-
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Approval Decisions** | timeseries | Approval gate decisions over time, by outcome |
-| **Total Gates** | stat | Approval gates decided |
-| **By Decision** | pie chart | Share of approved and rejected gates |
-| **Webhook Deliveries** | timeseries | Webhook delivery attempts by status |
-| **Webhook Success Rate** | gauge | Successful deliveries over all attempts |
-| **Webhook Latency p50 / p95** | timeseries | Webhook delivery latency percentiles |
-
-### Row 11 — Mock & Replay (collapsed)
-
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Mock Replays** | stat | Mock provider lookups, by how the response was matched |
-| **Replay Hit Ratio** | stat | Share of lookups that found a recorded response |
-| **Recording Captures by Provider** | timeseries | Real provider responses captured by the recorder |
-| **Captured Real-Provider Latency (p50 / p95)** | timeseries | Latency of the captured calls — what a replay simulates |
-
-### Row 12 — Streaming (collapsed)
-
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Streamed Responses** | stat | Streamed responses per provider |
-| **Time to First Token** | stat | Average time to first token per provider |
-| **Avg TTFT by Provider** | bar gauge | The same average, compared across providers |
-| **Total Streamed** | stat | All streamed responses |
-| **Streaming Ratio** | stat | Share of LLM calls that stream |
-| **Stream vs Batch Duration** | bar gauge | Average step duration, streamed against batch |
-
-### Row 13 — Traces
-
-| Panel | Type | What it shows |
-|-------|------|---------------|
-| **Recent Traces** | table | Latest workflow traces from Jaeger; a trace ID opens its span tree |
-
----
+- **`agentloom.prompt.captured`**, with `config.capture_prompts: true`: the rendered `prompt` and `system_prompt` of each attempt of an `llm_call`, on its step span. With a [redaction policy](state-and-templates.md#redaction), they are rendered again with the redacted values; without one, they are the text the provider got. Attachments, earlier turns and the reply aren't captured, and `agentloom.prompt.hash` always hashes the text the provider got.
+- **`agentloom.conversation.turn`**, always, after each turn of a step with a conversation: its turn and token counts, and the messages trimmed.
 
 ## Metrics reference
 
-All metrics are prefixed with `agentloom_`.
+The collector turns metric names into Prometheus names: dots become underscores, a metric in seconds gains `_seconds`, and a histogram becomes `_bucket`, `_sum` and `_count` series.
 
-### Workflow metrics
+### Runs and steps
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `workflow_runs_total` | counter | workflow, status | Workflow execution count |
-| `workflow_duration_seconds` | histogram | workflow | End-to-end workflow latency |
-| `cost_usd_total` | counter | workflow, provider | Estimated USD cost (`provider` is `total`) |
-| `budget_remaining_usd` | gauge | workflow | Remaining budget per workflow |
+| Metric | Type | Labels | Counts |
+|--------|------|--------|--------|
+| `agentloom_workflow_runs_total` | Counter | `workflow`, `status` | Runs, each subworkflow and each resume included. |
+| `agentloom_workflow_duration_seconds` | Histogram | `workflow`, `status` | Run durations. |
+| `agentloom_cost_usd_total` | Counter | `workflow`, `provider` (`total`) | Cost. A subworkflow's cost is counted twice: by the child run and in its parent's total. |
+| `agentloom_step_executions_total` | Counter | `step_type`, `status`, `stream` | Steps that ended, whatever their status; skipped steps aren't counted. |
+| `agentloom_step_duration_seconds` | Histogram | `step_type`, `stream` | The last attempt of each step: retries and their waits aren't included. |
+| `agentloom_attachments_total` | Counter | `step_type` | Attachments sent. |
 
-### Step metrics
+### Providers and tokens
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `step_executions_total` | counter | step_type, status, stream | Step execution count |
-| `step_duration_seconds` | histogram | step_type, stream | Per-step latency |
+| Metric | Type | Labels | Counts |
+|--------|------|--------|--------|
+| `agentloom_provider_calls_total` | Counter | `provider`, `model`, `stream` | Provider attempts, failed ones included. `model` is the model that answered. |
+| `agentloom_provider_errors_total` | Counter | `provider`, `error_type` | Failed attempts, by error class, such as `RateLimitError`. |
+| `gen_ai.client.operation.duration` | Histogram, s | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `stream` | Provider call latency. |
+| `gen_ai.client.token.usage` | Histogram | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.token.type` | Tokens per step attempt, by type: `input`, `output`, and `reasoning` when there are any. On a replay, the recorded provider. |
+| `agentloom_stream_responses_total` | Counter | `provider`, `model` | Streamed steps that succeeded. |
+| `gen_ai.client.operation.time_to_first_chunk` | Histogram, s | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` | Time to a streamed step's first chunk. |
+| `agentloom_embedding_calls_total` | Counter | `provider`, `model` | `embed` steps that succeeded. |
+| `agentloom_embedding_dimensions` | Histogram | `provider`, `model` | The length of the vectors returned. |
 
-### Agent metrics
+`gen_ai.operation.name` is `chat` for every call, embeddings included.
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `agentloom_agent_invocations_total` | counter | name, status | Turns of each agent, by the step's status (one per attempt, a turn that fails before a model call included; `timeout` or `cancelled` for one cut short), those of an agent used as a tool included |
-| `agentloom_agent_iterations` | histogram | name | Model calls per turn of each agent |
+### Tools, agents and conversations
 
-### Provider metrics
+| Metric | Type | Labels | Counts |
+|--------|------|--------|--------|
+| `agentloom_tool_calls_total` | Counter | `tool_name`, `status` | Tool calls the model made, replayed ones included. |
+| `agentloom_tool_call_duration_seconds` | Histogram | `tool_name` | Their durations. |
+| `agentloom_agent_invocations_total` | Counter | `name`, `status` | Agent turns, agents used as tools included. |
+| `agentloom_agent_iterations` | Histogram | `name` | Model calls per turn. |
+| `agentloom_conversation_message_count` | Histogram | `conversation_key` | Messages in the conversation after each turn. |
+| `agentloom_conversation_trims_total` | Counter | `policy`, `conversation_key` | Turns that trimmed messages. |
 
-AgentLoom-specific counters live alongside the canonical OTel GenAI client histogram. The histogram replaces the previous `provider_latency_seconds` — distributions are required by the spec.
+### Gates, webhooks and replay
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `agentloom_provider_calls_total` | counter | provider, model, stream | Provider API call count |
-| `gen_ai.client.operation.duration` | histogram (s) | gen_ai.operation.name, gen_ai.provider.name, stream | OTel canonical operation duration |
-| `agentloom_provider_errors_total` | counter | provider, error_type | Provider error count |
-| `agentloom_circuit_breaker_state` | gauge | provider | Circuit breaker state (0/1/2) |
+| Metric | Type | Labels | Counts |
+|--------|------|--------|--------|
+| `agentloom_approval_gates_total` | Counter | `decision`, `workflow` | `pending` when a gate pauses, then the decision when the run resumes. |
+| `agentloom_webhook_deliveries_total` | Counter | `status`, `workflow` | Gate notifications, once each, however many attempts they took. |
+| `agentloom_webhook_latency_seconds` | Histogram | `status` | Their durations. |
+| `agentloom_mock_replays_total` | Counter | `workflow`, `matched_by` | Model calls a recording answered; embeddings aren't counted. |
+| `agentloom_mock_faults_total` | Counter | `workflow`, `fault_type` | Faults a recording fired. |
+| `agentloom_recording_captures_total` | Counter | `provider`, `model` | Calls recorded with `--record`. |
+| `agentloom_recording_latency_seconds` | Histogram | `provider`, `model` | Their durations. |
 
-### Token metrics
+### Gauges
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `gen_ai.client.token.usage` | histogram (`{token}`) | gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model, gen_ai.token.type | OTel canonical per-call token observations. `gen_ai.token.type` is `input` / `output` / `reasoning` (reasoning is an AgentLoom extension to the spec's `input`/`output` enum). An agent step's tokens count under each model its calls ran on, the agents it called as tools included |
-| `agentloom_attachments_total` | counter | step_type | Attachment count by step type |
+| Metric | Labels | Value |
+|--------|--------|-------|
+| `agentloom_circuit_breaker_state` | `provider` | `0` closed, `1` open, `2` half open. |
+| `agentloom_budget_remaining_usd` | `workflow` | What the budget has left, for runs with `budget_usd`. |
 
-### Streaming metrics
+- **The circuit breaker gauge** is reported only when a circuit changes state. A run whose circuits stay closed reports nothing, so an open circuit reported by an earlier run stays on the dashboard until the bundled collector drops it, after 30 minutes.
+- **The budget gauge** updates after each step that succeeds, so a run that breaks its budget leaves the last value before the breach.
+- `AGENTLOOM_METRICS_MAX_KEYS`, 1024 by default, caps how many providers and workflows each gauge tracks.
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `agentloom_stream_responses_total` | counter | provider, model | Streaming response count (no OTel equivalent — kept AgentLoom-specific) |
-| `gen_ai.client.operation.time_to_first_chunk` | histogram (s) | gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model | OTel canonical streaming TTFT |
+### Reading the numbers
 
----
+- **Histograms use the SDK's default buckets,** whose first one ends at 5: every latency under 5 seconds falls in it, so a replay that takes 0.4 seconds shows a median of 2.5.
+- **Each `agentloom` process exports series of its own,** told apart by a `service_instance_id` label, so totals are sums over series, as the dashboard's are. The bundled collector stops exporting a series 30 minutes after its process last reported: those totals cover about the last half hour of runs, while [run history](#run-history) counts every run.
+- There are no metrics for rate-limit waits, routers, checkpoints or the sandbox.
 
-## Span schema
+## The Grafana dashboard
 
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+`deploy/grafana/dashboards/agentloom.json` reads the metrics above from Prometheus, and recent traces from Jaeger. Its variables filter by `workflow`, `provider`, `step_type` and `stream`.
 
-AgentLoom emits a three-level span hierarchy: **workflow → step → provider call** (and **tool call** when a step invokes a registered tool). Every span / attribute / metric name is centralised in `agentloom.observability.schema` so downstream consumers (Grafana dashboards, AgentAnvil, Jaeger plugins) parse a stable contract. Code outside the runtime imports the same names from `agentloom.contracts.experimental` without loading AgentLoom; that import emits a `FutureWarning`, since the OTel GenAI conventions are still in development ([Public contracts](architecture.md#public-contracts)).
+| Row | Panels |
+|-----|--------|
+| Overview | Runs, success rate, failures, tokens, reasoning tokens, estimated cost, providers, step types. |
+| Workflow Performance | Runs by status; duration percentiles by workflow. |
+| Step Analysis | Step executions; duration percentiles by step type. |
+| Token Economics | Tokens by provider and model; input, output and reasoning. |
+| Provider Performance | Latency percentiles; calls. |
+| Provider Reliability | Errors; availability, as one minus errors over calls since the counters started; circuit breaker state. |
+| Detailed Breakdown | Tables of runs and provider calls. |
+| Cost Analysis | Cost over time and per workflow; cost, tokens and duration per run; budget remaining. |
+| Multi-modal | Attachments by step type. |
+| Human-in-the-Loop | Approval decisions; webhook deliveries, success rate and latency. |
+| Mock & Replay | Replays by how they matched, the share answered from the recording, recorded calls and their latency. |
+| Streaming | Streamed responses, time to first token, streamed against whole responses. |
+| Traces | The latest traces, linked to Jaeger. |
 
-### Hierarchy
+The last four rows start collapsed.
 
-```
-workflow:<workflow_name>                   # AgentLoom orchestration
-└── step:<step_id>                         # AgentLoom orchestration
-    └── chat <model>                       # OTel GenAI inference span — one per fallback attempt
-```
+- **The `provider` variable** takes its values from the token metrics, which name providers as the registry does (`gcp.gemini`), and as recorded on a replay. The call, error, circuit and streaming panels label providers by AgentLoom's name (`google`, `mock`), so picking a provider can empty them.
+- Tool, agent, conversation, embedding and fault metrics have no panel.
 
-A failed primary provider followed by a successful fallback shows up as two sibling `chat <model>` spans under the same `step:*` parent — useful for debugging fallback latency.
+## Run history
 
-A `subworkflow` step nests the child's whole tree under its own `step:<step_id>` span, with the child's `workflow.run_id` (`<parent_run_id>.<step_id>`). Parallel subworkflows share the parent's observer but keep separate trees, even when they reuse step ids. A subworkflow stopped from outside (its step's `timeout`, a failing sibling) ends its workflow span with `workflow.status = cancelled`, so the parent's step span still closes.
-
-### Attribute conventions
-
-Inference spans follow the **canonical OTel GenAI registry** (May 2026 spec). Workflow / step orchestration spans use AgentLoom-specific names.
-
-| Namespace | Source | Example |
-|-----------|--------|---------|
-| `gen_ai.*` | OpenTelemetry GenAI registry (canonical names) | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.request.temperature`, `gen_ai.request.max_tokens`, `gen_ai.request.stream`, `gen_ai.response.model`, `gen_ai.response.finish_reasons` (array), `gen_ai.response.time_to_first_chunk`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.reasoning.output_tokens` |
-| `error.*` | OTel general semantic conventions | `error.type` (set on errored inference spans alongside `step.error`) |
-| `workflow.*` / `step.*` | AgentLoom orchestration metadata | `workflow.run_id`, `workflow.status`, `step.id`, `step.type`, `step.duration_ms`, `step.cost_usd` |
-| `tool.*` | Tool-call details | `tool.name`, `tool.args_hash`, `tool.success` |
-| `agent.*` | An agent step's turn, on its step span with `gen_ai.agent.name` | `agent.iterations`, `agent.tool_calls`, `agent.cost_usd`, `agent.output_valid` |
-| `agentloom.*` | AgentLoom-specific (no OTel equivalent) | `agentloom.prompt.hash`, `agentloom.approval_gate.decision`, `agentloom.webhook.status`, `agentloom.recording.provider` |
-
-### Workflow-level attributes
-
-| Attribute | Description |
-|-----------|-------------|
-| `workflow.name` | Workflow identifier |
-| `workflow.run_id` | Per-execution UUID — correlate Jaeger traces with checkpoints / external systems |
-| `workflow.status` | Final status (`success` / `failed` / `paused` / `budget_exceeded` / `timeout` / `cancelled`) |
-| `workflow.duration_ms` | End-to-end execution time |
-| `workflow.total_tokens`, `workflow.total_cost_usd` | Aggregates across all steps |
-
-### Step-level attributes
-
-| Attribute | Description |
-|-----------|-------------|
-| `step.id`, `step.type`, `step.status` | Step identification; `step.status` is the step's result, or `cancelled` / `budget_exceeded` when its layer is cancelled or it breaches the budget |
-| `step.duration_ms`, `step.cost_usd` | Per-step latency / spend |
-| `step.stream`, `step.attachments` | Streaming flag, attachment count |
-| `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` | Operation type (`chat` for `llm_call`, `invoke_agent` for `agent`), provider (e.g. `openai`, `gcp.gemini`), model |
-| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | Visible token counts |
-| `gen_ai.usage.reasoning.output_tokens` | Chain-of-thought tokens (o-series, Gemini 2.5+ thinking) — emitted only when non-zero |
-| `gen_ai.response.finish_reasons` | Array of provider-supplied stop reasons (e.g. `["stop"]`) |
-| `gen_ai.response.time_to_first_chunk` | Streaming-only, in seconds |
-| `agentloom.prompt.hash`, `agentloom.prompt.length_chars` | Prompt fingerprint for correlating failures with the prompt that caused them |
-| `agentloom.prompt.template_id`, `agentloom.prompt.template_vars` | Template provenance |
-| `gen_ai.agent.name` | An `agent` step's agent; its `gen_ai.operation.name` is `invoke_agent` |
-| `agent.iterations`, `agent.tool_calls` | The turn's model calls, and the tool calls its model made (its reply through `final_result` aside) |
-| `agent.cost_usd` | What the turn spent, the agents it called as tools included |
-| `agent.output_valid` | With an `output_schema`: whether the turn ended on a reply the schema validates |
-
-### Inference-level attributes (provider span)
-
-The `chat <model>` span — emitted once per fallback attempt by the gateway — carries the full set of GenAI inference attributes. A single `step:*` may have multiple sibling provider spans when fallback fires.
-
-| Attribute | Description |
-|-----------|-------------|
-| `gen_ai.operation.name` | Always `chat` for `llm_call`; future operation types follow the OTel registry (`embeddings`, `execute_tool`, `invoke_agent`, …) |
-| `gen_ai.provider.name` | Canonical OTel value (e.g. `openai`, `anthropic`, `gcp.gemini`) translated from AgentLoom's internal provider name |
-| `gen_ai.request.model`, `gen_ai.response.model` | Requested model and the model the provider actually responded with (may differ when the provider auto-resolves a version, e.g. `gpt-4o-mini` → `gpt-4o-mini-2024-07-18`) |
-| `gen_ai.request.temperature`, `gen_ai.request.max_tokens` | Sampling controls passed through to the provider |
-| `gen_ai.request.stream` | `true` for streaming calls — distinguishes streaming vs non-streaming inference at the inference span level |
-| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.reasoning.output_tokens` | Token counts |
-| `gen_ai.response.finish_reasons` | Array of stop reasons |
-| `gen_ai.response.time_to_first_chunk` | Streaming-only |
-| `error.type` | Set on errored attempts (OTel general convention, alongside the AgentLoom-specific `step.error`) |
-| `agentloom.provider.attempt`, `agentloom.provider.attempt_outcome` | Fallback attempt index (0-indexed) and outcome (`ok` / `error`) — debugging fallback behaviour |
-
-### Capture flags
-
-Full prompt content is **not** captured by default — size and secrets concerns. Set `config.capture_prompts: true` in the workflow YAML to opt in: each `llm_call` span then carries an `agentloom.prompt.captured` OTel event with the rendered `prompt` and `system_prompt`. Event payloads avoid the attribute-size cap and stay easy to filter at the OTel collector. Off by default; opt-in for debugging or trusted environments.
-
-When a redaction policy is configured (see [State redaction](providers.md#state-redaction)), the captured copy is re-rendered against the redacted state — a flagged `{state.api_key}` becomes a `<REDACTED:sha256=...>` sentinel in the span event, while the request actually sent to the provider keeps the plaintext value. Same policy, same patterns, single source of truth: declare it once in `state_schema:` (or `AGENTLOOM_REDACT_STATE_KEYS`) and every persistence boundary — checkpoint, webhook body, span event — honours it.
-
-### Provider name translation
-
-AgentLoom's internal provider names map to the canonical OTel registry values: `google` → `gcp.gemini`, others (`openai`, `anthropic`, `ollama`) match the registry as-is. Custom values (`ollama`, `mock`) ride the spec's "vendor extension" allowance. The bundled Grafana dashboard queries Prometheus metrics (not span attributes), so dashboard panels are unaffected by attribute renames.
-
-### Quality annotations
-
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
-
-Workflow spans capture latency, tokens, and cost — but not output *correctness*. The `WorkflowResult.annotate()` API attaches post-hoc quality scores so evaluators or human reviewers can correlate execution performance with output quality.
-
-```python
-result = await engine.run()
-result.annotate("answer", quality_score=4.5, source="human_feedback", rubric="helpfulness")
-```
-
-Each annotation produces a standalone `quality:<target>` OTel span carrying:
-
-| Attribute                          | Meaning                                                                |
-|------------------------------------|------------------------------------------------------------------------|
-| `workflow.run_id`                  | The original run id — group quality spans with the run by joining here |
-| `workflow.name`                    | Workflow name for filtering                                            |
-| `agentloom.quality.target`         | The annotation target (`"answer"`, `"step:review"`, ...)               |
-| `agentloom.quality.score`          | Numeric score                                                          |
-| `agentloom.quality.source`         | Producer (`"human_feedback"`, `"llm_judge"`, `"regex"`, ...)           |
-| `agentloom.quality.metadata.<key>` | Free-form metadata, flattened so each key is queryable in Jaeger       |
-
-The workflow span is already closed by the time `result.annotate()` runs, so retroactive attribute attachment isn't possible — standalone spans keyed by `workflow.run_id` are the workaround. The engine wires its tracing context onto the result before returning, so `result.annotate(...)` **auto-publishes the span** the moment it's called — no extra plumbing required to see the annotation in Jaeger. Offline / replay scenarios that construct a `WorkflowResult` without a tracer fall back to data-only annotations; `agentloom.observability.quality.emit_quality_annotations(result, tracing)` is available for batch evaluators that need to push annotations through a tracer assembled later.
-
-In Grafana / Jaeger, a query like `workflow.run_id="<id>" AND name=~"quality:.*"` lists every annotation attached to a run; `agentloom.quality.score < 3` surfaces low-quality outputs across runs to diagnose regressions.
-
-### Per-run history records
-
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
-
-The engine writes a JSON record to `./agentloom_runs/<run_id>.json` after every workflow execution (success or failure). Records are intentionally small and self-contained so post-hoc debugging never requires replaying the workflow:
+Every run that isn't interrupted writes `<run id>.json` to `AGENTLOOM_RUNS_DIR`, or `./agentloom_runs`, with or without the extra:
 
 ```json
 {
   "_schema_version": 1,
-  "run_id": "abc123def456",
-  "timestamp": "2026-05-02T18:34:18+00:00",
+  "run_id": "3f9c2a7b1e04",
+  "timestamp": "2026-11-08T20:28:01.556153+00:00",
   "agentloom_version": "0.5.0",
-  "python_version": "3.12.13",
-  "workflow_name": "simple-qa",
-  "workflow_hash": "sha256:...",
+  "python_version": "3.12.7",
+  "workflow_name": "fault-replay",
+  "workflow_hash": "9b1d…",
   "status": "success",
-  "providers_used": ["openai/gpt-4o-mini"],
-  "total_cost_usd": 0.012,
-  "total_tokens": 320,
-  "steps_executed": 5,
-  "duration_ms": 3200,
+  "providers_used": ["mock/mock-model"],
+  "total_cost_usd": 0.0,
+  "total_tokens": 56,
+  "steps_executed": 2,
+  "duration_ms": 421.3,
   "error": null
 }
 ```
 
-Override the directory via the `AGENTLOOM_RUNS_DIR` env var or the `runs_dir` argument on `RunHistoryWriter`. Disk I/O happens in a worker thread so the write doesn't block the event loop, and any failure (broken directory, permissions) is logged at debug and swallowed — history is best-effort, never load-bearing.
+The record holds no state and no prompts. [`agentloom history`](cli.md#history) lists and filters the records. A record that can't be written is skipped: with the default directory, silently; with `AGENTLOOM_RUNS_DIR` set, with a warning.
 
-Inspect records via the CLI:
+## Logs
 
-```bash
-agentloom history                                  # most recent 20 runs, table format
-agentloom history --workflow simple-qa             # filter by workflow
-agentloom history --provider openai                # filter by provider prefix
-agentloom history --since 2026-05-01               # date filter (UTC midnight anchor)
-agentloom history --since 2026-05-01 --until 2026-05-02   # date range
-agentloom history --min-cost 0.10                  # cost filters
-agentloom history --max-cost 1.00
-agentloom history --json                           # machine-readable
+The CLI configures no logging: warnings and errors print on stderr as plain lines, such as `Step 'draft' failed (attempt 1/3), retrying in 0.2s: …`, and lower levels don't show. `AGENTLOOM_LOG_LEVEL` and `AGENTLOOM_LOG_FORMAT` have no effect.
+
+From Python, `setup_logging(level="INFO", format="json")`, from `agentloom.observability`, sends the `agentloom` logs to stderr, one JSON object per line, with `timestamp`, `level`, `logger` and `message`.
+
+## From Python
+
+A Python program sends nothing unless it passes an observer:
+
+```python
+from agentloom.core.engine import WorkflowEngine
+from agentloom.observability import WorkflowObserver
+from agentloom.observability.metrics import MetricsManager
+from agentloom.observability.tracing import TracingManager
+
+observer = WorkflowObserver(
+    tracing=TracingManager(endpoint="http://localhost:4317"),
+    metrics=MetricsManager(endpoint="http://localhost:4317"),
+)
+engine = WorkflowEngine(workflow, provider_gateway=gateway, observer=observer)
+try:
+    result = await engine.run()
+finally:
+    observer.shutdown()
 ```
 
-`--since` / `--until` accept `YYYY-MM-DD` (anchored at UTC midnight) or full ISO 8601. `--min-cost` / `--max-cost` operate on `total_cost_usd`. Filters compose, so `--workflow simple-qa --since 2026-05-01 --max-cost 0.10` lists every cheap run of `simple-qa` since May 1st. The table columns (`TIMESTAMP`, `RUN ID`, `WORKFLOW`, `STATUS`, `COST USD`, `DUR MS`) are stable — downstream `grep` / `awk` scripts can rely on the layout. `agentloom history` is distinct from `agentloom runs`: `runs` lists checkpointed-resumable executions from the configured checkpointer, while `history` lists every execution regardless of checkpointing.
+The managers set the process's global OpenTelemetry tracer and meter providers, and `shutdown()` flushes and shuts them down. Pass the observer to `WorkflowEngine` rather than setting `engine.observer` later: only the constructor connects it to the gateway, which reports the provider spans and metrics.
 
----
+**An observer of your own** implements the hooks it needs. The engine calls six on every observer: `on_workflow_start`, `on_workflow_end`, `on_step_start`, `on_step_end`, `on_tokens` and `on_stream_response`, as `ObserverProtocol` in `agentloom.core.protocols` declares. The others, for provider calls, tools, agents, conversations, gates and replays, are called when they exist. Subclass `NoopObserver`, from `agentloom.observability.noop`, which has them all, and accept `**kwargs`, as hooks may gain arguments.
 
-## Budget enforcement
+- **`on_webhook_delivery`** is required once an approval gate sends notifications: without it, the gate step fails.
+- **A hook that raises** inside the engine or the gateway fails the step's attempt, which is retried, provider call included.
 
-The engine routes all workflow spend through `BudgetEnforcer` (`agentloom.resilience.budget`). The enforcer carries an `anyio.Lock`, so concurrent step completions in a parallel layer can't race past the limit by reading the same `_spent` value and both adding their cost. Two surfaces matter:
+## What's next
 
-* **Pre-dispatch gate** (`estimate(0)`) — before launching any step, the engine reads `spent` under the lock and refuses to start if the budget is already exhausted. This bounds the worst-case overshoot to the in-flight set of a single layer rather than letting it compound across layers.
-* **Post-completion charge** (`charge(cost_usd)`) — when a step succeeds, the engine adds the actual cost inside the lock and raises `BudgetExceededError` if the post-charge total is over. The exception propagates through the task group to the engine's terminal classifier, which surfaces `WorkflowStatus.BUDGET_EXCEEDED`.
-* **Failed attempts** — an attempt that fails (a provider error after paid calls, its step `timeout`, a structured reply never valid, a broken agent constraint) is charged too, as soon as it fails, with what its calls that answered cost, the agents it called and its summaries included; a breach stops the step's retries. The step's `cost_usd` and `token_usage` add up all its attempts, those before a resume included, and the token metrics count each attempt's tokens once, under their model.
-* **What an attempt spent** — what its calls cost as the gateway counted them, or what its step reports when that is more: the calls of a gateway of its own (`GatewayProtocol`), or the rolled-up cost of a subworkflow with a budget of its own. Cost and tokens are compared apart.
-* **Resume** — a checkpoint keeps what the run had charged (`spent_usd`), and a resumed run's budget goes on from it; a checkpoint written before it had that field goes on from its step results' cost. A resumed run reports its whole spend, the part before its pause included, in its result and to `on_workflow_end`; a process that ran the paused run too, such as the callback server, adds that part to `agentloom_cost_usd_total` twice.
-* **Cut steps** — a step cut short, by the workflow's `timeout` or when another step of its layer breaks the budget, is charged what its finished calls cost, without raising a second breach, and its span and token metrics carry it. One cut by the timeout keeps it on its `timeout` result; one cut by a breach gets no result, and the run's `total_cost_usd` and `total_tokens` count it. A subworkflow cut by its step's `timeout` or the workflow's keeps its steps' tokens on its result, and, with a budget of its own, charges its parent what they spent.
+<!-- cards -->
 
-### Cross-subworkflow accounting
+- **[Deployment](deployment.md)** — The Compose stack, and exporting from Kubernetes.
+- **[Reliability](reliability.md)** — Budgets, circuit breakers and what the metrics count.
+- **[Testing & replay](testing-and-replay.md)** — Replays, and the metrics they report.
 
-When a parent workflow launches a subworkflow step:
-
-| Parent budget | Child budget | Behaviour |
-|---------------|--------------|-----------|
-| Set (`$0.10`) | None | Child engine inherits the parent's enforcer. Child charges count against the parent's `_spent`, so the parent's gate trips at the right step. The child's own `total_cost_usd` is what its steps charged, not the parent's total. A child that breaks the parent's budget gives its step a `failed` result with its steps' tokens and `cost_usd: 0`, as they charged it already. |
-| Set (`$0.10`) | Set (`$0.05`) | Child uses a fresh enforcer scoped to its own limit. The parent's per-step accounting still adds the rolled-up subworkflow cost to the parent counter, whether the child succeeds, fails, pauses at an approval gate or breaks its own budget; a breach fails the step without a retry, and a pause that breaks the parent's budget still pauses. |
-| None | Set (`$0.05`) | Child enforces its own budget; parent has no limit to enforce. |
-| None | None | No enforcement at either level. |
-
-### Pause-over-budget precedence
-
-When an `approval_gate` and a budget-blowing LLM step land in the same layer, **pause wins**. Letting the budget win would complete the LLM step (spending the money), drop the pause and end the workflow `budget_exceeded` with no resumable checkpoint at the gate. Pausing first keeps both options — the human can `--approve` or `--reject`, and the workflow re-evaluates budget on resume. A workflow that resumes with budget already exhausted will then surface `BudgetExceededError` on the next dispatch (the user explicitly chose to look at the pause first).
-
-The workflow's `timeout` gives way to a pause the same way: the steps it cut short are marked `timeout` and run again on resume. Only a pause of the current run counts: a resumed run that breaks its budget or its timeout before it reaches the gate it had paused at ends `budget_exceeded` or `timeout`, not `paused` at that gate again.
-
----
-
-## Troubleshooting
-
-??? question "Panels show 'No data'"
-    Metrics are ephemeral — each CLI run exports data, then the process exits. The OTel Collector retains metrics for 30 minutes (`metric_expiration`).
-
-    ```bash
-    # Verify metrics reach Prometheus
-    curl -s 'http://localhost:9090/api/v1/query?query=agentloom_workflow_runs_total'
-
-    # Run a workflow to generate fresh data
-    agentloom run examples/01_simple_qa.yaml
-
-    # Run the circuit breaker demo for reliability panels
-    agentloom run examples/16_circuit_breaker_demo.yaml
-    ```
-
-??? question "Timeseries panels show flat lines"
-    Each CLI invocation is a short-lived process that creates ephemeral counters. Timeseries panels show cumulative totals — run several workflows to see the values increase over time. Metrics expire from Prometheus after 30 minutes, so run workflows periodically.
-
-??? question "Circuit Breaker shows OPEN unexpectedly"
-    If you ran `16_circuit_breaker_demo.yaml`, it intentionally trips the circuit breaker with a non-existent model. The OPEN state persists in Prometheus for 30 minutes. Run a successful workflow against the same provider to reset it, or wait for the metric to expire.
-
-??? question "Traces not appearing in Jaeger"
-    Check that the OTel Collector is running and accepting gRPC on port 4317:
-    ```bash
-    docker compose ps
-    docker compose logs otel-collector
-    ```
+<!-- /cards -->

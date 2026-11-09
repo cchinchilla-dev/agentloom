@@ -265,4 +265,4 @@ called as a tool, memory, loop policy, typed reply, constraints) and run by two
 `agent` steps on one conversation, offline against `recordings/agent.json`.
 Demonstrates: the `agent` step type, an agent as a tool, typed replies with tools.
 
-Full descriptions and commands: [docs/examples](https://cchinchilla-dev.github.io/agentloom/examples/).
+How to run them, grouped by topic: [docs/examples](https://cchinchilla.dev/agentloom/examples/).

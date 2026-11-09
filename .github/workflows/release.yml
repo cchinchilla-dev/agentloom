@@ -136,3 +136,30 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
+
+  docs:
+    name: Publish the docs
+    needs: [resolve-tag, publish]
+    runs-on: ubuntu-latest
+    # Its secret is a token that can only start the blog's workflows; the environment limits it to main and v* tags
+    environment: blog-dispatch
+    permissions: {}
+    steps:
+      # The blog publishes the docs of the version PyPI serves, so it must serve this one first
+      - name: Wait for PyPI
+        env:
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+        run: |
+          for _ in $(seq 20); do
+            served=$(curl -fsS https://pypi.org/pypi/agentloom/json | jq -r .info.version) || served=""
+            if [ "$served" = "${TAG#v}" ]; then exit 0; fi
+            sleep 15
+          done
+          echo "::warning::PyPI does not serve ${TAG#v} yet: the blog keeps the previous docs until this job is re-run."
+      # A failed start leaves the release published: the blog's build can be started from its Actions tab
+      - name: Rebuild the blog
+        env:
+          GH_TOKEN: ${{ secrets.BLOG_DISPATCH_TOKEN }}
+        run: >-
+          gh workflow run ci.yml --repo cchinchilla-dev/blog --ref main
+          || echo "::warning::Could not start the blog's build; start ci.yml in cchinchilla-dev/blog by hand."

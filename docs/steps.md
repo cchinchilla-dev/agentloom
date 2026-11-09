@@ -1,0 +1,273 @@
+---
+title: "Steps"
+description: "The seven AgentLoom step types at a glance, and the full reference for routers, subworkflows, approval gates and embedding steps."
+order: 5
+section: "Workflows"
+---
+
+# Steps
+
+Seven step types cover model calls, agents, tools, branching, nested workflows, human approval and embeddings. This page lists them all and covers four in full; model calls, agents and tools have pages of their own.
+
+## Step types at a glance
+
+| Type | What it does | Its main fields | Reference |
+|------|--------------|-----------------|-----------|
+| `llm_call` | One model call, with optional attachments, tools, structured output or a conversation. | `prompt`, `system_prompt`, `model` | [LLM calls](llm-calls.md) |
+| `agent` | One turn of an agent defined once and reused: its prompt, tools and loop policy. | `agent`, `prompt` | [Agents](agents.md) |
+| `tool` | Runs a tool, built in or your own, with arguments from the state. | `tool_name`, `tool_args` | [Tools & sandbox](tools-and-sandbox.md) |
+| `router` | Chooses which branch runs next. | `conditions`, `default` | [below](#router) |
+| `subworkflow` | Runs another workflow as a single step. | `workflow_path` or `workflow_inline` | [below](#subworkflow) |
+| `approval_gate` | Pauses the run until someone approves or rejects. | `notify` | [below](#approval_gate) |
+| `embed` | Turns text from the state into vectors. | `inputs`, `model` | [below](#embed) |
+
+Every type also takes the [fields all steps share](workflow-files.md#fields-every-step-has): `id`, `type`, `depends_on`, `output`, `timeout` and `retry`.
+
+## `router`
+
+A router reads the state and picks the step that runs next. It checks its conditions in order: the first one that is true names the target, and `default` covers the case where none is.
+
+```yaml
+- id: route
+  type: router
+  depends_on: [classify]
+  conditions:
+    - expression: "state.category == 'billing'"
+      target: billing_reply
+    - expression: "state.priority is not None and state.priority >= 3"
+      target: escalate
+  default: general_reply
+  output: route_taken          # optional: the id of the chosen step
+```
+
+| Field | What it is |
+|-------|------------|
+| `conditions` | A list of `expression` and `target` pairs, checked in order. |
+| `default` | The target when no condition is true. Without one, and with no match, the router fails. |
+| `output` | Receives the chosen step's id, which is also the router's `steps.<id>.output`. |
+
+The parser checks that every `target` and the `default` name a step of the file.
+
+### Branches
+
+A router gates only the steps that list it in `depends_on`:
+
+- The step it chose runs.
+- Every other step that depends on the router is skipped, and so is everything downstream of it.
+- A target that doesn't depend on the router isn't gated at all: it runs whatever the router chose. The parser doesn't catch this, so give every target `depends_on: [<router id>]`.
+
+A skipped branch doesn't fail the run. A step that depends on two branches never runs, though, because one of them was always skipped: there is no join after a router. Put a follow-up step in each branch instead.
+
+### Expressions
+
+An expression is a small subset of Python, evaluated against two names:
+
+- `state`, the run's state: `state.category`, `state.user.name`, `state['user']['name']` or `state.items[0]`. A key that doesn't exist reads as `None`.
+- `steps`, the result of each step that succeeded: `steps.classify.output` and `steps.classify.status`.
+
+There are no bare names: `category == 'billing'` fails, `state.category == 'billing'` works.
+
+| Allowed | Examples |
+|---------|----------|
+| Comparisons | `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, `is`, `is not` |
+| Logic | `and`, `or`, `not`, and `a if condition else b` |
+| Arithmetic | `+` and `-`, nothing else |
+| Literals | strings, numbers, `True`, `False`, `None`, lists, tuples and dictionaries |
+| Functions | `len`, `str`, `int`, `float`, `bool`, `abs`, `min`, `max` and `isinstance` |
+| Methods of strings and numbers | `state.category.strip().lower() == 'billing'`, `state.subject.startswith('RE:')` |
+| Indexes | literal keys and integer slices: `state['user']`, `state.items[-1]`, `len(state.items[1:3])` |
+
+Lists and dictionaries from the state work with `len`, `in` and indexes, but not with their own methods, and `==` against a literal list is always false.
+
+A comparison with a missing key raises an error rather than evaluating false: `state.priority > 3` fails when `priority` isn't set. Test for it first, as in `state.priority is not None and state.priority >= 3`.
+
+Anything else, from imports and assignments to other functions and attributes that start with `_`, is refused with a `SecurityError` that names the construct.
+
+### When a router fails
+
+A router fails when an expression raises, or when nothing matches and there is no `default`. That failure is retried like any other step's, with the router's `retry`, although evaluating the same state again gives the same result. Setting `retry: {max_retries: 0}` on a router makes it fail at once. Expressions are only evaluated when the router runs, so `agentloom validate` doesn't catch their mistakes.
+
+## `subworkflow`
+
+Runs another workflow as one step. Its steps run in their own layers, and the step succeeds when the child workflow does.
+
+<!-- tabs -->
+
+**From a file**
+
+```yaml
+- id: localize_es
+  type: subworkflow
+  depends_on: [draft]
+  workflow_path: workflows/localize.yaml    # relative to the directory you run from
+  output: es
+```
+
+**Inline**
+
+```yaml
+- id: score
+  type: subworkflow
+  depends_on: [draft]
+  workflow_inline:
+    name: scorer
+    steps:
+      - id: rate
+        type: llm_call
+        prompt: "Rate this draft from 1 to 10: {state.draft}"
+        output: rating
+  output: score_result
+```
+
+<!-- /tabs -->
+
+With both `workflow_path` and `workflow_inline`, the file wins.
+
+### State in and out
+
+| Mode | The child starts with | `output` receives |
+|------|-----------------------|-------------------|
+| Default | A copy of the parent's state. The child's own `state:` block and `input` are ignored. | The child's final state, or only the keys in `return_keys`. |
+| `isolated_state: true` | Its own `state:` block, plus the keys in `input`. Nothing from the parent. | The child's final state, or only the keys in `return_keys`. |
+
+```yaml
+- id: classify
+  type: subworkflow
+  isolated_state: true
+  input:
+    threshold: 0.75             # copied as written
+  return_keys: [label, score]
+  workflow_path: workflows/classifier.yaml
+  output: classification        # {label: ..., score: ...}
+```
+
+- The child never writes to the parent's state. What comes back lands under the step's `output` key, and only when the child succeeds.
+- In the default mode, the child's final state includes its copy of the parent's keys: `return_keys` keeps only what you need.
+- A key of `return_keys` that the child never set is left out, without an error.
+- `input` values are copied as written. A template such as `"{state.topic}"` reaches the child as that literal text, so the way to hand parent values to a child is the default mode.
+
+### What the child inherits
+
+- **Its own `config`.** A child without one runs with the defaults, OpenAI and `gpt-4o-mini`, not with the parent's model. `--provider` and `--model` on the command line change only the parent.
+- **The parent's budget,** unless the child sets its own `budget_usd`. A child that goes over its own budget fails the step, which isn't retried.
+- **The parent's sandbox,** when the parent's is enabled; it replaces the child's. The built-in tools follow the top-level workflow's sandbox in any case: see [Subworkflows](tools-and-sandbox.md#subworkflows).
+- **The parent's redaction rules,** added to the child's `state_schema`.
+- **The same providers and tools,** with the same keys, rate limits and circuit breakers.
+
+### Failures and retries
+
+A failed child fails the step, with the child's error. The step's `retry` then runs the whole child again, unless the child's failure was permanent, such as a rejected key. The child's steps have their own retries inside each of those attempts.
+
+### Approval gates inside
+
+An [approval gate](#approval_gate) in the child pauses the parent too, and the checkpoint records the pause as `<step id>.<gate id>`, such as `localize_es.review`. `agentloom resume <run_id> --approve` continues the parent and the child together. The child resumes from its own checkpoint, saved as `<run_id>.<step id>`, so its finished steps don't run again.
+
+### Step ids and validation
+
+The child's step ids are its own: a parent and its child can both have a step called `classify`. The parent's load only checks that a `workflow_path` exists; the child is parsed when the step runs. Run `agentloom validate` on a child file before you reference it.
+
+## `approval_gate`
+
+Pauses the run until someone approves or rejects, then writes the decision to `output`.
+
+```yaml
+- id: approve_send
+  type: approval_gate
+  depends_on: [draft_email]
+  output: decision                # "approved" or "rejected"
+  notify:                         # optional
+    url: https://hooks.example.com/agentloom
+    headers: { X-Source: agentloom }
+```
+
+1. **The gate runs.** It sends the `notify` webhook if there is one, and asks for a pause. The steps already running in its layer finish, and the run ends `paused`.
+2. **The run waits.** `agentloom run` prints what to do next:
+
+    ```text
+    [APPROVAL REQUIRED] Step 'approve_send' is waiting for a decision.
+      Approve: agentloom resume 3f2a9c1b7d4e --approve
+      Reject:  agentloom resume 3f2a9c1b7d4e --reject
+    ```
+
+3. **Someone decides,** with `agentloom resume` or over HTTP through the [callback server](cli.md#callback-server). The gate succeeds, writes `approved` or `rejected` to `output`, and the run goes on from the next layer.
+
+Run it with `--checkpoint`: without a checkpoint, a paused run leaves nothing to resume.
+
+A rejection doesn't stop the run. The gate succeeds either way, and the steps after it run, so route on the decision to act on it:
+
+```yaml
+- id: after_review
+  type: router
+  depends_on: [approve_send]
+  conditions:
+    - expression: "state.decision == 'approved'"
+      target: send_email
+  default: archive_draft
+```
+
+| Field | Default | What it is |
+|-------|---------|------------|
+| `notify.url` | required with `notify` | Where the webhook goes, as a POST. |
+| `notify.headers` | none | Headers sent with it, as given. |
+| `notify.body_template` | none | The JSON body, as a template. Without it, a default body is sent. |
+| `notify.timeout` | `30` | Seconds for each delivery attempt, within the overall limit below. |
+| `timeout_seconds`, `on_timeout` | none | Accepted, but not enforced yet: a paused run waits for a decision however long it takes. |
+
+### The webhook
+
+The default body names the run and the gate:
+
+```json
+{"run_id": "3f2a9c1b7d4e", "step_id": "approve_send", "workflow_name": "outreach", "status": "awaiting_approval"}
+```
+
+A `body_template` is rendered like a prompt, with the state, after [redaction](state-and-templates.md#redaction), plus `run_id`, `step_id` and `workflow_name`. Literal braces in the JSON are written twice:
+
+```yaml
+notify:
+  url: https://hooks.example.com/agentloom
+  body_template: '{{"text": "Run {run_id} is waiting at {step_id}: {state.subject}"}}'
+```
+
+Delivery is best effort. AgentLoom makes up to three attempts, 2 and then 4 seconds apart, within 5 seconds in all, and a response outside 2xx counts as a failure. A webhook that fails never fails the gate: the run pauses all the same, and the failure is logged.
+
+The URL passes through the workflow's [sandbox](tools-and-sandbox.md). With the sandbox enabled, it must satisfy its network rules. With the sandbox disabled, loopback, link-local and private addresses are still refused, unless `sandbox.allow_internal_webhook_targets` is `true`: a webhook to `localhost` or to an [`agentloom callback-server`](cli.md#callback-server) on your network needs that setting. A host that doesn't resolve is refused, and the delivery connects to the addresses the check resolved. A refused webhook isn't sent, and the gate pauses all the same.
+
+## `embed`
+
+Turns text from the state into vectors.
+
+```yaml
+- id: vectorize
+  type: embed
+  inputs: state.documents          # a string or a list of strings
+  model: text-embedding-3-small
+  dimensions: 256                  # optional
+  output: vectors                  # one vector per input
+```
+
+| Field | Default | What it is |
+|-------|---------|------------|
+| `inputs` | required | A state path, `state.documents` or `{state.documents}`. Dotted paths work, indexes don't. It must hold a string or a list of strings. |
+| `model` | `config.model` | An embedding model. The default is the workflow's model, usually a chat model, so set it. |
+| `dimensions` | the model's | Shorter vectors, where the provider supports it. |
+| `output` | none | Receives the vectors, a list of lists of numbers. The step's `steps.<id>.output` holds a summary instead, such as `3 vectors × 256`. |
+
+| Provider | Models | `dimensions` |
+|----------|--------|--------------|
+| OpenAI | `text-embedding-3-small`, `text-embedding-3-large` | Yes |
+| Google | `gemini-embedding-001` | Yes |
+| Ollama | Any embedding model you pulled, such as `nomic-embed-text` | Ignored |
+| Anthropic | None: the gateway skips it and tries the next provider | — |
+
+The model name picks the provider, as for a model call. The `mock` provider returns recorded vectors, or made-up ones that are the same on every run; see [Testing & Replay](testing-and-replay.md).
+
+## What's next
+
+<!-- cards -->
+
+- **[LLM calls](llm-calls.md)** — Prompts, attachments, reasoning, tool calling, structured output and conversations.
+- **[State & templates](state-and-templates.md)** — What steps write to the state, and the template syntax that reads it.
+- **[Examples](examples.md)** — Workflows with routers, subworkflows and approval gates you can run.
+
+<!-- /cards -->

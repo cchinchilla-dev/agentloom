@@ -1,4 +1,4 @@
-.PHONY: install install-all test test-cov lint format format-check typecheck version workflows check run validate info build clean \
+.PHONY: install install-all test test-cov lint format format-check typecheck version docs workflows check run validate info build clean \
        docker-build docker-build-lite docker-run docker-stack docker-stack-down \
        k8s-validate helm-lint helm-template
 
@@ -36,8 +36,11 @@ version:
 workflows:
 	uv run zizmor --offline .github/
 
-# CI's code gates; CI also builds the docs and package (K8s manifests: make k8s-validate helm-lint)
-check: lint format-check typecheck test-cov version workflows
+docs:
+	uv run python scripts/check_docs.py
+
+# CI's code gates; CI also builds the package (K8s manifests: make k8s-validate helm-lint)
+check: lint format-check typecheck test-cov version docs workflows
 
 # CLI shortcuts
 run:

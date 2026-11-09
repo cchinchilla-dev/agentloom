@@ -1,344 +1,203 @@
+---
+title: "Providers"
+description: "Which provider answers each step, how to configure OpenAI, Anthropic, Google, Ollama and OpenAI-compatible servers, and what each one supports."
+order: 11
+section: "Running"
+---
+
 # Providers
 
-AgentLoom ships with four providers, plus `generic_openai` for any OpenAI-compatible endpoint. The gateway routes requests based on model name and falls back automatically when a provider is unavailable.
+AgentLoom calls OpenAI, Anthropic, Google and Ollama over their HTTP APIs, any OpenAI-compatible server through `generic_openai`, and a `mock` provider for offline runs. This page covers which provider answers a step, how to set each one up, and what each supports.
 
-## Capability matrix
+## Which provider answers
 
-| Capability | OpenAI | Anthropic | Google | Ollama |
-|---|---|---|---|---|
-| Models | `gpt-*`, `o1*`, `o3*`, `o4*`, `text-embedding-*` | `claude*` | `gemini*` | Any local model |
-| Streaming | SSE | SSE | SSE | NDJSON |
-| Image input | :material-check: | :material-check: | :material-check: | :material-check: |
-| PDF input | :material-close: | :material-check: | :material-check: | :material-close: |
-| Audio input | :material-check: | :material-close: | :material-check: | :material-close: |
-| Reasoning token count | :material-check: (o-series, implicit) | :material-close: (rolled into `output_tokens`) | :material-check: (Gemini 2.5+, opt-in) | :material-close: (no `eval_count` split) |
-| Reasoning content (trace) | :material-close: (server-side only) | :material-check: (`type="thinking"` blocks) | :material-check: (`includeThoughts` opt-in) | :material-check: (Ollama 0.9+ `message.thinking`) |
-| Structured output (native) | :material-check: (strict `response_format`, `gpt-4o-2024-08-06+`) | :material-close: (prefill fallback) | :material-check: (`responseSchema`) | :material-check: (Ollama 0.5+ `format` schema) |
-| Embeddings | :material-check: (`text-embedding-3-*`, `dimensions` supported) | :material-close: (no native API — use OpenAI / Google / Ollama / Voyage AI) | :material-check: (`gemini-embedding-001`, `batchEmbedContents`; older `text-embedding-004` deprecated) | :material-check: (`/api/embed`, e.g. `nomic-embed-text`) |
-| Cost tracking | :material-check: | :material-check: | :material-check: | Free (local) |
+`agentloom run` sets up a provider for each key it finds in the environment:
 
-## Configuration
+| Provider | Set up when | Key | Endpoint |
+|----------|-------------|-----|----------|
+| `openai` | `OPENAI_API_KEY` is set | `OPENAI_API_KEY` | `OPENAI_BASE_URL` |
+| `anthropic` | `ANTHROPIC_API_KEY` is set | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` |
+| `google` | `GOOGLE_API_KEY` is set | `GOOGLE_API_KEY` | `GOOGLE_BASE_URL` |
+| `ollama` | The workflow says `provider: ollama`, or `AGENTLOOM_OLLAMA_FALLBACK` is on | none | `OLLAMA_BASE_URL`, else `http://localhost:11434` |
+| `generic_openai` | The workflow says `provider: generic_openai` | The variable `api_key_env` names | `base_url` |
+| `mock` | The workflow says `provider: mock`, or the run passes `--mock-responses` | none | none |
 
-Switch provider in any workflow:
+**The model name picks the provider,** not `provider`:
 
-```yaml
-config:
-  provider: google
-  model: gemini-2.5-flash
-```
+| Provider | Serves |
+|----------|--------|
+| OpenAI | Names that start with `gpt-`, `o1`, `o3`, `o4`, `text-embedding-3-` or `text-embedding-ada-`. |
+| Anthropic | Names that contain `claude`. |
+| Google | Names that contain `gemini`, and names that start with `embedding-`. |
+| Ollama, `generic_openai`, `mock` | Any name. |
 
-Or override at runtime via CLI:
+`config.provider`, or `--provider`, only puts that provider first among those that serve the model. So `provider: anthropic` with the default model, `gpt-4o-mini`, still needs OpenAI: set `model` along with `provider`. An unknown `provider` name is accepted without an error, and changes nothing.
 
-```bash
-agentloom run workflow.yaml --provider anthropic --model claude-sonnet-4-6
-```
+Each step runs `config.model` unless it names its own `model`. `--model` changes `config.model`, so a step's own `model` wins over it.
 
-## Environment variables
-
-| Variable | Provider |
-|----------|----------|
-| `OPENAI_API_KEY` | OpenAI |
-| `ANTHROPIC_API_KEY` | Anthropic |
-| `GOOGLE_API_KEY` | Google |
-| `OLLAMA_BASE_URL` | Ollama (default: `http://localhost:11434`) |
-| `AGENTLOOM_OLLAMA_FALLBACK` | **Opt-in:** any truthy value (`1`, `true`, `yes`) registers Ollama as a global fallback during provider auto-discovery. |
-
-!!! warning "Breaking change in 0.5.0 — Ollama is now opt-in"
-    Pre-0.5.0 AgentLoom auto-registered Ollama as a catch-all fallback whenever no `providers:` block was explicitly configured. Every primary-provider failure — a 404 from a wrong model id, a transient 5xx — triggered a secondary call to `http://localhost:11434`, adding 250 ms – 1 s of latency per failure and a confusing error chain ("Provider 'anthropic' failed: 404 / Provider 'ollama' failed: model not found") for users who didn't run Ollama at all.
-
-    Starting in 0.5.0 you opt in via `AGENTLOOM_OLLAMA_FALLBACK=1`. Workflows that set `provider: ollama` directly (no fallback) keep working unchanged — the opt-in only affects the *implicit fallback* path.
+A model that no provider serves fails with `No provider registered for model 'llama3.2'`, after the step's retries.
 
 ### Recommended model IDs
 
-Pin to date-stamped IDs rather than tracking aliases. Date-pinned IDs reproduce the exact behaviour you validated against; tracking aliases (`-latest`, `-flash-latest`) may stop accepting console keys without notice.
+Pin dated model IDs rather than aliases: a dated ID behaves as it did when you tested it, while an alias such as `-latest` can change or stop answering without notice.
 
 | Provider | Recommended ID | Notes |
 |----------|----------------|-------|
-| Anthropic | `claude-haiku-4-5-20251001` | Not `claude-3-5-haiku-latest`, which current console keys reject with `404 not_found_error`. |
-| Google | `gemini-2.5-flash` | Not `gemini-2.0-flash`, which Google's API returns as `404 NOT_FOUND` for new users. |
-| OpenAI | `gpt-4o-mini` / `gpt-4o` | — |
+| Anthropic | `claude-haiku-4-5-20251001` | Not `claude-3-5-haiku-latest`: current keys get a 404 for it. |
+| Google | `gemini-2.5-flash` | Not `gemini-2.0-flash`, which returns a 404 for new users. |
+| OpenAI | `gpt-4o-mini`, `gpt-4o` | |
 
-## Pricing
+Six names belong to their provider: `gpt-4o-mini`, `gpt-4o`, `gpt-4.1`, `o4-mini`, `claude-haiku-4-5-20251001` and `gemini-2.5-flash` go only to it, and never to a fallback.
 
-Costs come from the bundled `providers/pricing.yaml`, in USD per 1K tokens. A model is priced by its own entry or by the longest entry its name starts with, so a dated id takes its alias's price, and a model the table lacks costs 0. Reasoning tokens bill at the output rate, and a tiered price at its first tier: Gemini Pro's up to 200K tokens, Claude Haiku 5.5's up to 100K and OpenAI's short context. `AGENTLOOM_PRICING_FILE` points to a table of your own, of the same shape.
+### Fallback
 
-The OpenAI, Anthropic and Gemini entries are refreshed weekly from LiteLLM's public price list by `scripts/update_pricing.py`, through a pull request reviewed before it merges; prices are never fetched at run time. The refresh changes prices and adds new text models but removes no entry, and an entry whose key line ends in `# pinned` keeps a price set by hand.
+When a provider fails, the attempt moves on to the next one that can serve the model: first the providers that serve its name, by priority, then Ollama when it is a fallback. A few limits:
 
-## Circuit breaker
+- **Every provider receives the same model name.** Anthropic can't answer for `gpt-4o`, so a fallback is useful only towards a provider that takes any name, Ollama or `generic_openai`, and only if it serves a model of that exact name.
+- **The six names above never fall back.**
+- **A [streamed](llm-calls.md#streaming) call doesn't fall back:** a provider error fails the attempt.
 
-The gateway wraps each provider with a circuit breaker:
+When every provider fails, the error starts with `All providers failed for model`. [Reliability](reliability.md#provider-failures) covers how fallback, circuit breakers and rate limits combine with retries.
 
-| State | Behavior | Transition |
-|-------|----------|------------|
-| **Closed** | Requests pass through normally | :material-arrow-right: Open after 5 consecutive failures |
-| **Open** | Requests rejected immediately, fallback provider used | :material-arrow-right: Half-open after 60s |
-| **Half-open** | One test request allowed | :material-arrow-right: Closed on success, Open on failure |
+### Using Ollama
 
-`RateLimitError` (HTTP 429) and stream cancellations (`GeneratorExit` / `anyio.CancelledError`) are excluded from the failure count — being throttled or aborted is not a provider outage. Only genuine errors count toward the 5-failure threshold.
+- `provider: ollama` sets up Ollama and tries it first for every model but the six names above: with an OpenAI key set, a name like `o3` goes to Ollama before OpenAI.
+- `AGENTLOOM_OLLAMA_FALLBACK=1`, or `true`, `yes` or `on`, sets up Ollama as a fallback, tried after the others. Any other value leaves it off, without a warning.
+- AgentLoom doesn't look for a running Ollama: without one of the two, it isn't used.
+- Ollama costs 0, and its requests time out after 120 seconds.
 
-## Rate limiter
+## Endpoints
 
-Dual token-bucket rate limiting per provider:
+`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GOOGLE_BASE_URL` and `OLLAMA_BASE_URL` point a provider at a proxy or a self-hosted gateway. Each provider treats the URL its own way:
 
-- **Requests per minute** — default 60 RPM
-- **Tokens per minute** — default 100,000 TPM
+| Provider | The URL | Example |
+|----------|---------|---------|
+| OpenAI, `generic_openai` | A bare host gets `/v1`; any other path is kept as it is. A trailing `/` is dropped. | `http://vllm:8000` becomes `http://vllm:8000/v1`; `https://gw.example.com/openai` stays. |
+| Anthropic | Gets `/v1`, unless it already ends in `/v1`. | `https://gw.example.com/anthropic` becomes `…/anthropic/v1`; `…/v2` becomes `…/v2/v1`. |
+| Google | Used as it is: include `/v1beta`. | `https://generativelanguage.googleapis.com/v1beta` |
+| Ollama | Used as it is. | `http://gpu-box:11434` |
 
-```python
-gateway.register(
-    provider,
-    max_rpm=120,          # requests/minute
-    max_tpm=200_000,      # tokens/minute
-)
-```
+The `*_BASE_URL` variables apply to the CLI. From Python, pass `base_url` to the provider, except for Ollama, which reads `OLLAMA_BASE_URL` itself.
 
-`max_rpm` and `max_tpm` must be `>= 1`; the limiter rejects zero/negative bounds at registration with `ValueError`. A request whose estimated `token_count` exceeds `max_tpm` also raises `ValueError` instead of blocking forever on a bucket that can never refill that high — this is a local precondition violation, not a `RateLimitError` (which is reserved for HTTP 429 responses from the provider).
+Requests honour `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and `SSL_CERT_FILE`. Keys go in the provider's usual header, `Authorization: Bearer`, `x-api-key` or `x-goog-api-key`; custom headers can't be added.
 
-## HTTP errors
+## OpenAI-compatible servers
 
-All provider adapters normalize remote errors to a common taxonomy:
-
-| HTTP status | Exception | Notes |
-|-------------|-----------|-------|
-| `429 Too Many Requests` | `RateLimitError` | Numeric `Retry-After` (seconds) is parsed and exposed on the exception. HTTP-date form is not supported — providers we talk to use integer seconds. |
-| `5xx` | `ProviderError` | Counts toward the circuit breaker |
-| network / timeout | `ProviderError` | Counts toward the circuit breaker |
-
-Provider adapters declare an explicit kwargs allowlist for `extra` parameters; unknown kwargs raise a `TypeError` at call time rather than silently reaching the vendor's API. Each adapter exposes its allowlist via a constant (`_OPENAI_EXTRA_PAYLOAD_KEYS`, `_ANTHROPIC_EXTRA_PAYLOAD_KEYS`, `_GOOGLE_GEN_CONFIG_KEYS` + `_GOOGLE_TOPLEVEL_KEYS`, `_OLLAMA_OPTION_KEYS` + `_OLLAMA_TOPLEVEL_KEYS`).
-
-## Generic OpenAI-compatible endpoint
-
-`generic_openai` talks to any server that exposes the OpenAI chat-completions API: vLLM, Text Generation Inference, LM Studio, or a gateway in front of them. It reuses the OpenAI adapter, so streaming, tool calling, structured output and embeddings work as far as the server implements them. Set it in the workflow:
+`generic_openai` reaches any server with an OpenAI-style API, such as vLLM, LM Studio or a hosted gateway:
 
 ```yaml
 config:
   provider: generic_openai
-  base_url: "http://vllm-server:8000/v1"
-  model: "meta-llama/Llama-3-70B"
-  api_key_env: "VLLM_API_KEY"  # optional
+  base_url: http://localhost:8000
+  api_key_env: VLLM_API_KEY      # optional
+  model: meta-llama/Llama-3.1-8B-Instruct
 ```
 
-- `base_url` is required, and the same [normalization](#openai-base_url-normalization) as OpenAI applies: a bare host gets `/v1`, any other path is kept.
-- Every model name is accepted: the server decides what it serves.
-- Every call goes to `base_url`. The CLI registers no other provider for the workflow, so no step is routed or falls back to OpenAI, Anthropic, Google or Ollama, even when their keys are set.
-- The key is read from the variable `api_key_env` names, never from `OPENAI_API_KEY`, so an OpenAI key is not sent to another server. Without `api_key_env`, requests carry no `Authorization` header.
-- A model missing from the pricing table costs 0. A served model whose name starts like a priced one (`gpt-4o…`) is priced at that rate; override it with `AGENTLOOM_PRICING_FILE`.
-- Streams ask for `stream_options.include_usage`, as with OpenAI. vLLM, LM Studio and recent TGI accept it; an older server may not.
-- Usage is read as OpenAI reports it: `completion_tokens` counts the reasoning tokens that `completion_tokens_details.reasoning_tokens` reports, and the visible ones are the difference. A `usage` of `null` counts no tokens.
-- In traces, `gen_ai.provider.name` is `generic_openai`.
+- `base_url` is required with `generic_openai`, and refused with any other provider.
+- `api_key_env` names the environment variable that holds the key. If that variable isn't set, the run stops before it starts. Without `api_key_env`, requests carry no key; `OPENAI_API_KEY` is never sent.
+- It is the only provider of the run: every model goes to it, and other keys and `AGENTLOOM_OLLAMA_FALLBACK` are ignored.
+- It supports what OpenAI does: streaming, tools, structured output, attachments in OpenAI's format and embeddings, as far as the server does. Streaming sends `stream_options`, which some servers refuse.
+- Its cost comes from the price table, by model name: a model named like a cloud model is priced like it, and other names cost 0.
+- `--provider generic_openai` works only on a file that sets `generic_openai` already, and `--provider` with any other provider drops the file's `base_url`.
 
-From Python, register `agentloom.providers.generic_openai.GenericOpenAIProvider(base_url=...)` on the gateway like any other provider.
+## Capabilities
 
-### OpenAI base_url normalization
+| | OpenAI, `generic_openai` | Anthropic | Google | Ollama |
+|---|---|---|---|---|
+| [Streaming](llm-calls.md#streaming) | Yes | Yes | Yes | Yes |
+| [Tool calling](llm-calls.md#tool-calling) | Yes | Yes | Yes | Yes, without `tool_choice` |
+| [Structured output](llm-calls.md#structured-output) | Native | Through the prompt | Native | Native, as the model allows |
+| [Images](llm-calls.md#attachments) | Yes, by URL too | Yes, by URL too | Yes | Yes |
+| PDF | No | Yes | Yes | No |
+| Audio | WAV and MP3 | No | Yes | No |
+| [Reasoning](llm-calls.md#reasoning) | Built into the model | Yes | Yes | Yes |
+| Reasoning tokens reported | Yes | In the reply's tokens | Yes | In the reply's tokens |
+| [Embeddings](steps.md#embed) | Yes | No | Yes | Yes, without `dimensions` |
+| Cost | Price table | Price table | Price table | 0 |
 
-The OpenAI adapter normalizes `base_url` so workflows that point at the bare host (`https://api.openai.com`) get the `/v1` suffix automatically. Custom enterprise gateways that already include a path are preserved verbatim:
+[Prices](reliability.md#prices) covers the price table and how to add models to it.
 
-| Input | Normalized |
-|-------|------------|
-| `https://api.openai.com` | `https://api.openai.com/v1` |
-| `https://api.openai.com/` | `https://api.openai.com/v1` |
-| `https://api.openai.com/v1` | `https://api.openai.com/v1` |
-| `https://gw.example.com/v2` | `https://gw.example.com/v2` *(preserved)* |
-| `https://gw.example.com/api/v1/foo` | `https://gw.example.com/api/v1/foo` *(preserved)* |
+### OpenAI
 
-## Non-retryable errors
+- Chat Completions, at `{base_url}/chat/completions`. Requests time out after 60 seconds.
+- `temperature` and `max_tokens` are sent as given, so leave them unset for reasoning models; `max_completion_tokens` and `reasoning_effort` can't be sent.
+- Reasoning tokens are reported apart from the reply's.
+- Embeddings go in batches of 100, with `dimensions`.
 
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+### Anthropic
 
-The resilience layer short-circuits the retry loop when an exception carries `is_retryable = False`. Retrying them would spend the full retry budget (up to 127 s of backoff per workflow) only to surface the failure the first attempt returned.
+- The Messages API, at `{base_url}/messages`, with `anthropic-version: 2023-06-01`. Requests time out after 60 seconds.
+- `max_tokens` is required by the API: AgentLoom sends 4096 when it is unset, so raise it above a reasoning budget.
+- All system messages are joined into one.
+- No embeddings: an `embed` step skips Anthropic and goes to the next provider.
 
-| Exception | Reason |
-|-----------|--------|
-| `SandboxViolationError` | Sandbox policy is deterministic; the next attempt is refused identically. |
-| `ToolNotFoundError` *(subclass of `KeyError`)* | A typo in `tool_name` never resolves itself. |
-| `AttachmentResolutionError` *(subclass of `ValueError`)* | Deterministic resolution failure — size limit, empty source, unsupported type, or a missing local file. |
-| `TemplateError` | A typo in `{state.foo}` never resolves itself. |
-| `ValidationError` | Workflow / step definition refused by Pydantic — fix the YAML, don't retry. |
-| `SecurityError` | Expression rejected by router AST policy — semantics, not flakiness. |
-| `BudgetExceededError` | Spend doesn't decrease between attempts. |
-| Pydantic `ValidationError` | Provider-side schema rejection. Special-cased because it's outside the AgentLoom hierarchy. |
+### Google
 
-Every failed `StepResult` carries an `error_classification` field — `"permanent"` for the errors above and for a provider status outside the step's `retry.retryable_status_codes`, `"transient"` for failures that exhausted the retry budget. When every provider of a model fails, the step sees the status they all failed with; when the statuses differ, or a provider was skipped (open circuit, no embeddings), the failure has no status and the step retries. It is part of the result model (visible in `agentloom run --json` and on `result.step_results`), so callers and post-run analysis can distinguish "we wasted 30 s retrying nothing" from "we actually retried a transient one".
+- The Gemini API, at `{base_url}/models/{model}:generateContent`. Requests time out after 60 seconds.
+- Reasoning tokens are reported whenever Gemini returns them.
+- Embeddings go in one batch, with `dimensions`. Gemini returns no token count for them: AgentLoom estimates about 1.3 tokens a word, and prices that.
 
-## Fallback chain
+### Ollama
 
-Providers are tried in priority order. Register multiple providers for automatic fallback:
+- `{base_url}/api/chat`. Requests time out after 120 seconds.
+- `<think>` blocks are removed from replies.
+- Embeddings ignore `dimensions`.
 
-```python
-gateway.register(openai_provider, priority=0)
-gateway.register(anthropic_provider, priority=1, is_fallback=True)
-gateway.register(ollama_provider, priority=2, is_fallback=True)
-```
+## Errors
 
-If OpenAI fails or its circuit breaker trips, the gateway automatically routes to Anthropic. If Anthropic also fails, it falls back to Ollama.
+| The provider returns | What AgentLoom raises | Retried |
+|----------------------|-----------------------|---------|
+| 429 | `RateLimitError`, with the status | Yes, with the step's own waits: `Retry-After` isn't followed. |
+| Any other error status | `ProviderError`, with the status and the provider's message | When the status is in [`retryable_status_codes`](reliability.md#retries). |
+| No answer: a refused connection, a timeout | An error without a status | Yes. |
+| An attachment it can't take | `ProviderError`, before any request | Yes. See [Attachments](llm-calls.md#attachments). |
 
-## Multi-modal attachments
-
-LLM steps support image, PDF, and audio attachments:
-
-```yaml
-steps:
-  - id: analyze
-    type: llm_call
-    prompt: "Describe what you see in this image."
-    attachments:
-      - type: image
-        source: "{state.image_url}"
-        fetch: local
-    output: description
-```
-
-| Field | Description |
-|-------|-------------|
-| `type` | `image`, `pdf`, or `audio` |
-| `source` | HTTP(S) URL, `data:` URL, local file path, or raw base64 data |
-| `media_type` | Optional; inferred from type if omitted |
-| `fetch` | `local` (engine downloads) or `provider` (provider fetches URL directly) |
-
-!!! warning "Provider support varies"
-    Check the [capability matrix](#capability-matrix) above. Sending a PDF to OpenAI or audio to Anthropic will raise a `ProviderError`.
-
-### `data:` URL attachments
-
-A `source` may be an RFC 2397 `data:` URL — `data:image/png;base64,iVBORw0KGgo…` — to inline binary content directly in the workflow, a common idiom when an earlier step composed the image in-process. Both base64 and percent-encoded payloads are decoded. A malformed URL or invalid base64 raises `AttachmentResolutionError` (a non-retryable failure) rather than a misleading `FileNotFoundError`.
-
-`data:` URLs make no network call and open no file, so they are **allowed unconditionally** even when `sandbox.enabled: true` — the threat model for inline content is the workflow author, not a remote host. The 20 MB size limit still applies to the decoded payload.
-
-## Reasoning models
-
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
-
-OpenAI o-series (`o1`, `o3`, `o4-mini`) and Anthropic Claude with extended thinking produce internal *reasoning tokens* before the final answer. Providers bill these at the output rate, so cost accounting must include them.
-
-`TokenUsage` exposes the count alongside the usual fields:
-
-```python
-usage.prompt_tokens          # input
-usage.completion_tokens      # visible output
-usage.reasoning_tokens       # provider-side chain-of-thought
-usage.billable_completion_tokens  # completion + reasoning
-```
-
-`calculate_cost()` charges `(prompt × input_rate) + ((completion + reasoning) × output_rate)` automatically, so workflow budgets and Prometheus cost metrics reflect the true spend.
-
-**OpenAI** — reasoning is implicit when an o-series model is selected. The adapter parses `completion_tokens_details.reasoning_tokens` from the response and takes them out of `completion_tokens`, which OpenAI reports with them, so they are billed once. The chain-of-thought trace is kept server-side and is never returned, so `ProviderResponse.reasoning_content` stays `None`.
-
-**Anthropic** — extended thinking is opt-in via the step-level `thinking` block (see [workflow YAML](workflow-yaml.md#llm_call)). `ThinkingConfig` translates to the `thinking: {type: "enabled", budget_tokens}` request payload, and `type="thinking"` content blocks are concatenated into `ProviderResponse.reasoning_content`. The Anthropic API does **not** surface a separate thinking-token count — extended-thinking volume is rolled into `usage.output_tokens` per the [Anthropic docs](https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking) — so `reasoning_tokens` stays `0` for this provider. Cost is automatically correct because the output rate is applied to `output_tokens` which already includes the thinking volume.
-
-**Google Gemini 2.5+** — opt-in via the same `thinking` block. `ThinkingConfig` translates to `generationConfig.thinkingConfig` with `thinkingBudget` (from `budget_tokens`), `thinkingLevel` (from `level`), and `includeThoughts` (from `capture_reasoning`). The adapter parses `usageMetadata.thoughtsTokenCount` (defaulting to `0` when the field is absent — Gemini omits it for non-thinking models and intermittently on `gemini-3-flash-preview`). When `includeThoughts=true`, parts marked `thought=true` are split into `reasoning_content` so the visible `content` stays clean.
-
-**Ollama 0.9+** — opt-in via `thinking`. `ThinkingConfig` translates to the top-level `think` request parameter (`<level>` when `level` is set, else `true`). The adapter surfaces `message.thinking` on `reasoning_content`. As a fallback for older models or calls without `think=true`, the adapter strips inline `<think>...</think>` tags from `content`, in streamed replies too, and surfaces the captured trace the same way; a `<think>` still open when the reply ends, as one cut short by `max_tokens`, counts as trace.
-
-!!! warning "Ollama caveat — no token split"
-    Ollama exposes a single `eval_count` for all output tokens regardless of whether thinking is active, so `reasoning_tokens` always reports `0` for this provider. Cost is unaffected (local models are free), but `billable_completion_tokens` will not reflect the true thinking volume.
+When every provider fails, the gateway's error keeps a status only if they all returned the same one. [What is retried](reliability.md#what-is-retried) covers the rest.
 
 ## Response metadata
 
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+Each step's result records what answered:
 
-`ProviderResponse.meta` (a `ResponseMeta`) reports what a call sent and got back besides the answer, from `complete()` and from a stream once it is exhausted:
+- `model`, as the provider reports it: OpenAI's dated name, such as `gpt-4o-2024-08-06`, Ollama's tag, such as `llama3.2:latest`, and Google's requested name;
+- `provider`, the one that answered, which shows a fallback;
+- `token_usage`, with `reasoning_tokens`, and `cost_usd`;
+- `prompt_metadata.finish_reason`, as the provider wrote it: `stop`, `end_turn`, `STOP`.
 
-- `temperature`, `top_p`, `seed`: the sampling parameters in the request body, after the adapter dropped or renamed what its API does not take. Anthropic takes no `seed`.
-- the identifiers the provider returned, in the table below;
-- `rate_limit`: the response headers whose names start with `x-ratelimit-` or `anthropic-ratelimit-`, and `retry-after`. No other header is kept;
-- `received_at`: when the response headers arrived, in UTC.
+`agentloom run --json` prints them. A failed step has no `model` or `provider`.
+
+From Python, a provider's `ProviderResponse.meta` adds what the call sent and got back besides the answer: the `temperature`, `top_p` and `seed` sent, the provider's identifiers, its rate-limit headers and `received_at`. It reaches [recordings](testing-and-replay.md#recording-a-run) too, but not results or `--json`.
 
 | Provider | `system_fingerprint` | `model_version` | `request_id` |
 |----------|----------------------|-----------------|--------------|
-| OpenAI, `generic_openai` | `system_fingerprint` in the body | — | `x-request-id` header |
-| Anthropic | — | — | `request-id` header |
-| Google | — | `modelVersion` in the body | `responseId` in the body |
-| Ollama | — | — | — |
+| OpenAI, `generic_openai` | From the body | | The `x-request-id` header |
+| Anthropic | | | The `request-id` header |
+| Google | | `modelVersion` | `responseId` |
+| Ollama | | | |
 
-Embedding responses carry no metadata. Recordings keep it in each entry (see [Testing and replay](testing-and-replay.md#recording-a-run)).
+## Environment variables
 
-## Security
+| Variable | What it does |
+|----------|--------------|
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | Set up the provider, with that key. AgentLoom reads no `.env` file. |
+| `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GOOGLE_BASE_URL`, `OLLAMA_BASE_URL` | The provider's endpoint. See [Endpoints](#endpoints). |
+| `AGENTLOOM_OLLAMA_FALLBACK` | `1`, `true`, `yes` or `on` sets up Ollama as a fallback. |
+| The variable `api_key_env` names | The key of a `generic_openai` server. |
+| `AGENTLOOM_PRICING_FILE` | A price table that replaces the bundled one. See [Prices](reliability.md#prices). |
+| `AGENTLOOM_CANDIDATE_CACHE_MAX` | How many model names the gateway remembers the providers of. 1024 by default. |
 
-### SSRF protection
+> [!WARNING]
+> `AGENTLOOM_LOG_LEVEL`, `AGENTLOOM_LOG_FORMAT`, `AGENTLOOM_OBSERVABILITY`, `AGENTLOOM_DEFAULT_PROVIDER`, `AGENTLOOM_MAX_CONCURRENT_STEPS`, `AGENTLOOM_BUDGET_LIMIT`, `AGENTLOOM_CHECKPOINT` and `AGENTLOOM_CHECKPOINT_DIR` are read but change nothing. An invalid value in one of them, such as `AGENTLOOM_CHECKPOINT=maybe`, stops every run with a traceback: unset them.
 
-URL-based attachments (`fetch: local`) are protected against Server-Side Request Forgery. The engine blocks requests to private and reserved IP ranges (RFC 1918, loopback, link-local) before any network call is made, and refuses a host that does not resolve. Redirects are followed one hop at a time, each target checked the same way, and every request goes to the addresses its check resolved (see [DNS rebinding](#dns-rebinding)).
+## From Python
 
-### Tool network access
+The CLI's setup doesn't apply to a Python program, which registers its providers on a `ProviderGateway` itself, with their priorities, fallbacks, rate limits and circuit breakers. See [The provider gateway](python-dsl.md#the-provider-gateway).
 
-With the sandbox enabled and `allowed_domains` empty, the `http_request` tool refuses a host that resolves to an address the [webhook gate](#webhook-destination-gate) blocks, such as loopback, the cloud metadata service or RFC 1918, or that does not resolve; naming the host in `allowed_domains` allows it. The request then goes to the address the check resolved (see [DNS rebinding](#dns-rebinding)). The tool's result leaves out the response headers that can carry a credential: those whose name contains `authorization`, `cookie`, `token`, `secret` or `key`.
+## What's next
 
-### Webhook destination gate
+<!-- cards -->
 
-Approval-gate webhooks (`approval_gate.notify.url`) pass through two independent gates:
+- **[LLM calls](llm-calls.md)** — Attachments, reasoning, tool calling and structured output, provider by provider.
+- **[Reliability](reliability.md)** — Retries, fallback, circuit breakers, rate limits and prices.
+- **[Testing & replay](testing-and-replay.md)** — The `mock` provider and recordings.
 
-1. **Scheme gate** — always on. Non-`http`/`https` schemes (`file://`, `data:`, `javascript:`, `gopher://`, ...) are refused regardless of opt-in flags.
-2. **Internal-host gate** — always on unless the workflow explicitly opts out. Blocks loopback (`127.0.0.0/8`, `::1`, `localhost`, `*.localhost`), link-local (`169.254.0.0/16` — covers AWS / GCP / Azure metadata service at `169.254.169.254`; `fe80::/10`), RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT (`100.64/10`), ULA (`fc00::/7`), the unspecified addresses (`0.0.0.0`, `::`), multicast, and reserved ranges. IPv4-mapped IPv6 forms (`::ffff:127.0.0.1`) are normalised first so they hit the same flags.
-
-Hostname classification uses `getaddrinfo` so both A and AAAA records are inspected — an attacker can't smuggle a loopback target through an AAAA-only DNS response. Percent-encoded and IDN hostnames are decoded before the literal-string check. A host that does not resolve is refused, and the delivery goes to the addresses the gate checked (see [DNS rebinding](#dns-rebinding)).
-
-When the sandbox is enabled, the URL must additionally satisfy `allow_network`, `allowed_schemes`, and `allowed_domains`. Workflows that genuinely need to notify an in-cluster service can waive **only** the internal-host gate via:
-
-```yaml
-config:
-  sandbox:
-    allow_internal_webhook_targets: true
-```
-
-The opt-in does NOT widen the scheme gate — `file://` and friends stay refused. A blocked webhook is logged and emitted as a `status="sandbox_blocked"` observer breadcrumb; the approval gate itself still pauses normally because pause and notify are independent.
-
-### DNS rebinding
-
-A check that resolves a name and lets the HTTP client resolve it again leaves a gap: a DNS server can answer the check with a public address and the connection with `127.0.0.1` or `169.254.169.254`. Wherever an internal-host check runs (URL attachments, `http_request` and approval-gate webhooks), the request connects to the addresses that check resolved, in order while the connection fails. The URL's host stays in the `Host` header and the TLS server name, so the server's certificate is checked against that name as usual.
-
-When a proxy from the environment (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` or the system proxy settings) carries the request, the proxy resolves the name, so nothing is pinned and the check is only as good as the DNS answer at that moment: restrict which hosts the proxy lets through.
-
-### Router expression boundary
-
-Router conditions are AST-validated against an allowlist (`==`, `and`/`or`, safe builtins like `len`). Dunder and underscored attributes are rejected on both `state.foo` and `state['foo']` so a workflow author who seeds state with `_secret` cannot accidentally surface it through a router predicate. Subscript slices must be literal int/str — variables (`state[lookup]`), arithmetic (`state['_' + 'secret']`), conditionals, and calls are refused because the validator cannot determine the resulting key at parse time. Numeric slicing with optional unary `±` bounds works (`state['items'][::-1]`, `state['items'][-2:]`). A single method call on a state value (`state.severity.strip()`, `state.label.lower()`) is permitted; chained calls (`state.severity.strip().lower()`) are refused today because the validator requires call receivers to be a name / attribute / subscript chain, not another call. `eval`, `__import__`, comprehensions, lambdas, and starred unpacking remain blocked.
-
-State is reachable from a router predicate **only** through the `state.X` (or `state['X']`) surface — top-level state keys are not exposed as bare names, so a state key called `len` cannot shadow the safe builtin.
-
-### Allowed paths
-
-`sandbox.allowed_paths` grants both read and write access to a directory tree; `readable_paths` and `writable_paths` narrow it down per direction. With the sandbox enabled and neither list set, no file can be read, by a tool or as an attachment. Resolved paths must live inside an allowed prefix, and the resolution itself is wrapped — null bytes, oversized components, symlink loops, OS-level rejections, and non-string callers all surface as `SandboxViolationError` (not the raw `ValueError` / `OSError` / `RuntimeError` / `TypeError`).
-
-Command argument validation also covers flag-embedded paths: `tee --output=/etc/passwd`, `dd of=/dev/sda`, and similar `--key=value` / `key=value` forms have their value side validated against the allowlist, not just bare positional tokens.
-
-!!! warning "Avoid mounting `/dev`"
-    `allowed_paths: ["/dev"]` grants access to every device node — `/dev/null`, `/dev/console`, `/dev/mem` on Linux — and a tool that opens a file descriptor against an unexpected device can hang the workflow or leak data. Pick the tightest sub-directory you actually need (`/dev/null` if you only want to discard output) instead of the whole tree.
-
-### State redaction
-
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
-
-Sensitive state values (API keys, passwords, tokens) can be flagged so they never land in a persisted artefact:
-
-```yaml
-state:
-  api_key: "..."
-  password: "..."
-  user_id: 42
-state_schema:
-  api_key: { redact: true }
-  password: { redact: true }
-  "*token*": { redact: true }
-```
-
-Or, for a deployment-wide baseline, set `AGENTLOOM_REDACT_STATE_KEYS=api_key,password,*token*` — the env-var policy is merged with the YAML one.
-
-Redaction is applied at every persistence boundary:
-
-- **Checkpoint files**: the runtime state snapshot, the literal `state:` block in `workflow_definition`, every `step_results[id].output` value (an LLM call that returns a structured payload), and any step-level config field whose key matches the policy (`notify.headers.api_key`, `tool_args.api_key`, ...).
-- **`WorkflowResult.final_state`**: what `agentloom run --json` echoes to stdout and what `result.model_dump_json()` returns to Python callers.
-- **Webhook `body_template` rendering**.
-- **Opt-in `capture_prompts` span event**: re-rendered against the redacted state so the trace backend sees the sentinel.
-- **Subworkflows**: the parent's redaction patterns are merged into the child's `state_schema` at dispatch, so a parent's `redact: true` survives the parent/child boundary. The parent's sandbox config is also forwarded (a child cannot loosen what the parent locked).
-
-The in-memory state stays plaintext so a step that legitimately interpolates `{state.api_key}` against the provider keeps working — only the persistence layer sees the stable `<REDACTED:sha256=...>` sentinel. Redaction is idempotent: a second pass over an already-redacted value preserves it byte-for-byte (so diffing across resume cycles is stable).
-
-`WorkflowDefinition` uses `extra="forbid"` so a typo in `state_schema:` (e.g. `stat_schema:`) fails at parse time instead of silently shipping the secret to disk.
-
-!!! note "Resume contract"
-    A redacted checkpoint cannot be resumed with the original secret value. If a workflow pauses on `approval_gate` before consuming the secret, plan to re-inject it on resume (CLI `--state api_key=...`) or do not flag the key as `redact: true`. `WorkflowEngine.from_checkpoint` logs a warning that lists every state key whose loaded value is a sentinel.
-
-### Attachment size limit
-
-All attachments are limited to **20 MB** per file. Larger files are rejected before being sent to the provider.
+<!-- /cards -->

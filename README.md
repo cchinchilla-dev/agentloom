@@ -16,14 +16,14 @@
   <a href="https://codecov.io/github/cchinchilla-dev/agentloom"><img src="https://codecov.io/github/cchinchilla-dev/agentloom/graph/badge.svg" alt="Coverage"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
-  <a href="https://cchinchilla-dev.github.io/agentloom/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Docs"></a>
+  <a href="https://cchinchilla.dev/agentloom/"><img src="https://img.shields.io/badge/docs-cchinchilla.dev-blue.svg" alt="Docs"></a>
 </p>
 
 ---
 
 ## Table of Contents
 
-- [Documentation](https://cchinchilla-dev.github.io/agentloom/)
+- [Documentation](https://cchinchilla.dev/agentloom/)
 - [Why AgentLoom?](#why-agentloom)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
@@ -393,9 +393,9 @@ agentloom run workflow.yaml --record recordings/run1.json
 agentloom replay workflow.yaml --recording recordings/run1.json
 ```
 
-Or configure the mock directly in YAML (`provider: mock` + `responses_file`) and run it with plain `agentloom run` — see [`examples/32_yaml_mock.yaml`](examples/32_yaml_mock.yaml) and [docs/testing-and-replay](https://cchinchilla-dev.github.io/agentloom/testing-and-replay/#yaml-configured-mockprovider).
+Or configure the mock directly in YAML (`provider: mock` + `responses_file`) and run it with plain `agentloom run` — see [`examples/32_yaml_mock.yaml`](examples/32_yaml_mock.yaml) and [docs/testing-and-replay](https://cchinchilla.dev/agentloom/testing-and-replay/#the-mock-provider-in-yaml).
 
-Responses are keyed by `step_id` or a SHA-256 hash of the messages. `MockProvider` supports three latency models (`constant`, `normal`, `replay`) for faithful performance reproduction. Replays emit Prometheus metrics (`agentloom_mock_replays_total`, `agentloom_recording_captures_total`) and a dedicated "Mock & Replay" row in the stock Grafana dashboard. See [docs/testing-and-replay](https://cchinchilla-dev.github.io/agentloom/testing-and-replay/) and [`examples/31_record_and_replay.yaml`](examples/31_record_and_replay.yaml).
+Responses are keyed by `step_id` or a SHA-256 hash of the messages. `MockProvider` supports three latency models (`constant`, `normal`, `replay`) for faithful performance reproduction. Replays emit Prometheus metrics (`agentloom_mock_replays_total`, `agentloom_recording_captures_total`) and a dedicated "Mock & Replay" row in the stock Grafana dashboard. See [docs/testing-and-replay](https://cchinchilla.dev/agentloom/testing-and-replay/) and [`examples/31_record_and_replay.yaml`](examples/31_record_and_replay.yaml).
 
 ## Why not autonomous agents?
 

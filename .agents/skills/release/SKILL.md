@@ -46,8 +46,7 @@ So the commit message prefix (`bump version to`) is load-bearing. Don't paraphra
    - On release, **rename** `## [Unreleased]` to `## [<version>] - YYYY-MM-DD` (not prepend — rename in place).
    - Insert a fresh empty `## [Unreleased]` at the top for future work.
    - Do not rewrite or regroup existing entries. Do not auto-generate from `git log`; Unreleased is the source of truth.
-   - `docs/changelog.md` includes `CHANGELOG.md` through a snippet; nothing to sync.
-   - **Docs notices** — the site is built from `main`, so new features carry a `New in <X.Y.Z> (unreleased)` notice. Remove the ones for this version (`grep -rn "(unreleased)" docs/`) and the `announce` banner in `overrides/main.html`; if the banner is the only override, delete `overrides/` and `custom_dir` from `mkdocs.yml`.
+   - The site (cchinchilla.dev/agentloom) publishes `CHANGELOG.md` as a page and the `docs/` of the version PyPI serves; the release workflow's `docs` job rebuilds it once PyPI serves the new version. Nothing to sync, and no notices to remove.
 
 5. **Bump**
    - `version` in `pyproject.toml`
