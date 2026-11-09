@@ -128,7 +128,7 @@ class TestCallbackServer:
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
             from tests.conftest import MockProvider
 
-            def _wire(gw: object, default: str) -> None:
+            def _wire(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)
@@ -169,7 +169,7 @@ class TestCallbackServer:
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
             from tests.conftest import MockProvider
 
-            def _wire(gw: object, default: str) -> None:
+            def _wire(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)
@@ -454,7 +454,7 @@ class TestCallbackServerHTTP:
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
             from tests.conftest import MockProvider
 
-            def _wire(gw: object, default: str) -> None:
+            def _wire(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)
@@ -492,7 +492,7 @@ class TestCallbackServerHTTP:
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
             from tests.conftest import MockProvider
 
-            def _wire(gw: object, default: str) -> None:
+            def _wire(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)
@@ -833,3 +833,135 @@ class TestCallbackServerLimits:
         assert not _token_matches("señal", "s3cret")
         assert not _token_matches(None, "s3cret")
         assert _token_matches(None, None)
+
+
+class TestConfigFile:
+    """The server reads its config file once at start and hands the path to each resume."""
+
+    class _Responses:
+        def __init__(self) -> None:
+            self.sent: list[tuple[int, dict]] = []
+
+        async def send(self, data: bytes) -> None:
+            text = data.decode()
+            self.sent.append(
+                (int(text.split(" ")[1]), json.loads(text[text.index("\r\n\r\n") + 4 :]))
+            )
+
+    def test_a_valid_file_is_returned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agentloom.cli.callback_server import _checked_config_file
+
+        monkeypatch.delenv("AGENTLOOM_CONFIG", raising=False)
+        config = tmp_path / "agentloom.yaml"
+        config.write_text("providers: [{name: openai}]\n")
+        assert _checked_config_file(config) == config.resolve()
+
+    def test_the_command_refuses_a_broken_file_before_listening(self, tmp_path: Path) -> None:
+        from typer.testing import CliRunner
+
+        from agentloom.cli.main import app
+
+        config = tmp_path / "agentloom.yaml"
+        config.write_text("providers: [{name: openai, api_key: YOUR_KEY_HERE}]\n")
+        with patch("agentloom.cli.callback_server.anyio.run") as serve:
+            result = CliRunner().invoke(app, ["callback-server", "--config", str(config)])
+        assert result.exit_code == 1
+        assert "set OPENAI_API_KEY instead" in result.output
+        serve.assert_not_called()
+
+    def test_a_broken_file_stops_the_server_before_it_listens(self, tmp_path: Path) -> None:
+        import typer
+
+        from agentloom.cli.callback_server import _checked_config_file
+
+        config = tmp_path / "agentloom.yaml"
+        config.write_text("providers: [{name: opneai}]\n")
+        with pytest.raises(typer.Exit) as exc_info:
+            _checked_config_file(config)
+        assert exc_info.value.exit_code == 1
+
+    @pytest.mark.anyio()
+    async def test_the_path_reaches_provider_setup(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_decision
+        from tests.conftest import MockProvider
+
+        _write_checkpoint(tmp_path, "run-config")
+        config = tmp_path / "agentloom.yaml"
+        seen: list[object] = []
+
+        def _wire(gw: object, default: str, config_path: object = None) -> None:
+            seen.append(config_path)
+            gw.register(MockProvider(), priority=0)  # type: ignore[attr-defined]
+
+        stream = self._Responses()
+        with (
+            patch("agentloom.cli.run._setup_providers", side_effect=_wire),
+            patch("agentloom.cli.run._setup_observer", return_value=None),
+        ):
+            await _handle_decision(
+                stream,  # type: ignore[arg-type]
+                str(tmp_path),
+                True,
+                "run-config",
+                "approved",
+                config_path=config,
+            )
+        assert seen == [config]
+        assert stream.sent[0][0] == 202
+
+    @pytest.mark.anyio()
+    @pytest.mark.parametrize("decision", ["approve", "reject"])
+    async def test_a_request_passes_the_path_on(self, tmp_path: Path, decision: str) -> None:
+        from agentloom.cli.callback_server import _handle_request
+        from tests.conftest import MockProvider
+
+        _write_checkpoint(tmp_path, "run-config-http")
+        config = tmp_path / "agentloom.yaml"
+        seen: list[object] = []
+
+        class _Stream:
+            def __init__(self) -> None:
+                self._raw = f"POST /{decision}/run-config-http HTTP/1.1\r\nHost: x\r\n\r\n".encode()
+
+            async def receive(self, n: int) -> bytes:
+                data, self._raw = self._raw, b""
+                return data
+
+            async def send(self, data: bytes) -> None:
+                pass
+
+        def _wire(gw: object, default: str, config_path: object = None) -> None:
+            seen.append(config_path)
+            gw.register(MockProvider(), priority=0)  # type: ignore[attr-defined]
+
+        with (
+            patch("agentloom.cli.run._setup_providers", side_effect=_wire),
+            patch("agentloom.cli.run._setup_observer", return_value=None),
+        ):
+            await _handle_request(_Stream(), str(tmp_path), True, None, config)  # type: ignore[arg-type]
+        assert seen == [config]
+
+    @pytest.mark.anyio()
+    async def test_a_config_error_answers_500(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_decision
+        from agentloom.exceptions import ConfigError
+
+        _write_checkpoint(tmp_path, "run-config-bad")
+        stream = self._Responses()
+        with (
+            patch(
+                "agentloom.cli.run._setup_providers",
+                side_effect=ConfigError("config file 'x': providers must be a list"),
+            ),
+            patch("agentloom.cli.run._setup_observer", return_value=None),
+        ):
+            await _handle_decision(
+                stream,  # type: ignore[arg-type]
+                str(tmp_path),
+                True,
+                "run-config-bad",
+                "approved",
+            )
+        assert stream.sent == [(500, {"error": "config file 'x': providers must be a list"})]

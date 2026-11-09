@@ -33,7 +33,7 @@ section: "Running"
 | Exit code | When |
 |-----------|------|
 | `0` | Success, a paused run, a valid workflow, or replays that agree. |
-| `1` | A run that failed, timed out or went over budget; a workflow or recording that doesn't load; a failed check; a conflict between options in `replay` and `resume`. |
+| `1` | A run that failed, timed out or went over budget; a workflow, recording or config file that doesn't load; a failed check; a conflict between options in `replay` and `resume`. |
 | `2` | A usage error: an unknown option, a missing argument, a value out of range, a conflict between options in `run`. |
 | `130` | A run interrupted with Ctrl-C. |
 
@@ -48,9 +48,10 @@ agentloom run [OPTIONS] WORKFLOW_PATH
 | Option | What it does |
 |--------|--------------|
 | `-s, --state KEY=VALUE` | Sets a top-level state key, once per key. JSON-looking values, such as `[1, 2]`, `5` or `true`, are parsed; others stay strings. See [The initial state](state-and-templates.md#the-initial-state). |
-| `-p, --provider NAME` | Sets `config.provider`: the provider tried first among those that serve the model. See [Providers](providers.md#which-provider-answers). |
+| `-p, --provider NAME` | Sets `config.provider`: the provider tried first among those that serve the model, unless a config file sets up the providers. See [Providers](providers.md#which-provider-answers). |
 | `-m, --model NAME` | Sets `config.model`. A step's own `model` wins over it. |
 | `-b, --budget USD` | Sets `config.budget_usd`. |
+| `--config FILE` | The [config file](providers.md#config-file) whose `providers:` block sets up the providers. By default, the file `AGENTLOOM_CONFIG` names, then `./agentloom.yaml`. |
 | `--stream` | Prints model replies as they arrive. See [Streaming](llm-calls.md#streaming). |
 | `--json` | Prints the whole result as JSON. |
 | `--checkpoint` | Saves a checkpoint when the run ends, and prints its `Run ID`. See [Checkpoints and resume](reliability.md#checkpoints-and-resume). |
@@ -122,6 +123,7 @@ Runs a workflow against a recording made with `run --record`, without calling an
 | `--force-live STEP` | Runs that step live, once per option. |
 | `--record FILE` | With a cut, records this run to a new file. |
 | `--record-tools` | With `--record`, records tool results too. |
+| `--config FILE` | As in `run`, for the live providers of a cut. |
 | `--observability` | Turns OpenTelemetry on, which `replay` leaves off. |
 
 - **Replay is strict.** A step the recording lacks fails the run. A changed prompt fails too, for entries that carry a `request_hash`, as `run --record` writes them; older recordings without one replay a changed prompt with its recorded answer.
@@ -159,7 +161,7 @@ Continues a run from its checkpoint. [Checkpoints and resume](reliability.md#che
 |--------|--------------|
 | `--approve`, `--reject` | The decision for the paused [approval gate](steps.md#approval_gate). |
 | `--checkpoint-dir DIR` | Where the checkpoint is. `.agentloom/checkpoints` by default. |
-| `-p, --provider NAME`, `-m, --model NAME` | As in `run`. |
+| `-p, --provider NAME`, `-m, --model NAME`, `--config FILE` | As in `run`. |
 | `--stream`, `--json`, `--lite` | As in `run`. |
 
 - A run whose workflow says `provider: mock` resumes against its recording.
@@ -208,6 +210,7 @@ An HTTP server that resumes paused runs from their checkpoints, for approvals th
 | `--port PORT` | The port. `8642` by default; `0` picks a free one. |
 | `--token TOKEN` | A shared secret that requests must send in the `X-AgentLoom-Token` header. |
 | `--checkpoint-dir DIR` | Where the checkpoints are. `.agentloom/checkpoints` by default. |
+| `--config FILE` | As in `run`, for the runs it resumes. The server reads it when it starts, and stops if it doesn't load. |
 | `--lite` | As in `run`. |
 
 | Endpoint | What it does |
@@ -217,7 +220,7 @@ An HTTP server that resumes paused runs from their checkpoints, for approvals th
 | `POST /reject/<run_id>` | Rejects it and resumes it. |
 | `POST /webhook` | Receives an approval gate's notification and prints it. |
 
-- `/approve` and `/reject` answer `202` and then resume the run. The outcome reaches the checkpoint and the run's record, not the caller. An unknown run answers `404`, a run that isn't paused `409`.
+- `/approve` and `/reject` answer `202` and then resume the run. The outcome reaches the checkpoint and the run's record, not the caller. An unknown run answers `404`, a run that isn't paused `409`, and a config file that stopped loading after the server started `500`.
 - Two decisions sent at once for one run are both accepted, and both resume it.
 - With `--token`, every endpoint but `/webhook` answers `401` without the right header. A server on an address other than loopback, without a token, prints a warning: anyone who reaches it can decide. The token is a command-line argument, visible to other users of the machine in its process list.
 - Runs with `provider: mock` can't resume here: the server sets up only live providers. Use `agentloom resume`.

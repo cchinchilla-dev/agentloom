@@ -7,12 +7,13 @@ workflow's own providers. Observability is disabled by default.
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 import anyio
 import typer
 
-from agentloom.cli.run import _run_async
+from agentloom.cli.run import _config_file, _run_async
 from agentloom.providers.tool_tape import ToolMode
 
 
@@ -66,6 +67,16 @@ def replay(
     record_tools: bool = typer.Option(
         False, "--record-tools", help="With --record, also record tool results."
     ),
+    config_file: Path | None = typer.Option(
+        None,
+        "--config",
+        help=(
+            "Config file with a providers: block, for the steps that run live. Default: "
+            "$AGENTLOOM_CONFIG, then ./agentloom.yaml when it exists."
+        ),
+        exists=True,
+        dir_okay=False,
+    ),
 ) -> None:
     """Replay a workflow from recorded LLM responses, with no API calls unless cut.
 
@@ -91,7 +102,7 @@ def replay(
         typer.echo(f"Error: {problem}", err=True)
         raise typer.Exit(1)
     anyio.run(
-        _run_async,
+        partial(_run_async, config_path=_config_file(config_file)),
         workflow_path,
         state,
         None,  # provider_override

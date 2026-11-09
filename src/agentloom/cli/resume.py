@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import anyio
 import typer
 
@@ -22,11 +24,23 @@ def resume(
     lite: bool = typer.Option(False, "--lite", help="Run in lite mode (no observability)."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     stream: bool = typer.Option(False, "--stream", help="Stream LLM output in real-time."),
+    config_file: Path | None = typer.Option(
+        None,
+        "--config",
+        help=(
+            "Config file with a providers: block. Default: $AGENTLOOM_CONFIG, "
+            "then ./agentloom.yaml when it exists."
+        ),
+        exists=True,
+        dir_okay=False,
+    ),
 ) -> None:
     """Resume a paused or failed workflow from its last checkpoint."""
     if approve and reject:
         typer.echo("Cannot use --approve and --reject together.", err=True)
         raise typer.Exit(1)
+
+    from agentloom.cli.run import _config_file
 
     decision: str | None = None
     if approve:
@@ -44,6 +58,7 @@ def resume(
         lite,
         output_json,
         stream,
+        _config_file(config_file),
     )
 
 
@@ -56,6 +71,7 @@ async def _resume_async(
     lite: bool,
     output_json: bool,
     stream: bool,
+    config_path: Path | None = None,
 ) -> None:
     from agentloom.checkpointing.file import FileCheckpointer
     from agentloom.cli.run import (
@@ -121,7 +137,7 @@ async def _resume_async(
     if engine.workflow.config.provider == "mock":
         _setup_mock(gateway, engine.workflow.config, observer, engine.workflow.name)
     else:
-        _setup_live(gateway, engine.workflow.config)
+        _setup_live(gateway, engine.workflow.config, config_path)
     engine.provider_gateway = gateway
 
     sandbox_cfg = engine.workflow.config.sandbox

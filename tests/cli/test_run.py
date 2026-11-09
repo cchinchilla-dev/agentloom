@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
@@ -72,7 +72,7 @@ class TestRunCheckpoint:
                 with patch("agentloom.cli.run._setup_providers") as mock_setup:
                     from tests.conftest import MockProvider
 
-                    def _wire(gw: object, default: str) -> None:
+                    def _wire(gw: object, default: str, config_path: object = None) -> None:
                         from agentloom.providers.gateway import ProviderGateway
 
                         assert isinstance(gw, ProviderGateway)
@@ -109,7 +109,7 @@ class TestRunCheckpoint:
             with patch("agentloom.cli.run._setup_providers") as mock_setup:
                 from tests.conftest import MockProvider
 
-                def _wire(gw: object, default: str) -> None:
+                def _wire(gw: object, default: str, config_path: object = None) -> None:
                     from agentloom.providers.gateway import ProviderGateway
 
                     assert isinstance(gw, ProviderGateway)
@@ -410,7 +410,7 @@ class TestRunRecordAndReplay:
 
             captured: dict[str, object] = {}
 
-            def _wire(gw: object, default: str) -> None:
+            def _wire(gw: object, default: str, config_path: object = None) -> None:
                 from agentloom.providers.gateway import ProviderGateway
 
                 assert isinstance(gw, ProviderGateway)
@@ -491,3 +491,116 @@ class TestStateJSONParsing:
         from agentloom.cli.run import _parse_state_value
 
         assert _parse_state_value("") == ""
+
+
+LIVE_YAML = SIMPLE_YAML.replace("provider: mock", "provider: openai")
+
+
+class TestConfigOption:
+    """``--config``, ``AGENTLOOM_CONFIG`` and ``./agentloom.yaml`` reach provider setup."""
+
+    @pytest.fixture(autouse=True)
+    def _in_tmp(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("AGENTLOOM_CONFIG", raising=False)
+
+    def _run(self, tmp_path: Path, *flags: str) -> tuple[object, list[object]]:
+        """Run the live workflow with mocked providers; return the result and the paths seen."""
+        from tests.conftest import MockProvider
+
+        workflow = tmp_path / "wf.yaml"
+        workflow.write_text(LIVE_YAML)
+        seen: list[object] = []
+
+        def _wire(gw: Any, default: str, config_path: object = None) -> None:
+            seen.append(config_path)
+            gw.register(MockProvider(), priority=0)
+
+        with (
+            patch("agentloom.cli.run._setup_providers", side_effect=_wire),
+            patch("agentloom.cli.run._setup_observer", return_value=None),
+        ):
+            result = runner.invoke(app, ["run", str(workflow), "--lite", *flags])
+        return result, seen
+
+    def test_flag_path_reaches_provider_setup(self, tmp_path: Path) -> None:
+        config = tmp_path / "custom.yaml"
+        config.write_text("providers: [{name: openai}]\n")
+        result, seen = self._run(tmp_path, "--config", str(config))
+        assert result.exit_code == 0, result.output
+        assert seen == [config.resolve()]
+
+    def test_working_directory_file_is_read_without_the_flag(self, tmp_path: Path) -> None:
+        (tmp_path / "agentloom.yaml").write_text("providers: [{name: openai}]\n")
+        result, seen = self._run(tmp_path)
+        assert result.exit_code == 0, result.output
+        assert seen == [(tmp_path / "agentloom.yaml").resolve()]
+
+    def test_flag_overrides_the_working_directory_file(self, tmp_path: Path) -> None:
+        (tmp_path / "agentloom.yaml").write_text("providers: [{name: openai}]\n")
+        config = tmp_path / "custom.yaml"
+        config.write_text("providers: [{name: openai}]\n")
+        _, seen = self._run(tmp_path, "--config", str(config))
+        assert seen == [config.resolve()]
+
+    def test_missing_env_file_exits_in_one_line(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("AGENTLOOM_CONFIG", str(tmp_path / "gone.yaml"))
+        result, seen = self._run(tmp_path)
+        assert result.exit_code == 1
+        assert "not found" in result.output
+        assert seen == []
+
+    @pytest.mark.usefixtures("no_provider_env")
+    def test_invalid_file_exits_in_one_line(self, tmp_path: Path) -> None:
+        workflow = tmp_path / "wf.yaml"
+        workflow.write_text(LIVE_YAML)
+        config = tmp_path / "agentloom.yaml"
+        config.write_text("providers: [{name: openai, api_key: YOUR_KEY_HERE}]\n")
+        with patch("agentloom.cli.run._setup_observer", return_value=None):
+            result = runner.invoke(app, ["run", str(workflow), "--lite"])
+        assert result.exit_code == 1
+        assert "set OPENAI_API_KEY instead" in result.output
+        assert "Traceback" not in result.output
+
+    @pytest.mark.usefixtures("no_provider_env")
+    def test_providers_block_registers_only_its_providers(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from agentloom.cli.run import _setup_providers
+        from agentloom.providers.gateway import ProviderGateway
+
+        monkeypatch.setenv("OPENAI_API_KEY", "from-env-openai")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env-anthropic")
+        config = tmp_path / "agentloom.yaml"
+        config.write_text("providers: [{name: anthropic, models: [claude-x]}]\n")
+        gw = ProviderGateway()
+        _setup_providers(gw, "anthropic", config)
+        assert [e.provider.name for e in gw._providers] == ["anthropic"]
+        assert gw._providers[0].provider.api_key == "from-env-anthropic"
+
+    @pytest.mark.parametrize("command", ["resume", "replay"])
+    def test_resume_and_replay_pass_the_path(
+        self, tmp_path: Path, command: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = tmp_path / "custom.yaml"
+        config.write_text("providers: [{name: openai}]\n")
+        seen: list[object] = []
+
+        async def _capture(*args: Any, **kwargs: Any) -> None:
+            seen.append(kwargs.get("config_path", args[-1] if args else None))
+
+        if command == "resume":
+            monkeypatch.setattr("agentloom.cli.resume._resume_async", _capture)
+            argv = ["resume", "run-1", "--config", str(config)]
+        else:
+            workflow = tmp_path / "wf.yaml"
+            workflow.write_text(SIMPLE_YAML)
+            recording = tmp_path / "rec.json"
+            recording.write_text("{}")
+            monkeypatch.setattr("agentloom.cli.replay._run_async", _capture)
+            argv = ["replay", str(workflow), "-r", str(recording), "--config", str(config)]
+        result = runner.invoke(app, argv)
+        assert result.exit_code == 0, result.output
+        assert seen == [config.resolve()]
