@@ -18,6 +18,7 @@ from agentloom.core.results import (
 )
 from agentloom.exceptions import BudgetExceededError, PauseRequestedError, StepError
 from agentloom.resilience.budget import BudgetEnforcer
+from agentloom.resilience.retry import classify_failure
 from agentloom.steps.base import BaseStep, StepContext
 
 
@@ -46,6 +47,7 @@ class SubworkflowStep(BaseStep):
             raise StepError(
                 step.id,
                 "Subworkflow step requires 'workflow_path' or 'workflow_inline'",
+                is_retryable=False,
             )
 
         parent_state = await context.state_manager.get_state_snapshot()
@@ -153,6 +155,7 @@ class SubworkflowStep(BaseStep):
                 status=StepStatus.FAILED,
                 error=f"Subworkflow failed: {e}",
                 duration_ms=duration,
+                error_classification=classify_failure(e, step.retry.retryable_status_codes),
             )
         except BaseException:
             # Cut short: the attempt counts its child's tokens and, with an own budget, its spend,

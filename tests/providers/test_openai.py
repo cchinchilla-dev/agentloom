@@ -8,7 +8,7 @@ import httpx
 import pytest
 import respx
 
-from agentloom.exceptions import ProviderError
+from agentloom.exceptions import ProviderError, UnsupportedRequestError
 from agentloom.providers.openai import OpenAIProvider
 from agentloom.providers.pricing import calculate_cost
 
@@ -158,7 +158,7 @@ class TestOpenAIProvider:
         from agentloom.providers.multimodal import DocumentBlock, TextBlock
 
         provider = OpenAIProvider(api_key="test-key")
-        with pytest.raises(ProviderError, match="does not support PDF"):
+        with pytest.raises(UnsupportedRequestError, match="does not support PDF"):
             provider._format_messages(
                 [
                     {

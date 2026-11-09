@@ -479,12 +479,12 @@ class TestAttachmentResolutionErrorWrapping:
 
 class TestOpenAIAudioFormats:
     async def test_unsupported_audio_format_raises(self) -> None:
-        from agentloom.exceptions import ProviderError
+        from agentloom.exceptions import UnsupportedRequestError
         from agentloom.providers.multimodal import AudioBlock, TextBlock
         from agentloom.providers.openai import OpenAIProvider
 
         provider = OpenAIProvider(api_key="test-key")
-        with pytest.raises(ProviderError, match="only supports WAV and MP3"):
+        with pytest.raises(UnsupportedRequestError, match="only supports WAV and MP3"):
             provider._format_messages(
                 [
                     {

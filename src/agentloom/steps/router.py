@@ -320,7 +320,9 @@ class RouterStep(BaseStep):
         start = time.monotonic()
 
         if not step.conditions and not step.default:
-            raise StepError(step.id, "Router step requires 'conditions' or 'default'")
+            raise StepError(
+                step.id, "Router step requires 'conditions' or 'default'", is_retryable=False
+            )
 
         state_snapshot = await context.state_manager.get_state_snapshot()
 
@@ -359,13 +361,16 @@ class RouterStep(BaseStep):
                 raise StepError(
                     step.id,
                     f"Error evaluating condition '{condition.expression}': {e}",
+                    is_retryable=False,
                 ) from e
 
         if target is None:
             target = step.default
 
         if target is None:
-            raise StepError(step.id, "No condition matched and no default target set")
+            raise StepError(
+                step.id, "No condition matched and no default target set", is_retryable=False
+            )
 
         duration = (time.monotonic() - start) * 1000
 

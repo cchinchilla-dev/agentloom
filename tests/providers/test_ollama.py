@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 
-from agentloom.exceptions import ProviderError
+from agentloom.exceptions import ProviderError, UnsupportedRequestError
 from agentloom.providers.base import StreamResponse
 from agentloom.providers.ollama import OllamaProvider
 
@@ -288,7 +288,7 @@ class TestOllamaProvider:
         from agentloom.providers.multimodal import ImageURLBlock, TextBlock
 
         provider = OllamaProvider()
-        with pytest.raises(ProviderError, match="does not support URL passthrough"):
+        with pytest.raises(UnsupportedRequestError, match="does not support URL passthrough"):
             await provider.complete(
                 messages=[
                     {
@@ -309,7 +309,7 @@ class TestOllamaProvider:
         from agentloom.providers.multimodal import DocumentBlock, TextBlock
 
         provider = OllamaProvider()
-        with pytest.raises(ProviderError, match="does not support document"):
+        with pytest.raises(UnsupportedRequestError, match="does not support document"):
             provider._format_messages(
                 [
                     {
@@ -327,7 +327,7 @@ class TestOllamaProvider:
         from agentloom.providers.multimodal import AudioBlock, TextBlock
 
         provider = OllamaProvider()
-        with pytest.raises(ProviderError, match="does not support audio"):
+        with pytest.raises(UnsupportedRequestError, match="does not support audio"):
             provider._format_messages(
                 [
                     {

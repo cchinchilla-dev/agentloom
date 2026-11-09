@@ -8,7 +8,7 @@ import httpx
 import pytest
 import respx
 
-from agentloom.exceptions import ProviderError
+from agentloom.exceptions import ProviderError, UnsupportedRequestError
 from agentloom.providers.google import GoogleProvider
 
 MOCK_RESPONSE = {
@@ -244,7 +244,7 @@ class TestGoogleProvider:
         from agentloom.providers.multimodal import ImageURLBlock, TextBlock
 
         provider = GoogleProvider(api_key="test-key")
-        with pytest.raises(ProviderError, match="does not support URL passthrough"):
+        with pytest.raises(UnsupportedRequestError, match="does not support URL passthrough"):
             await provider.complete(
                 messages=[
                     {

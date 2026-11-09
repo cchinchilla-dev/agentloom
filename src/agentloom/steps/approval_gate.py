@@ -80,6 +80,7 @@ class ApprovalGateStep(BaseStep):
             raise StepError(
                 step.id,
                 f"Invalid approval decision '{decision}'. Expected 'approved' or 'rejected'.",
+                is_retryable=False,
             )
 
         if context.observer:

@@ -51,9 +51,11 @@ class EmbedStep(BaseStep):
         start = time.monotonic()
 
         if context.provider_gateway is None:
-            raise StepError(step.id, "No provider gateway configured")
+            raise StepError(step.id, "No provider gateway configured", is_retryable=False)
         if not step.inputs:
-            raise StepError(step.id, "Embed step requires an 'inputs' state reference")
+            raise StepError(
+                step.id, "Embed step requires an 'inputs' state reference", is_retryable=False
+            )
 
         state_snapshot = await context.state_manager.get_state_snapshot()
         try:
@@ -65,6 +67,7 @@ class EmbedStep(BaseStep):
                 status=StepStatus.FAILED,
                 error=str(e),
                 duration_ms=duration,
+                error_classification="permanent",
             )
 
         if isinstance(raw_inputs, str):
@@ -80,6 +83,7 @@ class EmbedStep(BaseStep):
                     f"'inputs' must resolve to a str or list[str]; got {type(raw_inputs).__name__}"
                 ),
                 duration_ms=duration,
+                error_classification="permanent",
             )
 
         model = step.model or context.workflow_model

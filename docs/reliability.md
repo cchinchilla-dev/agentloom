@@ -44,20 +44,20 @@ A failed step's result says whether its last failure was `transient` or `permane
 
 ### What is retried
 
-A failure is either permanent, and fails the step at once, or transient, and is retried. For a provider error, the status decides: one listed in `retryable_status_codes` is transient, any other status is permanent, and an error without a status, such as a dropped connection, a provider timeout or an open circuit breaker, is transient.
+A failure is either permanent, and fails the step at once, or transient, and is retried. For a provider error, the status decides: one listed in `retryable_status_codes` is transient, any other status is permanent, and an error without a status, such as a dropped connection, a provider timeout or an open circuit breaker, is transient. A model no provider serves, or a request none of them can take, is permanent.
 
 | Step | Fails at once | Retried |
 |------|---------------|---------|
-| `llm_call` | A provider status not listed, a broken prompt template, a structured reply that never validates, a conversation budget too small for the turn. See [LLM calls](llm-calls.md#when-a-call-fails). | Listed statuses, errors without a status, an attachment the provider can't take. |
+| `llm_call` | A provider status not listed, a broken prompt template, a structured reply that never validates, a conversation budget too small for the turn, an unusable conversation, an attachment that is refused, can't be read or that no provider can take. See [LLM calls](llm-calls.md#when-a-call-fails). | Listed statuses, errors without a status. |
 | `agent` | A broken constraint, the iteration cap, a missing tool. See [Agents](agents.md#retries-and-results). | `max_latency_ms`, and the provider errors an `llm_call` retries. |
-| `tool` | A tool that isn't registered, a `state.` argument that doesn't exist. | Any error the tool raises, a sandbox refusal included. |
-| `router` | An expression the router doesn't allow. | A syntax error, a condition that raises, no match and no `default`. |
-| `subworkflow` | A child that failed permanently, or went over its own budget. | Any other failure of the child. |
-| `embed` | A provider status not listed. | A missing input, listed statuses, errors without a status. |
-| `approval_gate` | A gate that expired with no `on_timeout`. | A decision other than `approved` or `rejected`. |
+| `tool` | A tool that isn't registered, arguments that can't be resolved, a sandbox refusal. | Any other error the tool raises. |
+| `router` | Every failure: an expression it doesn't allow, a syntax error, a condition that raises, no match and no `default`. | None of its own. |
+| `subworkflow` | A child that can't be loaded, that failed permanently, or that went over its own budget. | Any other failure of the child. |
+| `embed` | A provider status not listed, a missing input or one of the wrong type, no provider with embeddings. | Listed statuses, errors without a status. |
+| `approval_gate` | A gate that expired with no `on_timeout`, a decision other than `approved` or `rejected`. | None of its own. |
 | Any step | Going over the run's budget. | The step's `timeout`. |
 
-Several of the retried failures can't succeed on a later attempt, such as a router's syntax error or a sandbox refusal: they spend every retry and wait before the step fails. Where that is likely, set `retry: {max_retries: 0}`.
+AgentLoom can't tell which of a tool's own errors would pass on a later attempt. For a tool that fails the same way each time, set `retry: {max_retries: 0}`.
 
 ## Timeouts
 
@@ -125,7 +125,7 @@ my-finetuned-model:
 Each attempt goes through the provider gateway, which has protections of its own. [Providers](providers.md) covers them in full; this is how they combine with retries:
 
 - **Fallback.** An attempt tries the providers that serve the model, in order, then the fallback providers. Only when all of them fail does the attempt fail, with a status only if they all returned the same one. Every provider receives the same model name, and a [streamed](llm-calls.md#streaming) call doesn't fall back at all.
-- **Circuit breaker.** Five failed calls in a row to one provider, from any step, open its circuit, and calls skip that provider for 60 seconds; one call then tests it. 429 responses don't count, except on a streamed call. With no other provider for the model, an open circuit fails each attempt as transient, and the step goes on retrying until its retries run out.
+- **Circuit breaker.** Five failed calls in a row to one provider, from any step, open its circuit, and calls skip that provider for 60 seconds; one call then tests it. 429 responses don't count, except on a streamed call, and neither does a request the provider can't take. With no other provider for the model, an open circuit fails each attempt as transient, and the step goes on retrying until its retries run out.
 - **Rate limits.** Each provider is held to 60 requests and 100,000 tokens a minute, the `mock` provider included when `agentloom run` sets it up.
 
 A resumed run starts with closed circuits and fresh rate limits.

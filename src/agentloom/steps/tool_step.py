@@ -11,6 +11,7 @@ from agentloom.core.results import StepResult, StepStatus
 from agentloom.core.state import StateManager
 from agentloom.core.templates import SafeFormatDict, build_template_vars
 from agentloom.exceptions import StepError
+from agentloom.resilience.retry import classify_failure
 from agentloom.steps.base import BaseStep, StepContext
 
 # Format only real placeholders, so raw JSON, HTML and ``{foo: true}`` pass (no spec after ``: ``).
@@ -26,10 +27,10 @@ class ToolStep(BaseStep):
         start = time.monotonic()
 
         if context.tool_registry is None:
-            raise StepError(step.id, "No tool registry configured")
+            raise StepError(step.id, "No tool registry configured", is_retryable=False)
 
         if not step.tool_name:
-            raise StepError(step.id, "Tool step requires a 'tool_name' field")
+            raise StepError(step.id, "Tool step requires a 'tool_name' field", is_retryable=False)
 
         try:
             tool = context.tool_registry.get(step.tool_name)
@@ -41,7 +42,7 @@ class ToolStep(BaseStep):
             resolved_args = self._resolve_args(step.tool_args, state_snapshot, step.id)
         except (KeyError, ValueError, IndexError) as e:
             # A placeholder typo or a stray index raises in format_map: tie it to the step.
-            raise StepError(step.id, f"Failed to resolve tool args: {e}") from e
+            raise StepError(step.id, f"Failed to resolve tool args: {e}", is_retryable=False) from e
 
         try:
             result = await tool.execute(**resolved_args)
@@ -53,6 +54,7 @@ class ToolStep(BaseStep):
                 status=StepStatus.FAILED,
                 error=f"Tool '{step.tool_name}' failed: {e}",
                 duration_ms=duration,
+                error_classification=classify_failure(e, step.retry.retryable_status_codes),
             )
 
         log_tools([(step.tool_name, resolved_args)], [(result, True)])
