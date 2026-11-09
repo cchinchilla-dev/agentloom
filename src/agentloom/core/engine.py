@@ -36,7 +36,7 @@ from agentloom.core.dag import DAG
 from agentloom.core.inter_agent import active_log
 from agentloom.core.models import StepDefinition, StepType, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
-from agentloom.core.redact import RedactionPolicy, is_redacted, redact_state
+from agentloom.core.redact import RedactionPolicy, is_redacted, redact_model, redact_state
 from agentloom.core.results import (
     StepResult,
     StepStatus,
@@ -66,6 +66,8 @@ _RUNS: ContextVar[tuple[WorkflowEngine, ...]] = ContextVar("agentloom_runs", def
 
 # A step that ran out of time failed, as one that raised did
 _FAILED = (StepStatus.FAILED, StepStatus.TIMEOUT)
+# JSON schemas a checkpoint keeps as written: their property names are not the workflow's data
+_SCHEMA_FIELDS = frozenset({"parameters", "schema_"})
 
 
 def _extract_pause_error(exc: BaseException) -> PauseRequestedError | None:
@@ -249,12 +251,10 @@ class WorkflowEngine:
         result.run_id = self.run_id
         if self._redaction_policy:
             result.final_state = redact_state(result.final_state, self._redaction_policy)
-            redacted_step_results: dict[str, StepResult] = {}
-            for step_id, step_result in result.step_results.items():
-                dumped = step_result.model_dump()
-                dumped = redact_state(dumped, self._redaction_policy)
-                redacted_step_results[step_id] = StepResult.model_validate(dumped)
-            result.step_results = redacted_step_results
+            result.step_results = {
+                step_id: StepResult.model_validate(self._redacted_result(step_id, step_result))
+                for step_id, step_result in result.step_results.items()
+            }
         self._attach_quality_emitter(result, workflow_name)
         await self._write_run_history(result)
 
@@ -279,16 +279,14 @@ class WorkflowEngine:
 
         # Redact everything written to disk; in-memory state stays plaintext for later templates
         persisted_state = redact_state(state_snapshot, self._redaction_policy)
-        workflow_dump = self.workflow.model_dump()
-        if self._redaction_policy:
-            # Redacting the ``redact: true`` flags themselves would break validation on resume
-            preserved_schema = workflow_dump.pop("state_schema", None)
-            workflow_dump = redact_state(workflow_dump, self._redaction_policy)
-            if preserved_schema is not None:
-                workflow_dump["state_schema"] = preserved_schema
-        step_results_dump = {k: v.model_dump() for k, v in step_results.items()}
-        if self._redaction_policy:
-            step_results_dump = redact_state(step_results_dump, self._redaction_policy)
+        workflow_dump = redact_model(
+            self.workflow.model_dump(),
+            WorkflowDefinition,
+            self._redaction_policy,
+            parse_as={"workflow_inline": WorkflowDefinition},
+            opaque=_SCHEMA_FIELDS,
+        )
+        step_results_dump = {k: self._redacted_result(k, v) for k, v in step_results.items()}
 
         data = CheckpointData(
             workflow_name=self.workflow.name,
@@ -314,6 +312,14 @@ class WorkflowEngine:
             )
             return
         logger.debug("Checkpoint saved: run_id=%s status=%s", self.run_id, status)
+
+    def _redacted_result(self, step_id: str, result: StepResult) -> dict[str, Any]:
+        """*result*, dumped with its data redacted: its output as the state redacts its key."""
+        dumped = redact_model(result.model_dump(), StepResult, self._redaction_policy)
+        key = next((s.output for s in self.workflow.steps if s.id == step_id and s.output), None)
+        if key is not None and self._redaction_policy:
+            dumped["output"] = redact_state({key: result.output}, self._redaction_policy)[key]
+        return dumped
 
     @classmethod
     async def from_checkpoint(

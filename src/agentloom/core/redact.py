@@ -19,8 +19,11 @@ import fnmatch
 import hashlib
 import os
 import re
-from collections.abc import Mapping
-from typing import Any
+import types
+from collections.abc import Collection, Mapping
+from typing import Annotated, Any, Union, get_args, get_origin
+
+from pydantic import BaseModel
 
 # The sentinel's shape, so consumers detect a redacted value without sniffing strings
 _SENTINEL_PREFIX = "<REDACTED:sha256="
@@ -150,9 +153,128 @@ def _walk(
     return value
 
 
+def redact_model(
+    data: dict[str, Any],
+    model: type[BaseModel],
+    policy: RedactionPolicy,
+    *,
+    parse_as: Mapping[str, type[BaseModel]] | None = None,
+    opaque: Collection[str] = (),
+) -> dict[str, Any]:
+    """Return a copy of *data*, a dumped *model*, with the workflow's own data redacted.
+
+    The model's fields are never matched: a pattern written for state keys, such as
+    ``*token*``, would turn ``max_tokens`` or ``token_usage`` into a string the model
+    refuses, and a checkpoint that could not be resumed. Their values are walked
+    instead, down to the free-form data a workflow carries (``state``, ``tool_args``,
+    webhook headers, a step's ``output``), which is redacted as ``redact_state`` does,
+    with paths from where that data starts.
+
+    *parse_as* names free-form fields that hold a model of their own, such as an
+    inline subworkflow; the fields named in *opaque*, such as JSON schemas, stay as
+    they are.
+    """
+    if not policy:
+        return data
+    return _ModelRedactor(policy, parse_as or {}, frozenset(opaque)).fields(data, model)
+
+
+class _ModelRedactor:
+    """Walks a dump along its model's types, so a sentinel only lands where text is accepted."""
+
+    def __init__(
+        self,
+        policy: RedactionPolicy,
+        parse_as: Mapping[str, type[BaseModel]],
+        opaque: frozenset[str],
+    ) -> None:
+        self._policy = policy
+        self._parse_as = parse_as
+        self._opaque = opaque
+
+    def fields(self, data: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in data.items():
+            field = model.model_fields.get(key) if isinstance(key, str) else None
+            if field is None:
+                # A key the model doesn't declare is the workflow's data
+                result[key] = self._free({key: value})[key]
+            elif key in self._opaque:
+                result[key] = value
+            elif key in self._parse_as and isinstance(value, dict):
+                result[key] = self.fields(value, self._parse_as[key])
+            else:
+                result[key] = self.typed(value, field.annotation)
+        return result
+
+    def typed(self, value: Any, annotation: Any) -> Any:
+        """*value* with what its *annotation* leaves free redacted, the rest walked into."""
+        if value is None:
+            return None
+        origin = get_origin(annotation)
+        if origin is Annotated:
+            return self.typed(value, get_args(annotation)[0])
+        if origin is Union or origin is types.UnionType:
+            return self._union(value, [a for a in get_args(annotation) if a is not type(None)])
+        if annotation is Any:
+            return self._free(value)
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return self.fields(value, annotation) if isinstance(value, dict) else value
+        args = get_args(annotation)
+        if origin in (list, tuple, set, frozenset) and isinstance(value, list):
+            item = args[0] if args else Any
+            return [self.typed(element, item) for element in value]
+        if origin is dict and isinstance(value, dict):
+            item = args[1] if len(args) == 2 else Any
+            if _accepts_text(item):
+                return self._free(value)
+            return {k: self.typed(v, item) for k, v in value.items()}
+        # One of the model's own scalars: never a sentinel
+        return value
+
+    def _union(self, value: Any, options: list[Any]) -> Any:
+        if any(option is Any for option in options):
+            return self._free(value)
+        for option in options:
+            model = _model_in(option)
+            if model is not None and isinstance(value, dict):
+                if set(value) <= set(model.model_fields):
+                    return self.fields(value, model)
+        for option in options:
+            if isinstance(value, list) and get_origin(option) in (list, tuple, set, frozenset):
+                return self.typed(value, option)
+            if isinstance(value, dict) and get_origin(option) is dict:
+                return self.typed(value, option)
+        return value
+
+    def _free(self, value: Any) -> Any:
+        if isinstance(value, (dict, list)):
+            return _walk(value, self._policy, prefix="", seen=set())
+        return value
+
+
+def _model_in(annotation: Any) -> type[BaseModel] | None:
+    """The model *annotation* names, through ``Annotated``; ``None`` for anything else."""
+    if get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    return None
+
+
+def _accepts_text(annotation: Any) -> bool:
+    """Whether a value of *annotation* may be a string, as a sentinel is."""
+    if annotation is Any or annotation is str:
+        return True
+    if get_origin(annotation) in (Union, types.UnionType):
+        return any(_accepts_text(option) for option in get_args(annotation))
+    return False
+
+
 __all__ = [
     "ENV_VAR",
     "RedactionPolicy",
     "is_redacted",
+    "redact_model",
     "redact_state",
 ]

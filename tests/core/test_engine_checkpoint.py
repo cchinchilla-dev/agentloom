@@ -17,6 +17,7 @@ from agentloom.core.models import (
     WorkflowConfig,
     WorkflowDefinition,
 )
+from agentloom.core.redact import is_redacted
 from agentloom.core.results import StepStatus, WorkflowStatus
 from agentloom.providers.gateway import ProviderGateway
 from tests.conftest import MockProvider
@@ -554,6 +555,140 @@ class TestCheckpointStateRedaction:
         dumped = result.model_dump_json()
         assert "sk-final-state-leak" not in dumped
         assert "alice" in dumped
+
+
+class TestRedactionSparesOwnFields:
+    """A pattern written for state keys never touches AgentLoom's own fields."""
+
+    @staticmethod
+    def _workflow(pattern: str, **config: Any) -> WorkflowDefinition:
+        from agentloom.core.models import StateKeyConfig
+
+        return WorkflowDefinition(
+            name="redact-own-fields",
+            config=WorkflowConfig(**{"provider": "mock", "model": "mock-model", **config}),
+            state={"api_token": "dummy-token", "api_key": "dummy-key"},
+            state_schema={pattern: StateKeyConfig(redact=True)},
+            steps=[
+                StepDefinition(
+                    id="ask", type=StepType.LLM_CALL, prompt="hi", max_tokens=50, output="answer"
+                ),
+                StepDefinition(id="approve", type=StepType.APPROVAL_GATE, depends_on=["ask"]),
+                StepDefinition(
+                    id="leak",
+                    type=StepType.LLM_CALL,
+                    depends_on=["approve"],
+                    prompt="p",
+                    output="api_token",
+                ),
+            ],
+        )
+
+    async def test_a_token_pattern_leaves_the_run_and_its_resume_working(
+        self, tmp_path: Path
+    ) -> None:
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        engine = WorkflowEngine(
+            workflow=self._workflow("*token*"),
+            provider_gateway=_mock_gateway(),
+            checkpointer=cp,
+            run_id="tok",
+        )
+        first = await engine.run()
+        assert first.status == WorkflowStatus.PAUSED
+        assert first.step_results["ask"].token_usage.prompt_tokens > 0
+        assert is_redacted(first.final_state["api_token"])
+
+        data = await cp.load("tok")
+        assert data.workflow_definition["steps"][0]["max_tokens"] == 50
+        resumed = await WorkflowEngine.from_checkpoint(
+            data, cp, provider_gateway=_mock_gateway(), approval_decisions={"approve": "approved"}
+        )
+        second = await resumed.run()
+        assert second.status == WorkflowStatus.SUCCESS
+        second.model_dump_json()
+
+    async def test_a_key_pattern_keeps_the_endpoint_variable_name(self, tmp_path: Path) -> None:
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        workflow = self._workflow(
+            "*key*",
+            provider="generic_openai",
+            base_url="http://localhost:8000",
+            api_key_env="VLLM_API_KEY",
+        )
+        engine = WorkflowEngine(
+            workflow=workflow, provider_gateway=_mock_gateway(), checkpointer=cp
+        )
+        await engine.run()
+        data = await cp.load(engine.run_id)
+        assert data.workflow_definition["config"]["api_key_env"] == "VLLM_API_KEY"
+        assert is_redacted(data.workflow_definition["state"]["api_key"])
+
+    async def test_schemas_and_inline_subworkflows_stay_loadable(self, tmp_path: Path) -> None:
+        from agentloom.core.models import StateKeyConfig
+
+        workflow = WorkflowDefinition(
+            name="redact-schemas",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state_schema={
+                "*key*": StateKeyConfig(redact=True),
+                "*token*": StateKeyConfig(redact=True),
+            },
+            steps=[
+                StepDefinition(
+                    id="ask",
+                    type=StepType.LLM_CALL,
+                    prompt="hi",
+                    tools=[
+                        {
+                            "name": "lookup",
+                            "parameters": {"properties": {"api_key": {"type": "string"}}},
+                        }
+                    ],
+                ),
+                StepDefinition(
+                    id="sub",
+                    type=StepType.SUBWORKFLOW,
+                    workflow_inline={
+                        "name": "child",
+                        "state": {"api_key": "dummy-child"},
+                        "steps": [{"id": "a", "type": "llm_call", "prompt": "p", "max_tokens": 9}],
+                    },
+                ),
+            ],
+        )
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        engine = WorkflowEngine(workflow=workflow, checkpointer=cp, run_id="schemas")
+        await engine._save_checkpoint("success")
+
+        saved = (await cp.load("schemas")).workflow_definition
+        tool = saved["steps"][0]["tools"][0]
+        assert tool["parameters"]["properties"]["api_key"] == {"type": "string"}
+        child = saved["steps"][1]["workflow_inline"]
+        assert child["steps"][0]["max_tokens"] == 9
+        assert is_redacted(child["state"]["api_key"])
+        WorkflowDefinition.model_validate(saved)
+
+    async def test_a_step_writing_a_secret_key_has_its_output_redacted(
+        self, tmp_path: Path
+    ) -> None:
+        cp = FileCheckpointer(checkpoint_dir=tmp_path)
+        engine = WorkflowEngine(
+            workflow=self._workflow("api_token"),
+            provider_gateway=_mock_gateway(),
+            checkpointer=cp,
+            run_id="out",
+        )
+        await engine.run()
+        data = await cp.load("out")
+        resumed = await WorkflowEngine.from_checkpoint(
+            data, cp, provider_gateway=_mock_gateway(), approval_decisions={"approve": "approved"}
+        )
+        result = await resumed.run()
+        assert is_redacted(result.step_results["leak"].output)
+        assert result.step_results["ask"].output == result.final_state["answer"]
+        saved = await cp.load("out")
+        assert is_redacted(saved.step_results["leak"]["output"])
 
 
 class TestCheckpointSchemaStrictness:
