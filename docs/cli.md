@@ -35,7 +35,7 @@ section: "Running"
 | `0` | Success, a paused run, a valid workflow, or replays that agree. |
 | `1` | A run that failed, timed out or went over budget; a workflow, recording or config file that doesn't load; a failed check; a conflict between options in `replay` and `resume`. |
 | `2` | A usage error: an unknown option, a missing argument, a value out of range, a conflict between options in `run`. |
-| `130` | A run interrupted with Ctrl-C. |
+| `130` | A run interrupted with Ctrl-C or, outside Windows, SIGTERM; with `--checkpoint`, it saves a checkpoint to resume. |
 
 Every run, replay and resume writes a record to `agentloom_runs/<run_id>.json`, or under `AGENTLOOM_RUNS_DIR`: see [`history`](#history).
 

@@ -95,7 +95,7 @@ Either way, a run with a failed step ends `failed`.
 | `0` | The run succeeded or paused. |
 | `1` | The run failed, timed out or went over budget, or the workflow couldn't load. |
 | `2` | The options contradict each other, such as `--record-tools` without `--record`. |
-| `130` | The run was interrupted with Ctrl-C. |
+| `130` | The run was interrupted with Ctrl-C or SIGTERM. |
 
 `agentloom resume` exits with `0` or `1` the same way. Its summary marks a timed-out step `[FAIL]`, like a failed one. With `--json`, the output starts with a line such as `Running workflow: …`, and `Run ID: …` with `--checkpoint`, before the JSON.
 
@@ -141,10 +141,10 @@ agentloom run pipeline.yaml --checkpoint --checkpoint-dir runs/checkpoints
 
 With `--checkpoint`, the run prints its `Run ID` and saves a checkpoint to `.agentloom/checkpoints/<run_id>.json`, or to `--checkpoint-dir`. The checkpoint holds the workflow as it ran, the command line's overrides included, the state, every step's result, the status and the spend, with [redacted keys](state-and-templates.md#redaction) replaced. A subworkflow saves its own, as `<run_id>.<step_id>.json`.
 
-The checkpoint is written once, when the run ends: `success`, `failed`, `timeout`, `budget_exceeded` or `paused`.
+The checkpoint is written once, when the run ends: `success`, `failed`, `timeout`, `budget_exceeded` or `paused`, or `cancelled` when Ctrl-C or SIGTERM interrupts it. `agentloom resume` continues a cancelled run after its finished steps; a step that was running when it stopped runs again from the start, and is paid again. A subworkflow cut short with its parent leaves the checkpoint to the parent.
 
 > [!WARNING]
-> A run that is interrupted, by Ctrl-C or by its process being stopped, saves nothing: there is no checkpoint to resume, and the work it did is lost. A resumed run that is interrupted leaves its previous checkpoint as it was.
+> A process that is killed outright, with SIGKILL or by running out of memory, saves nothing: there is no checkpoint to resume, and the work it did is lost. A resumed run killed so leaves its previous checkpoint as it was.
 
 `agentloom runs` lists the checkpoints, with each run's id, workflow, status and last update; `--json` prints them whole. A resumed run updates its own checkpoint, under the same id.
 
