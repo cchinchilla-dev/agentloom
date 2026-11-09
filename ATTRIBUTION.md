@@ -119,7 +119,7 @@ Approximate, qualitative:
 | Architecture, module boundaries, public API | Human | AI used as sounding board and implementation partner. |
 | Implementation (engine, providers, steps, observability, resilience, record/replay) | AI-assisted, human-reviewed | Generated and iterated under maintainer direction; merged after human review and CI. |
 | Test suite (unit, integration, contract suites, e2e Ollama) | AI-assisted, human-curated | Edge cases and failure modes added by the maintainer during exploratory testing. |
-| Documentation (README, MkDocs site, examples, CHANGELOG, deployment) | AI-drafted, human-edited | Structure and framing set by the maintainer. |
+| Documentation (README, docs pages, examples, CHANGELOG, deployment) | AI-drafted, human-edited | Structure and framing set by the maintainer. |
 | Infrastructure (Dockerfile, Helm chart, Kustomize overlays, ArgoCD, Grafana dashboards) | AI-assisted, human-validated | Validated against a local kind cluster before merge. |
 | `AGENTS.md`, skill definitions, review configuration | Predominantly human | These govern how AI is used. |
 | Debugging root-cause analysis | Human-led | AI used for log inspection and hypothesis generation; root-cause calls by the maintainer. |
