@@ -1,193 +1,137 @@
+---
+title: "Architecture"
+description: "How the AgentLoom engine turns a workflow into layers, runs them, manages state, routes calls through the gateway and finishes a run."
+order: 18
+section: "Operations"
+---
+
 # Architecture
 
-AgentLoom is a **deterministic workflow orchestrator** — not an autonomous agent framework. You define the DAG, the engine executes it.
+How the engine runs a workflow: the modules it is made of, the path of a run from the YAML file to its result, and which parts are public. [Concepts](concepts.md) introduces the ideas this page builds on.
 
-## Overview
+## Modules
 
-```
-+-----------------------------------------------------+
-|                   CLI / Python API                  |
-+-----------------------------------------------------+
-|                   Workflow Engine                   |
-|  +-----------+  +-----------+  +---------------+    |
-|  |DAG Parser |  | Scheduler |  | State Manager |    |
-|  |& Validator|  |  (anyio)  |  |  (dict+lock)  |    |
-|  +-----------+  +-----------+  +---------------+    |
-+-----------------------------------------------------+
-|                   Step Executors                    |
-|  +--------+ +---------+ +------+ +------------+     |
-|  |LLM Call| |Tool Exec| |Router| | Subworkflow|     |
-|  +--------+ +---------+ +------+ +------------+     |
-|  +---------------+ +-------+ +-------+              |
-|  | Approval Gate | | Embed | | Agent |              |
-|  +---------------+ +-------+ +-------+              |
-+-----------------------------------------------------+
-|                  Provider Gateway                   |
-|  +-----------------------------------------------+  |
-|  | OpenAI | Anthropic | Google | Ollama          |  |
-|  | + Fallback | Circuit Breaker | Rate Limiter   |  |
-|  +-----------------------------------------------+  |
-+-----------------------------------------------------+
-|              Observability (optional)               |
-|  +------------+  +----------+  +----------+         |
-|  | OTel Traces|  |Prometheus|  | JSON Logs|         |
-|  +------------+  +----------+  +----------+         |
-+-----------------------------------------------------+
-```
+| Module | What it does |
+|--------|--------------|
+| `cli/` | The commands. Each one parses the workflow, sets up the gateway, the observer, the tools and the checkpointer, and runs the engine. |
+| `core/models.py`, `core/parser.py` | The workflow's Pydantic models, and loading YAML or a dictionary into them, with the reference, cycle and output checks. |
+| `core/dag.py` | The dependency graph: cycles, layers, topological order, the steps after a step. |
+| `core/engine.py` | `WorkflowEngine`: layers, concurrency, attempts, timeouts, the budget, pauses, routers, failures, the checkpoint and the history record. |
+| `core/state.py`, `core/templates.py`, `core/redact.py` | The state, rendering prompts from it, and masking redacted keys. |
+| `core/results.py` | `StepResult`, `WorkflowResult` and their statuses. |
+| `core/protocols.py` | The interfaces the engine uses for its collaborators. |
+| `steps/` | One executor per step type, found through `StepRegistry`. |
+| `providers/` | `ProviderGateway`, the provider adapters, the mock, recording and replay providers, attachments and prices. |
+| `resilience/` | Circuit breakers, rate limiters, retry waits and the budget. |
+| `tools/` | `ToolRegistry`, the `@tool` decorator, the built-in tools and `ToolSandbox`, which also checks webhooks and attachments. |
+| `checkpointing/`, `history/` | Checkpoint files, and run history records. |
+| `observability/` | The observer, OpenTelemetry tracing and metrics, and their no-op stand-ins. |
+| `webhooks/` | Approval gate notifications. |
+| `contracts/` | The public import surface. See [Public contracts](#public-contracts). |
 
-## Execution flow
+## The path of a run
 
-The engine processes a workflow in five phases:
+What `agentloom run workflow.yaml` does:
 
-### 1. DAG construction
+1. **Parse.** The YAML becomes a `WorkflowDefinition`; its references (`depends_on`, router targets, subworkflow files) are checked, then cycles, then steps that write the same `output`.
+2. **Set up.** The command applies its options to `config`, creates one `ProviderGateway`, registers the providers the environment sets up, or the mock, and adds an observer if the `observability` extra is installed, the built-in tools behind the sandbox, and a checkpointer with `--checkpoint`.
+3. **Layer.** The engine builds the graph again and sorts the steps into layers.
+4. **Run each layer.** Its steps start together, up to `max_concurrent_steps`, under the run's `timeout`.
+5. **Run each step.** The budget is checked, then each attempt calls the step's executor under the step's `timeout`. The executor takes a snapshot of the state, renders its templates and calls the gateway or its tool.
+6. **Call a provider.** The gateway tries the providers that serve the model in order, skipping those whose circuit is open, waiting for each one's rate limit, and records what the call cost.
+7. **Record.** A step that succeeds writes its `output` to the state. The engine stores its result, charges its cost to the budget and tells the observer.
+8. **Between layers,** the engine stops for a pause, skips the steps after a failure, and notes which branches the routers chose.
+9. **Finish.** The engine builds the `WorkflowResult`, saves the checkpoint, masks redacted keys, writes the history record and tells the observer. The command prints the result and closes the gateway.
 
-The parser reads the YAML (or Python DSL output) and builds a directed acyclic graph from step definitions and their `depends_on` fields. Cycle detection runs at parse time — circular dependencies are rejected before execution starts.
+## Scheduling
 
-### 2. Layer extraction
+- **Layers are levels of the graph:** a step joins the first layer after all its dependencies. Within a layer, steps are sorted by id.
+- **A layer waits for the whole previous layer,** not only for the steps it depends on: a step whose dependency took 0.1 seconds still waits for an unrelated 10-second step of that layer.
+- **`max_concurrent_steps`** caps the steps running at once within each layer, 10 by default. A subworkflow runs in an engine of its own, with its own cap.
+- **A failed step doesn't stop its siblings.** A pause takes effect once the layer has finished. A budget breach stops the steps still running.
+- One gateway serves the whole run, so parallel steps share each provider's circuit breaker and rate limit.
 
-Topological sort groups steps into **execution layers**. Each layer contains steps with no inter-dependencies, meaning they can run in parallel.
+## State
 
-```mermaid
-graph LR
-    A[Layer 0: fetch, validate] --> B[Layer 1: classify]
-    B --> C[Layer 2: route]
-    C --> D[Layer 3: handle_billing, handle_technical, handle_general]
-```
+`StateManager` holds the state behind one lock. Each attempt of a step reads a copy of the state taken when it starts, and the step writes its `output` only when it succeeds, along with `steps.<id>`. A failed attempt writes nothing to the state, but what its tools did isn't undone.
 
-### 3. Parallel execution
+Steps of the same layer don't see each other's writes, as each read the state when it started. With more steps in a layer than `max_concurrent_steps`, the steps that wait for a slot start after some siblings finished, and see their outputs: what they render can differ from run to run. Two steps of one layer that write the same `output` key get a warning when the workflow loads, or an error with `config.strict_outputs: true`.
 
-For each layer, the engine:
+## Routers and skipped steps
 
-1. Filters active steps (skips those blocked by router decisions)
-2. Launches concurrent tasks via `anyio` task groups (up to `max_concurrent_steps`)
-3. Waits for the layer to complete before advancing
+After each layer, every router that succeeded activates the step its `output` names. In the next layers:
 
-### 4. Router handling
+- **A step that depends on a router** runs only if the router activated it.
+- **Every step after a branch that wasn't taken** is skipped, even one that also depends on the branch that was: a join of two branches is skipped unless both ran.
+- **A router that failed** activates nothing. Under `skip_downstream`, its branches are skipped as after any failure; under `continue`, they all run.
 
-Router steps evaluate conditions against the current state and output a target step ID. Downstream steps not activated by the router are marked as **skipped** — they never execute.
+Under `skip_downstream`, every step after a failed or timed-out step is skipped with `skipped due to upstream failure: <step>`, naming the closest failed step. A resumed run restores the choices of the routers that finished.
 
-### 5. Result aggregation
+## Attempts and retries
 
-After all layers complete, the engine collects step results and computes totals (tokens, cost, duration). The final workflow status is `SUCCESS` if all steps passed, `FAILED` if any step failed, `TIMEOUT` if the deadline was exceeded, or `BUDGET_EXCEEDED` if the cost limit was hit.
+Retries happen in the engine, per step: each attempt runs the whole step again, and [Reliability](reliability.md#what-is-retried) lists what is retried. The gateway doesn't retry: a call tries each of the model's providers once, and fails when they all fail.
 
-## Result models
+The budget is checked before each step starts and charged after each attempt, failed ones included.
 
-### WorkflowResult
+## The gateway
 
-Returned by `engine.run()` after workflow execution completes:
+`ProviderGateway.register(provider, priority=0, is_fallback=False, models=None, max_rpm=60, max_tpm=100_000, circuit_fail_threshold=5, circuit_reset_timeout=60.0)` adds a provider. For each model, the gateway picks its candidates:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `workflow_name` | `str` | Workflow identifier |
-| `status` | `WorkflowStatus` | `success`, `failed`, `timeout`, or `budget_exceeded` |
-| `step_results` | `dict[str, StepResult]` | All step outputs and metadata |
-| `final_state` | `dict[str, Any]` | State snapshot after completion |
-| `total_duration_ms` | `float` | Total wall-clock time |
-| `total_tokens` | `int` | Sum of all tokens consumed |
-| `total_cost_usd` | `float` | Estimated total cost |
-| `error` | `str | None` | First failure message, if any |
-| `run_id` | `str` | Per-execution UUID (always set; propagated to spans / history records) |
-| `annotations` | `list[QualityAnnotation]` | Post-hoc quality scores attached via `result.annotate(...)` |
+1. **A model listed in a provider's `models`** goes to those providers only, without fallbacks.
+2. **Any other model** goes to the providers that serve it, by `priority`, lowest first, and then to the fallback providers.
 
-### StepResult
+For each candidate, an open circuit skips it, the rate limiter may make the call wait, and the call goes through the circuit breaker; a failure moves on to the next candidate. [Reliability](reliability.md#provider-failures) covers fallbacks, circuit breakers and rate limits from a workflow's side.
 
-Metadata and output for each individual step:
+## Where redaction applies
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `step_id` | `str` | Step identifier |
-| `status` | `StepStatus` | `pending`, `running`, `success`, `failed`, `skipped`, or `timeout` |
-| `output` | `Any` | Step output value |
-| `error` | `str | None` | Failure reason |
-| `duration_ms` | `float` | Step execution time |
-| `token_usage` | `TokenUsage` | Prompt, completion, and total tokens |
-| `cost_usd` | `float` | Estimated step cost |
-| `model` | `str | None` | Model used (LLM steps) |
-| `provider` | `str | None` | Provider name |
-| `attachment_count` | `int` | Multi-modal attachment count |
-| `time_to_first_token_ms` | `float | None` | TTFT for streaming steps |
+Keys marked `redact` in `state_schema`, and those `AGENTLOOM_REDACT_STATE_KEYS` names, are masked as `<REDACTED:sha256=…>` in:
 
-## State management
+- the checkpoint: the state, the step results and the workflow definition;
+- the `WorkflowResult`: its `final_state` and `step_results`, and so `--json`;
+- prompts captured with `capture_prompts`;
+- approval gate notifications;
+- subworkflows, which inherit the policy.
 
-The `StateManager` provides async-safe shared state with dotted-key access:
+The state stays as it is in memory, so prompts get the real values. History records hold no state. Recordings and the inter-agent event log aren't redacted. See [Redaction](state-and-templates.md#redaction).
 
-```python
-state["user.profile.email"]    # nested access
-state["items[0].name"]         # array indexing
-```
+## The end of a run
 
-- All steps in a workflow share the same state instance
-- Steps with `output: key` write their result to `state[key]`
-- Templates use `{state.key}` or `{key}` (flat namespace) for interpolation
-- Workflow state is stored as a plain dictionary and accessed/updated through `StateManager`
+However a run ends, `success`, `failed`, `paused`, `budget_exceeded` or `timeout`, or with an unexpected error, the engine saves its checkpoint, once, when it has a checkpointer, then writes its history record. There is no checkpoint per step. A checkpoint or record that can't be written is logged, and the run goes on. A run stopped from outside, such as with Ctrl+C, writes neither.
 
-## Provider gateway
-
-The gateway routes requests based on model name and manages resilience:
-
-| Feature | Description |
-|---------|-------------|
-| **Fallback** | Providers are tried in priority order. If one fails, the next is attempted automatically |
-| **Circuit breaker** | After 5 consecutive failures, a provider is taken offline for 60 seconds |
-| **Rate limiter** | Token-bucket algorithm enforces requests/minute and tokens/minute limits |
-| **Retryable status codes** | Step-level retry only re-attempts on transient codes (`429`, `5xx`) and network errors. Permanent failures (`400`/`401`/`403`/`404`) bail out without burning the retry budget. The list is configurable per step under `retry.retryable_status_codes` |
-
-See [Providers](providers.md) for provider-specific details.
+A subworkflow saves its own checkpoint and record, under `<run id>.<step id>`.
 
 ## Collaborator protocols
 
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
+The engine reaches its collaborators through the `typing.Protocol` interfaces of `agentloom.core.protocols`, so a test or an embedding program can pass its own:
 
-The engine talks to its collaborators (state manager, provider gateway, tool registry, observer, checkpointer, stream callback) through `typing.Protocol` shapes declared in `core/protocols.py` rather than concrete classes:
+| Protocol | For |
+|----------|-----|
+| `StateManagerProtocol` | Reading and writing the state. |
+| `GatewayProtocol` | Calling providers. |
+| `ToolRegistryProtocol` | Looking up tools. |
+| `ObserverProtocol` | The run's events. See [Observability](observability.md#from-python). |
+| `CheckpointerProtocol` | Saving and loading checkpoints. |
+| `StreamCallbackProtocol` | Receiving a streamed reply's chunks. |
 
-| Protocol | Used by |
-|----------|---------|
-| `StateManagerProtocol` | Step executors that read/write workflow state |
-| `GatewayProtocol` | LLM call steps that invoke a provider |
-| `ToolRegistryProtocol` | Tool steps that look up registered handlers |
-| `ObserverProtocol` | Engine + provider gateway lifecycle hooks |
-| `CheckpointerProtocol` | Engine checkpoint save / restore |
-| `StreamCallbackProtocol` | Per-chunk callback for streaming LLM steps |
-
-Step code holds a `StepContext` whose collaborator references are typed as `Any` plus a comment naming the expected protocol — Pydantic v2 forward refs to runtime-checkable Protocols are fragile, but call sites that import from `core.protocols` still get type-checker coverage. The lone exception is `checkpointer`, which imports the concrete `BaseCheckpointer` ABC at runtime because Pydantic v2 resolves that annotation. Each protocol is `@runtime_checkable` so tests can pass mocks without subclassing the concrete implementation.
-
-The engine and `resilience/retry.py` share `compute_backoff` and `is_retryable_exception` — there's a single source of truth for retry waveforms and retryability rules across both step retries and gateway retries.
+Each is `runtime_checkable`. The step retries and their waits come from `agentloom.resilience.retry`: `compute_backoff` and `is_retryable_exception`.
 
 ## Public contracts
 
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
-
-`agentloom.contracts` is the import surface for code that reads AgentLoom's output or wraps its workflows without running them. It imports only pydantic, and the top-level `agentloom` package resolves its own names lazily, so `import agentloom.contracts` loads neither the engine nor its dependencies.
+`agentloom.contracts` is the import surface for code that reads AgentLoom's output or wraps its workflows without running them. Importing it loads neither the engine nor httpx, anyio or PyYAML.
 
 | Module | Holds | Stability |
 |--------|-------|-----------|
-| `agentloom.contracts.stable` | `Message`, `Attachment`, `ToolCall`, `ToolDefinition`, `TokenUsage`, `ProviderResponse`, `ResponseMeta`, `WorkflowHandle` | Semantic versioning |
-| `agentloom.contracts.experimental` | `SpanName`, `SpanAttr`, `MetricName`, `GenAIOperationName`, `GenAIProviderName`; the inter-agent event models (`InterAgentEvent` and its six types) and their JSON Schema (`SCHEMA_PATH`, `SCHEMA_URI`) | May change in a minor release; importing it emits a `FutureWarning` |
+| `agentloom.contracts.stable` | `Message`, `Attachment`, `ToolCall`, `ToolDefinition`, `TokenUsage`, `ProviderResponse`, `ResponseMeta`, `WorkflowHandle` | Semantic versioning. |
+| `agentloom.contracts.experimental` | The span, attribute and metric names (`SpanName`, `SpanAttr`, `MetricName`, `GenAIOperationName`, `GenAIProviderName`); the inter-agent event models and their JSON Schema (`SCHEMA_PATH`, `SCHEMA_URI`) | May change in a minor release; importing it warns once. |
 
-The runtime modules `core.models`, `core.results`, `providers.base` and `observability.schema` re-export them, so both import paths give the same class.
+The engine's own modules use the same classes: `agentloom.contracts.stable.Message` is `agentloom.core.models.Message`. The top-level `agentloom` package loads `Agent`, `AgentResult`, `WorkflowGraph`, `GraphNode` and `GraphEdge` on first use. Every other module can be imported, without a stability promise. `WorkflowHandle`, and the `WorkflowAdapter` that runs a workflow through it, are in [Python DSL](python-dsl.md#as-a-function).
 
-`WorkflowHandle` is a structural protocol: `input_schema` and `output_schema` (JSON Schema) and `async run(inputs) -> outputs`. A wrapper around another framework satisfies it without depending on AgentLoom. `agentloom.core.handle.WorkflowAdapter` exposes an AgentLoom workflow through it:
+## What's next
 
-```python
-from agentloom.core.handle import WorkflowAdapter
+<!-- cards -->
 
-handle = WorkflowAdapter(workflow, provider_gateway, tool_registry=registry)
-outputs = await handle.run({"question": "..."})
-```
+- **[Concepts](concepts.md)** — Workflows, steps, layers and state, from a workflow author's side.
+- **[Reliability](reliability.md)** — Retries, timeouts, budgets and checkpoints.
+- **[Python DSL](python-dsl.md)** — Building and running workflows from Python.
 
-Each `run()` builds a fresh engine seeded with `{**workflow.state, **inputs}` and returns the final state; a failed, timed-out, over-budget or paused run raises `WorkflowError` instead of returning partial state. Workflows do not declare typed inputs yet, so the schemas are permissive objects; `input_schema` names the `state:` keys without their default values, which may be secrets.
-
-## Design principles
-
-!!! tip "Why not autonomous agents?"
-
-    Most LLM frameworks focus on autonomous agents with self-directed reasoning and unbounded tool loops. This works for demos but breaks in production where you need predictable costs, debuggable failures, and SLA compliance.
-
-    AgentLoom takes a different approach:
-
-    - **You define the DAG, not the LLM.** The model generates text within a step — it does not decide what runs next.
-    - **Observability is not optional.** Every step emits traces and metrics.
-    - **Cost is bounded.** Budget limits and circuit breakers are first-class.
-    - **Fallback is structural.** Provider routing happens at the infrastructure level, not via agent "choice."
+<!-- /cards -->

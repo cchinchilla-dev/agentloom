@@ -1,431 +1,180 @@
+---
+title: "Examples"
+description: "39 example workflows in the AgentLoom repository, from one LLM call to production pipelines, and how to run each one, offline or with a key."
+order: 3
+section: "Start"
+---
+
 # Examples
 
-39 example workflows, numbered 01–41, covering basic patterns to production-grade pipelines. Most run with Ollama (free, local) or any cloud provider; the multi-modal ones need a provider that supports the attachment type, examples 35–41 run offline against recordings committed under `recordings/`, and 31–32 replay a recording you capture first.
+Thirty-nine workflows in the repository's [`examples/`](../examples/) folder, from a single LLM call to pipelines with parallel checks, routing, subworkflows and human approval. Seven of them run offline, against recordings committed next to them.
+
+## Running the examples
+
+Clone the repository, install it, and run the examples from its root: recordings, agent definitions and data files are found from there.
 
 ```bash
-# Validate any example
-agentloom validate examples/01_simple_qa.yaml
+git clone https://github.com/cchinchilla-dev/agentloom.git
+cd agentloom
+pip install -e .    # the package that matches these examples
+```
 
-# Run with Ollama
-agentloom run examples/01_simple_qa.yaml --provider ollama --model phi4
+<!-- tabs -->
 
-# Run with OpenAI
+**Offline**
+
+```bash
+agentloom run examples/41_agent.yaml --lite
+```
+
+Examples 35 to 41 name the `mock` provider and replay a recording from [`recordings/`](../recordings/): no key, no network, the same answers every time. `--lite` skips the observability exporter.
+
+**With a key**
+
+```bash
 export OPENAI_API_KEY=sk-...
 agentloom run examples/02_chain_of_thought.yaml
-
-# Visualize the DAG
-agentloom visualize examples/03_router_workflow.yaml
-agentloom visualize examples/03_router_workflow.yaml --format mermaid
 ```
 
----
+Most examples name OpenAI's `gpt-4o-mini` in their `config`; the list below says which need another provider or files of their own.
 
-## Basic
-
-### 01 — Simple QA
-
-Single LLM call. Sends a question, gets an answer.
-
-**Demonstrates:** basic workflow structure, state, output mapping.
-
-```yaml
-name: simple-qa
-config:
-  provider: ollama
-  model: phi4
-state:
-  question: "What is Python in one sentence?"
-steps:
-  - id: answer
-    type: llm_call
-    prompt: "Answer this question concisely: {state.question}"
-    output: answer
-```
-
-### 02 — Chain of Thought
-
-Three sequential LLM calls: break down topic, research subtopics, synthesize summary.
-
-**Demonstrates:** sequential dependencies, state passing between steps.
-
-### 03 — Customer Support Router
-
-Classifies user intent, routes to specialized handler (billing/technical/general).
-
-**Demonstrates:** `router` step, conditional branching — only one branch executes.
-
-### 04 — Tool Augmented
-
-Fetches data from a URL using the `http_request` tool, then analyzes it with an LLM.
-
-**Demonstrates:** tool integration, mixing `tool` and `llm_call` steps.
-
----
-
-## Intermediate
-
-### 05 — Content Moderation Pipeline
-
-Parallel content moderation for UGC platforms. Runs toxicity, PII, and policy checks simultaneously, aggregates results, and routes to approve/review/reject.
-
-**Demonstrates:** parallel execution (3 checks at once), aggregation, router with 3 branches.
-
-### 06 — Lead Qualification
-
-B2B lead qualification pipeline. Enriches company data via API, analyzes buying intent, scores the lead, and routes to personalized outreach, nurture, or archive.
-
-**Demonstrates:** parallel tool+LLM execution, multi-step scoring, conditional routing.
-
-### 07 — Incident Triage
-
-Automated incident triage for SRE teams. Fetches deployment context, correlates with alert data, classifies severity (P1/P2/P3), and generates response actions.
-
-**Demonstrates:** 5-layer deep pipeline, tool integration, severity-based routing.
-
-### 08 — Contract Risk Analysis
-
-Legal contract risk analysis. Extracts clauses, evaluates risk, compares against industry standards, and generates an executive summary with sign/negotiate/walk-away recommendation.
-
-**Demonstrates:** deep 4-step sequential chain, state accumulation, structured analysis.
-
----
-
-## Advanced
-
-### 09 — Fraud Detection Pipeline
-
-E-commerce order fraud detection. Fetches order + customer data in parallel, runs 4 concurrent fraud signal checks (velocity, amount, address, device), aggregates risk, and routes high-risk orders to a deep investigation subworkflow.
-
-**Demonstrates:** 2 parallel tools, 4 parallel LLM checks, subworkflow, 11 steps / 5 layers.
-
-### 10 — Multi-Market Content Localization
-
-SaaS content localization across 3 markets. Fetches source content, runs 3 parallel localization subworkflows (ES/DE/JA) — each with 4 steps: translate, culturally adapt, legal compliance, and format — then cross-market review and deployment manifest.
-
-**Demonstrates:** 3 parallel subworkflows (12 nested steps), 18 total steps across 4 layers.
-
-### 11 — Insurance Claims Processing
-
-End-to-end claims adjudication. Extracts structured data, runs 3 parallel validation tracks via subworkflows (coverage, fraud, medical necessity), aggregates results, routes to auto-approve, adjuster assignment, or denial.
-
-**Demonstrates:** 4 subworkflows, 6 layers, 21 total steps. The most complex example.
-
----
-
-## Built-in Tools
-
-### 12 — Log Analysis & Alerting
-
-Server log analysis with `shell_command` tool. Collects error logs and system metrics in parallel, correlates them with an LLM, classifies severity, and routes to PagerDuty alert, ops ticket, or silent log.
-
-**Demonstrates:** `shell_command` tool, parallel data collection, severity routing.
-
-### 13 — Report Generator
-
-Data pipeline health report using `file_read` and `file_write` tools. Reads pipeline results and SLA config, analyzes compliance, generates executive summary, and writes the final report to disk.
-
-**Demonstrates:** `file_write` + `file_read` tools, file-based data pipeline.
-
-### 14 — Custom Tools: @tool Decorator
-
-Sentiment monitoring pipeline with custom tools defined using the `@tool` decorator: `query_database`, `send_slack_message`, `create_ticket`.
-
-**Demonstrates:** `@tool` decorator, custom tool registration.
+**Another provider**
 
 ```bash
-uv run python examples/14_custom_tools_decorator.py
+export ANTHROPIC_API_KEY=sk-ant-...
+agentloom run examples/02_chain_of_thought.yaml --provider anthropic --model claude-haiku-4-5-20251001
 ```
 
-!!! info "Two files"
-    This example uses a paired YAML workflow + Python runner:
-    `14_custom_tools_decorator.yaml` + `14_custom_tools_decorator.py`
+Pass the model too: the model name picks the provider.
 
-### 15 — Custom Tools: BaseTool Subclass
-
-Customer data enrichment with custom tools defined as `BaseTool` subclasses: `GeocodingTool`, `CRMLookupTool`, `RiskScoreTool`.
-
-**Demonstrates:** `BaseTool` subclass pattern, churn risk scoring.
+**Ollama**
 
 ```bash
-uv run python examples/15_custom_tools_subclass.py
+ollama pull phi4
+agentloom run examples/02_chain_of_thought.yaml --provider ollama --model phi4
 ```
 
----
+Free and local; small models follow long prompts less closely than the ones the examples were written for.
 
-## Resilience & Sandbox
+<!-- /tabs -->
 
-### 16 — Circuit Breaker Demo
+Before a run, `agentloom validate examples/<file>` checks a file and `agentloom visualize examples/<file>` draws its DAG.
 
-Intentionally trips the circuit breaker with a non-existent model, then shows automatic fallback.
+## Basics
 
-**Demonstrates:** circuit breaker state transitions (CLOSED -> OPEN), provider fallback.
+One idea each: the shape of a workflow, a chain, a branch, a tool.
 
-### 17 — Sandbox: Allowed Operations
+<!-- cards -->
 
-Runs commands and file I/O within sandbox limits. `echo` is allowed, files stay inside `/tmp/agentloom`, network is enabled.
+- **[01 · Simple QA](../examples/01_simple_qa.yaml)** — One LLM call that answers a question from the state: config, state and an output, and nothing else. Runs on Ollama with `phi4`.
+- **[02 · Chain of thought](../examples/02_chain_of_thought.yaml)** — Three calls in sequence: break a question down, research each part, synthesize an answer. Each step reads what the previous one wrote. OpenAI.
+- **[03 · Support router](../examples/03_router_workflow.yaml)** — Classifies a customer's message and routes it to a billing, technical or general handler; only the chosen branch runs. OpenAI.
+- **[04 · Tool augmented](../examples/04_tool_augmented.yaml)** — Fetches JSON with the built-in `http_request` tool, then has a model analyze it. OpenAI.
 
-**Demonstrates:** `config.sandbox`, command allowlist, path restriction.
+<!-- /cards -->
 
-### 18 — Sandbox: Blocked Operations
+## Pipelines
 
-Attempts operations that violate sandbox policy: disallowed command (`curl`), path outside allowed directory, network disabled, and pipe injection (`echo | cat`).
+Realistic workflows: parallel checks that join, a router at the end, subworkflows for repeated tracks. They use placeholder APIs, so the HTTP steps show the shape rather than real data.
 
-**Demonstrates:** sandbox enforcement, command injection prevention, path and network blocking.
+<!-- cards -->
 
----
+- **[05 · Content moderation](../examples/05_content_moderation.yaml)** — Toxicity, PII and policy checks run in parallel, then a router approves, escalates to a person or rejects. Eight steps in four layers, at most three at once. OpenAI.
+- **[06 · Lead qualification](../examples/06_lead_qualification.yaml)** — Enriches a lead through an API, scores its buying intent and routes it to outreach, nurture or archive. OpenAI.
+- **[07 · Incident triage](../examples/07_incident_triage.yaml)** — Correlates a deployment with an alert, classifies the severity as P1, P2 or P3 and drafts a page, a ticket or a backlog item. OpenAI.
+- **[08 · Contract analysis](../examples/08_contract_analysis.yaml)** — A four-step chain over a SaaS agreement: extract the clauses, assess the risk, compare with industry standards, summarize. OpenAI.
+- **[09 · Fraud detection](../examples/09_fraud_detection.yaml)** — Two parallel fetches, four parallel fraud checks and a risk score; high-risk orders go to a nested investigation subworkflow. Eleven steps in five layers. OpenAI.
+- **[10 · Content localization](../examples/10_content_localization.yaml)** — Three localization subworkflows, Spanish, German and Japanese, run in parallel, four steps each, then a review and a deployment manifest. Eighteen steps in all. OpenAI.
+- **[11 · Insurance claims](../examples/11_insurance_claims.yaml)** — Coverage and fraud checks run as subworkflows beside a medical review; the result routes to automatic approval, with its own payment subworkflow, an adjuster or a denial. Eighteen steps in six layers. OpenAI.
 
-## Multi-modal
+<!-- /cards -->
 
-### 19 — URL Image
+## Tools
 
-Fetches an image from a public URL and describes it. The engine downloads the image locally and sends base64 to the provider (`fetch: local`).
+The built-in tools, and tools of your own.
 
-**Demonstrates:** `attachments`, URL fetch, multi-step vision pipeline.
+<!-- cards -->
 
-### 20 — Base64 Inline
+- **[12 · Log analysis](../examples/12_log_analysis.yaml)** — Two `shell_command` steps gather error logs and system metrics in parallel (canned `echo` output, so it runs anywhere), then a model correlates them and a router acts on the severity. OpenAI.
+- **[13 · Report generator](../examples/13_report_generator.yaml)** — Writes its own input files with `file_write`, reads them back with `file_read`, analyzes SLA compliance and writes a report, all under `/tmp/agentloom-demo/`. OpenAI.
+- **[14 · Custom tools with a decorator](../examples/14_custom_tools_decorator.yaml)** — Tools defined as decorated Python functions, with their schema generated from the signature. Run the Python file next to it, `python examples/14_custom_tools_decorator.py`, which registers the tools and loads the YAML. Ollama with `phi4`.
+- **[15 · Custom tools as classes](../examples/15_custom_tools_subclass.yaml)** — The same idea with tools that subclass `BaseTool`; run `python examples/15_custom_tools_subclass.py`. Ollama with `phi4`.
 
-Analyzes an image embedded directly in workflow state as base64. No network access needed.
+<!-- /cards -->
 
-**Demonstrates:** inline base64 attachment, offline-capable vision.
+## Resilience and sandbox
 
-### 21 — URL Passthrough
+How failures surface, and what the sandbox lets a tool do.
 
-Sends the image URL directly to the provider API (`fetch: provider`). Only works with OpenAI and Anthropic.
+<!-- cards -->
 
-**Demonstrates:** `fetch: provider` mode, provider-side image fetching.
+- **[16 · Circuit breaker](../examples/16_circuit_breaker_demo.yaml)** — Calls a model that doesn't exist, so every call fails. When Ollama isn't running at all, the connection errors are retried until the provider's circuit breaker opens and rejects the remaining attempts. With Ollama running, the 404 is not retried and the steps fail at once.
+- **[17 · Sandbox, allowed](../examples/17_sandbox_allowed.yaml)** — Enables the sandbox with only `echo` and `cat` allowed and files limited to `/tmp/agentloom`, then runs tools that stay inside it. OpenAI.
+- **[18 · Sandbox, blocked](../examples/18_sandbox_blocked.yaml)** — Five tools that break the policy: a command off the list, a pipe, a path outside it. The run fails by design, and each blocked step is retried before it does. Needs no key.
 
-### 22 — Sandboxed URL
+<!-- /cards -->
 
-Image analysis with sandbox restrictions. Only domains in `allowed_domains` are permitted.
+## Attachments
 
-**Demonstrates:** sandbox `allowed_domains` for attachments.
+Images, PDFs and audio sent with a prompt. [Providers](providers.md) lists which provider takes which.
 
-### 23 — PDF Document
+<!-- cards -->
 
-Extracts key points from a PDF and generates an executive summary. Requires Anthropic or Google.
+- **[19 · Image from a URL](../examples/19_multimodal_vision.yaml)** — AgentLoom downloads the image and sends it inline. Any vision model; the file names OpenAI's `gpt-4o`.
+- **[20 · Inline image](../examples/20_multimodal_base64.yaml)** — The image is base64 data in the state: no network needed. OpenAI `gpt-4o`.
+- **[21 · URL passthrough](../examples/21_multimodal_url_passthrough.yaml)** — The URL goes to the provider, which fetches it itself; for providers that accept image URLs, OpenAI and Anthropic. OpenAI `gpt-4o`.
+- **[22 · Attachments in the sandbox](../examples/22_multimodal_sandbox.yaml)** — Only URLs from `allowed_domains` may be fetched. OpenAI `gpt-4o`.
+- **[23 · PDF](../examples/23_multimodal_pdf.yaml)** — Analyzes a PDF that you place at `/tmp/agentloom/sample.pdf`. Anthropic or Google.
+- **[24 · Audio](../examples/24_multimodal_audio.yaml)** — Transcribes and analyzes a clip that you place at `/tmp/agentloom/recording.wav`. Google, or OpenAI with `gpt-4o-audio-preview` and a WAV or MP3 file.
 
-**Demonstrates:** `type: pdf` attachment, document analysis.
-
-### 24 — Audio Transcription
-
-Transcribes an audio clip and analyzes for topic, sentiment, and action items. Requires OpenAI or Google.
-
-**Demonstrates:** `type: audio` attachment, transcription + analysis pipeline.
-
----
+<!-- /cards -->
 
 ## Streaming
 
-### 25 — Streaming QA
+<!-- cards -->
 
-Streams LLM output token-by-token in real-time.
+- **[25 · Streaming answer](../examples/25_streaming_qa.yaml)** — A question answered token by token with `--stream`, with usage and cost tracked as usual. OpenAI.
+- **[26 · Streaming with an image](../examples/26_streaming_multimodal.yaml)** — An image description streamed as it is written. OpenAI `gpt-4o`.
 
-**Demonstrates:** `stream` config, `--stream` CLI flag, time-to-first-token tracking.
+<!-- /cards -->
 
-```bash
-agentloom run examples/25_streaming_qa.yaml --stream
-```
+## State, checkpoints and approval
 
-### 26 — Streaming + Multi-modal
+<!-- cards -->
 
-Combines streaming with image input. The image is fetched locally, and the LLM description is streamed back in real-time.
+- **[27 · Array indexes](../examples/27_array_index.yaml)** — Templates that read list items from the state, such as `{state.items[0]}`. Ollama with `phi4`.
+- **[28 · Checkpoint and resume](../examples/28_checkpoint_resume.yaml)** — Run it with `--checkpoint`; if it fails, `agentloom resume <run_id>` continues from the saved state. Ollama with `phi4`.
+- **[29 · Approval gate](../examples/29_approval_gate.yaml)** — Drafts an email and pauses for a person. Run it with `--checkpoint`, then `agentloom resume <run_id> --approve` or `--reject`. OpenAI.
+- **[30 · Approval with a webhook](../examples/30_approval_gate_webhook.yaml)** — The same gate, which also posts to a URL when it pauses so a chat or CI system can act on it. The URL points at `localhost`, which the sandbox blocks for webhooks unless `allow_internal_webhook_targets` is set. OpenAI.
 
-**Demonstrates:** streaming + attachments composability.
+<!-- /cards -->
 
----
+## Testing and replay
 
-## State Features
+<!-- cards -->
 
-### 27 — Array Index
+- **[31 · Record and replay](../examples/31_record_and_replay.yaml)** — Run it once with `--record` against a real provider, then replay the recording offline with `agentloom replay` or `--mock-responses`. Anthropic.
+- **[32 · Mock provider from YAML](../examples/32_yaml_mock.yaml)** — The same replay configured in the file, with no flags: `provider: mock` and a `responses_file`. Needs the recording that 31 makes, at `recordings/byzantine.json`.
+- **[40 · Fault replay](../examples/40_fault_replay.yaml)** — The recording declares a 429 and a 503 before the answer: every run fails the same two calls and recovers on the third attempt, through the real retry path. Offline.
 
-Array index support in state paths (`state.items[0]`, `items[0].name`, `results[-1]`).
+<!-- /cards -->
 
-**Demonstrates:** bracket-based array indexing in state and templates.
+## Model features
 
----
+<!-- cards -->
 
-## Checkpointing
+- **[35 · Tool calling](../examples/35_tool_calling.yaml)** — The model decides to call `http_request`, reads the result and answers. Offline; with `--provider openai --model gpt-4o-mini` the model picks the tool itself.
+- **[36 · Structured output](../examples/36_structured_output.yaml)** — Classifies a message into one of four intents and returns a typed object with a confidence score, from a schema in [`structured_output_schemas.py`](../examples/structured_output_schemas.py). Offline, or live on any provider.
+- **[37 · Embeddings](../examples/37_embeddings.yaml)** — Embeds a small set of documents with the `embed` step. Offline, or live with OpenAI, Google or Ollama embedding models.
 
-### 28 — Checkpoint & Resume
+<!-- /cards -->
 
-Two-step workflow with checkpointing enabled. Persists execution state so failed
-or interrupted runs can be resumed without re-executing completed steps.
+## Conversations and agents
 
-**Demonstrates:** `--checkpoint` flag, `agentloom runs`, `agentloom resume`.
+<!-- cards -->
 
-```bash
-# Run with checkpointing
-agentloom run examples/28_checkpoint_resume.yaml --checkpoint --lite
+- **[38 · Chatbot](../examples/38_chatbot_conversation.yaml)** — Three turns of one conversation kept in the state: each step adds a user turn and the reply. Offline.
+- **[39 · Two agents talking](../examples/39_multi_agent_conversation.yaml)** — A planner and a critic take turns in one conversation, each with its own system prompt and name. Offline.
+- **[41 · Agent](../examples/41_agent.yaml)** — A support agent defined once in [`agents/support.yaml`](../examples/agents/support.yaml), with its tools, a refunds agent it calls as a tool, memory and a typed reply, run for two turns. Offline.
 
-# List checkpointed runs
-agentloom runs
-
-# Resume a failed or interrupted run
-agentloom resume <run_id> --lite
-```
-
-## Human-in-the-loop
-
-### 29 — Approval Gate
-
-Drafts an email, pauses at an `approval_gate` until a human decides, then finishes according to the decision.
-
-**Demonstrates:** `approval_gate`, `agentloom runs`, `agentloom resume --approve` / `--reject`.
-
-```bash
-agentloom run examples/29_approval_gate.yaml --checkpoint -s topic="project update"
-agentloom runs                          # status: paused
-agentloom resume <run_id> --approve     # or --reject
-```
-
-### 30 — Approval Gate with Webhook
-
-Same flow with a `notify` webhook: when the gate pauses, a POST goes to the configured URL so Slack, CI, or a dashboard can act on it. The default URL points at a local `agentloom callback-server`.
-
-**Demonstrates:** `notify`, `agentloom callback-server`.
-
-```bash
-agentloom callback-server --port 8642 &
-agentloom run examples/30_approval_gate_webhook.yaml --checkpoint
-curl -X POST http://localhost:8642/approve/<run_id>
-```
-
-## Testing & Replay
-
-### 31 — Record and Replay
-
-Two-step workflow used to capture real LLM responses and replay them offline.
-Run once with `--record` against a real provider, then replay any number of
-times without network or API keys.
-
-**Demonstrates:** `--record`, `--mock-responses`, `agentloom replay`.
-
-```bash
-# Capture real Anthropic responses (per-call flush; partial recordings survive crashes)
-agentloom run examples/31_record_and_replay.yaml --record recordings/byzantine.json
-
-# Replay offline — pick either form
-agentloom replay examples/31_record_and_replay.yaml --recording recordings/byzantine.json
-agentloom run examples/31_record_and_replay.yaml --mock-responses recordings/byzantine.json
-```
-
-### 32 — YAML-configured MockProvider
-
-Same workflow as 31, but with `provider: mock` and `responses_file` declared in
-YAML. Runs via plain `agentloom run` with no CLI flags — useful for committed
-fixtures and CI.
-
-**Demonstrates:** `provider: mock`, `responses_file`, `latency_model: replay`.
-
-```bash
-# Depends on the recording captured from example 31
-agentloom run examples/32_yaml_mock.yaml --lite
-```
-
-### 40 — Fault replay
-
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
-
-A recording that fails `draft` with a 429 and then a 503 before it answers. Every run fails the same two calls the same way, and the step's retry policy recovers on the third attempt.
-
-**Demonstrates:** `fault` entries in a recording, deterministic failure replay, `retry` recovering through the gateway.
-
-```bash
-agentloom run examples/40_fault_replay.yaml --lite
-```
-
-## Tool calling
-
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
-
-### 35 — Native tool/function calling
-
-ReAct-style agent: the model decides to invoke `http_request` against `httpbin.org/get`, receives the JSON, and emits a final natural-language answer. Sandbox is on with `allowed_domains: ["httpbin.org"]`, so the model-dispatched call goes through the same security policy as static `tool` steps (#105).
-
-**Demonstrates:** `tools` declaration on `llm_call`, `tool_choice: auto`, `max_tool_iterations`, model-driven dispatch via `ToolRegistry`, sandboxed tool execution, replay support for tool-iteration loops.
-
-```bash
-# Mock-replay against the committed recording (no API calls)
-agentloom run examples/35_tool_calling.yaml --lite
-
-# Real call: pass --provider + --model to drive a live model
-agentloom run examples/35_tool_calling.yaml --provider openai --model gpt-4o-mini
-```
-
-### 36 — Structured output (Pydantic)
-
-Classifies a customer message into one of four intents and returns a Pydantic `Classification` instance with a confidence score and rationale. `state.classification` holds the typed model instance directly — downstream templates can reference `{state.classification.label}` without re-parsing on every read.
-
-**Demonstrates:** `response_schema` with `type: pydantic`, dotted-path model resolution from the repo root, OpenAI strict `response_format` (when run live), MockProvider replay against a committed recording.
-
-```bash
-# Mock-replay against the committed recording (no API calls)
-agentloom run examples/36_structured_output.yaml --lite
-
-# Real call: --provider openai uses strict json_schema; --provider google
-# uses responseSchema; --provider anthropic uses prefill + client-side
-# validation; --provider ollama uses Ollama 0.5+ format schema.
-agentloom run examples/36_structured_output.yaml --provider openai --model gpt-4o-mini
-```
-
-### 37 — Embeddings
-
-Vectorises a small corpus of documents via the new `embed` step type. `state.vectors` holds a `list[list[float]]` after the run — plug it straight into a similarity search or a downstream evaluator.
-
-**Demonstrates:** `embed` step, dotted-path `inputs: state.documents`, per-batch cost tracking, `MockProvider` replay against a committed recording, `NotImplementedError` skip behaviour when Anthropic sits earlier in the fallback chain.
-
-```bash
-# Mock-replay against the committed recording (no API calls)
-agentloom run examples/37_embeddings.yaml --lite
-
-# Real calls:
-agentloom run examples/37_embeddings.yaml --provider openai --model text-embedding-3-small
-agentloom run examples/37_embeddings.yaml --provider google --model gemini-embedding-001
-agentloom run examples/37_embeddings.yaml --provider ollama --model nomic-embed-text
-```
-
-### 38 — Chatbot conversation
-
-A three-turn chatbot that shares message history across steps via the new `conversation` primitive. Each `llm_call` loads `state.chat`, appends the rendered prompt as a user turn, calls the model, and writes the assistant reply back — the token-budget trim policy (`drop_pairs`) fires only when the running conversation exceeds `token_budget`.
-
-**Demonstrates:** `conversation: state.chat` field on `llm_call`, `token_budget` + `trim_policy: drop_pairs`, `system_prompt` auto-prepending on the first turn, checkpoint round-trip of the `Conversation` envelope.
-
-```bash
-# Mock-replay against the committed recording (no API calls)
-agentloom run examples/38_chatbot_conversation.yaml --lite
-
-# Real calls:
-agentloom run examples/38_chatbot_conversation.yaml --provider openai --model gpt-4o-mini
-agentloom run examples/38_chatbot_conversation.yaml --provider anthropic --model claude-haiku-4-5-20251001
-```
-
-### 39 — Multi-agent conversation
-
-Two agents (`alice` the planner and `bob` the critic) exchange three turns in a shared `Conversation`. Each step sets its own `system_prompt` for the speaker; per-provider translation forwards `Message.name` verbatim on OpenAI and prepends `"[alice] …"` inline on Anthropic / Google / Ollama so downstream attribution is preserved regardless of provider.
-
-**Demonstrates:** multi-agent threading in one `Conversation`, distinct `system_prompt` per speaker, `Message.name` propagation across providers, `drop_pairs` trim policy scaled to a longer running dialogue.
-
-```bash
-# Mock-replay against the committed recording (no API calls)
-agentloom run examples/39_multi_agent_conversation.yaml --lite
-
-# Real calls (any provider that supports chat completions):
-agentloom run examples/39_multi_agent_conversation.yaml --provider openai --model gpt-4o-mini
-```
-
-### 41 — Agent
-
-A support desk defined once in `examples/agents/support.yaml`: a system prompt, the `file_read` tool and a refunds agent offered as a tool (`examples/agents/refunds.yaml`), a memory budget, a loop policy, a typed `SupportReply` and constraints. Two `agent` steps run two turns of it on one conversation: the first reads the billing policy and asks the refunds agent in parallel, then replies through `final_result`; the second answers a follow-up on the same conversation.
-
-**Demonstrates:** the `agent` step type, tool scoping, an agent called as a tool, `output_schema` with tools, a shared conversation across turns.
-
-```bash
-# Mock-replay against the committed recording (no API calls)
-agentloom run examples/41_agent.yaml --lite
-agentloom verify-determinism examples/41_agent.yaml -r recordings/agent.json
-
-# Real calls:
-agentloom run examples/41_agent.yaml --provider anthropic --model claude-haiku-4-5
-```
+<!-- /cards -->

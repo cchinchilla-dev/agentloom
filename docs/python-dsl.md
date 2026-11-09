@@ -1,211 +1,222 @@
+---
+title: "Python DSL"
+description: "Build AgentLoom workflows in Python or load them from YAML, then run them with the engine, the providers and the tools you choose."
+order: 13
+section: "Running"
+---
+
 # Python DSL
 
-Build workflows programmatically with a fluent builder API.
+Workflows can be built in Python as well as written in YAML. Either way, a Python program runs them with `WorkflowEngine`, with the providers, tools and checkpoints it sets up itself.
 
-## Basic usage
+## Building a workflow
 
 ```python
 from agentloom.core.dsl import workflow
 
 wf = (
-    workflow("simple-qa", provider="ollama", model="phi4")
-    .set_state(question="What is Python?")
-    .add_llm_step("answer", prompt="Answer: {question}", output="answer")
+    workflow("support-reply", model="gpt-4o-mini", budget_usd=0.10)
+    .set_state(message="My order arrived damaged")
+    .add_llm_step(
+        "classify",
+        system_prompt="Reply with one word: billing, technical or general.",
+        prompt="Classify: {state.message}",
+        output="category",
+    )
+    .add_llm_step(
+        "reply",
+        depends_on=["classify"],
+        prompt="Write a short {state.category} support reply to: {state.message}",
+        output="reply",
+        temperature=0.3,
+        retry={"max_retries": 2},
+    )
     .build()
 )
 ```
 
-The `workflow()` function returns a `WorkflowBuilder`. All methods return `self` for chaining. Call `.build()` to validate and produce a `WorkflowDefinition`.
+`workflow(name, description="", **config)` starts a builder. Its keyword arguments are the keys of a file's [`config`](workflow-files.md#config), such as `model`, `budget_usd`, `timeout`, `on_step_failure` or `sandbox`. Every method returns the builder, and `build()` returns the workflow.
 
-## API reference
-
-### `workflow()`
-
-```python
-workflow(name: str, description: str = "", **config_kwargs) -> WorkflowBuilder
-```
-
-Factory function. Config keyword arguments map to [workflow config options](workflow-yaml.md#config-options):
-
-```python
-wf = workflow(
-    "my-workflow",
-    provider="openai",
-    model="gpt-4o-mini",
-    budget_usd=0.50,
-    stream=True,
-)
-```
-
-### `.set_state(**kwargs)`
-
-Initialize workflow state variables:
-
-```python
-.set_state(
-    question="What is Python?",
-    context="",
-    items=[{"id": 1, "name": "Item A"}],
-)
-```
-
-### `.add_llm_step()`
-
-```python
-.add_llm_step(
-    step_id: str,
-    prompt: str,
-    system_prompt: str | None = None,
-    model: str | None = None,           # override workflow model
-    output: str | None = None,
-    depends_on: list[str] | None = None,
-    attachments: list[Attachment] | None = None,
-    stream: bool | None = None,
-    **kwargs,                           # temperature, max_tokens, timeout, retry, etc.
-)
-```
-
-### `.add_tool_step()`
-
-```python
-.add_tool_step(
-    step_id: str,
-    tool_name: str,
-    tool_args: dict[str, Any] | None = None,
-    output: str | None = None,
-    depends_on: list[str] | None = None,
-)
-```
-
-### `.add_router_step()`
+| Method | What it adds |
+|--------|--------------|
+| `set_state(**values)` | Keys of the initial state. Several calls add up. |
+| `add_llm_step(step_id, prompt, system_prompt=None, model=None, output=None, depends_on=None, attachments=None, stream=None, **fields)` | An [`llm_call`](llm-calls.md). `**fields` takes any other field of the step: `temperature`, `max_tokens`, `timeout`, `retry`, `thinking`, `tools`, `tool_choice`, `response_schema`, `conversation`, `speaker`. |
+| `add_tool_step(step_id, tool_name, tool_args=None, output=None, depends_on=None)` | A [`tool`](tools-and-sandbox.md#the-tool-step) step. |
+| `add_router_step(step_id, conditions, default=None, depends_on=None)` | A [`router`](steps.md#router). `conditions` is a list of `(expression, target)` pairs. |
+| `add_subworkflow_step(step_id, workflow_path=None, workflow_inline=None, output=None, depends_on=None)` | A [`subworkflow`](steps.md#subworkflow). |
 
 ```python
 .add_router_step(
-    step_id: str,
-    conditions: list[tuple[str, str]],   # (expression, target) pairs
-    default: str | None = None,
-    depends_on: list[str] | None = None,
+    "route",
+    depends_on=["classify"],
+    conditions=[
+        ("state.category.strip().lower() == 'billing'", "handle_billing"),
+        ("state.category.strip().lower() == 'technical'", "handle_technical"),
+    ],
+    default="handle_general",
 )
 ```
 
-### `.add_subworkflow_step()`
+- A wrong field fails at once, at the `workflow()` or `add_…` call that sets it: an unknown key, a value of the wrong type, `tools` and `response_schema` on one step.
+- A Pydantic `response_schema` names its class by path, as in YAML. In a script, `"__main__:Answer"` names a class defined in that script.
+
+### What the builder doesn't cover
+
+- There are no methods for `embed`, `approval_gate` or `agent` steps.
+- `version` and `state_schema` can't be set.
+- Only `add_llm_step` takes extra fields: tool, router and subworkflow steps get no `timeout` or `retry`, and a subworkflow no `isolated_state`, `input` or `return_keys`.
+
+For those, write the workflow as a dictionary, the same shape as the YAML file, and load it with `WorkflowParser.from_dict`. Or add to a build and validate the whole again:
 
 ```python
-.add_subworkflow_step(
-    step_id: str,
-    workflow_path: str | None = None,
-    workflow_inline: dict[str, Any] | None = None,
-    output: str | None = None,
-    depends_on: list[str] | None = None,
-)
+from agentloom.core.models import WorkflowDefinition
+
+wf = WorkflowDefinition(**{
+    **wf.model_dump(),
+    "state_schema": {"api_key": {"redact": True}},
+    "steps": [*wf.model_dump()["steps"],
+              {"id": "approve", "type": "approval_gate", "depends_on": ["reply"]}],
+})
 ```
 
-### `.build()`
+### Validating a build
 
-Validates the workflow definition (checks for cycles, missing dependencies, etc.) and returns a `WorkflowDefinition`.
+`build()` checks each field and that step ids are unique, and nothing more. Dependencies on steps that don't exist, cycles, router targets that don't exist, subworkflow files and parallel steps writing one key aren't checked, and show up only when the workflow runs, in confusing ways: a cycle raises from `run()`, a missing dependency fails the run with `unhandled errors in a TaskGroup`, and a missing router target skips the steps after the router without an error.
 
----
-
-## Full example
-
-A multi-step customer support workflow:
+Run the checks that `agentloom validate` runs before running a build:
 
 ```python
-from agentloom.core.dsl import workflow
+from agentloom.core.parser import WorkflowParser
 
-wf = (
-    workflow(
-        "customer-support",
-        provider="openai",
-        model="gpt-4o-mini",
-        budget_usd=0.10,
-    )
-    .set_state(
-        user_message="My order arrived damaged",
-        classification="",
-        response="",
-    )
-    .add_llm_step(
-        "classify",
-        system_prompt="Respond with one word: billing, technical, or general.",
-        prompt="Classify: {state.user_message}",
-        output="classification",
-    )
-    .add_router_step(
-        "route",
-        depends_on=["classify"],
-        conditions=[
-            ("state.classification.strip().lower() == 'billing'", "handle_billing"),
-            ("state.classification.strip().lower() == 'technical'", "handle_technical"),
-        ],
-        default="handle_general",
-    )
-    .add_llm_step(
-        "handle_billing",
-        depends_on=["route"],
-        prompt="Help with billing issue: {state.user_message}",
-        output="response",
-    )
-    .add_llm_step(
-        "handle_technical",
-        depends_on=["route"],
-        prompt="Help with technical issue: {state.user_message}",
-        output="response",
-    )
-    .add_llm_step(
-        "handle_general",
-        depends_on=["route"],
-        prompt="Help with: {state.user_message}",
-        output="response",
-    )
-    .build()
-)
+WorkflowParser.from_dict(wf.model_dump())   # raises ValidationError, warns on shared output keys
 ```
 
-## Running a built workflow
+## Loading YAML
 
 ```python
+from agentloom.core.parser import WorkflowParser
+
+wf = WorkflowParser.from_yaml("pipeline.yaml")
+wf = WorkflowParser.from_dict({"name": "inline", "steps": [...]})
+```
+
+Both run every check that `agentloom validate` runs, and raise `agentloom.exceptions.ValidationError`.
+
+`from_yaml` takes a path or YAML text: when no file exists at the given path, it reads the argument as YAML. A misspelled path therefore fails with `Workflow YAML must be a mapping at the top level` rather than a missing file, and YAML text with a line over 255 characters can fail with `File name too long`. To load YAML text, use `yaml.safe_load` and `from_dict`.
+
+## Running a workflow
+
+```python
+import anyio
+
 from agentloom.core.engine import WorkflowEngine
+from agentloom.providers.gateway import ProviderGateway
+from agentloom.providers.openai import OpenAIProvider
 
-engine = WorkflowEngine(wf)
-result = await engine.run()
+async def main() -> None:
+    gateway = ProviderGateway()
+    gateway.register(OpenAIProvider(), priority=0)   # reads OPENAI_API_KEY
+    try:
+        result = await WorkflowEngine(wf, provider_gateway=gateway).run()
+    finally:
+        await gateway.close()
+    print(result.status, result.final_state["reply"])
 
-print(result.status)            # success
-print(result.final_state)       # {"user_message": "...", "response": "..."}
-print(result.total_cost_usd)    # 0.002
+anyio.run(main)
 ```
 
-## State contract — atomic updates
+`run()` is asynchronous: call it from a coroutine, with `anyio.run` or `asyncio.run`.
 
-`StateManager.set` and `StateManager.get` each take the state lock individually, but the natural `cur = await sm.get('counter'); await sm.set('counter', cur + 1)` pattern drops the lock between the two awaits. Anything that yields control between them (a tool call, an `await anyio.sleep(0)`) lets another writer race, and the slower writer overwrites the faster one's result — 50 parallel counter bumps deterministically collapse to 1.
+| `WorkflowEngine` argument | What it is |
+|---------------------------|------------|
+| `workflow` | The workflow, built or loaded. |
+| `provider_gateway` | The providers, below. Without one, every `llm_call`, `agent` and `embed` step fails, after its retries. |
+| `tool_registry` | The tools. See [Tools of your own](tools-and-sandbox.md#tools-of-your-own). Without one, every `tool` step fails. |
+| `state_manager` | A `StateManager(initial_state={...})` from `agentloom.core.state`, to start from another state. It replaces the workflow's `state` rather than adding to it. |
+| `checkpointer`, `run_id` | Saving the run to resume it. See [Reliability](reliability.md#from-python). |
+| `on_stream_chunk` | A function called with `(step_id, chunk)` for each piece of a streamed reply. |
+| `observer` | Hooks called as the run goes. Subclass `NoopObserver` from `agentloom.observability.noop` and override the hooks you need. See [Observability](observability.md). |
 
-Use `StateManager.update(key, fn)` for compound read-modify-write. It holds the lock across the full `fn(current)` invocation:
+- **The gateway decides which providers answer.** From Python, `config.provider` has no effect. `config.model` is still the model of every step that doesn't name its own.
+- **A run that doesn't succeed returns a result,** with its status, as it does from the CLI. `run()` raises only for a cycle in a workflow that wasn't validated, an observer that lacks a hook, or a cancellation.
+- **Every run writes a record** to `agentloom_runs/<run_id>.json`, in the current directory, or under `AGENTLOOM_RUNS_DIR`. See [Observability](observability.md).
+- **The engine doesn't close the providers:** call `await gateway.close()` when done.
+
+### The provider gateway
 
 ```python
-# Atomic — 50 parallel bumps land 50 increments.
-async def bump(sm: StateManager) -> None:
-    await sm.update("counter", lambda c: (c or 0) + 1)
-
-# Racy — collapses under any concurrency. Documented as such.
-async def bump_racy(sm: StateManager) -> None:
-    cur = await sm.get("counter")
-    await anyio.sleep(0)
-    await sm.set("counter", cur + 1)
+gateway.register(provider, priority=0, is_fallback=False, models=None,
+                 max_rpm=60, max_tpm=100_000,
+                 circuit_fail_threshold=5, circuit_reset_timeout=60.0)
 ```
 
-`fn` must be **synchronous and side-effect-free** — it runs while the lock is held, so a blocking call stalls every other state operation. For async transformations, compute the new value outside the lock and pass a lambda that returns the already-computed value (this still races on read-modify-write, so for that case use `update` with a sync function).
+- A model goes to the providers that list it in `models`, and only to them. A model no provider lists goes to every provider that serves it by name, then to those registered with `is_fallback=True`; `priority` orders each group, lowest first.
+- `max_rpm` and `max_tpm` set the provider's rate limits, and `circuit_fail_threshold` and `circuit_reset_timeout` its circuit breaker. See [Provider failures](reliability.md#provider-failures).
 
-If the key does not exist yet, `fn` receives `None`; the caller chooses how to seed it.
+| Provider | Import from | Models it serves by name |
+|----------|-------------|--------------------------|
+| `OpenAIProvider` | `agentloom.providers.openai` | Names that start with `gpt-`, `o1`, `o3`, `o4`, `text-embedding-3-` or `text-embedding-ada-`. |
+| `AnthropicProvider` | `agentloom.providers.anthropic` | Names that contain `claude`. |
+| `GoogleProvider` | `agentloom.providers.google` | Names that contain `gemini`, and `embedding-…`. |
+| `OllamaProvider` | `agentloom.providers.ollama` | Any. |
+| `GenericOpenAIProvider(base_url)` | `agentloom.providers.generic_openai` | Any. |
+| `MockProvider(responses_file=...)` | `agentloom.providers.mock` | Any. Replays a recording; see [Testing & replay](testing-and-replay.md). |
 
-### Dotted writes refuse to overwrite scalars
+Without an `api_key`, OpenAI, Anthropic and Google read `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `GOOGLE_API_KEY`, and Ollama reads its address from `OLLAMA_BASE_URL`. The other `*_BASE_URL` variables apply only to the CLI: pass `base_url` instead. [Providers](providers.md) covers each one.
 
-Writing `output: "user.name"` when `state.user` is a scalar (`"alice"`) does not replace the string with `{"name": ...}`: it raises `StateWriteError` with a message naming the traversed prefix and the existing type — pick a different output key, or overwrite `user` at the parent path first.
+### Results
 
-```python
-sm = StateManager(initial_state={"user": "alice"})
-await sm.set("user.name", "bob")
-# StateWriteError: Cannot write to 'user.name': intermediate 'user' is a str
-# (value='alice'), not a dict. Refusing to silently overwrite the scalar.
-```
+`run()` returns a `WorkflowResult`:
 
-Missing intermediates still auto-create as dicts (`set("user.name", "bob")` on an empty state works), and existing dict / list intermediates traverse unchanged.
+| Field | What it holds |
+|-------|---------------|
+| `status` | `success`, `failed`, `timeout`, `budget_exceeded` or `paused`. |
+| `final_state` | The state at the end, with `steps.<id>` for each step that succeeded. |
+| `step_results` | A `StepResult` per step that ran: `status`, `output`, `error`, `duration_ms`, `token_usage`, `cost_usd`, `model`, `provider`, `error_classification` and more. |
+| `total_tokens`, `total_cost_usd`, `total_duration_ms` | The run's totals. |
+| `error` | The first failed step's error. |
+| `run_id`, `workflow_name` | The run and its workflow. |
+
+[Redacted keys](state-and-templates.md#redaction) are redacted in `final_state` and `step_results` too.
+
+### As a function
+
+`WorkflowAdapter(workflow, provider_gateway, tool_registry=None, observer=None)`, from `agentloom.core.handle`, wraps a workflow as a call: `await adapter.run(inputs)` starts from the workflow's state with `inputs` on top, and returns the final state, or raises `WorkflowError` when the run doesn't succeed. It takes no checkpointer.
+
+## The state from Python
+
+`StateManager` holds a run's state. From a step or a tool of your own:
+
+- `await state.get("user.profile.email")` and `await state.set("report.summary", text)` read and write dotted paths, by the rules of [Writing state](state-and-templates.md#writing-state).
+- `await state.update("counter", lambda n: (n or 0) + 1)` reads and writes under one lock, and returns the new value. A `get` followed by a `set` doesn't: fifty parallel increments written that way leave `1`, while fifty `update` calls leave `50`.
+- `await state.get_state_snapshot()` returns a copy of the whole state.
+
+A write that the rules refuse raises `StateWriteError`, from `agentloom.exceptions`. When it comes from a step's `output`, the step fails once its retries are spent, running again on each attempt, model call included.
+
+## Imports
+
+`agentloom` itself exports `Agent`, `AgentResult`, `WorkflowGraph`, `GraphNode` and `GraphEdge`. The rest comes from its modules:
+
+| Name | Import from |
+|------|-------------|
+| `workflow` | `agentloom.core.dsl` |
+| `WorkflowParser` | `agentloom.core.parser` |
+| `WorkflowEngine` | `agentloom.core.engine` |
+| `WorkflowResult`, `StepResult` | `agentloom.core.results` |
+| `WorkflowDefinition`, `StepDefinition` | `agentloom.core.models` |
+| `ProviderGateway` | `agentloom.providers.gateway` |
+| `ToolRegistry`, `BaseTool`, `tool` | `agentloom.tools` |
+| `FileCheckpointer` | `agentloom.checkpointing` |
+| `ValidationError`, `WorkflowError`, `StateWriteError` | `agentloom.exceptions` |
+
+`agentloom.contracts.stable` follows semantic versioning: `Attachment`, `Message`, `ProviderResponse`, `ResponseMeta`, `TokenUsage`, `ToolCall`, `ToolDefinition` and `WorkflowHandle` change only in a major version. `agentloom.contracts.experimental` warns on import that it may change. No other module makes that promise.
+
+## What's next
+
+<!-- cards -->
+
+- **[Graph API](graph-api.md)** — Read, analyse and export a workflow's DAG.
+- **[Tools & sandbox](tools-and-sandbox.md)** — Tools of your own, registered from Python.
+- **[Testing & replay](testing-and-replay.md)** — Running workflows offline against recordings.
+
+<!-- /cards -->

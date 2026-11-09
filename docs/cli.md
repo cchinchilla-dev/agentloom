@@ -1,98 +1,170 @@
+---
+title: "CLI reference"
+description: "Every agentloom command and option, from running and validating a workflow to replaying, resuming and inspecting runs."
+order: 12
+section: "Running"
+---
+
 # CLI reference
 
-The `agentloom` command is installed with the package. Every command accepts `--help`.
+`agentloom` runs, checks, replays and resumes workflows. Every command, and `agentloom` itself, takes `--help`.
 
-| Command | Purpose |
-|---------|---------|
-| [`run`](#run) | Execute a workflow |
-| [`replay`](#replay) | Re-run a workflow offline against a recording |
-| [`verify-determinism`](#verify-determinism) | Replay a recording several times and check that every replay gives the same result |
-| [`resume`](#resume) | Continue a checkpointed or paused run |
-| [`runs`](#runs) | List checkpointed runs |
-| [`history`](#history) | Query per-run history records |
-| [`validate`](#validate) | Check a workflow file without running it |
-| [`visualize`](#visualize) | Draw the workflow DAG |
-| [`agent inspect`](#agent-inspect) | Show an agent definition as it loads |
-| [`info`](#info) | Show version, dependencies, and provider configuration |
-| [`callback-server`](#callback-server) | Serve approval callbacks and webhook notifications |
+| Command | What it does |
+|---------|--------------|
+| [`run`](#run) | Runs a workflow. |
+| [`validate`](#validate) | Checks a workflow without running it, and prints its plan. |
+| [`visualize`](#visualize) | Draws a workflow's DAG, as text or Mermaid. |
+| [`replay`](#replay) | Runs a workflow against a recording, offline. |
+| [`verify-determinism`](#verify-determinism) | Replays a recording several times and compares the results. |
+| [`resume`](#resume) | Continues a run from its checkpoint. |
+| [`runs`](#runs) | Lists saved checkpoints. |
+| [`history`](#history) | Lists the record of every run. |
+| [`callback-server`](#callback-server) | Approves and rejects paused runs over HTTP. |
+| [`agent inspect`](#agent-inspect) | Prints an agent's definition as it loads. |
+| [`info`](#info) | Prints the version, dependencies and configured providers. |
+
+## Common behaviour
+
+- **There is no `--version` or `-h`.** `agentloom info` prints the version, and `--help` the help.
+- **Warnings go to stderr,** such as a retry or a parse warning. There is no option for more detail: `AGENTLOOM_LOG_LEVEL` is read but changes nothing.
+- **Paths are checked:** a workflow, agent or recording that doesn't exist is a usage error, exit `2`.
+- **`--json` isn't always pure JSON.** `run`, `replay` and `resume` print a first line such as `Running workflow: …` before it. `runs` and `history` print plain text when they find nothing.
+
+| Exit code | When |
+|-----------|------|
+| `0` | Success, a paused run, a valid workflow, or replays that agree. |
+| `1` | A run that failed, timed out or went over budget; a workflow or recording that doesn't load; a failed check; a conflict between options in `replay` and `resume`. |
+| `2` | A usage error: an unknown option, a missing argument, a value out of range, a conflict between options in `run`. |
+| `130` | A run interrupted with Ctrl-C. |
+
+Every run, replay and resume writes a record to `agentloom_runs/<run_id>.json`, or under `AGENTLOOM_RUNS_DIR`: see [`history`](#history).
 
 ## `run`
 
 ```bash
-agentloom run WORKFLOW.yaml [OPTIONS]
+agentloom run [OPTIONS] WORKFLOW_PATH
 ```
 
-| Option | Description |
-|--------|-------------|
-| `-s, --state key=value` | Set an initial state value; repeat for several keys |
-| `-p, --provider NAME` | Override the default provider |
-| `-m, --model NAME` | Override the default model |
-| `-b, --budget USD` | Maximum budget for the run |
-| `--stream` | Stream LLM output as it arrives |
-| `--checkpoint` | Write checkpoints so the run can be resumed |
-| `--checkpoint-dir DIR` | Checkpoint directory (default `.agentloom/checkpoints`) |
-| `--record FILE` | Record provider responses, and the [inter-agent event log](testing-and-replay.md#inter-agent-events), to a JSON file for later replay |
-| `--record-tools` | With `--record`, also record tool results, for `replay --tools` (see [Recording tool results](testing-and-replay.md#recording-tool-results)) |
-| `--mock-responses FILE` | Answer from a recording instead of calling providers |
-| `--lite` | Disable observability |
-| `--json` | Print the result as JSON |
+| Option | What it does |
+|--------|--------------|
+| `-s, --state KEY=VALUE` | Sets a top-level state key, once per key. JSON-looking values, such as `[1, 2]`, `5` or `true`, are parsed; others stay strings. See [The initial state](state-and-templates.md#the-initial-state). |
+| `-p, --provider NAME` | Sets `config.provider`: the provider tried first among those that serve the model. See [Providers](providers.md#which-provider-answers). |
+| `-m, --model NAME` | Sets `config.model`. A step's own `model` wins over it. |
+| `-b, --budget USD` | Sets `config.budget_usd`. |
+| `--stream` | Prints model replies as they arrive. See [Streaming](llm-calls.md#streaming). |
+| `--json` | Prints the whole result as JSON. |
+| `--checkpoint` | Saves a checkpoint when the run ends, and prints its `Run ID`. See [Checkpoints and resume](reliability.md#checkpoints-and-resume). |
+| `--checkpoint-dir DIR` | Where checkpoints go. `.agentloom/checkpoints` by default. |
+| `--mock-responses FILE` | Answers from a recording with the `mock` provider; a step it lacks gets `Mock response`, with a warning. |
+| `--record FILE` | Records every provider call to `FILE`, for [`replay`](#replay). |
+| `--record-tools` | With `--record`, records the results of the model's tool calls too. |
+| `--lite` | Runs without OpenTelemetry, even when the `observability` extra is installed. |
 
-`--record` and `--mock-responses` are mutually exclusive, and `--record` needs a live provider: on a workflow that declares `provider: mock`, pass `--provider`.
+The summary shows the status, duration, tokens and cost of the run and of each step, and the commands to resume a paused run. With `--json`, the result has `status`, `step_results`, `final_state`, `total_tokens`, `total_cost_usd`, `error` and `run_id`.
+
+- `--record` needs a live provider: it refuses a workflow with `provider: mock`, and `--mock-responses`. These conflicts exit with `2`.
+- `--mock-responses` with a file that doesn't exist isn't an error: every step gets `Mock response`, and the run succeeds.
+- A missing API key isn't caught before the run: the first step fails with `No provider registered for model …`, after its retries.
+
+## `validate`
+
+```bash
+agentloom validate WORKFLOW_PATH
+```
+
+For `examples/03_router_workflow.yaml`:
+
+```text
+Workflow 'customer-support-router' is valid.
+  Version:  1.0
+  Steps:    5
+  Layers:   3
+  Provider: openai
+  Model:    gpt-4o-mini
+  Budget:   $0.05
+
+  Execution plan:
+    Layer 0: classify
+    Layer 1: route
+    Layer 2: handle_billing, handle_general, handle_technical (parallel)
+```
+
+It loads the file as `run` does, agent files included, and checks every field, dependency, router target and subworkflow path, and that there is no cycle. Steps that can run in parallel and write the same `output` key get a warning. An error prints `Validation FAILED:` and exits with `1`.
+
+It doesn't check what only a run finds: an inline subworkflow's steps, a Pydantic schema's import, tool names, prompt templates, keys or recordings. See [What validate checks](workflow-files.md#what-validate-checks).
+
+## `visualize`
+
+```bash
+agentloom visualize [--format ascii|mermaid] WORKFLOW_PATH
+```
+
+`ascii`, the default, prints one row per layer, with a box per step, such as `[IF/ELSE: route]`. `mermaid` prints a Mermaid flowchart inside a ` ```mermaid ` fence, ready for a Markdown file. Both go to stdout.
+
+Router edges in the Mermaid output carry the condition's first 20 characters, so two conditions that start alike look the same. For exact labels, Graphviz DOT or PNML, use the [Graph API](graph-api.md).
 
 ## `replay`
 
 ```bash
-agentloom replay WORKFLOW.yaml --recording FILE [OPTIONS]
+agentloom replay [OPTIONS] WORKFLOW_PATH --recording FILE
 ```
 
-Runs the workflow against a recording with no network calls, unless a cut runs part of it live (see [Replaying up to a cut point](testing-and-replay.md#replaying-up-to-a-cut-point)). Replay is strict: a request that is not in the recording fails the run (see [Testing & Replay](testing-and-replay.md#strict-mode)).
+Runs a workflow against a recording made with `run --record`, without calling any provider. See [Testing & replay](testing-and-replay.md).
 
-| Option | Description |
-|--------|-------------|
-| `-r, --recording FILE` | Recording to replay (required) |
-| `-s, --state key=value` | Set an initial state value |
-| `--allow-default-fallback` | Return a placeholder response on a recording miss instead of failing |
-| `--tools live\|replay\|verify` | Tool calls: `live` (default) runs them, `replay` serves the results recorded with `--record-tools`, `verify` runs them and fails when a result differs |
-| `--live-from STEP` | Serve the steps before `STEP` from the recording, and run it and every step that depends on it live, with the workflow's providers |
-| `--force-live STEP` | Run `STEP` live even when the recording matches it; repeat for several steps |
-| `--record FILE` | With `--live-from` or `--force-live`, record the run to a new file |
-| `--record-tools` | With `--record`, also record tool results |
-| `--observability` | Enable observability (off by default in replay) |
-| `--json` | Print the result as JSON |
+| Option | What it does |
+|--------|--------------|
+| `-r, --recording FILE` | The recording. Required. |
+| `-s, --state KEY=VALUE` | As in `run`. |
+| `--json` | As in `run`; with a cut, it also lists each call and where it came from. |
+| `--allow-default-fallback` | A step that the recording lacks gets `Mock response`, instead of failing. |
+| `--tools live\|replay\|verify` | Model tool calls: `live` runs them (the default), `replay` serves the results recorded with `--record-tools`, and `verify` runs them and fails when a result differs. `tool` steps always run. |
+| `--live-from STEP` | Runs that step, and every step after it, against the live providers. |
+| `--force-live STEP` | Runs that step live, once per option. |
+| `--record FILE` | With a cut, records this run to a new file. |
+| `--record-tools` | With `--record`, records tool results too. |
+| `--observability` | Turns OpenTelemetry on, which `replay` leaves off. |
+
+- **Replay is strict.** A step the recording lacks fails the run. A changed prompt fails too, for entries that carry a `request_hash`, as `run --record` writes them; older recordings without one replay a changed prompt with its recorded answer.
+- **With `--allow-default-fallback`,** a step in the recording gets its recorded answer, even if its prompt changed.
+- **A cut serves the recording through the live providers,** so their keys must be set, for the steps before the cut as well as after it. Steps before the cut replay until a call misses, and go live from there.
+- Conflicting options, such as `--record` without a cut, exit with `1`.
 
 ## `verify-determinism`
 
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
-
 ```bash
-agentloom verify-determinism WORKFLOW.yaml --recording FILE [OPTIONS]
+agentloom verify-determinism [OPTIONS] WORKFLOW_PATH --recording FILE
 ```
 
-Replays the recording strictly several times and compares the results and the [inter-agent event log](testing-and-replay.md#inter-agent-events) across the replays and with the recorded log. Exits 1 with a unified diff on stderr on any difference.
+Replays the recording `--runs` times and compares the runs: the status, each step's status, output and error, the final state and the event log. When the recording carries an [event log](testing-and-replay.md#inter-agent-events), the replayed one must match it too.
 
-| Option | Description |
-|--------|-------------|
-| `-r, --recording FILE` | Recording to replay (required) |
-| `--runs N` | How many replays to compare (default 2, at least 2) |
-| `-s, --state key=value` | Set an initial state value |
-| `--tools live\|replay\|verify` | How tool calls run, as in `replay` (default `live`) |
-| `--events-out FILE` | Write the event log of the first replay as JSONL |
+| Option | What it does |
+|--------|--------------|
+| `-r, --recording FILE` | The recording. Required. |
+| `--runs N` | How many replays, at least 2. `2` by default. |
+| `-s, --state KEY=VALUE` | As in `run`. |
+| `--tools live\|replay\|verify` | As in `replay`. With `live`, tools run once per replay. |
+| `--events-out FILE` | Writes the first replay's event log as JSON Lines. |
+
+It prints `Deterministic: 2 replays of … give the same result` and exits with `0`, or prints the first difference as a diff and exits with `1`. It doesn't check that the replays succeed: replays that fail the same way agree, when the recording has no event log.
 
 ## `resume`
 
 ```bash
-agentloom resume RUN_ID [OPTIONS]
+agentloom resume [OPTIONS] RUN_ID
 ```
 
-Continues a run from its last checkpoint, on the providers `run` would use: a workflow that declares `provider: mock` resumes against its mock. For a run paused at an [`approval_gate`](workflow-yaml.md#approval_gate), pass the decision:
+Continues a run from its checkpoint. [Checkpoints and resume](reliability.md#checkpoints-and-resume) covers what runs again.
 
-| Option | Description |
-|--------|-------------|
-| `--approve` / `--reject` | Decision for a pending approval gate |
-| `--checkpoint-dir DIR` | Checkpoint directory (default `.agentloom/checkpoints`) |
-| `-p, --provider NAME` / `-m, --model NAME` | Override provider or model |
-| `--stream`, `--lite`, `--json` | Same as in `run` |
+| Option | What it does |
+|--------|--------------|
+| `--approve`, `--reject` | The decision for the paused [approval gate](steps.md#approval_gate). |
+| `--checkpoint-dir DIR` | Where the checkpoint is. `.agentloom/checkpoints` by default. |
+| `-p, --provider NAME`, `-m, --model NAME` | As in `run`. |
+| `--stream`, `--json`, `--lite` | As in `run`. |
+
+- A run whose workflow says `provider: mock` resumes against its recording.
+- `resume` has no `--budget` or `--state`.
+- An unknown run, `--approve` with `--reject`, or a decision for a run that isn't paused exits with `1`.
 
 ## `runs`
 
@@ -100,52 +172,64 @@ Continues a run from its last checkpoint, on the providers `run` would use: a wo
 agentloom runs [--checkpoint-dir DIR] [--json]
 ```
 
-Lists checkpointed runs with their workflow, status, and last update.
+Lists the checkpoints, with each run's id, workflow, status and last update, in UTC. Subworkflows have rows of their own, as `<run_id>.<step_id>`. `--json` prints the checkpoints whole, state and definition included.
 
 ## `history`
-
-!!! info "New in 0.5.0 (unreleased)"
-    Available on `main`; the 0.4.0 release on PyPI does not include it yet.
 
 ```bash
 agentloom history [OPTIONS]
 ```
 
-Queries the per-run records described in [Observability](observability.md#per-run-history-records).
+Lists the record of every run that ended, checkpointed or not, newest first.
 
-| Option | Description |
-|--------|-------------|
-| `--runs-dir DIR` | Records directory (default `./agentloom_runs`, or `AGENTLOOM_RUNS_DIR`) |
-| `--workflow NAME` | Filter by workflow name |
-| `--provider NAME` | Filter by provider |
-| `--since DATE` / `--until DATE` | Filter by timestamp (`YYYY-MM-DD` or ISO 8601) |
-| `--min-cost USD` / `--max-cost USD` | Filter by total cost |
-| `--limit N` | Maximum records to show (default 20) |
-| `--json` | Print as JSON |
+| Option | What it does |
+|--------|--------------|
+| `--runs-dir DIR` | Where the records are. `AGENTLOOM_RUNS_DIR`, else `./agentloom_runs`. |
+| `--workflow NAME` | Only that workflow. |
+| `--provider NAME` | Only runs that used that provider, by name alone: `anthropic`, not `anthropic/claude-…`. |
+| `--since DATE`, `--until DATE` | Only runs from `--since`, and before `--until`. A date is midnight UTC; a time without an offset is local time. |
+| `--min-cost USD`, `--max-cost USD` | Only runs within that cost. |
+| `--limit N` | At most N runs. `20` by default. |
+| `--json` | The records whole. |
 
-## `validate`
+A record holds the run's id, time, workflow, a hash of its definition, status, the providers and models it used, cost, tokens, steps run, duration and error. Records are never deleted, and a resumed run replaces the record of its first part. A replay records the provider of the recording, not `mock`. [Observability](observability.md) covers the record.
 
-```bash
-agentloom validate WORKFLOW.yaml
-```
-
-Parses the workflow and builds its DAG without calling any provider, then prints the step count, execution layers, provider, and model. Any schema or dependency error exits with status 1.
-
-## `visualize`
+## `callback-server`
 
 ```bash
-agentloom visualize WORKFLOW.yaml [--format ascii|mermaid]
+agentloom callback-server [OPTIONS]
 ```
 
-Prints the DAG as an ASCII diagram (default) or as a Mermaid graph.
+An HTTP server that resumes paused runs from their checkpoints, for approvals that come from another system.
+
+| Option | What it does |
+|--------|--------------|
+| `--host HOST` | The address to listen on. `0.0.0.0` by default. |
+| `--port PORT` | The port. `8642` by default; `0` picks a free one. |
+| `--token TOKEN` | A shared secret that requests must send in the `X-AgentLoom-Token` header. |
+| `--checkpoint-dir DIR` | Where the checkpoints are. `.agentloom/checkpoints` by default. |
+| `--lite` | As in `run`. |
+
+| Endpoint | What it does |
+|----------|--------------|
+| `GET /pending` | Lists the paused runs. |
+| `POST /approve/<run_id>` | Approves the run's gate and resumes it. |
+| `POST /reject/<run_id>` | Rejects it and resumes it. |
+| `POST /webhook` | Receives an approval gate's notification and prints it. |
+
+- `/approve` and `/reject` answer `202` and then resume the run. The outcome reaches the checkpoint and the run's record, not the caller. An unknown run answers `404`, a run that isn't paused `409`.
+- Two decisions sent at once for one run are both accepted, and both resume it.
+- With `--token`, every endpoint but `/webhook` answers `401` without the right header. A server on an address other than loopback, without a token, prints a warning: anyone who reaches it can decide. The token is a command-line argument, visible to other users of the machine in its process list.
+- Runs with `provider: mock` can't resume here: the server sets up only live providers. Use `agentloom resume`.
+- A gate's webhook can't reach a server on `localhost` or a private address unless the workflow sets `sandbox.allow_internal_webhook_targets: true`. See [The webhook](steps.md#the-webhook).
 
 ## `agent inspect`
 
 ```bash
-agentloom agent inspect AGENT.yaml [--json]
+agentloom agent inspect [--json] AGENT_PATH
 ```
 
-Loads an [agent definition](workflow-yaml.md#agent) and prints it as YAML, or as JSON with `--json`: its model and that model's prices from the pricing table, found as a run finds them (a dated id such as `gpt-4o-mini-2024-07-18` takes the entry it starts with; `null` when the definition names no model, or the table has no price for it), each tool with its parameters (a tool that is not built in is the workflow's to register, so only its name is known), each agent used as a tool with its own definition under it, memory, loop policy, the output schema with the JSON Schema it resolves to, and constraints. A `pydantic` output schema is imported from the working directory, as `run` does. A definition that does not load exits with status 1, and a file that does not exist with status 2, as for every command that takes a file.
+Prints an [agent](agents.md#inspecting-an-agent)'s definition as it loads, without running it: its model and prices, system prompt, tools with their parameters, the agents it calls, its loop policy, output schema and constraints. A file that isn't a valid agent prints the errors and exits with `1`.
 
 ## `info`
 
@@ -153,12 +237,14 @@ Loads an [agent definition](workflow-yaml.md#agent) and prints it as YAML, or as
 agentloom info
 ```
 
-Shows the AgentLoom and Python versions, core and optional dependencies, and which provider credentials are configured.
+Prints the AgentLoom version, the Python version and platform, the core dependencies and the `observability` extra, and the providers: OpenAI, Anthropic and Google as configured when their key is set, and Ollama's address. It never prints a key.
 
-## `callback-server`
+## What's next
 
-```bash
-agentloom callback-server [--port 8642] [--host 0.0.0.0] [--token SECRET]
-```
+<!-- cards -->
 
-Serves `approve` / `reject` callbacks for paused runs and receives approval-gate webhooks. Endpoints and security notes are in [Deployment](deployment.md#approval-callback-server).
+- **[Testing & replay](testing-and-replay.md)** — Recordings, replay, cuts and fault injection.
+- **[Reliability](reliability.md)** — Exit statuses, checkpoints and resuming runs.
+- **[Providers](providers.md)** — The keys and endpoints `run` reads.
+
+<!-- /cards -->

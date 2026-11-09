@@ -92,16 +92,17 @@ jobs:
           --deselect tests/core/test_inter_agent.py::test_committed_schema_matches_the_models
 
   docs:
+    # Branch protection requires this check by name: rename it there first
     name: Docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v8
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
-          enable-cache: true
-      - run: uv run --group docs mkdocs build --strict
+          python-version: "3.11"
+      - run: python scripts/check_docs.py
 
   package:
     name: Package

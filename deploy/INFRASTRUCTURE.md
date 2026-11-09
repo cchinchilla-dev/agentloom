@@ -245,12 +245,11 @@ The Application CRD configures:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | Push / PR to `main` | Lint, type check, workflow audit, tests (Python 3.11–3.14 on Linux, 3.14 on macOS and Windows, the lowest dependency versions), strict documentation build, build and check the wheel and sdist, version linearity, K8s validation, Helm lint |
+| `ci.yml` | Push / PR to `main` | Lint, type check, workflow audit, tests (Python 3.11–3.14 on Linux, 3.14 on macOS and Windows, the lowest dependency versions), docs check, build and check the wheel and sdist, version linearity, K8s validation, Helm lint |
 | `docker.yml` | Push / PR to `main` / called by `release.yml` / manual, for a tag | Build the image (multi-arch for a release), push to GHCR, smoke test |
 | `auto-tag.yml` | Push to `main` | Tag `vX.Y.Z` when the commit is a `bump version to X.Y.Z` release |
-| `release.yml` | Tags `v*` / after Auto Tag | Build and check the wheel and sdist, GitHub release with the version's changelog, publish to PyPI, Docker image |
+| `release.yml` | Tags `v*` / after Auto Tag | Build and check the wheel and sdist, GitHub release with the version's changelog, publish to PyPI, Docker image, rebuild the docs site once PyPI serves the version |
 | `pricing-update.yml` | Weekly (Monday) / manual | Refresh the pricing table and open a pull request with the changes |
-| `docs.yml` | Push to `main` (docs, mkdocs.yml, overrides, CHANGELOG, CONTRIBUTING) | Build and deploy documentation to GitHub Pages |
 | `e2e-ollama.yml` | `release/**` / `e2e` label / manual | Ollama integration tests against live Docker instance |
 | `pr-labeler.yml` | PR opened/updated | Auto-label PRs based on file paths |
 | `labels.yml` | Push to `main` (labels.json) | Sync GitHub labels from config |

@@ -63,7 +63,7 @@ def _build_payload(config: WebhookConfig, context: WebhookContext) -> str:
     therefore needs to be expressed with ``{{`` / ``}}`` escapes (or
     delivered through ``tool_step`` with ``template: false``); the
     placeholder grammar is identical to the one documented in
-    ``docs/workflow-yaml.md``.
+    ``docs/state-and-templates.md``.
     """
     if config.body_template:
         rendered_state = (
