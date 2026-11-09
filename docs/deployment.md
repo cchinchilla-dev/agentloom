@@ -98,6 +98,7 @@ kubectl logs job/agentloom-workflow -n agentloom
 
 - **Traces and metrics** go to `http://otel-collector:4317`, a name that only resolves to a collector in the `agentloom` namespace, which the manifests don't create. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector's full name, such as `http://otel-collector.observability.svc.cluster.local:4317`. A run whose export fails still succeeds.
 - **The run history and checkpoints** have no writable volume: see [Docker](#docker).
+- **A Job that is stopped,** deleted or past its `activeDeadlineSeconds`, gets SIGTERM, which AgentLoom takes as Ctrl-C: with `--checkpoint` on a volume, the run saves a `cancelled` checkpoint that `agentloom resume` continues.
 - `kubectl delete -k deploy/k8s/overlays/dev` removes everything, the namespace included.
 
 ### Example Jobs

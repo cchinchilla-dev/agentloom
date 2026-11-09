@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import anyio
 import pytest
 
 from agentloom.checkpointing.base import BaseCheckpointer, CheckpointData
@@ -689,6 +690,73 @@ class TestRedactionSparesOwnFields:
         assert result.step_results["ask"].output == result.final_state["answer"]
         saved = await cp.load("out")
         assert is_redacted(saved.step_results["leak"]["output"])
+
+
+class _Blocking(MockProvider):
+    """Never answers the prompt ``block``: a run waiting on it can only be cancelled."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waiting = anyio.Event()
+
+    async def complete(self, messages: list[dict[str, Any]], model: str, **kwargs: Any) -> Any:
+        if messages[-1].get("content") == "block":
+            self.waiting.set()
+            await anyio.sleep_forever()
+        return await super().complete(messages, model, **kwargs)
+
+
+class TestInterruptedRun:
+    """A run cancelled from outside, as by Ctrl-C, saves what it finished."""
+
+    @staticmethod
+    async def _interrupt(tmp_path: Path, last: StepDefinition) -> FileCheckpointer:
+        provider = _Blocking()
+        gateway = ProviderGateway()
+        gateway.register(provider, priority=0)
+        workflow = WorkflowDefinition(
+            name="interrupted",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            steps=[StepDefinition(id="one", type=StepType.LLM_CALL, prompt="a"), last],
+        )
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+        engine = WorkflowEngine(
+            workflow=workflow, provider_gateway=gateway, checkpointer=checkpointer, run_id="cut"
+        )
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(engine.run)
+            await provider.waiting.wait()
+            tg.cancel_scope.cancel()
+        return checkpointer
+
+    async def test_it_saves_the_finished_steps_and_resumes_after_them(self, tmp_path: Path) -> None:
+        last = StepDefinition(id="two", type=StepType.LLM_CALL, depends_on=["one"], prompt="block")
+        checkpointer = await self._interrupt(tmp_path, last)
+        data = await checkpointer.load("cut")
+        assert data.status == "cancelled"
+        assert data.completed_steps == ["one"]
+
+        provider = MockProvider()
+        gateway = ProviderGateway()
+        gateway.register(provider, priority=0)
+        resumed = await WorkflowEngine.from_checkpoint(data, checkpointer, provider_gateway=gateway)
+        result = await resumed.run()
+        assert result.status == WorkflowStatus.SUCCESS
+        assert [call["messages"][-1]["content"] for call in provider.calls] == ["block"]
+
+    async def test_a_subworkflow_leaves_the_checkpoint_to_its_parent(self, tmp_path: Path) -> None:
+        last = StepDefinition(
+            id="sub",
+            type=StepType.SUBWORKFLOW,
+            depends_on=["one"],
+            workflow_inline={
+                "name": "child",
+                "steps": [{"id": "wait", "type": "llm_call", "prompt": "block"}],
+            },
+        )
+        checkpointer = await self._interrupt(tmp_path, last)
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["cut.json"]
+        assert (await checkpointer.load("cut")).status == "cancelled"
 
 
 class TestCheckpointSchemaStrictness:

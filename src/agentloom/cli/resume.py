@@ -40,7 +40,7 @@ def resume(
         typer.echo("Cannot use --approve and --reject together.", err=True)
         raise typer.Exit(1)
 
-    from agentloom.cli.run import _config_file
+    from agentloom.cli.run import _config_file, _sigterm_as_interrupt
 
     decision: str | None = None
     if approve:
@@ -48,18 +48,19 @@ def resume(
     elif reject:
         decision = "rejected"
 
-    anyio.run(
-        _resume_async,
-        run_id,
-        checkpoint_dir,
-        provider,
-        model,
-        decision,
-        lite,
-        output_json,
-        stream,
-        _config_file(config_file),
-    )
+    with _sigterm_as_interrupt():
+        anyio.run(
+            _resume_async,
+            run_id,
+            checkpoint_dir,
+            provider,
+            model,
+            decision,
+            lite,
+            output_json,
+            stream,
+            _config_file(config_file),
+        )
 
 
 async def _resume_async(

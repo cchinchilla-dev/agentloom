@@ -731,7 +731,12 @@ class WorkflowEngine:
             return result
 
         except BaseException:
-            # Cancelled from outside: close this run's span so the observer returns to the parent
+            # Cancelled from outside, as by Ctrl-C: the steps that finished can be resumed. A
+            # subworkflow leaves it to its parent, or it would overwrite the pause it resumes from
+            if _RUNS.get()[0] is self:
+                with anyio.CancelScope(shield=True):
+                    await self._save_checkpoint("cancelled")
+            # Close this run's span so the observer returns to the parent
             if self.observer:
                 with anyio.CancelScope(shield=True):
                     total_tokens, total_cost = self._totals(await self.state.all_step_results())

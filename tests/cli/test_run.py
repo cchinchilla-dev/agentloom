@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import signal
+import sys
 import tempfile
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
@@ -604,3 +606,65 @@ class TestConfigOption:
         result = runner.invoke(app, argv)
         assert result.exit_code == 0, result.output
         assert seen == [config.resolve()]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGTERM is left alone on Windows")
+class TestSigtermAsInterrupt:
+    """A run stops on SIGTERM as on Ctrl-C, which saves its checkpoint."""
+
+    def test_the_handler_is_swapped_while_the_run_goes(self) -> None:
+        from agentloom.cli.run import _forward_to_sigint, _sigterm_as_interrupt
+
+        before = signal.getsignal(signal.SIGTERM)
+        with _sigterm_as_interrupt():
+            assert signal.getsignal(signal.SIGTERM) is _forward_to_sigint
+        assert signal.getsignal(signal.SIGTERM) is before
+
+    def test_windows_and_other_threads_keep_theirs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import threading
+
+        from agentloom.cli.run import _sigterm_as_interrupt
+
+        before = signal.getsignal(signal.SIGTERM)
+        seen: list[object] = []
+
+        def _inside() -> None:
+            with _sigterm_as_interrupt():
+                seen.append(signal.getsignal(signal.SIGTERM))
+
+        thread = threading.Thread(target=_inside)
+        thread.start()
+        thread.join()
+        monkeypatch.setattr(sys, "platform", "win32")
+        _inside()
+        assert seen == [before, before]
+
+    def test_sigterm_is_raised_again_as_sigint(self) -> None:
+        from agentloom.cli.run import _forward_to_sigint
+
+        received: list[int] = []
+        previous = signal.signal(signal.SIGINT, lambda signum, frame: received.append(signum))
+        try:
+            _forward_to_sigint(signal.SIGTERM, None)
+        finally:
+            signal.signal(signal.SIGINT, previous)
+        assert received == [signal.SIGINT]
+
+    @pytest.mark.parametrize("command", ["run", "resume"])
+    def test_run_and_resume_go_through_it(self, command: str, tmp_path: Path) -> None:
+        from contextlib import contextmanager
+
+        entered: list[bool] = []
+
+        @contextmanager
+        def _spy() -> Any:
+            entered.append(True)
+            yield
+
+        workflow = tmp_path / "wf.yaml"
+        workflow.write_text(LIVE_YAML)
+        args = [str(workflow)] if command == "run" else ["missing-run"]
+        flags = ["--checkpoint-dir", str(tmp_path)] if command == "resume" else []
+        with patch("agentloom.cli.run._sigterm_as_interrupt", _spy):
+            runner.invoke(app, [command, *args, "--lite", *flags])
+        assert entered == [True]

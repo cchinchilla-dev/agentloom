@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import json
 import os
-from contextlib import nullcontext
+import signal
+import sys
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from functools import partial
 from pathlib import Path
+from types import FrameType
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -102,23 +107,45 @@ def run(
     if record_tools and record is None:
         typer.echo("Error: --record-tools needs --record.", err=True)
         raise typer.Exit(2)
-    anyio.run(
-        partial(_run_async, config_path=_config_file(config_file)),
-        workflow_path,
-        state,
-        provider,
-        model,
-        budget,
-        lite,
-        output_json,
-        stream,
-        checkpoint,
-        checkpoint_dir,
-        mock_responses,
-        record,
-        False,  # mock_strict — `run` keeps the lenient dev fallback; `replay` is strict
-        record_tools,
-    )
+    with _sigterm_as_interrupt():
+        anyio.run(
+            partial(_run_async, config_path=_config_file(config_file)),
+            workflow_path,
+            state,
+            provider,
+            model,
+            budget,
+            lite,
+            output_json,
+            stream,
+            checkpoint,
+            checkpoint_dir,
+            mock_responses,
+            record,
+            False,  # mock_strict — `run` keeps the lenient dev fallback; `replay` is strict
+            record_tools,
+        )
+
+
+@contextmanager
+def _sigterm_as_interrupt() -> Iterator[None]:
+    """Stop the run on SIGTERM as on Ctrl-C, so it saves its checkpoint first.
+
+    Kubernetes stops a Job with SIGTERM, which ends Python at once; as SIGINT, the event
+    loop cancels the run instead. Windows and threads other than the main one keep theirs.
+    """
+    if sys.platform == "win32" or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.signal(signal.SIGTERM, _forward_to_sigint)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _forward_to_sigint(signum: int, frame: FrameType | None) -> None:
+    signal.raise_signal(signal.SIGINT)
 
 
 async def _run_async(
