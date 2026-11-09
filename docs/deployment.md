@@ -197,9 +197,10 @@ kubectl apply -f deploy/argocd/application.yaml
 
 | Variable | What it does |
 |----------|--------------|
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | Set up each provider. |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | Set up each provider, or give their keys to the providers a config file lists. |
 | `OLLAMA_BASE_URL` | Ollama's address; `http://localhost:11434` by default. |
 | `AGENTLOOM_OLLAMA_FALLBACK` | `1` makes Ollama answer the models no other provider takes. |
+| `AGENTLOOM_CONFIG` | The [config file](providers.md#config-file) that sets up the providers. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Where traces and metrics go, over gRPC. Without the `observability` extra, or with `--lite`, nothing is sent. |
 | `AGENTLOOM_RUNS_DIR` | Where run history records go; `./agentloom_runs` by default. |
 | `AGENTLOOM_REDACT_STATE_KEYS` | State keys to mask in checkpoints and results. See [Redaction](state-and-templates.md#redaction). |

@@ -60,7 +60,7 @@ Every key is optional.
 
 | Key | Default | What it sets |
 |-----|---------|--------------|
-| `provider` | `openai` | The provider tried first. The model name decides which providers can serve a call; see [Providers](providers.md). |
+| `provider` | `openai` | The provider tried first; with a [config file](providers.md#config-file), `priority` decides instead. The model name decides which providers can serve a call; see [Providers](providers.md). |
 | `model` | `gpt-4o-mini` | The model of every step that doesn't name its own. |
 | `base_url` | none | The endpoint of `provider: generic_openai`. Required there, and refused with any other provider. |
 | `api_key_env` | none | The environment variable that holds the key for `generic_openai`. Without it, requests carry no key. |
