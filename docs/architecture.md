@@ -34,7 +34,7 @@ How the engine runs a workflow: the modules it is made of, the path of a run fro
 What `agentloom run workflow.yaml` does:
 
 1. **Parse.** The YAML becomes a `WorkflowDefinition`; its references (`depends_on`, router targets, subworkflow files) are checked, then cycles, then steps that write the same `output`.
-2. **Set up.** The command applies its options to `config`, creates one `ProviderGateway`, registers the providers the environment sets up, or the mock, and adds an observer if the `observability` extra is installed, the built-in tools behind the sandbox, and a checkpointer with `--checkpoint`.
+2. **Set up.** The command applies its options to `config`, creates one `ProviderGateway`, registers the providers the [config file](providers.md#config-file) lists or, without one, those the environment sets up, or the mock, and adds an observer if the `observability` extra is installed, the built-in tools behind the sandbox, and a checkpointer with `--checkpoint`.
 3. **Layer.** The engine builds the graph again and sorts the steps into layers.
 4. **Run each layer.** Its steps start together, up to `max_concurrent_steps`, under the run's `timeout`.
 5. **Run each step.** The budget is checked, then each attempt calls the step's executor under the step's `timeout`. The executor takes a snapshot of the state, renders its templates and calls the gateway or its tool.
