@@ -274,7 +274,7 @@ Turns text from the state into vectors.
 |----------|--------|--------------|
 | OpenAI | `text-embedding-3-small`, `text-embedding-3-large` | Yes |
 | Google | `gemini-embedding-001` | Yes |
-| Ollama | Any embedding model you pulled, such as `nomic-embed-text` | Ignored |
+| Ollama | Any embedding model you pulled, such as `nomic-embed-text` | Yes, up to the model's length |
 | Anthropic | None: the gateway skips it and tries the next provider | — |
 
 The model name finds the provider, as for a model call. The `mock` provider returns recorded vectors, or made-up ones that are the same on every run; see [Testing & Replay](testing-and-replay.md).
