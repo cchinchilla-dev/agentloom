@@ -109,12 +109,13 @@ async def test_a_retry_while_recording_keeps_only_the_finished_attempt(
     recorded = await _run(recorder, _Clock(), ToolRecorder(path), nested)
     assert _out(recorded, nested) == "It is 10:02."
     recording = json.loads(path.read_text())
+    key = "sub/s" if nested else "s"
     assert recording["_tools"] == {
-        "s": [{"name": "clock", "arguments": {}, "result": "10:02", "success": True}]
+        key: [{"name": "clock", "arguments": {}, "result": "10:02", "success": True}]
     }
     # The LLM turns of the failed attempt are gone too: the retry's ask and its answer remain.
     turns = [
-        t["tool_calls"][0]["id"] if "tool_calls" in t else t["content"] for t in recording["s"]
+        t["tool_calls"][0]["id"] if "tool_calls" in t else t["content"] for t in recording[key]
     ]
     assert turns == ["call-3", "It is 10:02."]
 

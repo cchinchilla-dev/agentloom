@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
+from typing import Any, ClassVar
 
 import httpx
 import pytest
 import respx
 
+from agentloom.core.models import ThinkingConfig
 from agentloom.exceptions import ProviderError, UnsupportedRequestError
 from agentloom.providers.openai import OpenAIProvider
 from agentloom.providers.pricing import calculate_cost
@@ -391,4 +394,177 @@ class TestReasoningTokens:
         )
         assert r.usage.reasoning_tokens == 0
         assert r.usage.billable_completion_tokens == r.usage.completion_tokens
+        await provider.close()
+
+
+class TestWireFailures:
+    @respx.mock
+    async def test_a_200_that_is_not_json_is_a_provider_error_without_status(self) -> None:
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, text="<html>proxy</html>")
+        )
+        provider = OpenAIProvider(api_key="dummy-key")
+        with pytest.raises(ProviderError, match="not valid JSON") as exc:
+            await provider.complete(messages=[{"role": "user", "content": "hi"}], model="gpt-4o")
+        assert exc.value.status_code is None
+        await provider.close()
+
+    @respx.mock
+    async def test_embeddings_that_are_not_json_are_a_provider_error(self) -> None:
+        respx.post("https://api.openai.com/v1/embeddings").mock(
+            return_value=httpx.Response(200, text="oops")
+        )
+        provider = OpenAIProvider(api_key="dummy-key")
+        with pytest.raises(ProviderError, match="not valid JSON"):
+            await provider.embed(inputs=["a"], model="text-embedding-3-small")
+        await provider.close()
+
+    @respx.mock
+    async def test_a_network_error_opening_a_stream_is_a_provider_error(self) -> None:
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
+        provider = OpenAIProvider(api_key="dummy-key")
+        sr = await provider.stream(messages=[{"role": "user", "content": "hi"}], model="gpt-4o")
+        with pytest.raises(ProviderError, match="ConnectError") as exc:
+            [c async for c in sr]
+        assert exc.value.status_code is None
+        await provider.close()
+
+    @respx.mock
+    async def test_a_network_error_during_a_stream_is_a_provider_error(self) -> None:
+        class _Dropping(httpx.AsyncByteStream):
+            async def __aiter__(self) -> AsyncIterator[bytes]:
+                delta = {"choices": [{"delta": {"content": "a"}}]}
+                yield f"data: {json.dumps(delta)}\n\n".encode()
+                raise httpx.ReadError("connection reset")
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, stream=_Dropping())
+        )
+        provider = OpenAIProvider(api_key="dummy-key")
+        sr = await provider.stream(messages=[{"role": "user", "content": "hi"}], model="gpt-4o")
+        chunks: list[str] = []
+        with pytest.raises(ProviderError, match="ReadError"):
+            async for chunk in sr:
+                chunks.append(chunk)
+        assert chunks == ["a"]
+        await provider.close()
+
+
+def _sent(route: respx.Route) -> dict[str, Any]:
+    return json.loads(route.calls[0].request.content)
+
+
+class TestReasoningRequestShape:
+    """The request shape only: what the live API accepts is checked elsewhere."""
+
+    _URL = "https://api.openai.com/v1/chat/completions"
+    _HI: ClassVar[list[dict[str, Any]]] = [{"role": "user", "content": "hi"}]
+
+    @respx.mock
+    @pytest.mark.parametrize("model", ["o1-mini", "o3", "o4-mini", "gpt-5", "gpt-5.5-pro"])
+    async def test_a_reasoning_model_gets_max_completion_tokens_and_no_temperature(
+        self, model: str
+    ) -> None:
+        route = respx.post(self._URL).mock(return_value=httpx.Response(200, json=MOCK_RESPONSE))
+        provider = OpenAIProvider(api_key="dummy-key")
+        await provider.complete(self._HI, model, temperature=0.2, max_tokens=100)
+        sent = _sent(route)
+        assert sent["max_completion_tokens"] == 100
+        assert "max_tokens" not in sent
+        assert "temperature" not in sent
+        await provider.close()
+
+    @respx.mock
+    async def test_another_model_keeps_max_tokens_and_temperature(self) -> None:
+        route = respx.post(self._URL).mock(return_value=httpx.Response(200, json=MOCK_RESPONSE))
+        provider = OpenAIProvider(api_key="dummy-key")
+        await provider.complete(self._HI, "gpt-4o", temperature=0.2, max_tokens=100)
+        sent = _sent(route)
+        assert sent["max_tokens"] == 100
+        assert sent["temperature"] == 0.2
+        assert "max_completion_tokens" not in sent
+        await provider.close()
+
+    @respx.mock
+    async def test_a_streamed_reasoning_call_has_the_same_shape(self) -> None:
+        route = respx.post(self._URL).mock(
+            return_value=httpx.Response(200, content=b"data: [DONE]\n\n")
+        )
+        provider = OpenAIProvider(api_key="dummy-key")
+        sr = await provider.stream(
+            self._HI,
+            "o3",
+            temperature=0.2,
+            max_tokens=100,
+            thinking_config=ThinkingConfig(enabled=True, level="high"),
+        )
+        [c async for c in sr]
+        sent = _sent(route)
+        assert sent["max_completion_tokens"] == 100
+        assert "temperature" not in sent
+        assert sent["reasoning_effort"] == "high"
+        await provider.close()
+
+    @respx.mock
+    @pytest.mark.parametrize("model", ["gpt-5-chat", "gpt-5-chat-latest"])
+    async def test_gpt_5_chat_takes_the_ordinary_shape(self, model: str) -> None:
+        route = respx.post(self._URL).mock(return_value=httpx.Response(200, json=MOCK_RESPONSE))
+        provider = OpenAIProvider(api_key="dummy-key")
+        await provider.complete(
+            self._HI,
+            model,
+            temperature=0.2,
+            max_tokens=100,
+            thinking_config=ThinkingConfig(enabled=True, level="high"),
+        )
+        sent = _sent(route)
+        assert (sent["temperature"], sent["max_tokens"]) == (0.2, 100)
+        assert "max_completion_tokens" not in sent
+        assert "reasoning_effort" not in sent
+        await provider.close()
+
+    @respx.mock
+    async def test_o1_mini_gets_no_reasoning_effort(self) -> None:
+        route = respx.post(self._URL).mock(return_value=httpx.Response(200, json=MOCK_RESPONSE))
+        provider = OpenAIProvider(api_key="dummy-key")
+        await provider.complete(
+            self._HI,
+            "o1-mini",
+            max_tokens=100,
+            thinking_config=ThinkingConfig(enabled=True, level="high"),
+        )
+        sent = _sent(route)
+        assert sent["max_completion_tokens"] == 100
+        assert "reasoning_effort" not in sent
+        await provider.close()
+
+    @respx.mock
+    async def test_the_level_becomes_the_reasoning_effort(self) -> None:
+        route = respx.post(self._URL).mock(return_value=httpx.Response(200, json=MOCK_RESPONSE))
+        provider = OpenAIProvider(api_key="dummy-key")
+        await provider.complete(
+            self._HI, "o3", thinking_config=ThinkingConfig(enabled=True, level="low")
+        )
+        assert _sent(route)["reasoning_effort"] == "low"
+        assert "thinking_config" not in _sent(route)
+        await provider.close()
+
+    @respx.mock
+    @pytest.mark.parametrize(
+        ("model", "config"),
+        [
+            ("o3", ThinkingConfig(enabled=True)),  # no level to send
+            ("o3", ThinkingConfig(enabled=False, level="high")),  # turned off
+            ("gpt-4o", ThinkingConfig(enabled=True, level="high")),  # takes no effort
+        ],
+    )
+    async def test_no_effort_is_sent_without_a_level_to_send(
+        self, model: str, config: ThinkingConfig
+    ) -> None:
+        route = respx.post(self._URL).mock(return_value=httpx.Response(200, json=MOCK_RESPONSE))
+        provider = OpenAIProvider(api_key="dummy-key")
+        await provider.complete(self._HI, model, thinking_config=config)
+        assert "reasoning_effort" not in _sent(route)
         await provider.close()

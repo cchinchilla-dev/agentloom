@@ -20,6 +20,7 @@ from agentloom.core.models import (
 )
 from agentloom.core.redact import is_redacted
 from agentloom.core.results import StepStatus, WorkflowStatus
+from agentloom.providers.base import ProviderResponse
 from agentloom.providers.gateway import ProviderGateway
 from tests.conftest import MockProvider
 
@@ -256,7 +257,10 @@ class TestCheckpointErrorHandling:
         loaded = await checkpointer.load(engine.run_id)
         assert loaded.status in ("budget_exceeded", "failed")
 
-    async def test_checkpoint_saved_on_failure(self, tmp_path: Path) -> None:
+    async def test_checkpoint_saved_on_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("agentloom.core.engine.compute_backoff", lambda *_args: 0.0)
         checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
 
         class ErrorProvider(MockProvider):
@@ -371,6 +375,212 @@ class TestResumeWithRouter:
         assert result.step_results["general"].status == StepStatus.SKIPPED
         assert len(provider.calls) == 1
 
+    async def test_resume_skips_the_whole_branch_not_taken(self, tmp_path: Path) -> None:
+        """Past a completed router, the descendants of the other branch stay skipped too."""
+        llm = {"type": StepType.LLM_CALL, "prompt": "go"}
+        workflow = WorkflowDefinition(
+            name="router-resume-deep",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={"choice": "taken"},
+            steps=[
+                StepDefinition(
+                    id="route",
+                    type=StepType.ROUTER,
+                    conditions=[Condition(expression="state.choice == 'taken'", target="taken")],
+                    default="other",
+                ),
+                StepDefinition(id="taken", depends_on=["route"], **llm),
+                StepDefinition(id="other", depends_on=["route"], **llm),
+                StepDefinition(id="taken_after", depends_on=["taken"], **llm),
+                StepDefinition(id="other_after", depends_on=["other"], **llm),
+                StepDefinition(id="other_end", depends_on=["other_after"], **llm),
+            ],
+        )
+        checkpoint = CheckpointData(
+            workflow_name="router-resume-deep",
+            run_id="deep-run",
+            workflow_definition=workflow.model_dump(),
+            state={"choice": "taken"},
+            step_results={
+                "route": {"step_id": "route", "status": "success", "output": "taken"},
+            },
+            completed_steps=["route"],
+            status="failed",
+            created_at="2026-04-12T10:00:00+00:00",
+            updated_at="2026-04-12T10:00:01+00:00",
+        )
+        provider = MockProvider()
+        gateway = ProviderGateway()
+        gateway.register(provider, priority=0)
+
+        resumed = await WorkflowEngine.from_checkpoint(
+            checkpoint_data=checkpoint,
+            checkpointer=FileCheckpointer(checkpoint_dir=tmp_path),
+            provider_gateway=gateway,
+        )
+        result = await resumed.run()
+
+        assert result.step_results["taken_after"].status == StepStatus.SUCCESS
+        assert result.step_results["other_after"].status == StepStatus.SKIPPED
+        assert result.step_results["other_end"].status == StepStatus.SKIPPED
+        assert len(provider.calls) == 2
+
+    async def test_resume_reads_the_target_of_a_router_with_a_redacted_output(
+        self, tmp_path: Path
+    ) -> None:
+        """A router's output is a step id: a redaction pattern must not take the branch away."""
+        workflow = WorkflowDefinition.model_validate(
+            {
+                "name": "redacted-route",
+                "config": {"provider": "mock", "model": "mock-model"},
+                "state": {"go": 1},
+                "state_schema": {"route*": {"redact": True}},
+                "steps": [
+                    {
+                        "id": "r",
+                        "type": "router",
+                        "output": "route_taken",
+                        "conditions": [{"expression": "state.go == 1", "target": "review"}],
+                        "default": "fallback",
+                    },
+                    {"id": "review", "type": "approval_gate", "depends_on": ["r"]},
+                    {"id": "fallback", "type": "llm_call", "prompt": "no", "depends_on": ["r"]},
+                    {
+                        "id": "publish",
+                        "type": "llm_call",
+                        "prompt": "yes",
+                        "depends_on": ["review"],
+                    },
+                ],
+            }
+        )
+        provider = MockProvider()
+        gateway = ProviderGateway()
+        gateway.register(provider, priority=0)
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+        engine = WorkflowEngine(
+            workflow=workflow, provider_gateway=gateway, checkpointer=checkpointer, run_id="red"
+        )
+        assert (await engine.run()).status == WorkflowStatus.PAUSED
+        saved = await checkpointer.load("red")
+        assert saved.step_results["r"]["output"] == "review"
+        assert is_redacted(saved.state["route_taken"])
+
+        resumed = await WorkflowEngine.from_checkpoint(
+            checkpoint_data=saved,
+            checkpointer=checkpointer,
+            provider_gateway=gateway,
+            approval_decisions={"review": "approved"},
+        )
+        result = await resumed.run()
+
+        assert result.step_results["review"].status == StepStatus.SUCCESS
+        assert result.step_results["publish"].status == StepStatus.SUCCESS
+        assert result.step_results["fallback"].status == StepStatus.SKIPPED
+
+    async def test_resume_runs_a_child_shared_with_a_router_that_runs_again(
+        self, tmp_path: Path
+    ) -> None:
+        """What a re-run router activates can't be skipped for the finished one's branch."""
+        llm = {"type": StepType.LLM_CALL, "prompt": "go"}
+        workflow = WorkflowDefinition(
+            name="shared-child",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={"flag": 1},
+            steps=[
+                StepDefinition(id="r1", type=StepType.ROUTER, default="only1"),
+                StepDefinition(
+                    id="r2",
+                    type=StepType.ROUTER,
+                    conditions=[Condition(expression="state.flag == 1", target="shared")],
+                    default="only2",
+                ),
+                StepDefinition(id="shared", depends_on=["r1", "r2"], **llm),
+                StepDefinition(id="only1", depends_on=["r1"], **llm),
+                StepDefinition(id="only2", depends_on=["r2"], **llm),
+            ],
+        )
+        checkpoint = CheckpointData(
+            workflow_name="shared-child",
+            run_id="shared-run",
+            workflow_definition=workflow.model_dump(),
+            state={"flag": 1},
+            step_results={"r1": {"step_id": "r1", "status": "success", "output": "only1"}},
+            completed_steps=["r1"],
+            status="failed",
+            created_at="2026-04-12T10:00:00+00:00",
+            updated_at="2026-04-12T10:00:01+00:00",
+        )
+        gateway = ProviderGateway()
+        gateway.register(MockProvider(), priority=0)
+
+        resumed = await WorkflowEngine.from_checkpoint(
+            checkpoint_data=checkpoint,
+            checkpointer=FileCheckpointer(checkpoint_dir=tmp_path),
+            provider_gateway=gateway,
+        )
+        result = await resumed.run()
+
+        assert result.step_results["shared"].status == StepStatus.SUCCESS
+        assert result.step_results["only1"].status == StepStatus.SUCCESS
+        assert result.step_results["only2"].status == StepStatus.SKIPPED
+
+    async def test_resume_keeps_a_finished_routers_target_next_to_one_run_again(
+        self, tmp_path: Path
+    ) -> None:
+        """A router of the layer that runs again doesn't take away the other one's activation."""
+        llm = {"type": StepType.LLM_CALL, "prompt": "go"}
+        workflow = WorkflowDefinition(
+            name="two-routers",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state={"choice": 1},
+            steps=[
+                StepDefinition(
+                    id="r1",
+                    type=StepType.ROUTER,
+                    conditions=[Condition(expression="state.choice == 1", target="t1")],
+                    default="o1",
+                ),
+                StepDefinition(
+                    id="r2",
+                    type=StepType.ROUTER,
+                    conditions=[Condition(expression="state.choice == 1", target="t2")],
+                    default="o2",
+                ),
+                StepDefinition(id="t1", depends_on=["r1"], **llm),
+                StepDefinition(id="o1", depends_on=["r1"], **llm),
+                StepDefinition(id="t2", depends_on=["r2"], **llm),
+                StepDefinition(id="o2", depends_on=["r2"], **llm),
+            ],
+        )
+        checkpoint = CheckpointData(
+            workflow_name="two-routers",
+            run_id="two-routers-run",
+            workflow_definition=workflow.model_dump(),
+            state={"choice": 1},
+            step_results={"r1": {"step_id": "r1", "status": "success", "output": "t1"}},
+            completed_steps=["r1"],
+            status="failed",
+            created_at="2026-04-12T10:00:00+00:00",
+            updated_at="2026-04-12T10:00:01+00:00",
+        )
+        provider = MockProvider()
+        gateway = ProviderGateway()
+        gateway.register(provider, priority=0)
+
+        resumed = await WorkflowEngine.from_checkpoint(
+            checkpoint_data=checkpoint,
+            checkpointer=FileCheckpointer(checkpoint_dir=tmp_path),
+            provider_gateway=gateway,
+        )
+        result = await resumed.run()
+
+        assert result.step_results["t1"].status == StepStatus.SUCCESS
+        assert result.step_results["t2"].status == StepStatus.SUCCESS
+        assert result.step_results["o1"].status == StepStatus.SKIPPED
+        assert result.step_results["o2"].status == StepStatus.SKIPPED
+        assert len(provider.calls) == 2
+
 
 class TestCheckpointStateRedaction:
     """Checkpoint files carry no plaintext for redacted keys.
@@ -449,6 +659,38 @@ class TestCheckpointStateRedaction:
 
         doc = json.loads(next(tmp_path.glob("*.json")).read_text())
         assert "sk-yaml-seed" not in json.dumps(doc)
+
+    async def test_reasoning_is_redacted_with_the_output_it_led_to(self) -> None:
+        from agentloom.core.models import StateKeyConfig, ThinkingConfig
+
+        class _Reasoner(MockProvider):
+            async def complete(self, *args: Any, **kwargs: Any) -> ProviderResponse:
+                response = await super().complete(*args, **kwargs)
+                response.reasoning_content = "the code is dummy-secret"
+                return response
+
+        wf = WorkflowDefinition(
+            name="redact-reasoning",
+            config=WorkflowConfig(provider="mock", model="mock-model"),
+            state_schema={"answer": StateKeyConfig(redact=True)},
+            steps=[
+                StepDefinition(
+                    id="s",
+                    type=StepType.LLM_CALL,
+                    prompt="hi",
+                    output="answer",
+                    thinking=ThinkingConfig(enabled=True),
+                )
+            ],
+        )
+        gw = ProviderGateway()
+        gw.register(_Reasoner(), priority=0)
+
+        result = await WorkflowEngine(workflow=wf, provider_gateway=gw).run()
+
+        reasoning = result.step_results["s"].reasoning_content
+        assert reasoning is not None
+        assert "dummy-secret" not in reasoning
 
     async def test_no_redaction_keeps_plaintext(self, tmp_path: Path) -> None:
         wf = WorkflowDefinition(

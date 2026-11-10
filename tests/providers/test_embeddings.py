@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -403,18 +404,9 @@ class TestEmbedStepIntegration:
         assert status == WorkflowStatus.SUCCESS
         assert final["vectors"] == [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]
 
-    async def test_embed_step_rejects_missing_inputs_field(self) -> None:
-        # The model accepts an embed step without ``inputs:``; execution fails it.
-        wf = WorkflowDefinition(
-            name="bad",
-            config=WorkflowConfig(provider="mock", model="x"),
-            state={"docs": ["a"]},
-            steps=[StepDefinition(id="v", type=StepType.EMBED)],
-        )
-        gw = ProviderGateway()
-        gw.register(MockProvider(), priority=0)
-        status, _ = await _run(wf, gw)
-        assert status == WorkflowStatus.FAILED
+    def test_embed_step_rejects_missing_inputs_field(self) -> None:
+        with pytest.raises(ValueError, match="requires 'inputs'"):
+            StepDefinition(id="v", type=StepType.EMBED)
 
     async def test_embed_step_rejects_wrong_shape(self) -> None:
         wf = WorkflowDefinition(
@@ -640,6 +632,88 @@ class TestRecordingProviderEmbed:
         mock = MockProvider(responses_file=out, strict=True)
         r = await mock.embed(inputs=["hello"], model="x", step_id="v")
         assert r.embeddings == [[0.5, 0.5]]
+
+
+class TestEmbedRequestHash:
+    """A recorded embedding carries the hash of its request, and strict replay checks it."""
+
+    @staticmethod
+    def _wrapped(vectors: int) -> BaseProvider:
+        class _Wrapped(BaseProvider):
+            name = "wrapped"
+
+            def supports_model(self, model: str) -> bool:
+                return True
+
+            async def complete(self, messages, model, **kwargs):  # type: ignore[override]
+                raise NotImplementedError
+
+            async def embed(self, inputs, model, dimensions=None, **kwargs):  # type: ignore[override]
+                return EmbeddingResponse(
+                    embeddings=[[0.5, 0.5]] * vectors, model=model, provider=self.name
+                )
+
+        return _Wrapped()
+
+    async def _record(self, tmp_path: Any) -> Any:
+        from agentloom.providers.recorder import RecordingProvider
+
+        out = tmp_path / "rec.json"
+        recorder = RecordingProvider(self._wrapped(2), out)
+        await recorder.embed(inputs=["a", "b"], model="x", dimensions=2, step_id="v")
+        await recorder.close()
+        return out
+
+    async def test_the_recording_holds_the_hash(self, tmp_path: Any) -> None:
+        out = await self._record(tmp_path)
+        assert len(json.loads(out.read_text())["v"]["request_hash"]) == 64
+
+    async def test_the_same_request_replays(self, tmp_path: Any) -> None:
+        mock = MockProvider(responses_file=await self._record(tmp_path), strict=True)
+        r = await mock.embed(inputs=["a", "b"], model="x", dimensions=2, step_id="v")
+        assert r.embeddings == [[0.5, 0.5], [0.5, 0.5]]
+
+    @pytest.mark.parametrize(
+        "changed",
+        [
+            {"inputs": ["a", "c"], "model": "x", "dimensions": 2},
+            {"inputs": ["a", "b"], "model": "y", "dimensions": 2},
+            {"inputs": ["a", "b"], "model": "x", "dimensions": 4},
+        ],
+        ids=["input", "model", "dimensions"],
+    )
+    async def test_a_changed_request_fails_strict_replay(
+        self, tmp_path: Any, changed: dict[str, Any]
+    ) -> None:
+        from agentloom.exceptions import RecordingMismatchError
+
+        mock = MockProvider(responses_file=await self._record(tmp_path), strict=True)
+        with pytest.raises(RecordingMismatchError, match="does not match the recording"):
+            await mock.embed(step_id="v", **changed)
+
+    async def test_a_changed_request_warns_in_lenient_replay(
+        self, tmp_path: Any, caplog: Any
+    ) -> None:
+        mock = MockProvider(responses_file=await self._record(tmp_path))
+        r = await mock.embed(inputs=["a", "c"], model="x", dimensions=2, step_id="v")
+        assert r.embeddings == [[0.5, 0.5], [0.5, 0.5]]
+        assert any("changed since the recording" in rec.getMessage() for rec in caplog.records)
+
+    async def test_a_recording_without_a_hash_still_replays(self, tmp_path: Any) -> None:
+        rec = tmp_path / "rec.json"
+        rec.write_text(json.dumps({"v": {"embeddings": [[0.5, 0.5]]}}))
+        mock = MockProvider(responses_file=rec, strict=True)
+        assert (await mock.embed(inputs=["a"], model="x", step_id="v")).embeddings == [[0.5, 0.5]]
+
+    async def test_another_number_of_inputs_is_a_mismatch_at_once(self, tmp_path: Any) -> None:
+        from agentloom.exceptions import RecordingMismatchError
+
+        rec = tmp_path / "rec.json"
+        rec.write_text(json.dumps({"v": {"embeddings": [[0.5], [0.6], [0.7]]}}))
+        gateway = ProviderGateway()
+        gateway.register(MockProvider(responses_file=rec, strict=True), priority=0)
+        with pytest.raises(RecordingMismatchError, match="3 vectors for 2 inputs"):
+            await gateway.embed(inputs=["a", "b"], model="x", step_id="v")
 
 
 class TestGatewayEmbedResilience:
@@ -1444,3 +1518,60 @@ class TestGatewayEmbedCircuitOpenMidCall:
         gw._providers[0].circuit_breaker = _FakeCB()  # type: ignore[assignment]
         r = await gw.embed(inputs=["hi"], model="x")
         assert r.provider == "second"
+
+
+class TestEmbeddingsAreNotChat:
+    """An embedding call reports the ``embeddings`` operation to the observer."""
+
+    async def test_gateway_hooks_carry_the_operation(self) -> None:
+        class _Ok(BaseProvider):
+            name = "hooked"
+
+            def supports_model(self, model: str) -> bool:
+                return True
+
+            async def complete(self, messages, model, **kwargs):  # type: ignore[override]
+                raise NotImplementedError
+
+            async def embed(self, inputs, model, dimensions=None, **kwargs):  # type: ignore[override]
+                return EmbeddingResponse(embeddings=[[0.1]], model=model, provider=self.name)
+
+        gw = ProviderGateway()
+        gw.register(_Ok(), priority=0)
+        observer = MagicMock()
+        gw.set_observer(observer)
+
+        await gw.embed(inputs=["hi"], model="x", step_id="s1")
+
+        assert observer.on_provider_call_start.call_args.kwargs["operation"] == "embeddings"
+        assert observer.on_provider_call_end.call_args.kwargs["operation"] == "embeddings"
+        observer.on_circuit_state.assert_called_once_with("hooked", "closed")
+
+    async def test_tokens_of_an_embed_step_carry_it(self, tmp_path: Any) -> None:
+        rec = tmp_path / "rec.json"
+        rec.write_text(
+            json.dumps(
+                {
+                    "_version": 2,
+                    "vectorize": {
+                        "embeddings": [[0.1], [0.2], [0.3]],
+                        "model": "text-embedding-3-small",
+                        "usage": {"prompt_tokens": 3, "total_tokens": 3},
+                        "cost_usd": 0.0,
+                    },
+                }
+            )
+        )
+        wf = _embed_workflow(responses_file=str(rec))
+        gw = ProviderGateway()
+        gw.register(MockProvider(responses_file=rec), priority=0)
+        observer = MagicMock()
+        engine = WorkflowEngine(
+            workflow=wf, provider_gateway=gw, tool_registry=ToolRegistry(), observer=observer
+        )
+
+        result = await engine.run()
+
+        assert result.status == WorkflowStatus.SUCCESS
+        observer.on_tokens.assert_called_once()
+        assert observer.on_tokens.call_args.kwargs["operation"] == "embeddings"

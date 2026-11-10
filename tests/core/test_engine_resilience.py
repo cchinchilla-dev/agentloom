@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from agentloom.core.attempts import (
+    attempt_spend,
+    enter_attempt,
+    record_retry_after,
+    record_spend,
+    restart_spend,
+)
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import (
     StepDefinition,
@@ -14,7 +22,8 @@ from agentloom.core.models import (
     WorkflowConfig,
     WorkflowDefinition,
 )
-from agentloom.core.results import StepResult, StepStatus, WorkflowStatus
+from agentloom.core.results import StepResult, StepStatus, TokenUsage, WorkflowStatus
+from agentloom.exceptions import RateLimitError
 from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse
 from agentloom.providers.gateway import ProviderGateway
 
@@ -516,3 +525,120 @@ class TestWorkflowMaxRetries:
             steps=[StepDefinition(id="sub", type=StepType.SUBWORKFLOW, workflow_inline=child_yaml)],
         )
         assert await self._calls(workflow) == 2
+
+
+class _Throttled(BaseProvider):
+    """Refuses its first ``refusals`` calls with a 429, naming the wait it wants."""
+
+    def __init__(self, retry_after_s: float | None, name: str = "throttled") -> None:
+        super().__init__(api_key="", base_url="")
+        self.name = name
+        self.retry_after_s = retry_after_s
+        self.refusals = 1
+        self.calls = 0
+
+    def supports_model(self, model: str) -> bool:
+        return True
+
+    def _refuse_first(self) -> None:
+        self.calls += 1
+        if self.calls <= self.refusals:
+            raise RateLimitError(self.name, retry_after_s=self.retry_after_s)
+
+    async def complete(self, messages: Any, model: str, *args: Any, **kwargs: Any) -> Any:
+        self._refuse_first()
+        return ProviderResponse(content="ok", model=model, provider=self.name)
+
+    async def stream(self, messages: Any, model: str, *args: Any, **kwargs: Any) -> Any:
+        self._refuse_first()
+
+        async def chunks() -> AsyncIterator[str]:
+            yield "ok"
+
+        response = StreamResponse(model=model, provider=self.name)
+        response._set_iterator(chunks())
+        return response
+
+
+class TestRetryAfter:
+    """A step waits at least what the provider's ``Retry-After`` asks, up to ``backoff_max``."""
+
+    @pytest.fixture
+    def waits(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        recorded: list[float] = []
+
+        async def fake_sleep(delay: float) -> None:
+            recorded.append(delay)
+
+        monkeypatch.setattr("agentloom.core.engine.anyio.sleep", fake_sleep)
+        return recorded
+
+    @staticmethod
+    async def _run(
+        gateway: ProviderGateway, base: float, maximum: float, **fields: Any
+    ) -> WorkflowStatus:
+        workflow = WorkflowDefinition(
+            name="wf",
+            config=WorkflowConfig(provider="throttled", model="x"),
+            steps=[
+                StepDefinition(
+                    id="s",
+                    type=StepType.LLM_CALL,
+                    prompt="hi",
+                    retry={
+                        "max_retries": 1,
+                        "backoff_base": base,
+                        "backoff_max": maximum,
+                        "jitter": False,
+                    },
+                    **fields,
+                )
+            ],
+        )
+        result = await WorkflowEngine(workflow=workflow, provider_gateway=gateway).run()
+        return result.status
+
+    @pytest.mark.parametrize(
+        ("retry_after", "base", "maximum", "expected"),
+        [
+            (5.0, 2.0, 60.0, 5.0),
+            (1.0, 3.0, 60.0, 3.0),
+            (90.0, 2.0, 30.0, 30.0),
+            (None, 2.0, 60.0, 2.0),
+        ],
+    )
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_the_wait_honours_retry_after(
+        self,
+        waits: list[float],
+        retry_after: float | None,
+        base: float,
+        maximum: float,
+        expected: float,
+        stream: bool,
+    ) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Throttled(retry_after))
+
+        status = await self._run(gateway, base, maximum, stream=stream)
+
+        assert status == WorkflowStatus.SUCCESS
+        assert waits == [expected]
+
+    async def test_with_several_providers_the_soonest_one_counts(self, waits: list[float]) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Throttled(7.0, name="slow"), priority=0)
+        gateway.register(_Throttled(3.0, name="sooner"), priority=1)
+
+        status = await self._run(gateway, 2.0, 60.0)
+
+        assert status == WorkflowStatus.SUCCESS
+        assert waits == [3.0]
+
+    async def test_an_answer_clears_what_an_earlier_call_asked_for(self) -> None:
+        enter_attempt(())
+        record_retry_after(9.0)
+        restart_spend()
+        assert attempt_spend().retry_after_s == 9.0  # a charge is no answer
+        record_spend(0.0, "p", "m", TokenUsage())
+        assert attempt_spend().retry_after_s is None

@@ -12,12 +12,15 @@ import hashlib
 import json
 import logging
 import random
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, NoReturn, Protocol, runtime_checkable
 
 import anyio
 
+from agentloom.core.attempts import qualified_step
+from agentloom.core.redact import carries_sentinel
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import RecordingMismatchError
 from agentloom.providers.base import (
@@ -34,8 +37,13 @@ logger = logging.getLogger("agentloom.providers.mock")
 # Recording-file format this runtime reads and writes; a lower ``_version`` is refused.
 RECORDING_FORMAT_VERSION = 2
 
+# Only recording and replaying providers take these; a recording hashes ``requested_model``.
+ROUTING_KWARGS = ("step_id", "requested_model")
+
 # Call identifiers, not request content: recorder and mock both leave them out of the hash.
-UNHASHED_KWARGS = ("step_id", "agentloom_step_id")
+UNHASHED_KWARGS = (*ROUTING_KWARGS, "agentloom_step_id")
+
+_HASH_KEY = re.compile(r"[0-9a-f]{64}")
 
 
 @runtime_checkable
@@ -83,6 +91,17 @@ def prompt_hash(
     return hashlib.sha256(serialized).hexdigest()
 
 
+def embed_hash(
+    inputs: list[str],
+    model: str,
+    dimensions: int | None,
+    extra: dict[str, Any] | None = None,
+) -> str:
+    """Stable SHA-256 hash of an embedding request."""
+    embed_request = {"embed_inputs": inputs, "model": model, "dimensions": dimensions}
+    return prompt_hash([embed_request], model, None, None, extra)
+
+
 def _check_fault(entry: dict[str, Any], source: str, key: str) -> None:
     if "fault" in entry:
         parse_fault(entry["fault"], f"Recording {source} entry {key!r}")
@@ -120,6 +139,11 @@ def validate_recording_schema(raw: object, source: str) -> dict[str, Any]:
             _check_fault(value, source, key)
             continue
         if isinstance(value, list) and all(isinstance(turn, dict) for turn in value):
+            if _HASH_KEY.fullmatch(key):
+                raise ValueError(
+                    f"Recording {source} entry {key!r} is keyed by request hash, which names "
+                    f"one exact request: it must be a response object, not a list of turns"
+                )
             for turn in value:
                 _check_fault(turn, source, key)
             continue
@@ -219,7 +243,12 @@ class MockProvider(BaseProvider):
         # Each value is a response or a list of turns (a tool loop); the cursor is per step id.
         self._responses: dict[str, Any] = {}
         self._turn_cursor: dict[str, int] = {}
-        if self.responses_file and self.responses_file.exists():
+        if self.responses_file:
+            if not self.responses_file.exists():
+                raise FileNotFoundError(
+                    f"Recording {self.responses_file} does not exist; "
+                    f"a relative path starts at the working directory"
+                )
             try:
                 raw = json.loads(self.responses_file.read_text(encoding="utf-8"))
             except json.JSONDecodeError as e:
@@ -228,10 +257,20 @@ class MockProvider(BaseProvider):
 
     def recorded_turns(self, step_id: str) -> int:
         """How many turns the recording holds for ``step_id``: one per call of a tool loop."""
-        entry = self._responses.get(step_id)
+        key = self._entry_key(step_id)
+        entry = self._responses.get(key) if key is not None else None
         if isinstance(entry, list):
             return len(entry)
         return 1 if isinstance(entry, dict) else 0
+
+    def _entry_key(self, step_id: str | None) -> str | None:
+        """The key of a step's entry: its qualified path, else the bare id a recording may hold."""
+        if not step_id:
+            return None
+        for key in (qualified_step(step_id), step_id, step_id.rpartition("/")[2]):
+            if key in self._responses:
+                return key
+        return None
 
     def _lookup(
         self,
@@ -243,21 +282,34 @@ class MockProvider(BaseProvider):
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         request_hash = prompt_hash(messages, model, temperature, max_tokens, extra)
-        if step_id and step_id in self._responses:
-            entry = self._responses[step_id]
+        key = self._entry_key(step_id)
+        if key is not None:
+            entry = self._responses[key]
+            # A replayed tool call hands back its masked values; the hash covers the real ones.
+            comparable = not carries_sentinel(messages)
             # One turn per call; past the last turn, lenient replay repeats it.
             if isinstance(entry, list):
                 if not entry:
                     return None
-                idx = self._turn_cursor.get(step_id, 0)
-                if self.strict and any(isinstance(t, dict) and "request_hash" in t for t in entry):
-                    return self._strict_turn(step_id, entry, idx, request_hash)
-                turn = entry[min(idx, len(entry) - 1)]
-                self._turn_cursor[step_id] = idx + 1
-                return turn if isinstance(turn, dict) else None
+                idx = self._turn_cursor.get(key, 0)
+                hashed = any(isinstance(t, dict) and "request_hash" in t for t in entry)
+                if self.strict and hashed and comparable:
+                    return self._strict_turn(key, entry, idx, request_hash)
+                if self.strict and idx >= len(entry):
+                    raise RecordingMismatchError(
+                        f"Step {key!r}: the recording holds {len(entry)} turns and this is "
+                        f"call {idx + 1}. Re-record the fixture with `agentloom run --record`, "
+                        f"or add the turns the step now makes."
+                    )
+                turn: dict[str, Any] = entry[min(idx, len(entry) - 1)]
+                self._turn_cursor[key] = idx + 1
+                if comparable:
+                    self._check_drift(f"Step {key!r}", turn, request_hash)
+                return turn
             if not isinstance(entry, dict):
                 return None
-            self._check_drift(f"Step {step_id!r}", entry, request_hash)
+            if comparable:
+                self._check_drift(f"Step {key!r}", entry, request_hash)
             return entry
         return self._responses.get(request_hash)
 
@@ -295,7 +347,7 @@ class MockProvider(BaseProvider):
         )
 
     def _check_drift(self, where: str, entry: dict[str, Any], request_hash: str) -> None:
-        """Refuse, in strict mode, an entry captured against another request.
+        """Refuse an entry captured against another request; a lenient replay warns and serves it.
 
         An entry recorded under a step_id carries the ``request_hash`` it
         was captured against; a mismatch means the workflow's prompt, system
@@ -303,14 +355,24 @@ class MockProvider(BaseProvider):
         without ``request_hash`` (a hand-written one) matches by step_id alone.
         """
         recorded_hash = entry.get("request_hash")
-        if self.strict and isinstance(recorded_hash, str) and recorded_hash != request_hash:
-            raise RecordingMismatchError(
-                f"{where}: the replayed request (hash "
-                f"{request_hash[:16]}) does not match the recording "
-                f"(hash {recorded_hash[:16]}). The prompt, system prompt, "
-                f"model, or tools spec changed since capture — re-record "
-                f"the fixture with `agentloom run --record`."
+        if not isinstance(recorded_hash, str) or recorded_hash == request_hash:
+            return
+        if not self.strict:
+            logger.warning(
+                "%s: the request changed since the recording (hash %s, recorded %s); "
+                "serving the recorded answer.",
+                where,
+                request_hash[:16],
+                recorded_hash[:16],
             )
+            return
+        raise RecordingMismatchError(
+            f"{where}: the replayed request (hash "
+            f"{request_hash[:16]}) does not match the recording "
+            f"(hash {recorded_hash[:16]}). The prompt, system prompt, "
+            f"model, or tools spec changed since capture — re-record "
+            f"the fixture with `agentloom run --record`."
+        )
 
     async def _sleep(self, recorded_ms: float | None) -> None:
         if self.latency_model == "replay" and recorded_ms is not None:
@@ -334,7 +396,8 @@ class MockProvider(BaseProvider):
         step_id = kwargs.get("step_id")
         extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
         has_response_schema = "agentloom_response_schema" in extra_kwargs
-        entry = self._lookup(step_id, messages, model, temperature, max_tokens, extra_kwargs)
+        asked = kwargs.get("requested_model", model)
+        entry = self._lookup(step_id, messages, asked, temperature, max_tokens, extra_kwargs)
         if entry is None:
             if self.strict:
                 raise RecordingMismatchError(
@@ -345,7 +408,7 @@ class MockProvider(BaseProvider):
                     f"response."
                 )
             matched_by = "default"
-        elif step_id and step_id in self._responses:
+        elif self._entry_key(step_id) is not None:
             matched_by = "step_id"
         else:
             matched_by = "prompt_hash"
@@ -469,19 +532,17 @@ class MockProvider(BaseProvider):
         """
         step_id = kwargs.get("step_id")
         extra_kwargs = {k: v for k, v in kwargs.items() if k not in UNHASHED_KWARGS}
+        request_hash = embed_hash(
+            inputs, kwargs.get("requested_model", model), dimensions, extra_kwargs
+        )
         entry: dict[str, Any] | None = None
-        if step_id and step_id in self._responses:
-            candidate = self._responses[step_id]
+        key = self._entry_key(step_id)
+        if key is not None:
+            candidate = self._responses[key]
             if isinstance(candidate, dict) and "embeddings" in candidate:
                 entry = candidate
+                self._check_drift(f"Step {key!r}", entry, request_hash)
         if entry is None:
-            request_hash = prompt_hash(
-                [{"embed_inputs": inputs, "model": model, "dimensions": dimensions}],
-                model,
-                None,
-                None,
-                extra_kwargs,
-            )
             candidate = self._responses.get(request_hash)
             if isinstance(candidate, dict) and "embeddings" in candidate:
                 entry = candidate
@@ -493,6 +554,11 @@ class MockProvider(BaseProvider):
             )
         if entry is not None:
             vectors = [list(v) for v in entry["embeddings"]]
+            if self.strict and len(vectors) != len(inputs):
+                raise RecordingMismatchError(
+                    f"Step {step_id!r}: the recording holds {len(vectors)} vectors for "
+                    f"{len(inputs)} inputs. Re-record the fixture with `agentloom run --record`."
+                )
             usage_data = entry.get("usage", {}) or {}
             prompt_tokens = int(usage_data.get("prompt_tokens", 0))
             return EmbeddingResponse(

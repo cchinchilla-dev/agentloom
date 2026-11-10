@@ -52,10 +52,7 @@ class EmbedStep(BaseStep):
 
         if context.provider_gateway is None:
             raise StepError(step.id, "No provider gateway configured", is_retryable=False)
-        if not step.inputs:
-            raise StepError(
-                step.id, "Embed step requires an 'inputs' state reference", is_retryable=False
-            )
+        assert step.inputs is not None  # an embed step without it fails validation
 
         state_snapshot = await context.state_manager.get_state_snapshot()
         try:

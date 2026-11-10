@@ -10,20 +10,20 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from collections.abc import Awaitable, Callable, Collection, Iterable
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypeVar
 
 from pydantic import BaseModel
 
-from agentloom.core.attempts import running_steps
-from agentloom.exceptions import RecordingMismatchError
+from agentloom.core.attempts import qualified_step, running_steps
+from agentloom.exceptions import RecordingMismatchError, UnsupportedRequestError
 from agentloom.providers.base import (
     BaseProvider,
     EmbeddingResponse,
     ProviderResponse,
     StreamResponse,
 )
-from agentloom.providers.mock import MockProvider
+from agentloom.providers.mock import ROUTING_KWARGS, MockProvider
 
 if TYPE_CHECKING:
     from agentloom.core.models import WorkflowDefinition
@@ -57,6 +57,9 @@ class ReplayCut:
         self.calls: list[CallSource] = []
         self._missed: set[tuple[str, ...]] = set()
         self._numbers: dict[str, int] = {}
+        # By recording key: ``calls`` names a subworkflow's step by its bare id.
+        self._replayed: Counter[str] = Counter()
+        self._went_live: set[str] = set()
 
     @staticmethod
     def _path(step_id: str) -> tuple[str, ...]:
@@ -83,6 +86,7 @@ class ReplayCut:
         """Serve one call from the recording, or from the provider when the cut says so."""
         key = step_id or ""
         number = self._numbers[key] = self._numbers.get(key, 0) + 1
+        recording_key = qualified_step(key) if key else ""
         reason = self._reason(key)
         if reason is None:
             try:
@@ -95,16 +99,18 @@ class ReplayCut:
                 self.calls.append(
                     CallSource(step_id=key, call=number, source="replay", reason="hit")
                 )
+                self._replayed[recording_key] += 1
                 return served
         self.calls.append(CallSource(step_id=key, call=number, source="live", reason=reason))
+        self._went_live.add(recording_key)
         return await live()
 
     def unused_turns(self) -> dict[str, tuple[int, int]]:
         """Steps served only from the recording that left turns unused: ``(served, recorded)``."""
-        served = Counter(call.step_id for call in self.calls if call.source == "replay")
-        live = {call.step_id for call in self.calls if call.source == "live"}
-        turns = {step: (n, self.recording.recorded_turns(step)) for step, n in served.items()}
-        return {step: t for step, t in turns.items() if t[0] < t[1] and step not in live}
+        turns = {
+            step: (n, self.recording.recorded_turns(step)) for step, n in self._replayed.items()
+        }
+        return {step: t for step, t in turns.items() if t[0] < t[1] and step not in self._went_live}
 
     def summary(self) -> list[str]:
         """The call log and any unused turns, one line each, for the CLI."""
@@ -131,6 +137,44 @@ def cut_steps(
     return forced
 
 
+class NoLiveProvider(BaseProvider):
+    """Live side of a model no provider serves: a cut can replay it, and a live call fails."""
+
+    name = "recording"
+
+    def __init__(self, live: Collection[BaseProvider]) -> None:
+        super().__init__()
+        self._live = live
+
+    def _refuse(self, model: str) -> NoReturn:
+        raise UnsupportedRequestError(
+            self.name, f"no provider is set up for model {model!r}, which this step runs live"
+        )
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        self._refuse(model)
+
+    async def embed(
+        self,
+        inputs: list[str],
+        model: str,
+        dimensions: int | None = None,
+        **kwargs: Any,
+    ) -> EmbeddingResponse:
+        self._refuse(model)
+
+    def supports_model(self, model: str) -> bool:
+        # A candidate beside a real provider would blur the status of that provider's failure.
+        return not any(provider.supports_model(model) for provider in self._live)
+
+
 class ReplayOrLiveProvider(BaseProvider):
     """A live provider whose calls the recording serves while the cut allows."""
 
@@ -147,7 +191,7 @@ class ReplayOrLiveProvider(BaseProvider):
     def _live(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         if getattr(self._wrapped, "accepts_step_id", False):
             return kwargs
-        return {k: v for k, v in kwargs.items() if k != "step_id"}
+        return {k: v for k, v in kwargs.items() if k not in ROUTING_KWARGS}
 
     async def complete(
         self,

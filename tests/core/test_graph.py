@@ -737,6 +737,29 @@ class TestMermaidSanitization:
         assert "#rbrace;" in mmd
 
 
+class TestMermaidIds:
+    def test_ids_that_sanitise_alike_stay_two_nodes(self) -> None:
+        g = WorkflowGraph.from_dag(DAG.from_steps([("a-b", []), ("a_b", ["a-b"])]))
+        mmd = g.to_mermaid()
+        assert 'a_b["a-b"]' in mmd
+        assert 'a_b_2["a_b"]' in mmd
+        assert "a_b --> a_b_2" in mmd
+
+    def test_a_suffix_does_not_land_on_another_step(self) -> None:
+        g = WorkflowGraph.from_dag(DAG.from_steps([("a-b", []), ("a_b", []), ("a_b_2", [])]))
+        declared = [line.split("[")[0].strip() for line in g.to_mermaid().splitlines()[1:]]
+        assert len(set(declared)) == 3
+
+    def test_without_a_collision_the_ids_do_not_change(self) -> None:
+        g = WorkflowGraph.from_dag(DAG.from_steps([("my step", []), ("next-one", ["my step"])]))
+        assert g.to_mermaid().splitlines() == [
+            "graph TD",
+            '    my_step["my step"]',
+            '    next_one["next-one"]',
+            "    my_step --> next_one",
+        ]
+
+
 class TestPnmlNamespaceCollision:
     def test_step_named_t0_no_collision(self) -> None:
         """A step named 't0' must not collide with transition ID 't0'."""

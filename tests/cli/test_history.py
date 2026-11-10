@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from agentloom.cli.main import app
@@ -216,6 +219,55 @@ def test_history_naive_timestamp_treated_as_utc(tmp_path: Path) -> None:
     result = runner.invoke(app, ["history", "--runs-dir", str(tmp_path), "--since", "2026-05-01"])
     assert result.exit_code == 0
     assert "naive" in result.output
+
+
+def test_history_no_records_as_json_is_an_empty_list(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["history", "--runs-dir", str(tmp_path), "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == []
+
+
+@pytest.fixture(params=["America/New_York", "Asia/Tokyo"])
+def local_zone(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """A local time zone away from UTC, whichever way the machine running the test is."""
+    if not hasattr(time, "tzset"):
+        pytest.skip("the local zone can't be changed on this platform")
+    monkeypatch.setenv("TZ", request.param)
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.usefixtures("local_zone")
+@pytest.mark.parametrize(
+    ("option", "bound", "shown"),
+    [
+        ("--since", "2026-05-02T10:00:00", True),
+        ("--since", "2026-05-02T10:00:01", False),
+        ("--until", "2026-05-02T10:00:01", True),
+        ("--until", "2026-05-02T10:00:00", False),
+    ],
+)
+def test_history_bound_without_offset_is_utc_in_any_local_zone(
+    tmp_path: Path, option: str, bound: str, shown: bool
+) -> None:
+    _write_record(
+        tmp_path, "r", run_id="the-run", workflow_name="x", timestamp="2026-05-02T10:00:00+00:00"
+    )
+    result = runner.invoke(app, ["history", "--runs-dir", str(tmp_path), option, bound])
+    assert result.exit_code == 0
+    assert ("the-run" in result.output) is shown
+
+
+def test_history_bound_with_an_offset_keeps_it(tmp_path: Path) -> None:
+    _write_record(
+        tmp_path, "r", run_id="the-run", workflow_name="x", timestamp="2026-05-02T10:00:00+00:00"
+    )
+    result = runner.invoke(
+        app, ["history", "--runs-dir", str(tmp_path), "--since", "2026-05-02T11:00:00+02:00"]
+    )
+    assert "the-run" in result.output
 
 
 def test_history_full_iso_timestamp_accepted(tmp_path: Path) -> None:

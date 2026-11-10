@@ -92,7 +92,7 @@ def _drop_oldest(convo: Conversation, model: str) -> TrimResult:
     if convo.token_budget is None:
         return TrimResult(policy="drop_oldest")
     pinned, tail = _split_pinned(convo.messages)
-    pinned_tokens = sum(m.token_count(model) for m in pinned)
+    pinned_tokens = convo.token_count(model) - sum(m.token_count(model) for m in tail)
     if pinned_tokens >= convo.token_budget:
         logger.warning(
             "Conversation trim: pinned system prefix (%d tokens) already exceeds "
@@ -118,13 +118,22 @@ def _drop_pairs(convo: Conversation, model: str) -> TrimResult:
     dangling reply / bare question. When the leading trimmable message
     is *not* a user turn (rare — e.g. tool-only continuations), fall
     through to the single-message drop the ``drop_oldest`` policy uses
-    so the pass still makes forward progress.
+    so the pass still makes forward progress. A prefix that alone
+    reaches the budget stops the pass, as in ``drop_oldest``.
     """
     if convo.token_budget is None:
         return TrimResult(policy="drop_pairs")
     pinned, tail = _split_pinned(convo.messages)
     trimmed = 0
-    pinned_tokens = sum(m.token_count(model) for m in pinned)
+    pinned_tokens = convo.token_count(model) - sum(m.token_count(model) for m in tail)
+    if pinned_tokens >= convo.token_budget:
+        logger.warning(
+            "Conversation trim: pinned system prefix (%d tokens) already exceeds "
+            "budget (%d); nothing to drop. Raise token_budget or shorten the system prompt.",
+            pinned_tokens,
+            convo.token_budget,
+        )
+        return TrimResult(policy="drop_pairs")
     while tail and (pinned_tokens + sum(m.token_count(model) for m in tail)) > convo.token_budget:
         head = tail[0]
         if head.role == "user" and len(tail) > 1 and tail[1].role == "assistant":
@@ -149,7 +158,7 @@ def _plan_summarize_oldest(convo: Conversation, model: str) -> list[Message]:
     if convo.token_budget is None:
         return []
     pinned, tail = _split_pinned(convo.messages)
-    pinned_tokens = sum(m.token_count(model) for m in pinned)
+    pinned_tokens = convo.token_count(model) - sum(m.token_count(model) for m in tail)
     if pinned_tokens >= convo.token_budget or not tail:
         return []
     to_summarize: list[Message] = []

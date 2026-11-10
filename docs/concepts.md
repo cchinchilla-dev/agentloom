@@ -29,7 +29,7 @@ steps:                        # the graph
     output: category
 ```
 
-`config` sets what steps inherit: the provider and model (OpenAI and `gpt-4o-mini` unless stated), the budget, the timeout, how many steps run at once and what happens when one fails. Unknown keys at the top level, in `config` and in a step are refused, so a misspelled field fails at load time rather than being ignored; `agentloom validate` checks a file without running it.
+`config` sets what steps inherit: the provider and model (OpenAI and `gpt-4o-mini` unless stated), the budget, the timeout, how many steps run at once and what happens when one fails. Unknown keys at the top level, in `config`, in a step and in their nested blocks are refused, so a misspelled field fails at load time rather than being ignored; `agentloom validate` checks a file without running it.
 
 [Workflow files](workflow-files.md) lists every field of the file and of `config`.
 
@@ -97,13 +97,13 @@ The state is one dictionary shared by the whole run. It starts from the file's `
 - A step's `output:` names the key its result goes to. Dotted paths such as `report.summary` write into nested dictionaries.
 - Templates read the state: `{state.ticket}`, `{state.items[0]}` or `{state.report.summary}`.
 - Each successful step also lands under `steps.<id>`, so `{state.steps.classify.output}` reads a result without naming its key.
-- A step reads a snapshot of the state taken when it starts. Steps in the same layer don't see each other's writes, unless `max_concurrent_steps` holds one back until a sibling has finished; the next layer sees them all.
+- A step reads the state as it stood when its layer started. Steps in the same layer don't see each other's writes, however `max_concurrent_steps` staggers them; the next layer sees them all.
 
 A template that names a missing key renders an empty string, so a typo shows up as a blank in the prompt rather than an error. [State & templates](state-and-templates.md) has the full syntax.
 
 ## Providers and the gateway
 
-Steps never call a provider directly. They name a model, and the **gateway** picks the provider that serves it: `claude*` models go to Anthropic, `gemini*` to Google, `gpt-*` and the `o` series to OpenAI, anything to Ollama or a `generic_openai` endpoint. On the way it applies each provider's rate limit and circuit breaker, and records the tokens and cost of every call.
+Steps never call a provider directly. They name a model, and the **gateway** finds the providers that serve it, `config.provider` first: `claude*` models go to Anthropic, `gemini*` to Google, `gpt-*` and the `o` series to OpenAI, anything to Ollama or a `generic_openai` endpoint. On the way it applies each provider's rate limit and circuit breaker, and records the tokens and cost of every call.
 
 | Provider | Serves |
 |----------|--------|

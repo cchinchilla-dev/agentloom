@@ -121,7 +121,7 @@ json.dumps(graph.to_dict())
 | Export | What it gives |
 |--------|---------------|
 | `to_dot()` | Graphviz DOT, left to right. Routers are diamonds, tools trapeziums, subworkflows double octagons, LLM calls rounded boxes, and other steps plain boxes. Render it with `dot -Tsvg`. |
-| `to_mermaid()` | A Mermaid flowchart, without a code fence. Routers are diamonds, tools parallelograms and subworkflows subroutine boxes. Ids keep only letters, digits and `_`, so `a-b` and `a_b` become one node: keep step ids distinct after that change. |
+| `to_mermaid()` | A Mermaid flowchart, without a code fence. Routers are diamonds, tools parallelograms and subworkflows subroutine boxes. Ids keep only letters, digits and `_`. Steps that would end up with the same id get a numbered one: `a-b` and `a_b` become `a_b` and `a_b_2`. |
 | `to_pnml()` | A Petri net in PNML, as XML: a place for each step and a transition for each edge, named `source->target`. Edge labels are left out. |
 | `to_dict()` | A dictionary of nodes, edges, roots, leaves, layers and the critical path. |
 | `to_networkx()` | A `networkx.DiGraph`, with each node's `type` and `label` and each edge's `label` as attributes. |

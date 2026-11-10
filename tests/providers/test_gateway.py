@@ -2,14 +2,35 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
+import anyio
+import httpx
 import pytest
+import respx
 
-from agentloom.exceptions import ProviderError
-from agentloom.providers.base import BaseProvider, ProviderResponse, StreamResponse, ToolCall
+from agentloom.core.attempts import attempt_spend, enter_attempt
+from agentloom.core.results import TokenUsage
+from agentloom.exceptions import (
+    ProviderError,
+    RateLimitError,
+    RecordingMismatchError,
+    UnsupportedRequestError,
+)
+from agentloom.providers.base import (
+    BaseProvider,
+    EmbeddingResponse,
+    ProviderResponse,
+    StreamResponse,
+    ToolCall,
+)
 from agentloom.providers.gateway import ProviderGateway
+from agentloom.providers.ollama import OllamaProvider
+from agentloom.providers.openai import OpenAIProvider
+from agentloom.resilience.circuit_breaker import CircuitBreaker, CircuitState
 from tests.conftest import MockProvider
 
 
@@ -412,22 +433,21 @@ class TestGatewayStreaming:
         gateway.register(failing, priority=0, circuit_fail_threshold=1)
         gateway.register(succeeding, priority=1)
 
-        # The first stream fails while iterating; with threshold 1 that opens the circuit.
+        # The first stream fails before any chunk and falls back; threshold 1 opens the circuit.
         sr1 = await gateway.stream(
             messages=[{"role": "user", "content": "hello"}],
             model="test-model",
         )
-        with pytest.raises(ProviderError):
-            async for _ in sr1:
-                pass
+        assert "".join([chunk async for chunk in sr1]) == "fallback answer"
 
-        # The second stream skips the open circuit and reaches the fallback.
+        # The second stream skips the open circuit and never reaches the failing provider.
         sr2 = await gateway.stream(
             messages=[{"role": "user", "content": "hello"}],
             model="test-model",
         )
         chunks = [chunk async for chunk in sr2]
         assert "".join(chunks) == "fallback answer"
+        assert len(failing.calls) == 1
 
     async def test_stream_no_provider_raises(self) -> None:
         gateway = ProviderGateway()
@@ -841,3 +861,650 @@ class TestGatewayStreamErrorPaths:
         observer.on_provider_error.assert_called_once()
         # The end hook fires from the iterator's ``finally``.
         observer.on_provider_call_end.assert_called_once()
+
+
+class _Scripted(BaseProvider):
+    """A provider that streams ``script``: strings are chunks, an exception is raised in turn."""
+
+    def __init__(
+        self,
+        name: str,
+        script: list[Any] | None = None,
+        supports: bool = True,
+        usage: TokenUsage | None = None,
+    ) -> None:
+        super().__init__()
+        self.name = name
+        self.script = script if script is not None else ["ok"]
+        self.supports = supports
+        self.usage = usage
+        self.models: list[str] = []
+
+    async def complete(self, messages: Any, model: str, **_kw: Any) -> ProviderResponse:
+        self.models.append(model)
+        for item in self.script:
+            if isinstance(item, BaseException):
+                raise item
+        return ProviderResponse(content="".join(self.script), model=model, provider=self.name)
+
+    async def stream(self, messages: Any, model: str, **_kw: Any) -> StreamResponse:
+        self.models.append(model)
+        sr = StreamResponse(model=model, provider=self.name)
+
+        async def _generate() -> AsyncIterator[str]:
+            if self.usage is not None:
+                sr.usage = self.usage
+                sr.cost_usd = 0.5
+            for item in self.script:
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+
+        sr._set_iterator(_generate())
+        return sr
+
+    async def embed(self, inputs: list[str], model: str, **_kw: Any) -> EmbeddingResponse:
+        self.models.append(model)
+        return EmbeddingResponse(embeddings=[[0.0]] * len(inputs), model=model, provider=self.name)
+
+    def supports_model(self, model: str) -> bool:
+        return self.supports
+
+
+_HI = [{"role": "user", "content": "hi"}]
+
+
+def _half_open(gateway: ProviderGateway, index: int = 0) -> CircuitBreaker:
+    """Put a candidate's breaker in the state where the next call claims the half-open slot."""
+    cb = gateway._providers[index].circuit_breaker
+    cb._set_state(CircuitState.OPEN)
+    cb._last_failure_time = -1.0e9
+    return cb
+
+
+class TestStreamFallsBackBeforeFirstChunk:
+    async def test_failure_before_the_first_chunk_moves_to_the_next_candidate(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", [ProviderError("first", "503", status_code=503)]))
+        gateway.register(_Scripted("second", ["a", "b"]), priority=1)
+
+        sr = await gateway.stream(messages=_HI, model="m")
+
+        assert [c async for c in sr] == ["a", "b"]
+        assert sr.provider == "second"
+
+    @respx.mock
+    async def test_a_status_error_opening_the_request_falls_back(self) -> None:
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(503, text="overloaded")
+        )
+        respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(
+                200,
+                content=json.dumps({"message": {"content": "local"}, "done": False}).encode(),
+            )
+        )
+        gateway = ProviderGateway()
+        gateway.register(OpenAIProvider(api_key="dummy-key"))
+        gateway.register(OllamaProvider(), priority=1)
+
+        sr = await gateway.stream(messages=_HI, model="gpt-4o")
+
+        assert [c async for c in sr] == ["local"]
+        assert sr.provider == "ollama"
+        await gateway.close()
+
+    async def test_every_candidate_failing_first_raises_the_gateway_error(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", [ProviderError("first", "503", status_code=503)]))
+        gateway.register(_Scripted("second", [ProviderError("second", "503", status_code=503)]))
+
+        with pytest.raises(ProviderError, match="All providers failed") as exc:
+            await gateway.stream(messages=_HI, model="m")
+
+        assert exc.value.status_code == 503
+
+    async def test_a_failure_after_the_first_chunk_does_not_fall_back(self) -> None:
+        second = _Scripted("second")
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", ["a", ConnectionError("dropped")]))
+        gateway.register(second, priority=1)
+
+        sr = await gateway.stream(messages=_HI, model="m")
+
+        received = []
+        with pytest.raises(ConnectionError, match="dropped"):
+            async for chunk in sr:
+                received.append(chunk)
+        assert received == ["a"]
+        assert second.models == []
+
+    async def test_the_first_chunk_is_served_once_and_in_order(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", ["a", "b", "c"]))
+
+        sr = await gateway.stream(messages=_HI, model="m")
+
+        assert [c async for c in sr] == ["a", "b", "c"]
+        assert sr.content == "abc"
+
+    async def test_an_empty_stream_is_an_answer(self) -> None:
+        observer = MagicMock()
+        second = _Scripted("second")
+        gateway = ProviderGateway()
+        gateway.set_observer(observer)
+        gateway.register(_Scripted("first", []))
+        gateway.register(second, priority=1)
+        cb = _half_open(gateway, 0)
+
+        sr = await gateway.stream(messages=_HI, model="m", step_id="s1")
+
+        assert [c async for c in sr] == []
+        assert second.models == []
+        assert sr.time_to_first_token_ms is None
+        assert cb.state == CircuitState.CLOSED
+        observer.on_provider_call_end.assert_called_once()
+        assert observer.on_provider_call_end.call_args.kwargs["error"] is None
+
+    async def test_failing_first_feeds_the_breaker_and_closes_the_span(self) -> None:
+        observer = MagicMock()
+        gateway = ProviderGateway()
+        gateway.set_observer(observer)
+        gateway.register(_Scripted("first", [ProviderError("first", "boom")]))
+        gateway.register(_Scripted("second"), priority=1)
+
+        sr = await gateway.stream(messages=_HI, model="m", step_id="s1")
+        [c async for c in sr]
+
+        assert gateway._providers[0].circuit_breaker.failure_count == 1
+        assert observer.on_provider_call_start.call_count == 2
+        ends = observer.on_provider_call_end.call_args_list
+        assert [c.kwargs["provider"] for c in ends] == ["first", "second"]
+        assert [c.kwargs["error"] for c in ends] == ["ProviderError", None]
+        observer.on_provider_error.assert_called_once_with("first", "ProviderError")
+
+    async def test_a_429_before_the_first_chunk_frees_the_slot_without_a_failure(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", [RateLimitError("first", retry_after_s=2.0)]))
+        gateway.register(_Scripted("second"), priority=1)
+        cb = _half_open(gateway, 0)
+
+        sr = await gateway.stream(messages=_HI, model="m")
+        [c async for c in sr]
+
+        assert sr.provider == "second"
+        assert cb._half_open_calls == 0
+        assert cb.failure_count == 0
+
+    async def test_one_refusal_on_the_first_pull_moves_on_without_a_failure(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", [UnsupportedRequestError("first", "no audio")]))
+        gateway.register(_Scripted("second"), priority=1)
+        cb = _half_open(gateway, 0)
+
+        sr = await gateway.stream(messages=_HI, model="m")
+        [c async for c in sr]
+
+        assert sr.provider == "second"
+        assert cb.failure_count == 0
+        assert cb._half_open_calls == 0
+
+    async def test_every_candidate_refusing_on_the_first_pull_is_permanent(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", [UnsupportedRequestError("first", "no audio")]))
+        gateway.register(_Scripted("second", [UnsupportedRequestError("second", "no audio")]))
+
+        with pytest.raises(UnsupportedRequestError, match="no audio"):
+            await gateway.stream(messages=_HI, model="m")
+
+    async def test_a_stale_recording_is_not_answered_by_another_provider(self) -> None:
+        second = _Scripted("second")
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", [RecordingMismatchError("drifted")]))
+        gateway.register(second, priority=1)
+
+        with pytest.raises(RecordingMismatchError):
+            await gateway.stream(messages=_HI, model="m")
+        assert second.models == []
+
+    async def test_a_cancel_on_the_first_pull_frees_the_slot_and_closes_the_span(self) -> None:
+        started = anyio.Event()
+
+        class Hanging(_Scripted):
+            async def stream(self, messages: Any, model: str, **_kw: Any) -> StreamResponse:
+                sr = StreamResponse(model=model, provider=self.name)
+
+                async def _generate() -> AsyncIterator[str]:
+                    started.set()
+                    await anyio.sleep_forever()
+                    yield ""
+
+                sr._set_iterator(_generate())
+                return sr
+
+        observer = MagicMock()
+        second = _Scripted("second")
+        gateway = ProviderGateway()
+        gateway.set_observer(observer)
+        gateway.register(Hanging("first"))
+        gateway.register(second, priority=1)
+        cb = _half_open(gateway, 0)
+
+        with anyio.fail_after(5):  # a stream that never pulls would otherwise hang the test
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(lambda: gateway.stream(messages=_HI, model="m", step_id="s1"))
+                await started.wait()
+                tg.cancel_scope.cancel()
+
+        assert cb._half_open_calls == 0
+        assert cb.failure_count == 0
+        assert second.models == []
+        observer.on_provider_call_end.assert_called_once()
+
+    async def test_a_failed_candidate_consumes_no_response_tokens(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", [ProviderError("first", "boom")]))
+        gateway.register(_Scripted("second", ["a"]), priority=1)
+        limiter = gateway._providers[0].rate_limiter
+        assert limiter is not None
+        limiter.consume_response_tokens = AsyncMock()  # type: ignore[method-assign]
+
+        sr = await gateway.stream(messages=_HI, model="m")
+        [c async for c in sr]
+
+        limiter.consume_response_tokens.assert_not_awaited()
+
+    async def test_usage_billed_before_a_failed_first_pull_still_counts(self) -> None:
+        enter_attempt(())
+        usage = TokenUsage(prompt_tokens=5, completion_tokens=2, total_tokens=7)
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", [ProviderError("first", "boom")], usage=usage))
+        gateway.register(_Scripted("second", ["a"]), priority=1)
+
+        sr = await gateway.stream(messages=_HI, model="m")
+        [c async for c in sr]
+
+        spend = attempt_spend()
+        assert spend.cost_usd == 0.5
+        assert spend.by_model[("first", "m")] == usage
+
+    async def test_a_first_pull_without_usage_adds_no_empty_spend(self) -> None:
+        enter_attempt(())
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", [ProviderError("first", "boom")]))
+        gateway.register(_Scripted("second", ["a"]), priority=1)
+
+        sr = await gateway.stream(messages=_HI, model="m")
+        [c async for c in sr]
+
+        assert ("first", "m") not in attempt_spend().by_model
+
+    async def test_the_time_to_first_token_is_measured_at_the_first_pull(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = iter([10.0, 10.25])
+        monkeypatch.setattr("agentloom.providers.gateway.anyio.current_time", lambda: next(clock))
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", ["a"]))
+
+        sr = await gateway.stream(messages=_HI, model="m")
+
+        assert sr.time_to_first_token_ms == 250.0
+
+
+class TestStreamRateLimitAfterFirstChunk:
+    async def test_a_429_mid_stream_does_not_count_against_the_breaker(self) -> None:
+        observer = MagicMock()
+        gateway = ProviderGateway()
+        gateway.set_observer(observer)
+        gateway.register(_Scripted("first", ["a", RateLimitError("first")]))
+        cb = _half_open(gateway, 0)
+
+        sr = await gateway.stream(messages=_HI, model="m", step_id="s1")
+        with pytest.raises(RateLimitError):
+            async for _ in sr:
+                pass
+
+        assert cb.failure_count == 0
+        assert cb._half_open_calls == 0
+        assert cb.state == CircuitState.HALF_OPEN
+        assert observer.on_provider_call_end.call_args.kwargs["error"] == "RateLimitError"
+        observer.on_provider_error.assert_not_called()
+
+
+class TestCandidateOrder:
+    @staticmethod
+    def _names(gateway: ProviderGateway, model: str) -> list[str]:
+        return [e.provider.name for e in gateway._get_candidates(model)]
+
+    def test_a_listed_model_still_gets_the_fallback_providers(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("cloud", supports=False), models=["m"])
+        gateway.register(_Scripted("local", supports=False), priority=100, is_fallback=True)
+
+        assert self._names(gateway, "m") == ["cloud", "local"]
+
+    async def test_a_listed_model_falls_back_when_its_provider_fails(self) -> None:
+        local = _Scripted("local", ["from local"], supports=False)
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("cloud", [ProviderError("cloud", "down")]), models=["m"])
+        gateway.register(local, priority=100, is_fallback=True)
+
+        response = await gateway.complete(messages=_HI, model="m")
+
+        assert response.provider == "local"
+
+    def test_the_primary_goes_first_whatever_its_priority(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("cheap"), priority=0)
+        gateway.register(_Scripted("named"), priority=50, is_primary=True)
+
+        assert self._names(gateway, "m") == ["named", "cheap"]
+
+    def test_the_primary_goes_ahead_of_a_listed_model(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("listed", supports=False), priority=0, models=["m"])
+        gateway.register(_Scripted("named"), priority=50, is_primary=True)
+
+        assert self._names(gateway, "m") == ["named", "listed"]
+
+    def test_a_primary_that_cannot_serve_the_name_is_left_out(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("named", supports=False), is_primary=True)
+        gateway.register(_Scripted("serves"), priority=10)
+
+        assert self._names(gateway, "m") == ["serves"]
+
+    def test_a_primary_that_is_also_a_fallback_appears_once(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("cloud"), priority=10)
+        gateway.register(_Scripted("local"), priority=100, is_fallback=True, is_primary=True)
+
+        assert self._names(gateway, "m") == ["local", "cloud"]
+
+    def test_the_others_keep_their_priority_after_the_primary(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("b"), priority=20)
+        gateway.register(_Scripted("a"), priority=10)
+        gateway.register(_Scripted("named"), priority=30, is_primary=True)
+
+        assert self._names(gateway, "m") == ["named", "a", "b"]
+
+
+class TestModelAliases:
+    async def test_each_candidate_gets_its_own_id(self) -> None:
+        first = _Scripted("first", [ProviderError("first", "down")])
+        second = _Scripted("second", ["answer"])
+        gateway = ProviderGateway()
+        gateway.register(first, priority=0)
+        gateway.register(second, priority=1, model_aliases={"gpt-4o": "claude-x"})
+
+        response = await gateway.complete(messages=_HI, model="gpt-4o")
+
+        assert first.models == ["gpt-4o"]
+        assert second.models == ["claude-x"]
+        assert response.model == "claude-x"
+
+    async def test_a_streamed_call_translates_too(self) -> None:
+        second = _Scripted("second", ["answer"])
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("first", [ProviderError("first", "down")]), priority=0)
+        gateway.register(second, priority=1, model_aliases={"gpt-4o": "claude-x"})
+
+        sr = await gateway.stream(messages=_HI, model="gpt-4o")
+        [c async for c in sr]
+
+        assert second.models == ["claude-x"]
+
+    async def test_embeddings_translate_too(self) -> None:
+        provider = _Scripted("first")
+        gateway = ProviderGateway()
+        gateway.register(provider, model_aliases={"text-embedding-3-small": "nomic"})
+
+        response = await gateway.embed(inputs=["a"], model="text-embedding-3-small")
+
+        assert provider.models == ["nomic"]
+        assert response.model == "nomic"
+
+    def test_an_alias_makes_a_provider_a_candidate_for_a_name_it_does_not_serve(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("openai"), priority=0)
+        gateway.register(
+            _Scripted("anthropic", supports=False),
+            priority=1,
+            model_aliases={"gpt-4o": "claude-x"},
+        )
+
+        assert [e.provider.name for e in gateway._get_candidates("gpt-4o")] == [
+            "openai",
+            "anthropic",
+        ]
+        assert [e.provider.name for e in gateway._get_candidates("gpt-3.5")] == ["openai"]
+
+    def test_an_alias_does_not_pin_the_name_away_from_the_others(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("listed", supports=False), priority=5, models=["m"])
+        gateway.register(_Scripted("aliased", supports=False), priority=1, model_aliases={"m": "x"})
+
+        assert [e.provider.name for e in gateway._get_candidates("m")] == ["aliased", "listed"]
+
+    async def test_a_name_without_an_alias_goes_unchanged(self) -> None:
+        provider = _Scripted("first")
+        gateway = ProviderGateway()
+        gateway.register(provider, model_aliases={"other": "x"})
+
+        await gateway.complete(messages=_HI, model="m")
+
+        assert provider.models == ["m"]
+
+
+class _Hanging(MockProvider):
+    """Never answers, so only a cancel ends the call."""
+
+    async def complete(self, *args: Any, **kwargs: Any) -> ProviderResponse:
+        await anyio.Event().wait()
+        raise AssertionError("unreachable")
+
+    async def embed(self, *args: Any, **kwargs: Any) -> EmbeddingResponse:
+        await anyio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+class _StallsAfterFirstChunk(MockProvider):
+    async def stream(self, *args: Any, model: str, **kwargs: Any) -> StreamResponse:
+        sr = StreamResponse(model=model, provider="mock")
+
+        async def _generate() -> AsyncIterator[str]:
+            yield "first"
+            await anyio.Event().wait()
+
+        sr._set_iterator(_generate())
+        return sr
+
+
+class TestACancelEndsTheAttempt:
+    """A call cut by a timeout or a cancel still reports its end, so its span closes."""
+
+    @pytest.mark.parametrize("call", ["complete", "embed"])
+    async def test_a_call_in_flight(self, call: str) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Hanging(), priority=0)
+        observer = MagicMock()
+        gateway.set_observer(observer)
+
+        with anyio.move_on_after(0.01):
+            if call == "complete":
+                await gateway.complete(
+                    messages=[{"role": "user", "content": "hi"}], model="m", step_id="s1"
+                )
+            else:
+                await gateway.embed(inputs=["hi"], model="m", step_id="s1")
+
+        observer.on_provider_call_end.assert_called_once()
+        end = observer.on_provider_call_end.call_args.kwargs
+        assert end["step_id"] == "s1"
+        assert end["error"] == anyio.get_cancelled_exc_class().__name__
+
+    @pytest.mark.parametrize("call", ["complete", "embed"])
+    async def test_a_half_open_circuit_gets_its_slot_back(self, call: str) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Hanging(), priority=0)
+        breaker = gateway._providers[0].circuit_breaker
+        breaker._set_state(CircuitState.HALF_OPEN)
+
+        with anyio.move_on_after(0.01):
+            if call == "complete":
+                await gateway.complete(messages=[{"role": "user", "content": "hi"}], model="m")
+            else:
+                await gateway.embed(inputs=["hi"], model="m")
+
+        assert breaker._half_open_calls == 0
+
+    async def test_an_embed_refused_by_a_circuit_probing_elsewhere(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Hanging(), priority=0)
+        breaker = gateway._providers[0].circuit_breaker
+        breaker._set_state(CircuitState.HALF_OPEN)
+        breaker._half_open_calls = breaker.half_open_max_calls
+        observer = MagicMock()
+        gateway.set_observer(observer)
+
+        with pytest.raises(ProviderError, match="circuit is open"):
+            await gateway.embed(inputs=["hi"], model="m", step_id="s1")
+
+        observer.on_provider_call_end.assert_called_once()
+        end = observer.on_provider_call_end.call_args.kwargs
+        assert end["error"] == "CircuitOpenError"
+        assert end["operation"] == "embeddings"
+
+    async def test_a_stream_after_its_first_chunk(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_StallsAfterFirstChunk(), priority=0)
+        observer = MagicMock()
+        gateway.set_observer(observer)
+
+        with anyio.move_on_after(0.01):
+            sr = await gateway.stream(
+                messages=[{"role": "user", "content": "hi"}], model="m", step_id="s1"
+            )
+            async for _ in sr:
+                pass
+
+        observer.on_provider_call_end.assert_called_once()
+        end = observer.on_provider_call_end.call_args.kwargs
+        assert end["error"] == anyio.get_cancelled_exc_class().__name__
+
+
+class TestHooksThatRaise:
+    async def test_the_error_hook_leaves_the_fallback_alone(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(FailingProvider("boom"), priority=0)
+        answers = MockProvider()
+        gateway.register(answers, priority=1)
+        observer = MagicMock()
+        observer.on_provider_error.side_effect = RuntimeError("hook bug")
+        gateway.set_observer(observer)
+
+        response = await gateway.complete(
+            messages=[{"role": "user", "content": "hi"}], model="m", step_id="s1"
+        )
+
+        assert response.provider == "mock"
+        assert len(answers.calls) == 1
+
+    async def test_the_transition_hook_leaves_the_providers_error(self) -> None:
+        gateway = ProviderGateway()
+        observer = MagicMock()
+        observer.on_circuit_state_change.side_effect = RuntimeError("hook bug")
+        gateway.set_observer(observer)
+        gateway.register(FailingProvider("boom"), priority=0, circuit_fail_threshold=1)
+
+        with pytest.raises(ProviderError, match="boom"):
+            await gateway.complete(messages=[{"role": "user", "content": "hi"}], model="m")
+
+        assert gateway._providers[0].circuit_breaker.state == CircuitState.OPEN
+
+
+class TestCircuitGaugeRefresh:
+    async def test_each_provider_call_reports_its_circuit(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(MockProvider(), priority=0)
+        observer = MagicMock()
+        gateway.set_observer(observer)
+        messages = [{"role": "user", "content": "hi"}]
+
+        await gateway.complete(messages=messages, model="m")
+        observer.on_circuit_state.assert_called_once_with("mock", "closed")
+
+        await gateway.stream(messages=messages, model="m")
+        assert observer.on_circuit_state.call_count == 2
+
+
+class _Stale(_Scripted):
+    """A replay that misses its recording, on every kind of call."""
+
+    def __init__(self) -> None:
+        super().__init__("mock", [RecordingMismatchError("drifted")])
+
+    async def embed(self, inputs: list[str], model: str, **_kw: Any) -> EmbeddingResponse:
+        raise RecordingMismatchError("drifted")
+
+
+async def _stale_call(gateway: ProviderGateway, method: str) -> None:
+    with pytest.raises(RecordingMismatchError):
+        if method == "embed":
+            await gateway.embed(inputs=["hi"], model="m")
+        else:
+            await getattr(gateway, method)(messages=_HI, model="m")
+
+
+class TestAStaleRecordingIsNoProviderFault:
+    @pytest.mark.parametrize("method", ["complete", "stream", "embed"])
+    async def test_it_does_not_count_against_the_breaker(self, method: str) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Stale(), circuit_fail_threshold=2)
+        cb = gateway._providers[0].circuit_breaker
+
+        for _ in range(2):
+            await _stale_call(gateway, method)
+
+        assert cb.failure_count == 0
+        assert cb.state == CircuitState.CLOSED
+
+    @pytest.mark.parametrize("method", ["complete", "stream", "embed"])
+    async def test_it_gives_back_the_half_open_slot(self, method: str) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Stale())
+        cb = _half_open(gateway)
+
+        await _stale_call(gateway, method)
+
+        assert cb.state == CircuitState.HALF_OPEN
+        assert cb._half_open_calls == 0
+
+
+class TestARequestOverTheTokenLimit:
+    _HUGE: Any = [{"role": "user", "content": "x" * 400}]
+
+    async def test_a_stream_leaves_the_breaker_alone(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("p"), max_tpm=1, circuit_fail_threshold=2)
+        cb = gateway._providers[0].circuit_breaker
+
+        for _ in range(2):
+            with pytest.raises(ProviderError, match="exceeds max_tokens_per_minute"):
+                await gateway.stream(messages=self._HUGE, model="m")
+
+        assert cb.failure_count == 0
+        assert cb.state == CircuitState.CLOSED
+
+    async def test_a_stream_gives_back_the_half_open_slot(self) -> None:
+        gateway = ProviderGateway()
+        gateway.register(_Scripted("p"), max_tpm=1)
+        cb = _half_open(gateway)
+
+        with pytest.raises(ProviderError, match="exceeds max_tokens_per_minute"):
+            await gateway.stream(messages=self._HUGE, model="m")
+
+        assert cb.state == CircuitState.HALF_OPEN
+        assert cb._half_open_calls == 0

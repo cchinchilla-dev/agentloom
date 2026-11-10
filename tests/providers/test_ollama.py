@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -540,3 +540,62 @@ class TestOllamaBaseURLResolution:
         assert opts["seed"] == 7
         assert captured["format"] == "json"
         assert captured["tools"] == [{"name": "calc"}]
+
+
+class TestEmbedDimensions:
+    @respx.mock
+    async def test_dimensions_are_sent(self) -> None:
+        route = respx.post("http://localhost:11434/api/embed").mock(
+            return_value=httpx.Response(200, json={"embeddings": [[0.1, 0.2]]})
+        )
+        provider = OllamaProvider()
+        await provider.embed(inputs=["a"], model="nomic-embed-text", dimensions=2)
+        assert json.loads(route.calls[0].request.content)["dimensions"] == 2
+        await provider.close()
+
+    @respx.mock
+    async def test_without_dimensions_the_key_stays_off(self) -> None:
+        route = respx.post("http://localhost:11434/api/embed").mock(
+            return_value=httpx.Response(200, json={"embeddings": [[0.1, 0.2]]})
+        )
+        provider = OllamaProvider()
+        await provider.embed(inputs=["a"], model="nomic-embed-text")
+        assert "dimensions" not in json.loads(route.calls[0].request.content)
+        await provider.close()
+
+
+class TestWireFailures:
+    _HI: ClassVar[list[dict[str, Any]]] = [{"role": "user", "content": "hi"}]
+
+    @respx.mock
+    async def test_a_200_that_is_not_json_is_a_provider_error(self) -> None:
+        respx.post("http://localhost:11434/api/chat").mock(
+            return_value=httpx.Response(200, text="<html/>")
+        )
+        provider = OllamaProvider()
+        with pytest.raises(ProviderError, match="not valid JSON") as exc:
+            await provider.complete(self._HI, "phi4")
+        assert exc.value.status_code is None
+        await provider.close()
+
+    @respx.mock
+    async def test_embeddings_that_are_not_json_are_a_provider_error(self) -> None:
+        respx.post("http://localhost:11434/api/embed").mock(
+            return_value=httpx.Response(200, text="oops")
+        )
+        provider = OllamaProvider()
+        with pytest.raises(ProviderError, match="not valid JSON"):
+            await provider.embed(inputs=["a"], model="nomic-embed-text")
+        await provider.close()
+
+    @respx.mock
+    async def test_a_network_error_in_a_stream_is_a_provider_error(self) -> None:
+        respx.post("http://localhost:11434/api/chat").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
+        provider = OllamaProvider()
+        sr = await provider.stream(self._HI, "phi4")
+        with pytest.raises(ProviderError, match="ConnectError") as exc:
+            [c async for c in sr]
+        assert exc.value.status_code is None
+        await provider.close()

@@ -539,7 +539,7 @@ async def test_a_step_cut_by_the_workflow_timeout_keeps_what_it_spent(
 async def test_a_step_cut_while_it_waits_to_retry_is_charged_once() -> None:
     call = ToolCall(id="c1", name="add", arguments={"a": 2, "b": 3})
     provider = _Paid(_paid("", call), _unavailable())
-    # The first backoff waits 1s, past the workflow's timeout
+    # The first backoff waits 2s, past the workflow's timeout
     result, engine = await _run(
         provider, workflow_timeout=0.2, retry={"max_retries": 1, "jitter": False}
     )
@@ -1209,24 +1209,23 @@ async def test_a_subworkflow_sharing_the_budget_that_breaks_it_reports_its_token
     assert ("sub", "budget_exceeded", 0.0) in engine.observer.ends
 
 
-class _ChildEndFails(_Tokens):
-    """An observer that raises when the child run ends: its step fails outside its steps."""
-
-    def on_workflow_end(self, name: str, *args: Any, **kwargs: Any) -> None:
-        super().on_workflow_end(name, *args, **kwargs)
-        if name == "child":
-            raise RuntimeError("observer down")
-
-
 @pytest.mark.parametrize("child_budget", [None, 10.0], ids=["shared", "own"])
 async def test_a_subworkflow_that_fails_outside_its_steps_is_charged_what_they_spent(
-    child_budget: float | None,
+    child_budget: float | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    finalize = WorkflowEngine._finalize_result
+
+    async def child_end_fails(self: WorkflowEngine, result: Any, workflow_name: str) -> None:
+        if workflow_name == "child":
+            raise RuntimeError("history down")
+        await finalize(self, result, workflow_name)
+
+    monkeypatch.setattr(WorkflowEngine, "_finalize_result", child_end_fails)
     result, engine = await _run_subworkflow(
         _Paid(_paid("a")),
         child_budget,
         _PAYS,
-        observer=_ChildEndFails(),
+        observer=_Tokens(),
         retry={"max_retries": 0},
     )
 

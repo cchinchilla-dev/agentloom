@@ -25,7 +25,7 @@ def info() -> None:
 
     # Core dependencies
     typer.echo("\nCore dependencies:")
-    for pkg in ["pydantic", "httpx", "pyyaml", "typer", "anyio"]:
+    for pkg in ["pydantic", "httpx", "pyyaml", "typer", "anyio", "jsonschema"]:
         _show_dep(pkg)
 
     # Optional dependencies

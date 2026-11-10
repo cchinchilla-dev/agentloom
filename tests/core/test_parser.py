@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
-import pytest
+import errno
+from pathlib import Path
+from typing import Any, ClassVar
+from unittest.mock import patch
 
+import pytest
+from pydantic import ValidationError as PydanticValidationError
+
+from agentloom.core.models import WorkflowConfig, WorkflowDefinition
 from agentloom.core.parser import WorkflowParser
 from agentloom.exceptions import ValidationError
 
@@ -321,6 +328,60 @@ class TestStrictExtraKeys:
             # Mock responses come from ``responses_file:``; an inline ``responses:`` is refused.
             WorkflowConfig.model_validate({"provider": "mock", "responses": ["a", "b"]})
 
+    @pytest.mark.parametrize(
+        ("field", "entry", "typo"),
+        [
+            ("tools", {"name": "t", "paramters": {}}, "paramters"),
+            ("attachments", {"source": "a.png", "media_typ": "image/png"}, "media_typ"),
+        ],
+    )
+    def test_contract_blocks_reject_unknown_keys(
+        self, field: str, entry: dict[str, Any], typo: str
+    ) -> None:
+        from pydantic import ValidationError as PydanticValidationError
+
+        from agentloom.core.models import StepDefinition, StepType
+
+        with pytest.raises(PydanticValidationError, match=typo):
+            StepDefinition.model_validate(
+                {"id": "s", "type": StepType.LLM_CALL, "prompt": "hi", field: [entry]}
+            )
+
+    @pytest.mark.parametrize(
+        ("field", "entry"),
+        [
+            ("tools", {"name": "t", "description": "d", "parameters": {"type": "object"}}),
+            (
+                "attachments",
+                {"type": "image", "source": "a.png", "media_type": "image/png", "fetch": "local"},
+            ),
+        ],
+    )
+    def test_contract_blocks_accept_every_known_key(
+        self, field: str, entry: dict[str, Any]
+    ) -> None:
+        from agentloom.core.models import StepDefinition, StepType
+
+        step = StepDefinition.model_validate(
+            {"id": "s", "type": StepType.LLM_CALL, "prompt": "hi", field: [entry]}
+        )
+        assert len(getattr(step, field)) == 1
+
+    def test_the_contract_models_still_ignore_unknown_keys(self) -> None:
+        # Stable contracts: only a step's YAML is held to the stricter rule
+        from agentloom.core.models import Attachment, ToolDefinition
+
+        assert ToolDefinition.model_validate({"name": "t", "extra": 1}).name == "t"
+        assert Attachment.model_validate({"source": "a", "extra": 1}).source == "a"
+
+    def test_built_contract_instances_pass(self) -> None:
+        from agentloom.core.models import StepDefinition, StepType, ToolDefinition
+
+        step = StepDefinition(
+            id="s", type=StepType.LLM_CALL, prompt="hi", tools=[ToolDefinition(name="t")]
+        )
+        assert step.tools[0].name == "t"
+
     def test_workflow_yaml_with_typo_rejected_at_parse(self) -> None:
         yaml = """\
 name: typo-test
@@ -341,3 +402,348 @@ steps:
             # from_yaml wraps Pydantic and parse failures in agentloom's own ``ValidationError``.
             with pytest.raises(ValidationError):
                 WorkflowParser.from_yaml(f.name)
+
+
+def _workflow(*steps: dict[str, Any], **top: Any) -> dict[str, Any]:
+    return {"name": "w", "steps": list(steps), **top}
+
+
+NOTE = {"id": "note", "type": "tool", "tool_name": "t"}
+
+
+class TestRequiredFieldsByType:
+    """A step missing what its type cannot run without fails at load, not when it runs."""
+
+    @pytest.mark.parametrize(
+        ("step", "named"),
+        [
+            ({"type": "router"}, "'conditions' or 'default'"),
+            ({"type": "router", "conditions": []}, "'conditions' or 'default'"),
+            ({"type": "tool"}, "'tool_name'"),
+            ({"type": "subworkflow"}, "'workflow_path' or 'workflow_inline'"),
+            (
+                {"type": "subworkflow", "workflow_inline": {}},
+                "'workflow_path' or 'workflow_inline'",
+            ),
+            ({"type": "embed"}, "'inputs'"),
+            ({"type": "llm_call"}, "'prompt' or 'conversation'"),
+            ({"type": "llm_call", "prompt": ""}, "'prompt' or 'conversation'"),
+        ],
+    )
+    def test_refused_at_load(self, step: dict[str, Any], named: str) -> None:
+        with pytest.raises(ValidationError, match=named):
+            WorkflowParser.from_dict(_workflow({"id": "s", **step}))
+
+    @pytest.mark.parametrize(
+        "step",
+        [
+            {"type": "router", "default": "note"},
+            {"type": "router", "conditions": [{"expression": "state.x", "target": "note"}]},
+            {"type": "tool", "tool_name": "t"},
+            {"type": "embed", "inputs": "state.docs"},
+            {"type": "llm_call", "prompt": "p"},
+            {"type": "llm_call", "conversation": "state.chat"},
+            {"type": "approval_gate"},
+        ],
+    )
+    def test_one_of_the_alternatives_is_enough(self, step: dict[str, Any]) -> None:
+        assert WorkflowParser.from_dict(_workflow({"id": "s", **step}, NOTE)).get_step("s")
+
+    def test_inline_subworkflow_is_enough(self) -> None:
+        inline = {"name": "c", "steps": [{"id": "c", "type": "llm_call", "prompt": "p"}]}
+        step = {"id": "s", "type": "subworkflow", "workflow_inline": inline}
+        assert WorkflowParser.from_dict(_workflow(step)).steps[0].workflow_inline == inline
+
+    def test_a_step_that_is_no_mapping_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="valid dictionary"):
+            WorkflowParser.from_dict(_workflow("not a step"))
+
+    def test_a_field_of_another_type_does_not_count(self) -> None:
+        with pytest.raises(ValidationError, match="'tool_name'"):
+            WorkflowParser.from_dict(_workflow({"id": "s", "type": "tool", "prompt": "p"}))
+
+
+class TestNestedUnknownKeys:
+    """A misspelled key in a nested block stops the load and is named."""
+
+    @pytest.mark.parametrize(
+        ("typo", "workflow"),
+        [
+            ("max_retry", _workflow({**NOTE, "retry": {"max_retry": 1}})),
+            ("allowed_domain", _workflow(NOTE, config={"sandbox": {"allowed_domain": ["a.b"]}})),
+            (
+                "header",
+                _workflow(
+                    {"id": "g", "type": "approval_gate", "notify": {"url": "u", "header": {}}}
+                ),
+            ),
+            (
+                "enable",
+                _workflow(
+                    {"id": "s", "type": "llm_call", "prompt": "p", "thinking": {"enable": True}}
+                ),
+            ),
+            (
+                "priority",
+                _workflow(
+                    NOTE,
+                    {
+                        "id": "r",
+                        "type": "router",
+                        "conditions": [{"expression": "x", "target": "note", "priority": 1}],
+                    },
+                ),
+            ),
+            (
+                "kind",
+                _workflow(
+                    {
+                        "id": "s",
+                        "type": "llm_call",
+                        "prompt": "p",
+                        "tool_choice": {"name": "t", "kind": "function"},
+                    }
+                ),
+            ),
+            (
+                "strictt",
+                _workflow(
+                    {
+                        "id": "s",
+                        "type": "llm_call",
+                        "prompt": "p",
+                        "response_schema": {"type": "json_object", "strictt": True},
+                    }
+                ),
+            ),
+            ("redacted", _workflow(NOTE, state_schema={"api_key": {"redacted": True}})),
+        ],
+        ids=[
+            "retry",
+            "sandbox",
+            "notify",
+            "thinking",
+            "condition",
+            "tool_choice",
+            "schema",
+            "state",
+        ],
+    )
+    def test_refused_and_named(self, typo: str, workflow: dict[str, Any]) -> None:
+        with pytest.raises(ValidationError, match=typo):
+            WorkflowParser.from_dict(workflow)
+
+    def test_a_dumped_workflow_still_loads(self) -> None:
+        # What a checkpoint stores: every field of every nested model, ``schema_`` by field name.
+        schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+        step = {
+            "id": "s",
+            "type": "llm_call",
+            "prompt": "p",
+            "response_schema": {"type": "json_schema", "schema": schema},
+            "thinking": {"enabled": True},
+            "tool_choice": "auto",
+        }
+        wf = WorkflowParser.from_dict(_workflow(step, state_schema={"k": {"redact": True}}))
+        assert WorkflowDefinition.model_validate(wf.model_dump()) == wf
+
+
+class TestFromYamlSource:
+    """``from_yaml`` tells a path from YAML text."""
+
+    @pytest.mark.parametrize("missing", ["workflwo.yaml", "some/dir/missing.yml", "no-such-file"])
+    def test_a_missing_path_is_reported_as_missing(
+        self, missing: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValidationError, match=f"file not found: {missing}"):
+            WorkflowParser.from_yaml(missing)
+
+    def test_a_path_object_is_a_path_even_with_a_colon(self, tmp_path: Path) -> None:
+        missing = tmp_path / "a:b.yaml"
+        with pytest.raises(ValidationError, match="file not found"):
+            WorkflowParser.from_yaml(missing)
+
+    def test_a_directory_is_not_a_workflow_file(self, tmp_path: Path) -> None:
+        with pytest.raises(ValidationError, match="file not found"):
+            WorkflowParser.from_yaml(tmp_path)
+
+    def test_an_existing_file_is_read(self, tmp_path: Path) -> None:
+        path = tmp_path / "w.yaml"
+        path.write_text(SIMPLE_YAML, encoding="utf-8")
+        assert WorkflowParser.from_yaml(str(path)).name == "yaml-test"
+
+    def test_a_line_over_the_path_limit_is_yaml_text(self) -> None:
+        name = "n" * 300
+        text = f"{{name: {name}, steps: [{{id: a, type: llm_call, prompt: hi}}]}}"
+        assert WorkflowParser.from_yaml(text).name == name
+
+    def test_a_path_the_os_refuses_is_not_read_as_yaml(self) -> None:
+        refused = PermissionError(errno.EACCES, "denied")
+        with (
+            patch.object(Path, "is_file", side_effect=refused),
+            pytest.raises(PermissionError),
+        ):
+            WorkflowParser.from_yaml("workflow.yaml")
+
+    def test_a_long_scalar_is_yaml_text_not_a_missing_file(self) -> None:
+        with pytest.raises(ValidationError, match="must be a mapping"):
+            WorkflowParser.from_yaml("n" * 5000)
+
+    @pytest.mark.parametrize("text", ["", "   \n", "just\nthree\nwords\n"])
+    def test_text_that_is_no_path_keeps_the_mapping_error(self, text: str) -> None:
+        with pytest.raises(ValidationError, match="must be a mapping"):
+            WorkflowParser.from_yaml(text)
+
+
+def _loaded(config: dict[str, Any], step: dict[str, Any] | None = None) -> WorkflowDefinition:
+    llm_call = {"id": "s", "type": "llm_call", "prompt": "hi", **(step or {})}
+    return WorkflowDefinition.model_validate({"name": "w", "config": config, "steps": [llm_call]})
+
+
+class TestDefaultModelFollowsTheProvider:
+    @pytest.mark.parametrize(
+        ("provider", "model"),
+        [
+            ("openai", "gpt-4o-mini"),
+            ("anthropic", "claude-haiku-4-5-20251001"),
+            ("google", "gemini-2.5-flash"),
+            ("mock", "gpt-4o-mini"),
+            ("unknown-name", "gpt-4o-mini"),
+        ],
+    )
+    def test_without_a_model_the_provider_gives_it(self, provider: str, model: str) -> None:
+        assert _loaded({"provider": provider}).config.model == model
+
+    def test_no_config_at_all_is_openai(self) -> None:
+        assert _loaded({}).config.model == "gpt-4o-mini"
+
+    def test_a_named_model_wins(self) -> None:
+        assert _loaded({"provider": "anthropic", "model": "claude-x"}).config.model == "claude-x"
+
+    @pytest.mark.parametrize(
+        "config",
+        [{"provider": "ollama"}, {"provider": "generic_openai", "base_url": "http://x"}],
+    )
+    def test_a_provider_without_a_default_must_name_one(self, config: dict[str, Any]) -> None:
+        with pytest.raises(PydanticValidationError, match=r"no default model.*config\.model"):
+            _loaded(config)
+
+    def test_a_provider_without_a_default_loads_with_a_model(self) -> None:
+        assert _loaded({"provider": "ollama", "model": "phi4"}).config.model == "phi4"
+
+    def test_switching_provider_moves_a_model_the_file_did_not_set(self) -> None:
+        config = WorkflowConfig()
+        config.use_provider("anthropic")
+        assert (config.provider, config.model) == ("anthropic", "claude-haiku-4-5-20251001")
+
+    def test_switching_provider_keeps_a_model_the_file_set(self) -> None:
+        config = WorkflowConfig(model="gpt-4o")
+        config.use_provider("anthropic")
+        assert (config.provider, config.model) == ("anthropic", "gpt-4o")
+
+    def test_switching_provider_drops_the_endpoint_of_generic_openai(self) -> None:
+        config = WorkflowConfig(
+            provider="generic_openai", model="m", base_url="http://x", api_key_env="K"
+        )
+        config.use_provider("openai")
+        assert (config.base_url, config.api_key_env) == (None, None)
+        WorkflowConfig.model_validate(config.model_dump())
+
+    def test_switching_to_generic_openai_keeps_the_endpoint(self) -> None:
+        config = WorkflowConfig(provider="generic_openai", model="m", base_url="http://x")
+        config.use_provider("generic_openai")
+        assert config.base_url == "http://x"
+
+    def test_switching_to_a_provider_without_a_default_needs_a_model(self) -> None:
+        with pytest.raises(ValueError, match="no default model"):
+            _loaded({}).use_provider("ollama")
+
+    def test_switching_is_free_when_every_step_names_its_model(self) -> None:
+        workflow = _loaded({}, {"model": "phi4"})
+        workflow.use_provider("ollama")
+        assert workflow.config.provider == "ollama"
+
+    @pytest.mark.parametrize(
+        "config",
+        [{"provider": "ollama"}, {"provider": "generic_openai", "base_url": "http://x"}],
+    )
+    @pytest.mark.parametrize(
+        "step",
+        [
+            {"id": "s", "type": "llm_call", "prompt": "hi", "model": "phi4"},
+            {"id": "s", "type": "embed", "inputs": "state.d", "model": "phi4"},
+            {"id": "s", "type": "agent", "prompt": "hi", "agent": {"name": "a", "model": "phi4"}},
+            {"id": "s", "type": "tool", "tool_name": "t"},
+        ],
+    )
+    def test_no_step_on_the_config_model_needs_no_default(
+        self, config: dict[str, Any], step: dict[str, Any]
+    ) -> None:
+        data = {"name": "w", "config": config, "steps": [step]}
+        assert WorkflowDefinition.model_validate(data).config.provider == config["provider"]
+
+    @pytest.mark.parametrize(
+        "step",
+        [
+            {"id": "s", "type": "embed", "inputs": "state.d"},
+            {"id": "s", "type": "agent", "prompt": "hi", "agent": {"name": "a"}},
+        ],
+    )
+    def test_a_step_on_the_config_model_still_needs_one(self, step: dict[str, Any]) -> None:
+        data = {"name": "w", "config": {"provider": "ollama"}, "steps": [step]}
+        with pytest.raises(PydanticValidationError, match="no default model"):
+            WorkflowDefinition.model_validate(data)
+
+    def test_a_dumped_config_keeps_its_model(self) -> None:
+        dumped = WorkflowConfig(provider="anthropic").model_dump()
+        assert WorkflowConfig.model_validate(dumped).model == "claude-haiku-4-5-20251001"
+
+
+class TestAnthropicThinkingBudget:
+    THINKING: ClassVar[dict[str, Any]] = {"enabled": True, "budget_tokens": 4000}
+
+    @pytest.mark.parametrize("max_tokens", [4000, 3999])
+    def test_max_tokens_at_or_below_the_budget_fails_at_load(self, max_tokens: int) -> None:
+        with pytest.raises(PydanticValidationError, match="max_tokens.*budget_tokens"):
+            _loaded(
+                {"model": "claude-sonnet-4-5"},
+                {"max_tokens": max_tokens, "thinking": self.THINKING},
+            )
+
+    def test_a_step_that_names_the_model_counts(self) -> None:
+        with pytest.raises(PydanticValidationError, match="max_tokens"):
+            _loaded(
+                {"model": "gpt-4o"},
+                {"model": "claude-x", "max_tokens": 100, "thinking": self.THINKING},
+            )
+
+    def test_above_the_budget_loads(self) -> None:
+        _loaded({"model": "claude-sonnet-4-5"}, {"max_tokens": 4001, "thinking": self.THINKING})
+
+    def test_unset_max_tokens_loads(self) -> None:
+        _loaded({"model": "claude-sonnet-4-5"}, {"thinking": self.THINKING})
+
+    @pytest.mark.parametrize("thinking", [{"enabled": True}, {"enabled": True, "level": "high"}])
+    def test_no_budget_on_a_claude_model_fails_at_load(self, thinking: dict[str, Any]) -> None:
+        with pytest.raises(PydanticValidationError, match="needs budget_tokens"):
+            _loaded({"model": "claude-sonnet-4-5"}, {"thinking": thinking})
+
+    def test_no_budget_on_the_default_model_of_anthropic_fails_at_load(self) -> None:
+        with pytest.raises(PydanticValidationError, match="needs budget_tokens"):
+            _loaded({"provider": "anthropic"}, {"thinking": {"enabled": True, "level": "high"}})
+
+    def test_no_budget_elsewhere_loads(self) -> None:
+        _loaded({"model": "o3"}, {"thinking": {"enabled": True, "level": "high"}})
+
+    def test_no_budget_with_thinking_turned_off_loads(self) -> None:
+        _loaded({"model": "claude-sonnet-4-5"}, {"thinking": {"enabled": False}})
+
+    def test_another_provider_is_not_held_to_it(self) -> None:
+        _loaded({"model": "gemini-2.5-flash"}, {"max_tokens": 100, "thinking": self.THINKING})
+
+    def test_thinking_turned_off_is_not_held_to_it(self) -> None:
+        _loaded(
+            {"model": "claude-sonnet-4-5"},
+            {"max_tokens": 100, "thinking": {"enabled": False, "budget_tokens": 4000}},
+        )

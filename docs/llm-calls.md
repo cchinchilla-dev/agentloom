@@ -29,7 +29,7 @@ An `llm_call` step sends one request to a model and writes the reply to the stat
 | `system_prompt` | none | The system message, a template too. |
 | `model` | `config.model` | The model of this step. It wins over `--model`, which only changes `config.model`. |
 | `temperature` | the provider's | Sent as given, without a range check. |
-| `max_tokens` | the provider's | The reply's token limit. Anthropic requires one, so AgentLoom sends 4096 when it is unset. |
+| `max_tokens` | the provider's | The reply's token limit. Anthropic requires one, so AgentLoom sends 4096 when it is unset, plus the reasoning budget if there is one. |
 | `stream` | `config.stream` | Stream the reply as it is written. See [Streaming](#streaming). |
 | `attachments` | none | Images, PDFs and audio sent with the prompt. See [Attachments](#attachments). |
 | `thinking` | none | Reasoning settings. See [Reasoning](#reasoning). |
@@ -76,7 +76,7 @@ Tokens and cost cover every call the step made: each turn of a tool loop, each r
 |-------|---------|------------|
 | `type` | `image` | `image`, `pdf` or `audio`. |
 | `source` | required | A URL, a local file path, a `data:` URL or a base64 string. It is a template. |
-| `media_type` | guessed | The MIME type, such as `image/jpeg`. Without it, AgentLoom guesses from the file extension, then from a download's `Content-Type`, then falls back to `image/png`, `application/pdf` or `audio/wav`. A `data:` URL's own type wins over this field. |
+| `media_type` | guessed | The MIME type, such as `image/jpeg`. Without it, AgentLoom guesses from the file extension, then from a download's `Content-Type`, then falls back to `image/png`, `application/pdf` or `audio/wav`. A `data:` URL's own type wins over this field. One that contradicts `type`, such as `application/pdf` on an `image`, fails the step. |
 | `fetch` | `local` | For URLs: `local` downloads the file and sends its bytes; `provider` sends the URL itself, for the provider to fetch. |
 
 How the `source` is read:
@@ -89,7 +89,7 @@ How the `source` is read:
 | A long base64 string | Sent as it is. Set `media_type`. |
 | Anything else | A file path, relative to the directory you run from. |
 
-- A file or download may be up to 20 MB.
+- A file, a download, a `data:` URL or a base64 string may be up to 20 MB.
 - URLs at private, loopback or link-local addresses are refused, with either `fetch`.
 - The [sandbox](tools-and-sandbox.md) applies. `sandbox.allow_network: false` and `sandbox.allowed_domains` restrict downloads even when the sandbox is disabled. With the sandbox enabled, a local file must sit under `readable_paths` or `allowed_paths`.
 
@@ -123,18 +123,18 @@ In a [conversation](#conversations), attachments go with this step's user turn o
 | `enabled` | `false` | Turns reasoning on. Without it, nothing else in the block is sent. |
 | `budget_tokens` | none | The most tokens the model may spend reasoning, where the provider takes a budget. |
 | `level` | none | `low`, `medium` or `high`, where the provider takes a level. |
-| `capture_reasoning` | `true` | Whether the provider returns its reasoning text. |
+| `capture_reasoning` | `true` | Whether the provider returns its reasoning text, and the step's result keeps it. |
 
 | Provider | What AgentLoom sends |
 |----------|----------------------|
-| OpenAI | Nothing: the o-series and GPT-5 models reason on their own, and the block is ignored. `level` doesn't reach OpenAI. |
-| Anthropic | `thinking` with `budget_tokens`. `level` is ignored. Set `max_tokens` above the budget. |
+| OpenAI | `reasoning_effort`, set to the `level`, on the o-series and GPT-5 models, which reason on their own, except `o1-mini` and `gpt-5-chat`. Nothing without a `level`, or on other models. `budget_tokens` is ignored. |
+| Anthropic | `thinking` with `budget_tokens`, which a step on a Claude model must set, or it fails at load. `level` is ignored. Without `max_tokens`, AgentLoom sends the budget plus 4096; one that isn't above the budget fails at load. |
 | Google | `thinkingConfig` with the budget, the level and whether to include thoughts. |
 | Ollama | `think`, set to the `level`, or to `true` without one. `budget_tokens` is ignored. |
 
 - Reasoning tokens count in the step's tokens and are billed at the output price. OpenAI and Google report them apart; Anthropic and Ollama count them in the reply's tokens.
-- The reasoning text itself isn't kept: it doesn't reach the state, the step's result or a recording.
-- For OpenAI's reasoning models, leave `temperature` and `max_tokens` unset: AgentLoom sends them as given.
+- With `capture_reasoning` on, the reasoning text reaches the step's result as `reasoning_content`, where `agentloom run --json` prints it, and is redacted when the step's `output` is. It doesn't reach the state or a recording. OpenAI doesn't return it.
+- OpenAI's reasoning models get `max_tokens` as `max_completion_tokens`, and no `temperature`. `gpt-5-chat` isn't one of them: it gets both as given.
 - [Agents](agents.md) don't take a `thinking` block.
 
 ## Tool calling
@@ -161,8 +161,8 @@ The model decides which tools to call, and with what arguments. AgentLoom runs t
 
 | Field | Default | What it is |
 |-------|---------|------------|
-| `tools` | none | Each tool's `name`, `description` and `parameters`, a JSON Schema. This is what the model sees. |
-| `tool_choice` | `auto` | `auto` lets the model decide, `none` turns tools off, `required` makes it call one, and `{name: http_request}` makes it call that one. |
+| `tools` | none | Each tool's `name`, `description` and `parameters`, a JSON Schema. This is what the model sees. A tool without `parameters` is sent with the registered tool's own. |
+| `tool_choice` | `auto` | `auto` lets the model decide, `none` turns tools off, `required` makes its first call use a tool, and `{name: http_request}` makes its first call use that one. |
 | `max_tool_iterations` | `5` | The most model calls the step makes, the one that answers included. |
 
 The `name` must match a registered tool. `agentloom run` registers the four [built-in tools](tools-and-sandbox.md): `http_request`, `shell_command`, `file_read` and `file_write`. Tools of your own are registered from Python. A registered tool that the step doesn't declare stays out of the model's reach.
@@ -172,10 +172,10 @@ The `name` must match a registered tool. `agentloom run` registers the four [bui
 1. AgentLoom calls the model with the tools.
 2. A reply without tool calls is the answer: the step succeeds with it.
 3. Otherwise, AgentLoom runs every call in the reply at once, sends the results back in the order of the calls, and calls the model again.
-4. At `max_tool_iterations`, the step still succeeds, with the last reply's text and `finish_reason: max_tool_iterations`. The tools that last reply asked for still run.
+4. At `max_tool_iterations`, the step still succeeds, with the last reply's text and `finish_reason: max_tool_iterations`. The tools that last reply asked for don't run, as no call would read their results: with `max_tool_iterations: 1`, no tool ever runs.
 
 - **A failing tool doesn't fail the step.** An unknown tool, arguments that aren't valid JSON, an exception or a sandbox refusal go back to the model as the tool's result, and the loop goes on. Arguments aren't checked against `parameters`.
-- **`required` and a named tool are sent on every call of the loop,** so the model can never stop calling tools. The loop always runs to `max_tool_iterations`, and the reply is whatever text came with the last call, often none: with `required`, an empty reply ends with `finish_reason: max_tool_iterations_no_answer`. Use them when the tool's effect is what you want, not the reply.
+- **`required` and a named tool apply to the first call only.** The later calls of the loop use `auto`, so the model can read the results and answer. A model that keeps calling tools up to `max_tool_iterations` and leaves an empty reply ends with `finish_reason: max_tool_iterations_no_answer`.
 - **A retry runs the whole loop again,** the tools included. A tool with side effects, such as a write, a message or a payment, should be safe to repeat, or the step should set `retry: {max_retries: 0}`.
 - **Tools and a `response_schema` can't share a step.** An [agent](agents.md) with an `output_schema` combines them.
 - **A step with tools doesn't stream:** its answer reaches the stream in one piece at the end.
@@ -234,7 +234,7 @@ OpenAI, Anthropic, Google, Ollama and `generic_openai` all take tools; Ollama ig
 |-------|---------|------------|
 | `type` | `json_object` | `pydantic`, `json_schema` or `json_object`. |
 | `model` | required for `pydantic` | The model class, as a dotted path: `package.module.Class` or `package.module:Class`. `agentloom run` imports it from the directory you run from. |
-| `schema` | required for `json_schema` | An inline JSON Schema. `additionalProperties: true` at its root is refused. |
+| `schema` | required for `json_schema` | An inline JSON Schema. `additionalProperties: true` anywhere in it is refused. |
 | `name` | the class name, else the step id | The schema's name, which OpenAI requires. |
 | `strict` | `true` | OpenAI's strict mode, which also makes every property required. |
 | `description` | none | A description of the schema, for OpenAI. |
@@ -246,9 +246,9 @@ OpenAI, Anthropic, Google, Ollama and `generic_openai` all take tools; Ollama ig
 | Ollama | `format`, with the schema or as plain JSON; how well it holds depends on the model. |
 | Anthropic | No native mode: the schema goes into the system prompt and the reply is prefilled with `{`. |
 
-**Validation.** AgentLoom reads the JSON from the reply, from a fenced JSON block in it, or from its first `{…}`, and validates it. An invalid reply goes back to the model with the validation error, and the model tries again, up to `retry.max_retries` more calls within the same attempt. If none is valid, the step fails without a retry. A streamed reply is validated once it ends, and a failure there repeats the whole step.
+**Validation.** AgentLoom reads the JSON from the reply, from a fenced JSON block in it, or from its first `{…}`, and validates it. An invalid reply goes back to the model with the validation error, and the model tries again, up to `retry.max_retries` more calls within the same attempt. If none is valid, the step fails without a retry. A streamed reply is validated once it ends, and a failure there fails the step without a retry.
 
-**Storage.** `output` receives a Pydantic instance or a dictionary, which templates read like any other value: `{state.classification.label}`. Checkpoints and `--json` write it as a plain dictionary, so a resumed run reads a dictionary. Redaction patterns don't reach the fields of a Pydantic instance: keep secrets out of typed replies.
+**Storage.** `output` receives a Pydantic instance or a dictionary, which templates read like any other value: `{state.classification.label}`. Checkpoints and `--json` write it as a plain dictionary, so a resumed run reads a dictionary. Redaction patterns reach the fields of a Pydantic instance, as those of a dictionary.
 
 ## Conversations
 
@@ -282,7 +282,7 @@ steps:
 | Field | What it is |
 |-------|------------|
 | `messages` | The turns: `role` (`system`, `user`, `assistant` or `tool`), `content`, and `name` for a speaker's turns. |
-| `token_budget` | The most tokens the messages may take; no limit without one. |
+| `token_budget` | The most tokens the messages and the summary may take; no limit without one. |
 | `trim_policy` | How to make room: `drop_oldest` (the default), `drop_pairs` or `summarize_oldest`. |
 | `summary` | What `summarize_oldest` has folded in so far. |
 
@@ -295,21 +295,21 @@ steps:
 
 - Only the final text is stored. The calls and results of a tool loop, and the re-asks for valid JSON, aren't. A structured reply is stored as the model wrote it.
 - The conversation and `output` are written only when the step succeeds.
-- Two steps that continue one conversation at the same time each write their own copy, and one of the turns is lost. Chain them with `depends_on`.
+- Two steps of one layer on one conversation are refused when the file loads: each would write its own copy, and one of the turns would be lost. Chain them with `depends_on`. Branches of one router are exempt, because only one of them runs.
 
 ### Trimming
 
 The budget is counted roughly: about one token per four characters, plus a little for each message's role and name. Leading system messages always stay.
 
-- **`drop_oldest`** removes the oldest messages until the rest fits. If the system messages alone exceed the budget, nothing more is removed, and the request goes over.
-- **`drop_pairs`** removes the oldest user and assistant pairs. If the system messages alone exceed the budget, the step fails.
-- **`summarize_oldest`** folds the oldest messages into `summary`, with one extra call to the step's model, and sends the summary as a system message. If that call fails, the messages are joined as plain text instead. The summary isn't counted in the budget.
+- **`drop_oldest`** removes the oldest messages until the rest fits. If the system messages and the summary alone reach the budget, nothing is removed, and the request goes over.
+- **`drop_pairs`** removes the oldest user and assistant pairs. If the system messages and the summary alone reach the budget, nothing is removed, and the request goes over.
+- **`summarize_oldest`** folds the oldest messages into `summary`, with one extra call to the step's model, and sends the summary as a system message. If that call fails, the messages are joined as plain text instead. The summary counts in the budget and isn't trimmed: once it and the system messages reach the budget, nothing more is folded, and the request goes over.
 
 Trimmed messages leave the stored conversation too. A budget too small to hold the new user turn fails the step at once.
 
 ### Several speakers
 
-`speaker` names the assistant turns of a step, so several voices can share one conversation:
+`speaker` names the assistant turns of a step, so several voices can share one conversation. It takes letters, digits, `_` and `-`, up to 64 characters:
 
 ```yaml
 - id: planner
@@ -338,7 +338,7 @@ With a `speaker`, the step's `system_prompt` applies to its own turn only and is
 - `agentloom run --stream` prints the text as it arrives, without step names, so parallel steps interleave. With `--json`, nothing is printed until the end. Without `--stream`, steps that stream print nothing as they go.
 - A streaming step records its time to first token in its result and metrics.
 - Steps with tools, [agent](agents.md) turns and conversation summaries don't stream: their text arrives in one piece. A structured reply streams as raw JSON and is validated at the end.
-- A streamed call doesn't fall back to another provider: a provider error, before the first chunk or after it, fails the attempt, and the step's `retry` decides what comes next. A 429 on a streamed call also counts against the provider's circuit breaker.
+- A streamed call falls back to another provider only before its first chunk. After that, a provider error fails the attempt, and the step's `retry` decides what comes next. A 429 doesn't count against the provider's circuit breaker.
 
 ## What's next
 

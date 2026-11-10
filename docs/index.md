@@ -162,7 +162,7 @@ agentloom visualize my_workflow.yaml   # draw the DAG as text; --format mermaid 
 ## Keys and providers
 
 - **Keys come from the environment**: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `GOOGLE_API_KEY`. AgentLoom reads no `.env` file, so load one with your shell or a tool like direnv. Each provider whose key is set is available to every step.
-- **The model name picks the provider.** `gpt-*`, `o1`, `o3` and `o4` models go to OpenAI, `claude*` to Anthropic, `gemini*` to Google. `--provider` only says which provider is tried first. To switch provider, pass `--model` too: `--provider anthropic` alone still asks for `gpt-4o-mini`, which only OpenAI serves.
+- **The model name finds the providers.** `gpt-*`, `o1`, `o3` and `o4` models go to OpenAI, `claude*` to Anthropic, `gemini*` to Google. `--provider` says which provider is tried first, if it can serve the model. On a workflow with no `model`, `--provider anthropic` brings Anthropic's default; on one that names a model, pass `--model` too.
 - **Ollama takes no key.** It is used when a workflow says `provider: ollama` (or `--provider ollama`), and accepts any model name.
 - **Endpoints can be changed** with `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GOOGLE_BASE_URL` and `OLLAMA_BASE_URL`, for a proxy or a self-hosted gateway. Any other OpenAI-compatible server works through the [`generic_openai` provider](providers.md).
 

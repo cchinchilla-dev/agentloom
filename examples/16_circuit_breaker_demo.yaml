@@ -1,13 +1,15 @@
 name: circuit-breaker-demo
 version: "1.0"
 description: >
-  Demonstrates the circuit breaker pattern. Uses a non-existent model to force
-  provider failures. After 5 consecutive failures the circuit opens, and the
-  remaining step is rejected immediately with CircuitOpenError.
+  Demonstrates the circuit breaker pattern. Run it with Ollama stopped: refused
+  connections are retried, and after 5 consecutive failures the circuit opens, so
+  the last step fails without reaching the provider. With Ollama running, the
+  missing model answers 404, which isn't retried, and the circuit stays closed.
 
 config:
   provider: ollama
   model: nonexistent-model-for-demo
+  on_step_failure: continue  # the last step must run after its parents fail
 
 state:
   prompt_a: "What is 2+2?"
@@ -32,7 +34,7 @@ steps:
       max_retries: 3
 
   # Layer 2: depends on a+b, so it runs after the circuit has opened.
-  # This step should be immediately rejected by CircuitOpenError.
+  # The circuit is open: this step never reaches the provider.
   - id: call_c
     type: llm_call
     prompt: "{state.prompt_c}"

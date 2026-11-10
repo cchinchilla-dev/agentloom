@@ -9,6 +9,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs
 
 import anyio
 import typer
@@ -162,6 +163,12 @@ def _parse_headers(header_section: str) -> dict[str, str]:
     return headers
 
 
+def _decision_target(target: str) -> tuple[str, str | None]:
+    """The run id of a decision's path and, from a nested gate's link, the gate it names."""
+    run_id, _, query = target.partition("?")
+    return run_id, parse_qs(query).get("gate", [None])[0]
+
+
 async def _handle_request(
     stream: anyio.abc.SocketStream,
     checkpoint_dir: str,
@@ -237,25 +244,27 @@ async def _handle_request(
             return
         await _handle_pending(stream, checkpoint_dir)
     elif method == "POST" and path.startswith("/approve/"):
-        run_id = path[len("/approve/") :]
+        run_id, gate = _decision_target(path[len("/approve/") :])
         await _handle_decision(
             stream,
             checkpoint_dir,
             lite,
             run_id,
             "approved",
+            gate=gate,
             provided_token=headers.get("x-agentloom-token"),
             expected_token=token,
             config_path=config_path,
         )
     elif method == "POST" and path.startswith("/reject/"):
-        run_id = path[len("/reject/") :]
+        run_id, gate = _decision_target(path[len("/reject/") :])
         await _handle_decision(
             stream,
             checkpoint_dir,
             lite,
             run_id,
             "rejected",
+            gate=gate,
             provided_token=headers.get("x-agentloom-token"),
             expected_token=token,
             config_path=config_path,
@@ -321,6 +330,7 @@ async def _handle_decision(
     run_id: str,
     decision: str,
     *,
+    gate: str | None = None,
     provided_token: str | None = None,
     expected_token: str | None = None,
     config_path: Path | None = None,
@@ -345,6 +355,14 @@ async def _handle_decision(
         await _send_response(stream, 400, {"error": f"invalid run id: {e}"})
         return
 
+    # ``run.step`` is a subworkflow's own checkpoint: resuming it would strand its parent
+    if "." in run_id:
+        root = run_id.partition(".")[0]
+        await _send_response(
+            stream, 400, {"error": f"run '{run_id}' is part of run '{root}': decide on '{root}'"}
+        )
+        return
+
     if checkpoint_data.status != "paused":
         await _send_response(
             stream,
@@ -358,6 +376,12 @@ async def _handle_decision(
         await _send_response(stream, 409, {"error": "checkpoint has no paused step id"})
         return
 
+    if gate is not None and gate != paused_step:
+        await _send_response(
+            stream, 409, {"error": f"run '{run_id}' is paused at '{paused_step}', not at '{gate}'"}
+        )
+        return
+
     if run_id in _resuming:
         await _send_response(stream, 409, {"error": f"run '{run_id}' is already resuming"})
         return
@@ -369,6 +393,9 @@ async def _handle_decision(
             )
         except (ProviderError, ConfigError) as e:
             await _send_response(stream, 500, {"error": str(e)})
+            return
+        except typer.Exit:  # _setup_mock has said why on stderr
+            await _send_response(stream, 500, {"error": "the run's mock recording doesn't load"})
             return
 
         body: dict[str, Any] = {
@@ -445,7 +472,12 @@ async def _prepare_resume(
     config_path: Path | None,
 ) -> tuple[WorkflowEngine, ProviderGateway, Any]:
     """An engine that resumes *checkpoint_data*, with its providers, tools and observer."""
-    from agentloom.cli.run import _setup_generic_openai, _setup_observer, _setup_providers
+    from agentloom.cli.run import (
+        _setup_generic_openai,
+        _setup_mock,
+        _setup_observer,
+        _setup_providers,
+    )
     from agentloom.core.engine import WorkflowEngine
     from agentloom.providers.gateway import ProviderGateway
     from agentloom.tools.builtins import register_builtins
@@ -459,11 +491,17 @@ async def _prepare_resume(
         approval_decisions={paused_step: decision} if decision and paused_step else None,
     )
 
+    observer = _setup_observer(lite)
     gateway = ProviderGateway()
     try:
-        _setup_generic_openai(gateway, engine.workflow.config)
-        _setup_providers(gateway, engine.workflow.config.provider, config_path)
+        if engine.workflow.config.provider == "mock":
+            _setup_mock(gateway, engine.workflow.config, observer, engine.workflow.name)
+        else:
+            _setup_generic_openai(gateway, engine.workflow.config)
+            _setup_providers(gateway, engine.workflow.config.provider, config_path)
     except BaseException:
+        if observer:
+            observer.shutdown()  # pragma: no cover
         await gateway.close()
         raise
     engine.provider_gateway = gateway
@@ -481,13 +519,15 @@ async def _prepare_resume(
         max_write_bytes=sandbox_cfg.max_write_bytes,
         danger_opt_in=sandbox_cfg.danger_opt_in,
         allow_internal_webhook_targets=sandbox_cfg.allow_internal_webhook_targets,
+        deny_internal_hosts=sandbox_cfg.deny_internal_hosts,
     )
     tool_registry = ToolRegistry()
     register_builtins(tool_registry, sandbox=sandbox)
     engine.tool_registry = tool_registry
 
-    observer = _setup_observer(lite)
     engine.observer = observer
+    if observer:
+        gateway.set_observer(observer)
     return engine, gateway, observer
 
 

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import MagicMock
 
-if TYPE_CHECKING:
-    import pytest
+import pytest
 
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import (
@@ -427,7 +426,8 @@ class TestObserverIntegration:
         observer.on_workflow_end.assert_called_once()
         observer.on_tokens.assert_called_once()
 
-    async def test_run_id_populated_on_failure_path(self) -> None:
+    async def test_run_id_populated_on_failure_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("agentloom.core.engine.compute_backoff", lambda *_args: 0.0)
         # Trace correlation and history need run_id on every termination, failures included.
         gw = ProviderGateway()
         gw.register(FailingProvider(), models=["mock-model"])
@@ -443,7 +443,10 @@ class TestObserverIntegration:
             "run_id must be populated on failure for trace correlation"
         )
 
-    async def test_run_history_written_on_failure_path(self, tmp_path) -> None:
+    async def test_run_history_written_on_failure_path(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("agentloom.core.engine.compute_backoff", lambda *_args: 0.0)
         # ``agentloom history`` lists failed runs too: debugging an incident needs them.
         from pathlib import Path as _Path
 
@@ -707,3 +710,105 @@ class TestComplexWorkflow:
         assert result.step_results["route"].status == StepStatus.SUCCESS
         assert result.step_results["escalate"].status == StepStatus.SUCCESS
         assert result.step_results["log_only"].status == StepStatus.SKIPPED
+
+
+class TestObserverHooksAreGuarded:
+    """A hook that raises is logged: the step goes on and its paid call isn't repeated."""
+
+    @pytest.mark.parametrize(
+        "hook",
+        [
+            "on_workflow_start",
+            "on_workflow_end",
+            "on_step_start",
+            "on_step_end",
+            "on_tokens",
+            "on_budget_remaining",
+            "on_stream_response",
+            "on_provider_call_start",
+            "on_provider_call_end",
+            "on_circuit_state",
+        ],
+    )
+    async def test_the_call_runs_once(self, hook: str) -> None:
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+        wf = WorkflowDefinition(
+            name="guarded",
+            config=WorkflowConfig(provider="mock", model="mock-model", budget_usd=1.0),
+            steps=[
+                StepDefinition(
+                    id="a",
+                    type=StepType.LLM_CALL,
+                    prompt="a",
+                    output="oa",
+                    stream=True,
+                    retry=RetryConfig(max_retries=3),
+                ),
+            ],
+        )
+        observer = MagicMock()
+        getattr(observer, hook).side_effect = RuntimeError("hook bug")
+        engine = WorkflowEngine(workflow=wf, provider_gateway=gw, observer=observer)
+
+        result = await engine.run()
+
+        assert result.status == WorkflowStatus.SUCCESS
+        assert len(provider.calls) == 1
+
+    @pytest.mark.parametrize(
+        ("capture_prompts", "conversation"),
+        [(True, None), (False, "state.chat")],
+        ids=["prompt-event", "conversation-event"],
+    )
+    async def test_a_step_event_that_raises_repeats_no_call(
+        self, capture_prompts: bool, conversation: str | None
+    ) -> None:
+        provider = MockProvider()
+        gw = ProviderGateway()
+        gw.register(provider, models=["mock-model"])
+        wf = WorkflowDefinition(
+            name="events",
+            config=WorkflowConfig(
+                provider="mock", model="mock-model", capture_prompts=capture_prompts
+            ),
+            steps=[
+                StepDefinition(
+                    id="a",
+                    type=StepType.LLM_CALL,
+                    prompt="a",
+                    output="oa",
+                    conversation=conversation,
+                    retry=RetryConfig(max_retries=3),
+                ),
+            ],
+        )
+        observer = MagicMock()
+        observer.attach_step_event.side_effect = RuntimeError("hook bug")
+        engine = WorkflowEngine(workflow=wf, provider_gateway=gw, observer=observer)
+
+        result = await engine.run()
+
+        assert result.status == WorkflowStatus.SUCCESS
+        assert len(provider.calls) == 1
+        observer.attach_step_event.assert_called_once()
+
+
+class TestBudgetGauge:
+    async def test_a_breach_updates_it(self) -> None:
+        gw = ProviderGateway()
+        gw.register(MockProvider(), models=["mock-model"])
+        # MockProvider charges 0.001 per call, so the first answer breaches the budget.
+        wf = WorkflowDefinition(
+            name="breach",
+            config=WorkflowConfig(provider="mock", model="mock-model", budget_usd=0.0005),
+            steps=[StepDefinition(id="a", type=StepType.LLM_CALL, prompt="a", output="oa")],
+        )
+        observer = MagicMock()
+        engine = WorkflowEngine(workflow=wf, provider_gateway=gw, observer=observer)
+
+        result = await engine.run()
+
+        assert result.status == WorkflowStatus.BUDGET_EXCEEDED
+        observer.on_budget_remaining.assert_called_once_with("breach", 0.0)

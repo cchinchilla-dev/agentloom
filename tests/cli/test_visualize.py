@@ -99,6 +99,27 @@ steps:
         assert result.exit_code == 0
         assert "route{route}" in result.output  # diamond shape for router
 
+    def test_router_labels_are_whole_and_escaped(self) -> None:
+        yaml = """\
+name: labels
+steps:
+  - id: route
+    type: router
+    conditions:
+      - expression: 'state.tags[0] == "urgent|now" and state.level > 3'
+        target: handler
+    default: fallback
+  - {id: handler, type: llm_call, prompt: h, depends_on: [route]}
+  - {id: fallback, type: llm_call, prompt: f, depends_on: [route]}
+"""
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(yaml)
+            f.flush()
+            result = runner.invoke(app, ["visualize", f.name, "--format", "mermaid"])
+        assert result.exit_code == 0, result.output
+        label = "state.tags#lsqb;0#rsqb; == #quot;urgent#vert;now#quot; and state.level > 3"
+        assert f"route -->|{label}| handler" in result.output
+
 
 class TestFormatChoice:
     """``--format`` is a typed Choice: an unknown value is rejected, not rendered as ASCII."""

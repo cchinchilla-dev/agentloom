@@ -13,7 +13,13 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError, UnsupportedRequestError
-from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
+from agentloom.providers._http import (
+    format_http_error,
+    json_body,
+    raise_for_status,
+    validate_extra_kwargs,
+    wrap_stream_errors,
+)
 from agentloom.providers._meta import response_meta
 from agentloom.providers.base import (
     BaseProvider,
@@ -65,10 +71,40 @@ _OPENAI_EXTRA_PAYLOAD_KEYS = frozenset(
         "tools",
         "tool_choice",
         "parallel_tool_calls",
-        # Accepted so ThinkingConfig stays provider-uniform; chat completions has no such field.
+        # Provider-uniform config from ``llm_call``, translated to ``reasoning_effort``.
         "thinking_config",
     }
 )
+
+
+# pricing.yaml names the models but not which ones reason, so this goes by family.
+_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5")
+_CHAT_ONLY_PREFIXES = ("gpt-5-chat",)  # in the family by name, but takes the ordinary request
+_NO_EFFORT_PREFIXES = ("o1-mini",)  # reasons, and refuses ``reasoning_effort``
+
+
+def _is_reasoning_model(model: str) -> bool:
+    return model.startswith(_REASONING_PREFIXES) and not model.startswith(_CHAT_ONLY_PREFIXES)
+
+
+def _translate_thinking_config(extras: dict[str, Any], model: str) -> None:
+    """Replace a ``ThinkingConfig`` extra with the ``reasoning_effort`` of its ``level``."""
+    cfg = extras.pop("thinking_config", None)
+    level = getattr(cfg, "level", None) if getattr(cfg, "enabled", False) else None
+    takes_effort = _is_reasoning_model(model) and not model.startswith(_NO_EFFORT_PREFIXES)
+    if level is not None and takes_effort:
+        extras["reasoning_effort"] = level
+
+
+def _add_sampling(
+    payload: dict[str, Any], model: str, temperature: float | None, max_tokens: int | None
+) -> None:
+    """Add the limits a model takes: reasoning models refuse ``temperature`` and ``max_tokens``."""
+    reasoning = _is_reasoning_model(model)
+    if temperature is not None and not reasoning:
+        payload["temperature"] = temperature
+    if max_tokens is not None:
+        payload["max_completion_tokens" if reasoning else "max_tokens"] = max_tokens
 
 
 def _usage(usage_data: dict[str, Any]) -> TokenUsage:
@@ -122,6 +158,9 @@ class OpenAIProvider(BaseProvider):
         name the API rejects surfaces as a request-time 400 rather than
         being silently stripped here.
         """
+        from agentloom.steps._tools import wire_seeded_tool_turns
+
+        messages = wire_seeded_tool_turns("openai", messages)
         formatted: list[dict[str, Any]] = []
         for msg in messages:
             # Tool-loop messages already use the OpenAI wire shape: pass them through verbatim.
@@ -183,7 +222,7 @@ class OpenAIProvider(BaseProvider):
         agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
         agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs(self.name, "complete", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
-        extras.pop("thinking_config", None)
+        _translate_thinking_config(extras, model)
         if agentloom_response_schema is not None:
             from agentloom.steps._structured import translate_for_openai
 
@@ -209,10 +248,7 @@ class OpenAIProvider(BaseProvider):
             "messages": self._format_messages(messages),
             **extras,
         }
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+        _add_sampling(payload, model, temperature, max_tokens)
 
         try:
             response = await self._client.post("/chat/completions", json=payload)
@@ -221,7 +257,7 @@ class OpenAIProvider(BaseProvider):
 
         raise_for_status(self.name, response)
 
-        data = response.json()
+        data = json_body(self.name, response)
         message = data["choices"][0]["message"]
         content = message.get("content") or ""
         usage = _usage(data.get("usage") or {})  # null from some compatible servers
@@ -267,7 +303,7 @@ class OpenAIProvider(BaseProvider):
         agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
         agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs(self.name, "stream", kwargs, _OPENAI_EXTRA_PAYLOAD_KEYS)
-        extras.pop("thinking_config", None)
+        _translate_thinking_config(extras, model)
         if agentloom_response_schema is not None:
             from agentloom.steps._structured import translate_for_openai
 
@@ -294,10 +330,7 @@ class OpenAIProvider(BaseProvider):
             "stream_options": {"include_usage": True},
             **extras,
         }
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+        _add_sampling(payload, model, temperature, max_tokens)
 
         sr = StreamResponse(model=model, provider=self.name)
 
@@ -343,7 +376,7 @@ class OpenAIProvider(BaseProvider):
                             reasoning_tokens=sr.usage.reasoning_tokens,
                         )
 
-        sr._set_iterator(_generate())
+        sr._set_iterator(wrap_stream_errors(self.name, _generate()))
         return sr
 
     # Model-name prefixes this adapter serves; any match counts, so order does not matter.
@@ -391,7 +424,7 @@ class OpenAIProvider(BaseProvider):
             except httpx.HTTPError as e:
                 raise ProviderError(self.name, format_http_error(e)) from e
             raise_for_status(self.name, response)
-            data = response.json()
+            data = json_body(self.name, response)
             # Sort by ``index`` so vectors stay aligned with inputs whatever order the API uses.
             for entry in sorted(data.get("data", []), key=lambda x: x.get("index", 0)):
                 all_vectors.append(entry["embedding"])

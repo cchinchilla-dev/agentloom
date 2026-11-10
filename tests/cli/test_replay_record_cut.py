@@ -43,6 +43,19 @@ def test_a_cut_records_a_workflow_that_declares_mock(tmp_path: Path) -> None:
     assert _load(out)["b"]["content"] == "v2-b"
 
 
+def test_a_cut_keeps_merging_into_an_existing_file(tmp_path: Path) -> None:
+    workflow, recording = _recorded(tmp_path)
+    out = tmp_path / "out.json"
+    out.write_text(json.dumps({"_version": 2, "kept": {"content": "from another cut"}}))
+
+    result = _replay(tmp_path, workflow, recording, "--live-from", "b", "--record", str(out))
+
+    assert result.exit_code == 0, result.output
+    recorded = _load(out)
+    assert recorded["kept"]["content"] == "from another cut"
+    assert recorded["b"]["content"] == "v2-b"
+
+
 def test_record_never_writes_the_source_recording(tmp_path: Path) -> None:
     workflow, recording = _recorded(tmp_path)
     before = recording.read_bytes()
@@ -53,7 +66,7 @@ def test_record_never_writes_the_source_recording(tmp_path: Path) -> None:
         result = _replay(
             tmp_path, workflow, recording, "--force-live", "a", "--record", str(target)
         )
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "--record must name another file" in result.output
     out = tmp_path / "out.json"
     result = _replay(tmp_path, workflow, recording, "--force-live", "a", "--record", str(out))
@@ -79,11 +92,11 @@ def test_record_needs_a_cut_and_record_tools_needs_record(tmp_path: Path) -> Non
     workflow, recording = _recorded(tmp_path)
 
     result = _replay(tmp_path, workflow, recording, "--record", str(tmp_path / "out.json"))
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--record needs --live-from or --force-live" in result.output
 
     result = _replay(tmp_path, workflow, recording, "--force-live", "a", "--record-tools")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--record-tools needs --record" in result.output
 
 

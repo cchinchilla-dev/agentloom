@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import contextlib
 import ipaddress
+import os
 import re
 import shlex
+import shutil
 import socket
 import urllib.request
 from collections.abc import Sequence
@@ -25,6 +27,13 @@ from agentloom.exceptions import SandboxViolationError
 # Shell operators that chain, redirect or substitute, matched on the raw string before shlex
 # (which keeps them as literal tokens); \n and \r separate commands under sh -c
 _SHELL_OPERATOR_RE = re.compile(r"[|;&`\n\r]|\$\(|<\(|>\(|[<>]")
+
+# sh expands these after the check, so a path could leave the lists; bash as sh expands {a,b} too
+# A ``~`` counts only where sh expands it: inside a word it is a Windows short name (RUNNER~1)
+_SHELL_EXPANSION_RE = re.compile(r"[$*?\[]|(?:^|[\s=:'\"])~|\{[^{}]*(?:,|\.\.)[^{}]*\}")
+
+# All a sandboxed command gets: the rest of the environment holds provider keys
+_COMMAND_ENV_VARS = ("PATH", "HOME", "LANG", "LC_ALL", "TZ")
 
 # Run arbitrary code from their arguments: refused even when allowlisted, unless in danger_opt_in
 _DANGEROUS_EXECUTABLES = frozenset(
@@ -49,6 +58,7 @@ _DANGEROUS_EXECUTABLES = frozenset(
         "source",
         ".",
         "exec",
+        "find",
         "nc",
         "ncat",
         "socat",
@@ -265,9 +275,10 @@ def _extract_path_candidates(token: str) -> list[str]:
         _, _, value = token.partition("=")
         if value and (value in (".", "..") or "/" in value):
             return [value]
-        return []
     if token.startswith("-"):
-        return []
+        # A short flag's value can follow it directly: ``grep -f/etc/shadow``
+        attached = re.search(r"\.{0,2}/", token)
+        return [token[attached.start() :]] if attached else []
     if token in (".", ".."):
         return [token]
     if "/" in token:
@@ -313,6 +324,8 @@ class ToolSandbox:
             working directory at validation time.
         allow_internal_webhook_targets: Let webhook destinations reach
             internal hosts (see ``validate_webhook_url``).
+        deny_internal_hosts: Refuse internal hosts in ``validate_network``
+            even when *allowed_domains* lists them.
     """
 
     def __init__(
@@ -330,6 +343,7 @@ class ToolSandbox:
         danger_opt_in: list[str] | None = None,
         command_cwd: str | None = None,
         allow_internal_webhook_targets: bool = False,
+        deny_internal_hosts: bool = False,
     ) -> None:
         self.enabled = enabled
         self._allowed_commands = set(allowed_commands or [])
@@ -347,6 +361,7 @@ class ToolSandbox:
         self._danger_opt_in = {e.lower() for e in (danger_opt_in or [])}
         self._command_cwd = Path(command_cwd).resolve() if command_cwd else None
         self.allow_internal_webhook_targets = allow_internal_webhook_targets
+        self._deny_internal_hosts = deny_internal_hosts
 
     def _paths_for_read(self) -> list[Path]:
         return self._allowed_paths + self._readable_paths
@@ -372,11 +387,13 @@ class ToolSandbox:
         """Validate a shell command against the allowlist.
 
         Blocks shell operators (``|``, ``;``, ``&``, `` ` ``, ``$()``,
-        redirections, process substitution), rejects dangerous meta-executables
-        (``env``, ``bash``, ``python -c`` …) unless explicitly opted in,
-        checks the executable against the allowlist, and resolves every
-        path-shaped argument (absolute or relative to *cwd*) against allowed
-        directories.
+        redirections, process substitution) and anything the shell would
+        expand (``$``, ``~``, globs, brace lists), quoted or not; rejects
+        dangerous meta-executables (``env``, ``bash``, ``python -c`` …) unless
+        explicitly opted in, checks the executable against the allowlist (a
+        path must be what the allowlisted name resolves to), and resolves
+        every path-shaped argument (absolute or relative to *cwd*) against
+        allowed directories.
 
         Raises:
             SandboxViolationError: If the command is not allowed.
@@ -388,6 +405,12 @@ class ToolSandbox:
             raise SandboxViolationError(
                 "shell_command",
                 f"Shell operators are not allowed in sandboxed commands: {command!r}",
+            )
+
+        if _SHELL_EXPANSION_RE.search(command):
+            raise SandboxViolationError(
+                "shell_command",
+                f"Shell expansion is not allowed in sandboxed commands: {command!r}",
             )
 
         try:
@@ -407,6 +430,17 @@ class ToolSandbox:
                 f"Allowed: {sorted(self._allowed_commands) or '(none)'}",
             )
 
+        base = self._command_cwd or (Path(cwd).resolve() if cwd else Path.cwd())
+
+        if tokens[0] != executable:
+            found = shutil.which(executable)
+            if found is None or (base / tokens[0]).resolve() != Path(found).resolve():
+                raise SandboxViolationError(
+                    "shell_command",
+                    f"Command {tokens[0]!r} is not what {executable!r} resolves to: "
+                    f"{found or '(not found)'}",
+                )
+
         if (
             executable.lower() in _DANGEROUS_EXECUTABLES
             and executable.lower() not in self._danger_opt_in
@@ -421,9 +455,12 @@ class ToolSandbox:
 
         all_paths = self._all_paths()
         if all_paths:
-            base = self._command_cwd or (Path(cwd).resolve() if cwd else Path.cwd())
             for token in tokens[1:]:
-                for candidate_str in _extract_path_candidates(token):
+                # A bare name has no path shape, but a link of that name can point anywhere
+                links = [
+                    n for n in (token, token.partition("=")[2]) if n and os.path.islink(base / n)
+                ]
+                for candidate_str in _extract_path_candidates(token) or links:
                     candidate = Path(candidate_str)
                     resolved = (
                         candidate if candidate.is_absolute() else base / candidate
@@ -433,6 +470,12 @@ class ToolSandbox:
                             "shell_command",
                             f"Path argument {str(resolved)!r} not within allowed directories",
                         )
+
+    def command_env(self) -> dict[str, str] | None:
+        """The environment for a shell command: the minimal set, or ``None`` to inherit it all."""
+        if not self.enabled:
+            return None
+        return {name: os.environ[name] for name in _COMMAND_ENV_VARS if name in os.environ}
 
     def validate_path(self, path: str, *, writable: bool = False, tool_name: str = "file") -> None:
         """Validate a file path is within allowed directories.
@@ -484,7 +527,8 @@ class ToolSandbox:
         is non-empty, the request domain must be in the allowlist; when
         it is empty, a host that resolves to an internal address
         (loopback, link-local, RFC 1918), or does not resolve, is
-        refused, so naming it in *allowed_domains* is the way to reach it.
+        refused, so naming it in *allowed_domains* is the way to reach it,
+        unless *deny_internal_hosts* is set.
 
         Returns:
             The addresses the internal-host check resolved the host to,
@@ -497,15 +541,18 @@ class ToolSandbox:
             return ()
 
         self._validate_scheme_and_domain(url)
-        if self._allowed_domains:
+        if self._allowed_domains and not self._deny_internal_hosts:
             return ()
         hostname = (urlparse(url).hostname or "").lower()
         internal, addresses = _check_host(hostname)
         if internal:
+            advice = (
+                "the sandbox refuses internal hosts, listed or not"
+                if self._deny_internal_hosts
+                else "list it in sandbox.allowed_domains to allow it"
+            )
             raise SandboxViolationError(
-                "http_request",
-                f"Host {hostname!r} resolves to an internal address; "
-                f"list it in sandbox.allowed_domains to allow it",
+                "http_request", f"Host {hostname!r} resolves to an internal address; {advice}"
             )
         if not addresses:
             raise SandboxViolationError("http_request", _unresolved(hostname))

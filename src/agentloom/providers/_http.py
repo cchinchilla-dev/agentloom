@@ -7,12 +7,12 @@ caller-supplied payload key.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import AsyncIterator
+from typing import Any
+
+import httpx
 
 from agentloom.exceptions import ProviderError, RateLimitError
-
-if TYPE_CHECKING:
-    import httpx
 
 # Bookkeeping kwargs a caller may pass to any adapter: ignored, neither rejected nor sent.
 _PASSTHROUGH_KWARGS = frozenset({"step_id"})
@@ -66,6 +66,23 @@ def raise_for_status(provider: str, response: httpx.Response) -> None:
             f"API error {response.status_code}: {response.text}",
             status_code=response.status_code,
         )
+
+
+def json_body(provider: str, response: httpx.Response) -> Any:
+    """The parsed body of a successful response; a body that isn't JSON is a ``ProviderError``."""
+    try:
+        return response.json()
+    except ValueError as e:  # also what a body that isn't valid UTF-8 raises
+        raise ProviderError(provider, f"response is not valid JSON: {response.text[:200]}") from e
+
+
+async def wrap_stream_errors(provider: str, chunks: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Yield *chunks*, a network failure as the ``ProviderError`` a non-streamed call gets."""
+    try:
+        async for chunk in chunks:
+            yield chunk
+    except httpx.HTTPError as e:
+        raise ProviderError(provider, format_http_error(e)) from e
 
 
 def validate_extra_kwargs(

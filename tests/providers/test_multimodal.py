@@ -11,6 +11,7 @@ import pytest
 import respx
 
 from agentloom.core.models import Attachment, SandboxConfig
+from agentloom.exceptions import AttachmentResolutionError
 from agentloom.providers.multimodal import (
     AudioBlock,
     ContentBlock,
@@ -247,6 +248,15 @@ class TestSandboxRestrictions:
         with pytest.raises(PermissionError, match="readable_paths"):
             await resolve_attachments([att], sandbox=sandbox)
 
+    async def test_file_path_that_is_no_link_names_one_path(self, tmp_path) -> None:
+        path = (tmp_path / "a.png").resolve()
+        path.write_bytes(_TINY_PNG)
+        sandbox = SandboxConfig(enabled=True, readable_paths=["/other/dir"])
+        att = Attachment(type="image", source=str(path))
+        with pytest.raises(PermissionError, match="not within sandbox") as refused:
+            await resolve_attachments([att], sandbox=sandbox)
+        assert "resolves to" not in str(refused.value)
+
     async def test_file_path_allowed_by_sandbox(self, tmp_path) -> None:
         path = tmp_path / "image.png"
         path.write_bytes(_TINY_PNG)
@@ -254,6 +264,23 @@ class TestSandboxRestrictions:
         sandbox = SandboxConfig(enabled=True, readable_paths=[str(tmp_path)])
         att = Attachment(type="image", source=str(path))
         blocks = await resolve_attachments([att], sandbox=sandbox)
+        assert isinstance(blocks[0], ImageBlock)
+
+    @pytest.mark.parametrize("listed", ["allowed", "readable"])
+    async def test_both_path_lists_admit_a_file(self, tmp_path, listed: str) -> None:
+        path = tmp_path / "image.png"
+        path.write_bytes(_TINY_PNG)
+
+        other = str(tmp_path / "other")
+        lists = (
+            {"allowed_paths": [str(tmp_path)], "readable_paths": [other]}
+            if listed == "allowed"
+            else {"allowed_paths": [other], "readable_paths": [str(tmp_path)]}
+        )
+        blocks = await resolve_attachments(
+            [Attachment(type="image", source=str(path))],
+            sandbox=SandboxConfig(enabled=True, **lists),
+        )
         assert isinstance(blocks[0], ImageBlock)
 
     async def test_file_path_blocked_when_sandbox_lists_no_paths(self, tmp_path) -> None:
@@ -264,6 +291,66 @@ class TestSandboxRestrictions:
         att = Attachment(type="image", source=str(path))
         with pytest.raises(PermissionError, match="lists no readable_paths or allowed_paths"):
             await resolve_attachments([att], sandbox=sandbox)
+
+
+class TestRawBase64SizeLimit:
+    async def test_over_the_limit_is_refused(self, monkeypatch: Any) -> None:
+        monkeypatch.setattr("agentloom.providers.multimodal.MAX_ATTACHMENT_BYTES", 16)
+        att = Attachment(type="image", source=base64.b64encode(_TINY_PNG).decode("ascii"))
+        with pytest.raises(AttachmentResolutionError, match="exceeds limit"):
+            await resolve_attachments([att])
+
+    async def test_within_the_limit_is_sent_as_it_is(self) -> None:
+        raw_b64 = base64.b64encode(_TINY_PNG).decode("ascii")
+        blocks = await resolve_attachments([Attachment(type="image", source=raw_b64)])
+        assert isinstance(blocks[0], ImageBlock)
+        assert blocks[0].data == raw_b64
+
+
+class TestMediaTypeAgainstType:
+    _RAW = base64.b64encode(_TINY_PNG).decode("ascii")
+
+    @pytest.mark.parametrize(
+        ("attachment_type", "media_type"),
+        [
+            ("image", "application/pdf"),
+            ("image", "text/plain"),
+            ("pdf", "image/png"),
+            ("audio", "image/png"),
+        ],
+    )
+    async def test_contradiction_is_refused(self, attachment_type: Any, media_type: str) -> None:
+        att = Attachment(type=attachment_type, source=self._RAW, media_type=media_type)
+        with pytest.raises(AttachmentResolutionError, match="does not match type"):
+            await resolve_attachments([att])
+
+    @pytest.mark.parametrize(
+        ("attachment_type", "media_type"),
+        [("image", "image/jpeg"), ("image", "IMAGE/PNG"), ("pdf", "application/pdf")]
+        + [("audio", "audio/mpeg")],
+    )
+    async def test_match_is_accepted(self, attachment_type: Any, media_type: str) -> None:
+        att = Attachment(type=attachment_type, source=self._RAW, media_type=media_type)
+        assert len(await resolve_attachments([att])) == 1
+
+    @respx.mock
+    async def test_refused_before_fetching(self, public_dns: str) -> None:
+        route = respx.get(f"https://{public_dns}/a.png").mock(
+            return_value=httpx.Response(200, content=_TINY_PNG)
+        )
+        att = Attachment(
+            type="image", source=f"https://{public_dns}/a.png", media_type="application/pdf"
+        )
+        with pytest.raises(AttachmentResolutionError, match="does not match type"):
+            await resolve_attachments([att])
+        assert not route.called
+
+    async def test_a_guessed_type_is_not_checked(self, tmp_path) -> None:
+        # Only the field the author set can contradict ``type``
+        path = tmp_path / "scan.bin"
+        path.write_bytes(_TINY_PNG)
+        blocks = await resolve_attachments([Attachment(type="image", source=str(path))])
+        assert isinstance(blocks[0], ImageBlock)
 
 
 class TestSSRFProtection:

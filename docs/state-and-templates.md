@@ -51,7 +51,7 @@ A step's `output` names the key its result goes to, written when the step succee
 - `items[0]` and `items[0].name` write into a list item that already exists. Lists never grow: an index past the end fails the step.
 - A path can't go through a value that isn't a dictionary: writing `user.name` when `user` is the string `"alice"` fails the step instead of replacing the string.
 
-Each step reads a copy of the state taken when it starts, so steps in the same layer don't see each other's writes; the next layer sees all of them. See [Dependencies and layers](concepts.md#dependencies-and-layers).
+Each step reads a copy of the state taken when its layer starts, so steps in the same layer don't see each other's writes; the next layer sees all of them. See [Dependencies and layers](concepts.md#dependencies-and-layers).
 
 ### Keys AgentLoom writes
 
@@ -71,7 +71,7 @@ Templates put state values into text. They are rendered in:
 - the string values of `tool_args`, with [narrower rules](#templates-in-tool_args);
 - the `body_template` of an approval gate's webhook.
 
-Other fields that name state are paths, not templates: a router's `expression`, an embed step's `inputs`, a `conversation`. A subworkflow's `input` values are copied as written.
+Other fields that name state are paths, not templates: a router's `expression`, an embed step's `inputs`, a `conversation`. A subworkflow's `input` values are rendered like a tool step's `tool_args`.
 
 | Template | Renders |
 |----------|---------|
@@ -109,9 +109,9 @@ tool_args:
 ```
 
 - **A whole value.** A string that starts with `state.`, such as `items: state.items`, passes the value itself, a list or a dictionary, not its text. If the key doesn't exist, the step fails without a retry.
-- **Only top-level values.** A string inside a nested mapping or list, such as `headers: {Authorization: "Bearer {state.token}"}`, is passed as written, without rendering.
+- **At any depth.** A string inside a nested mapping or list, such as `headers: {Authorization: "Bearer {state.token}"}`, follows these same rules.
 - **Mixed strings.** A string with a placeholder and literal braces, such as `'{"user": "{state.user}"}'`, is rendered as a whole and fails on the literal braces. Write those braces twice: `'{{"user": "{state.user}"}}'`.
-- **A literal that looks like a placeholder.** `{value: "...", template: false}` passes `value` as written:
+- **A literal that looks like a placeholder.** `{value: "...", template: false}`, with no other keys, passes `value` as written:
 
 ```yaml
 tool_args:
@@ -152,7 +152,7 @@ In the workflow definition and the step results, patterns match the workflow's o
 The state in memory stays plain, so a step that needs the secret, such as a tool call with `{state.api_key}`, still gets it. A subworkflow inherits its parent's patterns.
 
 > [!WARNING]
-> A run resumed from a checkpoint gets the redacted value, not the original: steps after the pause that read the key receive `<REDACTED:sha256=…>`, and `agentloom resume` logs a warning that names the key. Redact only keys that no step after an approval gate needs.
+> A run resumed from a checkpoint gets the redacted value, not the original: steps after the pause that read the key receive `<REDACTED:sha256=…>`, and `agentloom resume` logs a warning that names the key. `agentloom resume --state key=value` puts the value back; without it, redact only keys that no step after an approval gate needs.
 
 ## What's next
 

@@ -138,6 +138,50 @@ class TestResponseSchemaModel:
                 schema_={"type": "object", "additionalProperties": True},
             )
 
+    @pytest.mark.parametrize(
+        ("schema", "where"),
+        [
+            (
+                {"type": "object", "properties": {"a": {"additionalProperties": True}}},
+                "properties.a",
+            ),
+            ({"type": "array", "items": {"additionalProperties": True}}, "items"),
+            ({"$defs": {"d": {"additionalProperties": True}}}, r"\$defs.d"),
+            ({"definitions": {"d": {"additionalProperties": True}}}, "definitions.d"),
+            ({"anyOf": [{}, {"additionalProperties": True}]}, r"anyOf\[1\]"),
+            ({"additionalProperties": {"additionalProperties": True}}, "additionalProperties"),
+            (
+                {
+                    "properties": {
+                        "a": {"items": {"properties": {"b": {"additionalProperties": True}}}}
+                    }
+                },
+                "properties.a.items.properties.b",
+            ),
+        ],
+    )
+    def test_additionalproperties_true_rejected_at_any_depth(
+        self, schema: dict[str, Any], where: str
+    ) -> None:
+        with pytest.raises(ValidationError, match=f"additionalProperties: true.*{where}"):
+            ResponseSchema(type="json_schema", schema_=schema)
+
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            {"type": "object", "properties": {"a": {"additionalProperties": False}}},
+            {"type": "object", "additionalProperties": {"type": "string"}},
+            {"type": "string", "const": {"additionalProperties": True}},
+            {"type": "object", "default": {"additionalProperties": True}},
+            {"enum": [{"additionalProperties": True}]},
+            {"properties": {"additionalProperties": {"type": "boolean"}}},
+        ],
+    )
+    def test_additionalproperties_is_only_read_where_it_is_the_keyword(
+        self, schema: dict[str, Any]
+    ) -> None:
+        assert ResponseSchema(type="json_schema", schema_=schema).schema_ == schema
+
 
 class TestSchemaTranslators:
     """Provider-agnostic translation helpers."""

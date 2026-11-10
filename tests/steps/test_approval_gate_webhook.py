@@ -40,6 +40,39 @@ def _context(
 class TestApprovalGateWebhook:
     @respx.mock
     @pytest.mark.anyio()
+    async def test_callback_base_url_puts_the_decision_links_in_the_body(
+        self, public_dns: str
+    ) -> None:
+        route = respx.post(f"https://{public_dns}/notify").mock(return_value=httpx.Response(200))
+        step = _gate_step(
+            notify=WebhookConfig(
+                url="https://hooks.example.com/notify",
+                callback_base_url="https://callbacks.example.com/",
+            )
+        )
+
+        with pytest.raises(PauseRequestedError):
+            await ApprovalGateStep().execute(_context(step))
+
+        body = json.loads(route.calls[0].request.content)
+        assert body["approve_url"] == "https://callbacks.example.com/approve/run-42"
+        assert body["reject_url"] == "https://callbacks.example.com/reject/run-42"
+
+    @respx.mock
+    @pytest.mark.anyio()
+    async def test_without_callback_base_url_the_body_has_no_links(self, public_dns: str) -> None:
+        route = respx.post(f"https://{public_dns}/notify").mock(return_value=httpx.Response(200))
+        step = _gate_step(notify=WebhookConfig(url="https://hooks.example.com/notify"))
+
+        with pytest.raises(PauseRequestedError):
+            await ApprovalGateStep().execute(_context(step))
+
+        body = json.loads(route.calls[0].request.content)
+        assert "approve_url" not in body
+        assert "reject_url" not in body
+
+    @respx.mock
+    @pytest.mark.anyio()
     async def test_sends_webhook_on_pause(self, public_dns: str) -> None:
         route = respx.post(f"https://{public_dns}/notify").mock(return_value=httpx.Response(200))
         step = _gate_step(notify=WebhookConfig(url="https://hooks.example.com/notify"))
@@ -93,6 +126,28 @@ class TestApprovalGateWebhook:
             await ApprovalGateStep().execute(ctx)
 
         observer.on_approval_gate.assert_called_once_with("approve_draft", "review-wf", "pending")
+
+    @pytest.mark.anyio()
+    async def test_a_hook_that_raises_leaves_the_pause_alone(self) -> None:
+        observer = MagicMock()
+        observer.on_approval_gate.side_effect = RuntimeError("hook bug")
+
+        with pytest.raises(PauseRequestedError):
+            await ApprovalGateStep().execute(_context(_gate_step(notify=None), observer=observer))
+
+    @pytest.mark.anyio()
+    async def test_a_hook_that_raises_leaves_the_decision_alone(self) -> None:
+        observer = MagicMock()
+        observer.on_approval_gate.side_effect = RuntimeError("hook bug")
+        ctx = _context(
+            _gate_step(notify=None),
+            state={"_approval": {"approve_draft": "approved"}},
+            observer=observer,
+        )
+
+        result = await ApprovalGateStep().execute(ctx)
+
+        assert result.output == "approved"
 
     @pytest.mark.anyio()
     async def test_observer_notified_on_resume(self) -> None:

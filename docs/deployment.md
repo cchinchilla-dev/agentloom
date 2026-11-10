@@ -27,7 +27,7 @@ The image's entrypoint is `agentloom`, and its working directory, `/workflows`, 
 
 Both production images run as the user `agentloom` (UID 1000), on `python:3.14-slim`, and have no pip: an image built `FROM` them that installs packages brings its own installer, such as `uv` (`COPY --from=ghcr.io/astral-sh/uv`). They expose no port and set `OTEL_EXPORTER_OTLP_ENDPOINT` to `http://otel-collector:4317`.
 
-- **Your own workflows** go in a mount below `/workflows`, such as `-v ./workflows:/workflows/custom:ro` and `run custom/report.yaml`. A mount over `/workflows` itself hides the bundled recordings, and the mock examples then answer `Mock response`. Paths in a workflow, such as `responses_file`, a subworkflow or an agent file, are relative to `/workflows`.
+- **Your own workflows** go in a mount below `/workflows`, such as `-v ./workflows:/workflows/custom:ro` and `run custom/report.yaml`. A mount over `/workflows` itself hides the bundled recordings, and the mock examples then stop with an error. Paths in a workflow, such as `responses_file`, a subworkflow or an agent file, are relative to `/workflows`.
 - **Files a run writes** need a writable directory, and `/workflows` belongs to root. Without one, the run history is lost without a warning, and `--checkpoint` logs that it can't save, so a run paused at an approval gate can't be resumed. Mount a volume the UID 1000 user can write, and point `AGENTLOOM_RUNS_DIR` and `--checkpoint-dir` at it.
 - **Ollama on the host** isn't at `localhost` from inside the container: set `OLLAMA_BASE_URL`, as the Compose file does with `http://host.docker.internal:11434`.
 
@@ -205,6 +205,7 @@ kubectl apply -f deploy/argocd/application.yaml
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Where traces and metrics go, over gRPC. Without the `observability` extra, or with `--lite`, nothing is sent. |
 | `AGENTLOOM_RUNS_DIR` | Where run history records go; `./agentloom_runs` by default. |
 | `AGENTLOOM_REDACT_STATE_KEYS` | State keys to mask in checkpoints and results. See [Redaction](state-and-templates.md#redaction). |
+| `AGENTLOOM_LOG_LEVEL`, `AGENTLOOM_LOG_FORMAT` | The level and format of the CLI's logs, on stderr. See [Logs](observability.md#logs). |
 
 [Providers](providers.md#environment-variables) lists every variable AgentLoom reads. In Kubernetes, the provider keys come from a Secret, and the other variables are set in the pod spec.
 

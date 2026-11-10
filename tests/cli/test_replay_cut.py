@@ -93,7 +93,7 @@ def test_unknown_cut_step_is_refused(tmp_path: Path) -> None:
     workflow, recording = _recorded(tmp_path)
     result = _replay(tmp_path, workflow, recording, "--live-from", "x")
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "No step 'x' in workflow 'cut-cli'" in result.output
 
 
@@ -101,7 +101,7 @@ def test_default_fallback_does_not_combine_with_a_cut(tmp_path: Path) -> None:
     workflow, recording = _recorded(tmp_path)
     result = _replay(tmp_path, workflow, recording, "--force-live", "a", "--allow-default-fallback")
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--allow-default-fallback does not combine" in result.output
 
 
@@ -127,3 +127,44 @@ def test_a_forced_step_runs_its_tools_live(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     page.assert_awaited_once()  # served from the recording, it would not have run
     assert "  ask #2: live (forced)" in result.output
+
+
+def _no_providers() -> Any:
+    """No key set, so the workflow's providers register nothing."""
+    return patch("agentloom.cli.run._setup_providers")
+
+
+def test_a_replayed_step_needs_no_provider(tmp_path: Path) -> None:
+    workflow, recording = _recorded(tmp_path)
+    argv = ["replay", str(workflow), "-r", str(recording), "--live-from", "b", "--json"]
+    with _no_providers():
+        result = runner.invoke(app, argv)
+
+    assert result.exit_code == 1  # b has no provider to run live on
+    data = json.loads(result.output[result.output.index("{") :])
+    assert data["final_state"]["a"] == "v1-a"
+    assert data["step_results"]["a"]["status"] == "success"
+    assert data["calls"] == [
+        {"step_id": "a", "call": 1, "source": "replay", "reason": "hit"},
+        {"step_id": "b", "call": 1, "source": "live", "reason": "forced"},
+    ]
+    assert "no provider is set up for model 'gpt-4o-mini'" in data["step_results"]["b"]["error"]
+
+
+def test_a_cut_with_no_provider_can_still_record_what_it_replayed(tmp_path: Path) -> None:
+    workflow, recording = _recorded(tmp_path)
+    out = tmp_path / "out.json"
+    argv = [
+        "replay",
+        str(workflow),
+        "-r",
+        str(recording),
+        "--force-live",
+        "b",
+        "--record",
+        str(out),
+    ]
+    with _no_providers():
+        runner.invoke(app, argv)
+
+    assert json.loads(out.read_text())["a"]["content"] == "v1-a"

@@ -16,7 +16,9 @@ from agentloom.core.models import (
     Message,
     ResponseSchema,
     StepDefinition,
+    ToolChoiceByName,
 )
+from agentloom.core.protocols import call_hook
 from agentloom.core.results import PromptMetadata, StepResult, StepStatus, TokenUsage
 from agentloom.core.templates import SafeFormatDict, build_template_vars
 from agentloom.exceptions import RecordingMismatchError, StepError
@@ -172,7 +174,7 @@ class LLMCallStep(BaseStep):
                 provider_kwargs["agentloom_tool_choice"] = "required"
         # max_tool_iterations >= 1 is validated on the model, so the loop always assigns response
         response: ProviderResponse | None = None
-        for _ in range(step.max_tool_iterations):
+        for iteration in range(step.max_tool_iterations):
             response = await gateway.complete(
                 messages=messages,
                 model=model,
@@ -219,6 +221,10 @@ class LLMCallStep(BaseStep):
             elif not response.tool_calls or not step.tools:
                 return _with_totals(response)
 
+            # No model call follows to read what these tools return, unless a reply depends on it
+            if iteration == step.max_tool_iterations - 1 and not replied:
+                break
+
             # Output-tool calls are not dispatched; the others run, next to a reply too.
             pending = [
                 c for c in response.tool_calls if output_schema is None or c.name != OUTPUT_TOOL
@@ -262,6 +268,10 @@ class LLMCallStep(BaseStep):
                 )
             )
             messages.extend(build_tool_result_messages(response.provider, results))
+            # Kept forced, the model could never answer; the output tool is its only way to reply
+            choice = provider_kwargs.get("agentloom_tool_choice")
+            if output_schema is None and (choice == "required" or isinstance(choice, dict)):
+                provider_kwargs = {**provider_kwargs, "agentloom_tool_choice": "auto"}
 
         # Cap reached: surface the last response, the cap as its finish_reason
         assert response is not None
@@ -272,10 +282,11 @@ class LLMCallStep(BaseStep):
                 is_retryable=False,
             )
         _with_totals(response)
-        # Empty at the cap with tool_choice required: never answered, unlike a normal cap hit
-        if step.tool_choice == "required" and not (response.content or "").strip():
+        # Empty at the cap with a forced tool_choice: never answered, unlike a normal cap hit
+        forced = step.tool_choice == "required" or isinstance(step.tool_choice, ToolChoiceByName)
+        if forced and not (response.content or "").strip():
             logger.warning(
-                "Step %r: tool_choice='required' hit the %d-iteration cap with an "
+                "Step %r: a forced tool_choice hit the %d-iteration cap with an "
                 "empty final response — the model never produced an answer. Raise "
                 "max_tool_iterations or relax tool_choice.",
                 step.id,
@@ -374,15 +385,14 @@ class LLMCallStep(BaseStep):
         observer = context.observer
         if observer is None:
             return
-        attach = getattr(observer, "attach_step_event", None)
-        if callable(attach):
+        if callable(getattr(observer, "attach_step_event", None)):
             attrs: dict[str, Any] = {
                 SpanAttr.CONVERSATION_TURN_COUNT: len(conversation.messages),
                 SpanAttr.CONVERSATION_TOKEN_COUNT: conversation.token_count(response_model),
             }
             if trim_result is not None:
                 attrs[SpanAttr.CONVERSATION_TRIMMED_MESSAGES] = trim_result.trimmed_count
-            attach(step.id, SpanAttr.CONVERSATION_EVENT, attrs)
+            call_hook(observer, "attach_step_event", step.id, SpanAttr.CONVERSATION_EVENT, attrs)
         on_conv = getattr(observer, "on_conversation_turn", None)
         if callable(on_conv):
             try:
@@ -460,6 +470,12 @@ class LLMCallStep(BaseStep):
         if cfg is None or not cfg.enabled:
             return {}
         return {"thinking_config": cfg}
+
+    @staticmethod
+    def _kept_reasoning(step: StepDefinition, response: ProviderResponse) -> str | None:
+        """The reasoning text for the step's result, when its ``thinking`` block asks for it."""
+        cfg = step.thinking
+        return response.reasoning_content if cfg and cfg.enabled and cfg.capture_reasoning else None
 
     @staticmethod
     async def _validate_structured_output(
@@ -567,10 +583,6 @@ class LLMCallStep(BaseStep):
         step = context.step_definition
         start = time.monotonic()
 
-        # A conversation-backed call may omit prompt: its user turn is already in the history
-        if not step.prompt and not step.conversation:
-            raise StepError(step.id, "LLM call step requires a 'prompt' field", is_retryable=False)
-
         model = step.model or context.workflow_model
         state_snapshot = await context.state_manager.get_state_snapshot()
 
@@ -589,8 +601,7 @@ class LLMCallStep(BaseStep):
 
         # Opt-in (capture_prompts); re-rendered on redacted state so secrets never reach traces
         if context.capture_prompts and context.observer is not None:
-            attach = getattr(context.observer, "attach_step_event", None)
-            if callable(attach):
+            if callable(getattr(context.observer, "attach_step_event", None)):
                 captured_prompt = rendered_prompt
                 captured_system = rendered_system or ""
                 if context.redaction_policy:
@@ -608,7 +619,9 @@ class LLMCallStep(BaseStep):
                     except (KeyError, ValueError):  # pragma: no cover — already validated
                         captured_prompt = rendered_prompt
                         captured_system = rendered_system or ""
-                attach(
+                call_hook(
+                    context.observer,
+                    "attach_step_event",
                     step.id,
                     SpanAttr.PROMPT_CAPTURED_EVENT,
                     {
@@ -750,9 +763,11 @@ class LLMCallStep(BaseStep):
 
         provider_kwargs = self._build_thinking_kwargs(step)
         if step.tools:
-            from agentloom.core.models import ToolChoiceByName
+            from agentloom.steps._tools import fill_tool_parameters
 
-            provider_kwargs["agentloom_tools"] = step.tools
+            provider_kwargs["agentloom_tools"] = fill_tool_parameters(
+                step.tools, context.tool_registry
+            )
             # Typed tool_choice to the dict form the provider translators expect
             choice: Any = step.tool_choice
             if isinstance(choice, ToolChoiceByName):
@@ -846,6 +861,7 @@ class LLMCallStep(BaseStep):
             provider=response.provider,
             attachment_count=len(content_blocks),
             prompt_metadata=prompt_metadata,
+            reasoning_content=self._kept_reasoning(step, response),
         )
 
     async def _execute_stream(
@@ -890,9 +906,9 @@ class LLMCallStep(BaseStep):
             )
 
         # TTFT includes HTTP connect (the provider iterator is lazy), not the rate-limiter wait
-        ttft_ms: float | None = None
+        ttft_ms: float | None = sr.time_to_first_token_ms
         stream_start = time.monotonic()
-        first_chunk = True
+        first_chunk = ttft_ms is None
 
         try:
             async for chunk in sr:
@@ -954,6 +970,7 @@ class LLMCallStep(BaseStep):
                     status=StepStatus.FAILED,
                     error=f"Structured-output validation failed: {e}",
                     duration_ms=duration,
+                    error_classification="permanent",  # as when a reply that doesn't stream fails
                 )
 
         if step.output:
@@ -986,6 +1003,7 @@ class LLMCallStep(BaseStep):
             attachment_count=attachment_count,
             time_to_first_token_ms=ttft_ms,
             prompt_metadata=prompt_metadata,
+            reasoning_content=self._kept_reasoning(step, response),
         )
 
     @staticmethod

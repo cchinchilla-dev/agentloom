@@ -23,6 +23,7 @@ otel_metric_exporter = try_import(
     "opentelemetry.exporter.otlp.proto.grpc.metric_exporter", extra="observability"
 )
 otel_api_metrics = try_import("opentelemetry.metrics", extra="observability")
+otel_sdk_resources = try_import("opentelemetry.sdk.resources", extra="observability")
 
 _HAS_OTEL_METRICS = (
     is_available(otel_metrics)
@@ -33,6 +34,19 @@ _HAS_OTEL_METRICS = (
 # Fallback: prometheus_client (pull-based)
 prom = try_import("prometheus_client", extra="observability")
 _HAS_PROM = is_available(prom)
+
+# One table for both backends, so OTLP and prometheus_client report the same ``le`` series.
+_BUCKETS: dict[str, list[float]] = {
+    "step_duration": [0.1, 0.5, 1, 2, 5, 10, 30, 60],
+    "operation_duration": [0.1, 0.5, 1, 2, 5, 10, 30],
+    "tool_call_duration": [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60],
+    "embedding_dimensions": [64, 128, 256, 384, 512, 768, 1024, 1536, 3072],
+    "agent_iterations": [1, 2, 3, 5, 8, 13, 21],
+    "conversation_message_count": [1, 2, 4, 8, 16, 32, 64, 128, 256],
+    "time_to_first_chunk": [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+    "recording_latency": [0.1, 0.5, 1, 2, 5, 10, 30],
+    "webhook_latency": [0.1, 0.5, 1, 2, 5, 10, 30],
+}
 
 
 class MetricsManager:
@@ -46,6 +60,7 @@ class MetricsManager:
         self,
         endpoint: str = "http://localhost:4317",
         enabled: bool = True,
+        service_name: str = "agentloom",
     ) -> None:
         self._enabled = enabled and (_HAS_OTEL_METRICS or _HAS_PROM)
         self._backend: str = "none"
@@ -86,16 +101,19 @@ class MetricsManager:
             return
 
         if _HAS_OTEL_METRICS:
-            self._setup_otel(endpoint)
+            self._setup_otel(endpoint, service_name)
         elif _HAS_PROM:  # pragma: no cover — prom fallback, only active when OTel unavailable
             self._setup_prom()
 
-    def _setup_otel(self, endpoint: str) -> None:
+    def _setup_otel(self, endpoint: str, service_name: str) -> None:
         exporter = otel_metric_exporter.OTLPMetricExporter(endpoint=endpoint, insecure=True)
         reader = otel_metrics.export.PeriodicExportingMetricReader(
             exporter, export_interval_millis=5000
         )
-        self._meter_provider = otel_metrics.MeterProvider(metric_readers=[reader])
+        resource = otel_sdk_resources.Resource.create({"service.name": service_name})
+        self._meter_provider = otel_metrics.MeterProvider(
+            resource=resource, metric_readers=[reader]
+        )
         otel_api_metrics.set_meter_provider(self._meter_provider)
         meter = otel_api_metrics.get_meter("agentloom")
 
@@ -109,6 +127,7 @@ class MetricsManager:
         )
         self._step_histogram = meter.create_histogram(
             "agentloom_step_duration_seconds",
+            explicit_bucket_boundaries_advisory=_BUCKETS["step_duration"],
             description="Step execution duration",
             unit="s",
         )
@@ -123,6 +142,7 @@ class MetricsManager:
         # Canonical OTel GenAI client metric.
         self._operation_duration_histogram = meter.create_histogram(
             "gen_ai.client.operation.duration",
+            explicit_bucket_boundaries_advisory=_BUCKETS["operation_duration"],
             description="GenAI operation duration (per OTel GenAI conventions)",
             unit="s",
         )
@@ -156,6 +176,7 @@ class MetricsManager:
         )
         self._tool_call_histogram = meter.create_histogram(
             "agentloom_tool_call_duration_seconds",
+            explicit_bucket_boundaries_advisory=_BUCKETS["tool_call_duration"],
             description="Tool-call execution duration",
             unit="s",
         )
@@ -165,6 +186,7 @@ class MetricsManager:
         )
         self._embedding_dimensions_histogram = meter.create_histogram(
             "agentloom_embedding_dimensions",
+            explicit_bucket_boundaries_advisory=_BUCKETS["embedding_dimensions"],
             description="Requested embedding vector dimensions",
         )
         # One per trim pass that removed a turn, by policy and conversation state key.
@@ -178,15 +200,18 @@ class MetricsManager:
         )
         self._agent_iterations_histogram = meter.create_histogram(
             "agentloom_agent_iterations",
+            explicit_bucket_boundaries_advisory=_BUCKETS["agent_iterations"],
             description="Model calls per agent turn",
         )
         self._conversation_message_histogram = meter.create_histogram(
             "agentloom_conversation_message_count",
+            explicit_bucket_boundaries_advisory=_BUCKETS["conversation_message_count"],
             description="Visible message count after each conversation turn",
         )
         # Canonical OTel GenAI metric.
         self._time_to_first_chunk_histogram = meter.create_histogram(
             "gen_ai.client.operation.time_to_first_chunk",
+            explicit_bucket_boundaries_advisory=_BUCKETS["time_to_first_chunk"],
             description="GenAI streaming time-to-first-chunk (per OTel GenAI conventions)",
             unit="s",
         )
@@ -200,6 +225,7 @@ class MetricsManager:
         )
         self._webhook_histogram = meter.create_histogram(
             "agentloom_webhook_latency_seconds",
+            explicit_bucket_boundaries_advisory=_BUCKETS["webhook_latency"],
             description="Webhook delivery latency",
             unit="s",
         )
@@ -217,6 +243,7 @@ class MetricsManager:
         )
         self._recording_latency_histogram = meter.create_histogram(
             "agentloom_recording_latency_seconds",
+            explicit_bucket_boundaries_advisory=_BUCKETS["recording_latency"],
             description="Latency of real provider calls captured by RecordingProvider",
             unit="s",
         )
@@ -285,13 +312,13 @@ class MetricsManager:
             "agentloom_step_duration_seconds",
             "Step execution duration",
             ["step_type", "stream"],
-            buckets=[0.1, 0.5, 1, 2, 5, 10, 30, 60],
+            buckets=_BUCKETS["step_duration"],
         )
         self._prom_histograms["operation_duration"] = prom.Histogram(
             "gen_ai_client_operation_duration_seconds",
             "GenAI operation duration (per OTel GenAI conventions)",
             ["gen_ai_provider_name", "stream"],
-            buckets=[0.1, 0.5, 1, 2, 5, 10, 30],
+            buckets=_BUCKETS["operation_duration"],
         )
         self._prom_counters["attachments"] = prom.Counter(
             "agentloom_attachments_total",
@@ -312,7 +339,7 @@ class MetricsManager:
             "agentloom_tool_call_duration_seconds",
             "Tool-call execution duration",
             ["tool_name"],
-            buckets=[0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60],
+            buckets=_BUCKETS["tool_call_duration"],
         )
         self._prom_counters["embeddings"] = prom.Counter(
             "agentloom_embedding_calls_total",
@@ -323,7 +350,7 @@ class MetricsManager:
             "agentloom_embedding_dimensions",
             "Requested embedding vector dimensions",
             ["provider", "model"],
-            buckets=[64, 128, 256, 384, 512, 768, 1024, 1536, 3072],
+            buckets=_BUCKETS["embedding_dimensions"],
         )
         self._prom_counters["conversation_trims"] = prom.Counter(  # pragma: no cover
             "agentloom_conversation_trims_total",
@@ -339,19 +366,19 @@ class MetricsManager:
             "agentloom_agent_iterations",
             "Model calls per agent turn",
             ["name"],
-            buckets=[1, 2, 3, 5, 8, 13, 21],
+            buckets=_BUCKETS["agent_iterations"],
         )
         self._prom_histograms["conversation_message_count"] = prom.Histogram(  # pragma: no cover
             "agentloom_conversation_message_count",
             "Visible message count after each conversation turn",
             ["conversation_key"],
-            buckets=[1, 2, 4, 8, 16, 32, 64, 128, 256],
+            buckets=_BUCKETS["conversation_message_count"],
         )
         self._prom_histograms["time_to_first_chunk"] = prom.Histogram(
             "gen_ai_client_operation_time_to_first_chunk_seconds",
             "GenAI streaming time-to-first-chunk (per OTel GenAI conventions)",
             ["gen_ai_provider_name", "gen_ai_request_model"],
-            buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+            buckets=_BUCKETS["time_to_first_chunk"],
         )
         self._prom_counters["approval_gates"] = prom.Counter(  # pragma: no cover
             "agentloom_approval_gates_total",
@@ -385,14 +412,14 @@ class MetricsManager:
                 "agentloom_recording_latency_seconds",
                 "Latency of real provider calls captured by RecordingProvider",
                 ["provider", "model"],
-                buckets=[0.1, 0.5, 1, 2, 5, 10, 30],
+                buckets=_BUCKETS["recording_latency"],
             )
         )
         self._prom_histograms["webhook_latency"] = prom.Histogram(  # pragma: no cover
             "agentloom_webhook_latency_seconds",
             "Webhook delivery latency",
             ["status"],
-            buckets=[0.1, 0.5, 1, 2, 5, 10, 30],
+            buckets=_BUCKETS["webhook_latency"],
         )
         self._prom_gauges["budget_remaining"] = prom.Gauge(
             "agentloom_budget_remaining_usd",
@@ -442,7 +469,12 @@ class MetricsManager:
             ).observe(duration_s)
 
     def record_provider_call(
-        self, provider: str, model: str, latency_s: float, stream: bool = False
+        self,
+        provider: str,
+        model: str,
+        latency_s: float,
+        stream: bool = False,
+        operation: str = "chat",
     ) -> None:
         if not self._enabled:
             return
@@ -455,7 +487,7 @@ class MetricsManager:
             self._operation_duration_histogram.record(
                 latency_s,
                 {
-                    "gen_ai.operation.name": "chat",
+                    "gen_ai.operation.name": operation,
                     "gen_ai.provider.name": to_genai_provider_name(provider),
                     "gen_ai.request.model": model,
                     "stream": stream_str,
@@ -487,6 +519,7 @@ class MetricsManager:
         completion_tokens: int,
         *,
         reasoning_tokens: int = 0,
+        operation: str = "chat",
     ) -> None:
         """Record token usage on the ``gen_ai.client.token.usage`` histogram.
 
@@ -503,7 +536,7 @@ class MetricsManager:
         canonical_provider = to_genai_provider_name(provider)
         if self._backend == "otel":
             common: dict[str, Any] = {
-                "gen_ai.operation.name": "chat",
+                "gen_ai.operation.name": operation,
                 "gen_ai.provider.name": canonical_provider,
                 "gen_ai.request.model": model,
             }

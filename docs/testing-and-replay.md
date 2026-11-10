@@ -36,10 +36,10 @@ A step that was retried keeps the calls of its last attempt only. A recording ma
 
 The file is written after every call, so a run cut short keeps the calls it made, but not its event log, which is written when the run ends. `--record` refuses a workflow whose provider is `mock`.
 
-**Recording into an existing file** replaces the entries of the steps this run called and keeps the rest. The event log is replaced whole, so it no longer matches entries kept from an earlier run, and `verify-determinism` fails on such a file. Record to a new file when you mean to verify it.
+**Recording into an existing file** replaces it: nothing from an earlier run stays. The file is cleared just before the run starts, so a run that can't start leaves it alone.
 
 > [!CAUTION]
-> A recording holds the answers verbatim. A `state_schema` key marked `redact` is masked in checkpoints and the run history, not here: an answer that repeats a secret, and a tool's arguments and results, are saved as they were. Prompts aren't saved, only their hash. Read a recording before you commit it.
+> A recording holds the answers verbatim: an answer that repeats a secret is saved as it was. A `state_schema` key marked `redact`, or named in `AGENTLOOM_REDACT_STATE_KEYS`, is masked in the tool calls a recording holds: in their arguments, and in a result that is a JSON object or array. A result in plain text is saved as it was. Prompts aren't saved, only their hash. Read a recording before you commit it.
 
 ### What a recording holds
 
@@ -75,7 +75,7 @@ A recording is a JSON object with an entry per step:
 
 No field is required: an entry written by hand can hold `content` alone. Keys starting with `_` aren't steps: `_version`, `_tools` and `_inter_agent_events`. A file without `_version` loads; one with a version below `2` is refused.
 
-- **Entries are keyed by step id.** A conversation's summary call is recorded under `<step>::summarize`, and the calls of an [agent used as a tool](agents.md#agents-as-tools) under `<step>::<tool>#<n>`. A subworkflow's steps use their own id, so they share an entry with a top-level step of the same id.
+- **Entries are keyed by step id.** A conversation's summary call is recorded under `<step>::summarize`, and the calls of an [agent used as a tool](agents.md#agents-as-tools) under `<step>::<tool>#<n>`. A subworkflow's steps are keyed by their path, `<subworkflow step>/<step>`, and so are their tool results.
 - **A step that calls the model several times,** in a tool loop or to re-ask for a valid structured reply, gets a list of turns, in call order.
 - **A call made from Python without a step id** is keyed by a hash of its messages, model, temperature, `max_tokens` and other arguments.
 
@@ -96,23 +96,25 @@ The [CLI reference](cli.md#replay) lists every option.
 - **A step missing from the recording** fails with `No recorded response for step 'review'`.
 - **A changed request** fails with `the replayed request (hash …) does not match the recording (hash …)`. Any change counts: the prompt, the state it renders, the model, the temperature, the tools or the schema.
 
-Only entries with a `request_hash` can catch a change. `run --record` writes one on every model call, but not on embeddings: an `embed` step replays its recorded vectors whatever its input, and fails, after its retries, when the number of inputs changes. Entries written by hand, such as the recordings of examples 35 to 40, carry none either.
+The hash covers the model, so a recording made with `--provider` or `--model` replays with the same options. Only entries with a `request_hash` can catch a change. `run --record` writes one on every call, embeddings included; an entry written by hand can leave it out, and then matches by step id alone. Of the example recordings, only `recordings/tool_calling.json` has none: the request of its second turn holds a live tool result. An `embed` step fails at once when the number of inputs isn't the number of recorded vectors, with a hash or without.
 
-In a list of turns, strict replay picks the turn whose hash matches the call: a retried step starts its turns again. A list without hashes is served in order, one turn per call, and repeats its last turn once it runs out.
+In a list of turns, strict replay picks the turn whose hash matches the call: a retried step starts its turns again. A list without hashes is served in order, one turn per call, and the call after its last turn fails with `the recording holds N turns`.
+
+The hash is taken on the real request. A request that holds a masked value, from a [redacted](#recording-a-run) tool call replayed earlier in the step, can't match it, so that turn is served in order, unchecked.
 
 ### Lenient replay
 
-Lenient replay answers what it can and never fails a call: a missing step gets `Mock response`, or `{}` for a step with a `response_schema`, with a warning, and a changed request gets its recorded answer, without one. Lists are served in order, hashes ignored.
+Lenient replay answers what it can and never fails a call: a missing step gets `Mock response`, or `{}` for a step with a `response_schema`, with a warning, and a changed request gets its recorded answer, with a warning too. Lists are served in order, and repeat their last turn once they run out.
 
 | | Missing step | Changed request | Missing file |
 |---|---|---|---|
 | `replay` | Fails | Fails | Exit `2` |
 | `verify-determinism` | Fails | Fails | Exit `2` |
-| `replay --allow-default-fallback` | Placeholder | Recorded answer | Exit `2` |
-| `run --mock-responses FILE` | Placeholder | Recorded answer | Placeholders for every call |
-| `provider: mock` in the workflow | Placeholder | Recorded answer | Placeholders for every call |
+| `replay --allow-default-fallback` | Placeholder | Recorded answer, with a warning | Exit `2` |
+| `run --mock-responses FILE` | Placeholder | Recorded answer, with a warning | Exit `2` |
+| `provider: mock` in the workflow | Placeholder | Recorded answer, with a warning | Exit `1` |
 
-For CI, use `replay` or `verify-determinism`: a lenient run passes on a stale recording, and on a mistyped path.
+For CI, use `replay` or `verify-determinism`: a lenient run passes on a stale recording.
 
 ### The `mock` provider in YAML
 
@@ -128,11 +130,11 @@ config:
 ```
 
 - **The replay is lenient.** For a strict one, run `agentloom replay` on the same recording.
-- **`responses_file` is relative to the working directory,** not to the workflow file. Run from the folder the path assumes: from anywhere else, the file isn't found, and every call answers the placeholder.
-- A recording that doesn't parse fails the run with a traceback.
-- Like any provider set up by `agentloom run`, the mock is held to 60 requests a minute.
+- **`responses_file` is relative to the working directory,** not to the workflow file. Run from the folder the path assumes: from anywhere else, the file isn't found.
+- A recording that doesn't exist or doesn't parse stops the run before its first step, with an error and exit `1`.
+- Unlike the other providers the CLI sets up, the mock has no rate limit.
 
-Examples 35 to 41 run this way against the recordings in `recordings/`. [`examples/32_yaml_mock.yaml`](../examples/32_yaml_mock.yaml) names `recordings/byzantine.json`, which isn't in the repository: it runs on placeholders.
+Examples 35 to 41 run this way against the recordings in `recordings/`. [`examples/32_yaml_mock.yaml`](../examples/32_yaml_mock.yaml) names `recordings/byzantine.json`, which isn't in the repository: make it first with example 31, or the run stops with an error.
 
 ### Latency
 
@@ -175,8 +177,8 @@ agentloom replay workflow.yaml -r recordings/run1.json --live-from summarize
 
 - **`--live-from STEP`** runs that step and every step that depends on it live. **`--force-live STEP`** runs one step live, and can be repeated.
 - **Other steps replay** until one of their calls misses the recording, and run live from that call on.
-- **The recording is served through the live providers,** so the workflow's providers must be set up, with their keys, for the replayed steps as well as the live ones.
-- **`--record FILE`** saves the run to a new recording: replayed calls as recorded, live calls as made. With `--record-tools`, tools too.
+- **Only the steps that run live need a provider and its key.** A step replayed from the recording needs neither; a step that has to run live on a model with no provider fails, naming the model.
+- **`--record FILE`** saves the run to a new recording: replayed calls as recorded, live calls as made. With `--record-tools`, tools too. Into a file that exists, it replaces the entries of the steps it called and keeps the rest, unlike `run --record`, so give each cut a file of its own when you mean to verify it.
 - **`--json`** adds a `calls` list: for each call, its step, whether it was replayed or live, and why (`hit`, `miss` or `forced`).
 
 A cut can't be combined with `--allow-default-fallback`.
@@ -210,7 +212,7 @@ Each failure is retried or not as a real one would be: see [What is retried](rel
 - **A list without hashes,** as written by hand, is served in order, one turn per call, and a retry carries on from the next turn. So a retry doesn't go back to the start of a tool loop: with `[a turn that calls a tool, a fault, an answer]`, the retried step gets the answer first and never calls the tool.
 - **A single entry with a fault** fails every attempt: retries can't recover.
 - **In a recorded list,** with hashes, under strict replay, a fault turn fires when the call reaches it, and the retry starts the step's turns again.
-- A 429 doesn't wait for its `retry_after_s`: the step's own waits apply.
+- A 429's `retry_after_s` is honoured like a provider's `Retry-After`: see [Retries](reliability.md#retries).
 - Words a `stream_truncate` fault delivered are already printed when the retry streams its answer.
 - `embed` steps ignore faults.
 - Faults fire in the replayed steps of a cut too, without sending them live.
@@ -248,9 +250,7 @@ From Python, `agentloom.contracts.experimental` exports the event models, `Inter
 agentloom verify-determinism workflow.yaml -r recordings/run1.json --runs 3
 ```
 
-It replays the recording strictly `--runs` times and compares the runs: the status, each step's status, output and error, the final state and the event log, which must also match the recorded one. `--events-out FILE` writes the first replay's log as JSON Lines. A difference prints a diff and exits with `1`.
-
-It doesn't check that the replays succeed: replays that fail the same way agree when the recording has no event log. See the [CLI reference](cli.md#verify-determinism).
+It replays the recording strictly `--runs` times and compares the runs: the status, each step's status, output and error, the final state and the event log, which must also match the recorded one. `--events-out FILE` writes the first replay's log as JSON Lines. A difference prints a diff and exits with `1`, and so does a replay that doesn't end in `success`. To accept a stable failure, pass `--allow-failed`. See the [CLI reference](cli.md#verify-determinism).
 
 ## Testing from Python
 
@@ -306,7 +306,7 @@ def test_a_changed_topic_misses_the_recording():
 
 `MockProvider` takes `latency_model` and `latency_ms` as the YAML does, plus `seed`, which makes `normal` waits repeat, and `default_response`, the placeholder text. Its `calls` list records each call it answered and how: `step_id`, `prompt_hash` or `default`.
 
-To drive the CLI from a test, `typer.testing.CliRunner` invokes `agentloom.cli.main.app`. With `--json`, the output starts with a `Running workflow:` line before the JSON.
+To drive the CLI from a test, `typer.testing.CliRunner` invokes `agentloom.cli.main.app`. With `--json`, `result.stdout` holds only the JSON.
 
 ## Metrics
 
@@ -324,8 +324,9 @@ With OpenTelemetry on, replays and recordings report:
 ## Limits
 
 - Two processes recording to the same file at once can lose each other's entries.
-- A changed request goes unnoticed in lenient replays, in entries without a `request_hash` and in embeddings.
-- Steps that share an id across a subworkflow share an entry: a lenient replay serves them in call order.
+- A changed request goes unnoticed in entries without a `request_hash`, and only warns in a lenient replay.
+- A recording made before subworkflow steps had paths holds them under their bare id: they replay from it, and share the entry with a top-level step of the same id.
+- A masked tool argument replays as its `<REDACTED:…>` sentinel: a tool run live gets that as its argument, so a masked call only replays faithfully with `--tools replay`.
 
 ## What's next
 

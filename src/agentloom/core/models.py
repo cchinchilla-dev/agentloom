@@ -15,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from agentloom.config import default_model
 from agentloom.contracts.stable import Attachment as Attachment
 from agentloom.contracts.stable import Message as Message
 from agentloom.contracts.stable import ToolDefinition as ToolDefinition
@@ -47,6 +48,8 @@ class RetryConfig(BaseModel):
     Without ``max_retries``, a step takes its workflow's ``config.max_retries``.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     max_retries: int = Field(default=3, ge=0)
     backoff_base: float = 2.0
     backoff_max: float = 60.0
@@ -59,6 +62,8 @@ class RetryConfig(BaseModel):
 class Condition(BaseModel):
     """A routing condition: expression + target step."""
 
+    model_config = ConfigDict(extra="forbid")
+
     expression: str
     target: str
 
@@ -66,9 +71,13 @@ class Condition(BaseModel):
 class WebhookConfig(BaseModel):
     """Webhook notification config for approval gates."""
 
+    model_config = ConfigDict(extra="forbid")
+
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
     body_template: str | None = None
+    # Base URL of a callback server: the default body then links to approve and reject the run
+    callback_base_url: str = ""
     timeout: float = 30.0
 
 
@@ -79,8 +88,8 @@ class ThinkingConfig(BaseModel):
     have to drop into Python kwargs. The same config is translated per
     provider:
 
-    - **OpenAI o-series** — reasoning is implicit in the model name; this
-      config is ignored (accepted so the YAML stays uniform).
+    - **OpenAI o-series and GPT-5** — reasoning is implicit in the model name;
+      ``level`` is sent as ``reasoning_effort``, the rest is ignored.
     - **Anthropic** — sends ``thinking: {type: "enabled", budget_tokens}``.
     - **Google Gemini 2.5+** — sends ``generationConfig.thinkingConfig``
       with ``thinkingBudget`` (from ``budget_tokens``), ``thinkingLevel``
@@ -95,8 +104,11 @@ class ThinkingConfig(BaseModel):
     the request so the server never sends thought summaries; Ollama
     drops ``message.thinking`` and inline ``<think>...</think>`` tags
     (the visible answer is still cleaned up). OpenAI keeps the trace
-    server-side regardless, so the field has no effect there.
+    server-side regardless, so the field has no effect there. With it on,
+    an ``llm_call`` step keeps the trace in ``StepResult.reasoning_content``.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
     budget_tokens: int | None = None
@@ -110,8 +122,8 @@ class Conversation(BaseModel):
     Workflows reference a conversation by dotted state path
     (``conversation: state.chat``) on an ``llm_call`` step. The step
     loads the messages, calls the provider with the full history, and
-    appends the assistant reply (plus any tool calls) back into the same
-    state key.
+    appends the final text reply back into the same state key; the tool
+    calls of the turn and their results are not stored.
 
     ``token_budget`` bounds the message list; ``trim_policy`` decides how
     to shrink it when the budget is exceeded. When ``None``, the
@@ -155,17 +167,68 @@ class Conversation(BaseModel):
         return coerced
 
     def token_count(self, model: str = "") -> int:
-        """Sum of per-message token estimates.
+        """Sum of per-message token estimates, plus the summary sent as a system turn.
 
         See :meth:`Message.token_count` for the heuristic's caveats.
         """
-        return sum(m.token_count(model) for m in self.messages)
+        total = sum(m.token_count(model) for m in self.messages)
+        if self.summary:
+            total += Message(role="system", content=self.summary).token_count(model)
+        return total
 
 
 class ToolChoiceByName(BaseModel):
     """Pin tool selection to a specific function: ``{"name": "..."}``."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str
+
+
+# Only these keywords hold subschemas: ``const``, ``enum`` and ``default`` hold plain data.
+_SUBSCHEMA_KEYWORDS = (
+    "additionalItems",
+    "additionalProperties",
+    "contains",
+    "else",
+    "if",
+    "items",
+    "not",
+    "propertyNames",
+    "then",
+    "unevaluatedItems",
+    "unevaluatedProperties",
+)
+_SUBSCHEMA_LIST_KEYWORDS = ("allOf", "anyOf", "items", "oneOf", "prefixItems")
+_SUBSCHEMA_MAP_KEYWORDS = (
+    "$defs",
+    "definitions",
+    "dependentSchemas",
+    "patternProperties",
+    "properties",
+)
+
+
+def _open_object_path(schema: object, path: str = "") -> str | None:
+    """Locate the first subschema with ``additionalProperties: true``; ``""`` is the root."""
+    if not isinstance(schema, dict):
+        return None
+    if schema.get("additionalProperties") is True:
+        return path
+    children: list[tuple[str, object]] = []
+    for keyword in _SUBSCHEMA_KEYWORDS:
+        children.append((keyword, schema.get(keyword)))
+    for keyword in _SUBSCHEMA_LIST_KEYWORDS:
+        if isinstance(schema.get(keyword), list):
+            children.extend((f"{keyword}[{i}]", s) for i, s in enumerate(schema[keyword]))
+    for keyword in _SUBSCHEMA_MAP_KEYWORDS:
+        if isinstance(schema.get(keyword), dict):
+            children.extend((f"{keyword}.{name}", s) for name, s in schema[keyword].items())
+    for child, subschema in children:
+        found = _open_object_path(subschema, f"{path}.{child}" if path else child)
+        if found is not None:
+            return found
+    return None
 
 
 class ResponseSchema(BaseModel):
@@ -178,7 +241,7 @@ class ResponseSchema(BaseModel):
     validation.
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     type: Literal["pydantic", "json_schema", "json_object"] = "json_object"
     model: str | None = None
@@ -212,9 +275,11 @@ class ResponseSchema(BaseModel):
                 raise ValueError(
                     "response_schema.type='json_schema' requires an inline 'schema' object."
                 )
-            if self.schema_.get("additionalProperties") is True:
+            open_object = _open_object_path(self.schema_)
+            if open_object is not None:
                 raise ValueError(
-                    "response_schema: 'additionalProperties: true' is incompatible with "
+                    f"response_schema: 'additionalProperties: true' at "
+                    f"'{open_object or '<root>'}' is incompatible with "
                     "OpenAI's strict json_schema mode. Set it to false (or remove the "
                     "key — strict mode treats it as false by default)."
                 )
@@ -414,10 +479,27 @@ class StepDefinition(BaseModel):
     # State path to a :class:`Conversation` the reply is appended to; ``output`` gets the raw text
     conversation: str | None = None
     # With a conversation: tag replies with ``Message.name``, re-assert ``system_prompt`` each turn
-    speaker: str | None = None
+    # OpenAI sends it as ``name`` and refuses anything outside this pattern
+    speaker: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
 
     # Inline, or a path resolved like ``workflow_path``; its settings replace the llm_call fields
     agent: AgentDefinition | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_unknown_contract_keys(cls, data: Any) -> Any:
+        """Refuse a typo in ``tools`` or ``attachments``, whose stable models ignore extra keys."""
+        if not isinstance(data, dict):
+            return data
+        for field, model in (("tools", ToolDefinition), ("attachments", Attachment)):
+            entries = data.get(field)
+            for index, entry in enumerate(entries if isinstance(entries, list) else []):
+                unknown = (
+                    sorted(set(entry) - set(model.model_fields)) if isinstance(entry, dict) else []
+                )
+                if unknown:
+                    raise ValueError(f"{field}[{index}]: unknown keys {unknown}")
+        return data
 
     @field_validator("agent", mode="before")
     @classmethod
@@ -425,6 +507,23 @@ class StepDefinition(BaseModel):
         from agentloom.core.agent import resolve_agent
 
         return resolve_agent(value)
+
+    @model_validator(mode="after")
+    def _validate_required_fields(self) -> StepDefinition:
+        """Refuse a step without what its type cannot run without."""
+        required = {
+            StepType.LLM_CALL: (self.prompt or self.conversation, "'prompt' or 'conversation'"),
+            StepType.TOOL: (self.tool_name, "'tool_name'"),
+            StepType.ROUTER: (self.conditions or self.default, "'conditions' or 'default'"),
+            StepType.SUBWORKFLOW: (
+                self.workflow_path or self.workflow_inline,
+                "'workflow_path' or 'workflow_inline'",
+            ),
+            StepType.EMBED: (self.inputs, "'inputs'"),
+        }.get(self.type)
+        if required is not None and not required[0]:
+            raise ValueError(f"{self.type.value} step {self.id!r} requires {required[1]}")
+        return self
 
     @model_validator(mode="after")
     def _validate_agent_fields(self) -> StepDefinition:
@@ -501,6 +600,8 @@ class SandboxConfig(BaseModel):
     ``allow_internal_webhook_targets``.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = False
     allowed_commands: list[str] = Field(default_factory=list)
     allowed_paths: list[str] = Field(default_factory=list)
@@ -512,6 +613,12 @@ class SandboxConfig(BaseModel):
     max_write_bytes: int | None = None
     danger_opt_in: list[str] = Field(default_factory=list)
     allow_internal_webhook_targets: bool = False
+    # Outlasts allowed_domains: a subworkflow's list can't open the hosts its parent refuses
+    deny_internal_hosts: bool = False
+
+
+# Their model is whatever the server has loaded, so no name can stand in for it.
+_PROVIDERS_WITHOUT_DEFAULT_MODEL = ("ollama", "generic_openai")
 
 
 class WorkflowConfig(BaseModel):
@@ -565,6 +672,27 @@ class WorkflowConfig(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _model_from_provider(self) -> WorkflowConfig:
+        self._apply_default_model()
+        return self
+
+    def _apply_default_model(self) -> None:
+        """Without a ``model`` of its own, take the provider's, when it has one."""
+        if "model" in self.model_fields_set:
+            return
+        if (model := default_model(self.provider)) is not None:
+            # Past __setattr__, to stay out of model_fields_set: a later provider can replace it
+            object.__setattr__(self, "model", model)
+
+    def use_provider(self, provider: str) -> None:
+        """Switch to *provider* (``--provider``); a model the workflow didn't name follows it."""
+        self.provider = provider
+        if provider != "generic_openai":  # any other provider refuses a checkpoint that keeps them
+            self.base_url = None
+            self.api_key_env = None
+        self._apply_default_model()
+
 
 class StateKeyConfig(BaseModel):
     """Per-key state metadata; ``redact`` is its only setting.
@@ -582,6 +710,8 @@ class StateKeyConfig(BaseModel):
     webhook body). The in-memory state stays plaintext so steps that
     legitimately need the secret keep working.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     redact: bool = False
 
@@ -640,6 +770,53 @@ class WorkflowDefinition(BaseModel):
             )
             for step in self.steps
         ]
+        return self
+
+    @model_validator(mode="after")
+    def _validate_default_model(self) -> WorkflowDefinition:
+        self.require_default_model()
+        return self
+
+    def require_default_model(self) -> None:
+        """Refuse a provider with no default model when a step would run on ``config.model``."""
+        config = self.config
+        if (
+            "model" in config.model_fields_set
+            or config.provider not in _PROVIDERS_WITHOUT_DEFAULT_MODEL
+        ):
+            return
+        for step in self.steps:
+            own = step.agent.model if step.agent is not None else step.model
+            if own is None and step.type in (StepType.LLM_CALL, StepType.EMBED, StepType.AGENT):
+                raise ValueError(
+                    f"provider {config.provider!r} has no default model: set config.model"
+                )
+
+    def use_provider(self, provider: str) -> None:
+        """Switch to *provider* (``--provider``); refused if a step is left without a model."""
+        self.config.use_provider(provider)
+        self.require_default_model()
+
+    @model_validator(mode="after")
+    def _validate_anthropic_thinking_budget(self) -> WorkflowDefinition:
+        """Refuse a Claude step without a thinking budget, or with no room above it."""
+        for step in self.steps:
+            thinking = step.thinking
+            if (
+                thinking is None
+                or not thinking.enabled
+                or "claude" not in (step.model or self.config.model)
+            ):
+                continue
+            if thinking.budget_tokens is None:
+                raise ValueError(
+                    f"Step {step.id!r}: thinking on a Claude model needs budget_tokens"
+                )
+            if step.max_tokens is not None and step.max_tokens <= thinking.budget_tokens:
+                raise ValueError(
+                    f"Step {step.id!r}: max_tokens ({step.max_tokens}) must be above "
+                    f"thinking.budget_tokens ({thinking.budget_tokens})"
+                )
         return self
 
     def get_step(self, step_id: str) -> StepDefinition | None:

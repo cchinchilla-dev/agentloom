@@ -27,6 +27,12 @@ class TestInfoCommand:
         assert "httpx" in result.output
         assert "anyio" in result.output
 
+    def test_shows_jsonschema_with_its_version(self) -> None:
+        from importlib.metadata import version
+
+        result = runner.invoke(app, ["info"])
+        assert f"jsonschema   {version('jsonschema')}" in result.output
+
     def test_shows_observability_status(self) -> None:
         result = runner.invoke(app, ["info"])
         assert "opentelemetry:" in result.output

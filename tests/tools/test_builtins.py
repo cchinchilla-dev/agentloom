@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import sys
@@ -73,6 +74,35 @@ class TestHttpRequestTool:
             body='{"data": 1}',
         )
         assert result["status_code"] == 201
+
+    @respx.mock
+    async def test_a_method_outside_the_enum_is_refused(self) -> None:
+        route = respx.route(url="https://example.com/api").mock(return_value=httpx.Response(200))
+        with pytest.raises(ValueError, match="PATCH"):
+            await HttpRequestTool().execute(url="https://example.com/api", method="PATCH")
+        assert not route.called
+
+    @respx.mock
+    async def test_a_lowercase_method_is_still_accepted(self) -> None:
+        route = respx.get("https://example.com/api").mock(return_value=httpx.Response(200))
+        await HttpRequestTool().execute(url="https://example.com/api", method="get")
+        assert route.called
+
+    @respx.mock
+    async def test_a_dict_body_is_sent_as_json(self) -> None:
+        route = respx.post("https://example.com/api").mock(return_value=httpx.Response(200))
+        await HttpRequestTool().execute(
+            url="https://example.com/api", method="POST", body={"a": [1, "é"]}
+        )
+        request = route.calls[0].request
+        assert json.loads(request.content) == {"a": [1, "é"]}
+        assert request.headers["content-type"] == "application/json"
+
+    @respx.mock
+    async def test_a_string_body_is_sent_as_it_is(self) -> None:
+        route = respx.post("https://example.com/api").mock(return_value=httpx.Response(200))
+        await HttpRequestTool().execute(url="https://example.com/api", method="POST", body="a=1")
+        assert route.calls[0].request.content == b"a=1"
 
 
 class TestShellCommandTool:
@@ -161,6 +191,17 @@ class TestFileWriteTool:
             result = await tool.execute(path=path, content="written content")
             assert result["written"] == 15
             assert Path(path).read_text() == "written content"
+
+    async def test_written_counts_bytes(self, tmp_path: Path) -> None:
+        path = tmp_path / "accents.txt"
+        result = await FileWriteTool().execute(path=str(path), content="héé")
+        assert result["written"] == 5
+        assert result["written"] == path.stat().st_size
+
+    async def test_written_counts_bytes_in_the_given_encoding(self, tmp_path: Path) -> None:
+        path = tmp_path / "accents.txt"
+        result = await FileWriteTool().execute(path=str(path), content="héé", encoding="latin-1")
+        assert result["written"] == 3
 
     async def test_creates_parent_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

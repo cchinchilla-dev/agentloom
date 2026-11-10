@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -18,10 +18,10 @@ from agentloom.core.models import (
 )
 
 
-def _make_workflow() -> WorkflowDefinition:
+def _make_workflow(provider: str = "mock") -> WorkflowDefinition:
     return WorkflowDefinition(
         name="cb-test",
-        config=WorkflowConfig(provider="mock", model="mock-model"),
+        config=WorkflowConfig(provider=provider, model="mock-model"),
         state={"input": "hello"},
         steps=[
             StepDefinition(
@@ -110,6 +110,28 @@ class TestCallbackServer:
         assert "run-list2" not in run_ids
 
     @pytest.mark.anyio()
+    async def test_a_resume_connects_the_observer_to_the_gateway(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "run-observed")
+
+        from agentloom.checkpointing.file import FileCheckpointer
+        from agentloom.cli.callback_server import _prepare_resume
+
+        checkpointer = FileCheckpointer(checkpoint_dir=str(tmp_path))
+        data = await checkpointer.load("run-observed")
+        observer = MagicMock()
+        with (
+            patch("agentloom.cli.run._setup_providers"),
+            patch("agentloom.cli.run._setup_observer", return_value=observer),
+        ):
+            engine, gateway, returned = await _prepare_resume(
+                data, checkpointer, "approved", False, None
+            )
+
+        assert returned is observer
+        assert engine.observer is observer
+        assert gateway._observer is observer
+
+    @pytest.mark.anyio()
     async def test_approve_endpoint(self, tmp_path: Path) -> None:
         _write_checkpoint(tmp_path, "run-approve")
 
@@ -149,6 +171,65 @@ class TestCallbackServer:
         status, body = responses[0]
         assert status == 202
         assert body["decision"] == "approved"
+
+    @pytest.mark.anyio()
+    async def test_a_mock_workflow_resumes_with_its_recording(self, tmp_path: Path) -> None:
+        from agentloom.checkpointing.file import FileCheckpointer
+        from agentloom.cli.callback_server import _handle_decision
+
+        (tmp_path / "rec.json").write_text(json.dumps({"step_b": {"content": "from-recording"}}))
+        workflow = _make_workflow()
+        workflow.config.responses_file = str(tmp_path / "rec.json")
+        cp_dir = tmp_path / "cp"
+        _write_checkpoint(cp_dir, "run-mock", workflow=workflow)
+
+        statuses: list[int] = []
+
+        class FakeStream:
+            async def send(self, data: bytes) -> None:
+                statuses.append(int(data.decode().split(" ")[1]))
+
+        with patch("agentloom.cli.run._setup_observer", return_value=None):
+            await _handle_decision(
+                FakeStream(),  # type: ignore[arg-type]
+                str(cp_dir),
+                True,
+                "run-mock",
+                "approved",
+            )
+
+        assert statuses == [202]
+        saved = await FileCheckpointer(checkpoint_dir=cp_dir).load("run-mock")
+        assert saved.status == "success"
+        assert saved.state["result_b"] == "from-recording"
+
+    @pytest.mark.anyio()
+    async def test_a_mock_recording_that_is_gone_answers_500(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_decision
+
+        workflow = _make_workflow()
+        workflow.config.responses_file = str(tmp_path / "gone.json")
+        cp_dir = tmp_path / "cp"
+        _write_checkpoint(cp_dir, "run-gone", workflow=workflow)
+
+        responses: list[tuple[int, dict]] = []
+
+        class FakeStream:
+            async def send(self, data: bytes) -> None:
+                text = data.decode()
+                responses.append((int(text.split(" ")[1]), json.loads(text.split("\r\n\r\n")[1])))
+
+        with patch("agentloom.cli.run._setup_observer", return_value=None):
+            await _handle_decision(
+                FakeStream(),  # type: ignore[arg-type]
+                str(cp_dir),
+                True,
+                "run-gone",
+                "approved",
+            )
+
+        assert [status for status, _ in responses] == [500]
+        assert "mock" in responses[0][1]["error"]
 
     @pytest.mark.anyio()
     async def test_reject_endpoint(self, tmp_path: Path) -> None:
@@ -320,6 +401,7 @@ class TestCallbackServer:
             provider="generic_openai",
             base_url="http://vllm.local:8000/v1",
             api_key_env="VLLM_API_KEY",
+            model="mock-model",
         )
         wf = _make_workflow().model_copy(update={"config": endpoint})
         _write_checkpoint(tmp_path, "run-generic", workflow=wf)
@@ -348,6 +430,107 @@ class TestCallbackServer:
         assert "'VLLM_API_KEY' is not set" in responses[0][1]["error"]
         saved = json.loads((tmp_path / "run-generic.json").read_text())
         assert saved["status"] == "paused"
+
+
+class TestNestedGateDecisions:
+    class _Stream:
+        def __init__(self) -> None:
+            self.responses: list[tuple[int, dict]] = []
+
+        async def send(self, data: bytes) -> None:
+            text = data.decode()
+            self.responses.append(
+                (int(text.split(" ")[1]), json.loads(text[text.index("\r\n\r\n") + 4 :]))
+            )
+
+    @pytest.mark.anyio()
+    async def test_a_childs_own_run_is_refused_naming_the_root(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_decision
+
+        _write_checkpoint(tmp_path, "root.sub")
+        stream = self._Stream()
+        await _handle_decision(stream, str(tmp_path), True, "root.sub", "approved")  # type: ignore[arg-type]
+        status, body = stream.responses[0]
+        assert status == 400
+        assert "'root'" in body["error"]
+
+    @pytest.mark.anyio()
+    async def test_a_link_to_a_gate_the_run_is_past_answers_409(self, tmp_path: Path) -> None:
+        from agentloom.cli.callback_server import _handle_decision
+
+        _write_checkpoint(tmp_path, "root", paused_step_id="sub.second")
+        stream = self._Stream()
+        await _handle_decision(
+            stream,
+            str(tmp_path),
+            True,
+            "root",
+            "approved",
+            gate="sub.first",  # type: ignore[arg-type]
+        )
+        status, body = stream.responses[0]
+        assert status == 409
+        assert "sub.second" in body["error"]
+
+    @pytest.mark.anyio()
+    async def test_the_link_reaches_the_handler_as_run_and_gate(self, tmp_path: Path) -> None:
+        from agentloom.cli import callback_server
+
+        request = b"POST /approve/root?gate=sub.gate HTTP/1.1\r\nHost: x\r\n\r\n"
+        chunks = [request]
+
+        class _Reading(self._Stream):
+            async def receive(self, n: int) -> bytes:
+                return chunks.pop(0) if chunks else b""
+
+        with patch.object(callback_server, "_handle_decision") as decide:
+            await callback_server._handle_request(_Reading(), str(tmp_path), True)  # type: ignore[arg-type]
+        assert decide.call_args.args[3:5] == ("root", "approved")
+        assert decide.call_args.kwargs["gate"] == "sub.gate"
+
+    @pytest.mark.anyio()
+    async def test_one_post_resumes_the_whole_run(self, tmp_path: Path) -> None:
+        from agentloom.checkpointing.file import FileCheckpointer
+        from agentloom.cli.callback_server import _handle_decision
+        from agentloom.core.engine import WorkflowEngine
+        from agentloom.core.parser import WorkflowParser
+        from agentloom.tools.registry import ToolRegistry
+
+        child = {
+            "name": "child",
+            "config": {"provider": "mock", "model": "x"},
+            "steps": [{"id": "gate", "type": "approval_gate"}],
+        }
+        workflow = WorkflowParser.from_dict(
+            {
+                "name": "parent",
+                "config": {"provider": "mock", "model": "x"},
+                "steps": [{"id": "sub", "type": "subworkflow", "workflow_inline": child}],
+            }
+        )
+        checkpointer = FileCheckpointer(checkpoint_dir=tmp_path)
+        engine = WorkflowEngine(
+            workflow=workflow,
+            tool_registry=ToolRegistry(),
+            checkpointer=checkpointer,
+            run_id="root",
+        )
+        assert (await engine.run()).status.value == "paused"
+
+        stream = self._Stream()
+        with patch("agentloom.cli.run._setup_observer", return_value=None):
+            await _handle_decision(
+                stream,
+                str(tmp_path),
+                True,
+                "root",
+                "approved",
+                gate="sub.gate",  # type: ignore[arg-type]
+            )
+
+        assert stream.responses[0][0] == 202
+        assert (await checkpointer.load("root")).status == "success"
+        assert (await checkpointer.load("root.sub")).status == "success"
 
 
 class TestCallbackServerHTTP:
@@ -887,7 +1070,7 @@ class TestConfigFile:
         from agentloom.cli.callback_server import _handle_decision
         from tests.conftest import MockProvider
 
-        _write_checkpoint(tmp_path, "run-config")
+        _write_checkpoint(tmp_path, "run-config", workflow=_make_workflow("openai"))
         config = tmp_path / "agentloom.yaml"
         seen: list[object] = []
 
@@ -917,7 +1100,7 @@ class TestConfigFile:
         from agentloom.cli.callback_server import _handle_request
         from tests.conftest import MockProvider
 
-        _write_checkpoint(tmp_path, "run-config-http")
+        _write_checkpoint(tmp_path, "run-config-http", workflow=_make_workflow("openai"))
         config = tmp_path / "agentloom.yaml"
         seen: list[object] = []
 
@@ -948,7 +1131,7 @@ class TestConfigFile:
         from agentloom.cli.callback_server import _handle_decision
         from agentloom.exceptions import ConfigError
 
-        _write_checkpoint(tmp_path, "run-config-bad")
+        _write_checkpoint(tmp_path, "run-config-bad", workflow=_make_workflow("openai"))
         stream = self._Responses()
         with (
             patch(

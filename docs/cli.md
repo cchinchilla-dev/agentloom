@@ -25,16 +25,16 @@ section: "Running"
 
 ## Common behaviour
 
-- **There is no `--version` or `-h`.** `agentloom info` prints the version, and `--help` the help.
-- **Warnings go to stderr,** such as a retry or a parse warning. There is no option for more detail: `AGENTLOOM_LOG_LEVEL` is read but changes nothing.
+- **`agentloom --version` prints the version,** and `-h` is `--help`, on `agentloom` and on every command.
+- **Warnings go to stderr,** such as a retry or a parse warning. `agentloom --log-level LEVEL COMMAND`, or `AGENTLOOM_LOG_LEVEL`, shows more or less: see [Logs](observability.md#logs).
 - **Paths are checked:** a workflow, agent or recording that doesn't exist is a usage error, exit `2`.
-- **`--json` isn't always pure JSON.** `run`, `replay` and `resume` print a first line such as `Running workflow: …` before it. `runs` and `history` print plain text when they find nothing.
+- **`--json` prints only JSON on stdout.** Lines such as `Running workflow: …` go to stderr, and `runs` and `history` print `[]` when they find nothing. A command that stops before it has a result, such as on a workflow that doesn't load, prints nothing on stdout and the error on stderr.
 
 | Exit code | When |
 |-----------|------|
 | `0` | Success, a paused run, a valid workflow, or replays that agree. |
-| `1` | A run that failed, timed out or went over budget; a workflow, recording or config file that doesn't load; a failed check; a conflict between options in `replay` and `resume`. |
-| `2` | A usage error: an unknown option, a missing argument, a value out of range, a conflict between options in `run`. |
+| `1` | A run that failed, timed out or went over budget; a workflow, recording or config file that doesn't load; a failed check. |
+| `2` | A usage error: an unknown option, a missing argument, a value out of range, a conflict between options, a `--state` without `=`. |
 | `130` | A run interrupted with Ctrl-C or, outside Windows, SIGTERM; with `--checkpoint`, it saves a checkpoint to resume. |
 
 Every run, replay and resume writes a record to `agentloom_runs/<run_id>.json`, or under `AGENTLOOM_RUNS_DIR`: see [`history`](#history).
@@ -57,14 +57,14 @@ agentloom run [OPTIONS] WORKFLOW_PATH
 | `--checkpoint` | Saves a checkpoint when the run ends, and prints its `Run ID`. See [Checkpoints and resume](reliability.md#checkpoints-and-resume). |
 | `--checkpoint-dir DIR` | Where checkpoints go. `.agentloom/checkpoints` by default. |
 | `--mock-responses FILE` | Answers from a recording with the `mock` provider; a step it lacks gets `Mock response`, with a warning. |
-| `--record FILE` | Records every provider call to `FILE`, for [`replay`](#replay). |
+| `--record FILE` | Records every provider call to `FILE`, for [`replay`](#replay). An existing file is replaced. |
 | `--record-tools` | With `--record`, records the results of the model's tool calls too. |
 | `--lite` | Runs without OpenTelemetry, even when the `observability` extra is installed. |
 
-The summary shows the status, duration, tokens and cost of the run and of each step, and the commands to resume a paused run. With `--json`, the result has `status`, `step_results`, `final_state`, `total_tokens`, `total_cost_usd`, `error` and `run_id`.
+The summary shows the status, duration, tokens and cost of the run and of each step and, with `--checkpoint`, the commands to resume a paused run. With `--json`, the result has `status`, `step_results`, `final_state`, `total_tokens`, `total_cost_usd`, `error` and `run_id`.
 
 - `--record` needs a live provider: it refuses a workflow with `provider: mock`, and `--mock-responses`. These conflicts exit with `2`.
-- `--mock-responses` with a file that doesn't exist isn't an error: every step gets `Mock response`, and the run succeeds.
+- `--mock-responses` with a file that doesn't exist is a usage error, exit `2`.
 - A missing API key isn't caught before the run: the first step fails with `No provider registered for model …`, after its retries.
 
 ## `validate`
@@ -102,7 +102,7 @@ agentloom visualize [--format ascii|mermaid] WORKFLOW_PATH
 
 `ascii`, the default, prints one row per layer, with a box per step, such as `[IF/ELSE: route]`. `mermaid` prints a Mermaid flowchart inside a ` ```mermaid ` fence, ready for a Markdown file. Both go to stdout.
 
-Router edges in the Mermaid output carry the condition's first 20 characters, so two conditions that start alike look the same. For exact labels, Graphviz DOT or PNML, use the [Graph API](graph-api.md).
+Router edges in the Mermaid output carry the whole condition. For Graphviz DOT or PNML, use the [Graph API](graph-api.md).
 
 ## `replay`
 
@@ -116,6 +116,7 @@ Runs a workflow against a recording made with `run --record`, without calling an
 |--------|--------------|
 | `-r, --recording FILE` | The recording. Required. |
 | `-s, --state KEY=VALUE` | As in `run`. |
+| `-p, --provider NAME`, `-m, --model NAME` | As in `run`. A recording made with them replays with them, as its hashes cover the model. |
 | `--json` | As in `run`; with a cut, it also lists each call and where it came from. |
 | `--allow-default-fallback` | A step that the recording lacks gets `Mock response`, instead of failing. |
 | `--tools live\|replay\|verify` | Model tool calls: `live` runs them (the default), `replay` serves the results recorded with `--record-tools`, and `verify` runs them and fails when a result differs. `tool` steps always run. |
@@ -127,9 +128,9 @@ Runs a workflow against a recording made with `run --record`, without calling an
 | `--observability` | Turns OpenTelemetry on, which `replay` leaves off. |
 
 - **Replay is strict.** A step the recording lacks fails the run. A changed prompt fails too, for entries that carry a `request_hash`, as `run --record` writes them; older recordings without one replay a changed prompt with its recorded answer.
-- **With `--allow-default-fallback`,** a step in the recording gets its recorded answer, even if its prompt changed.
-- **A cut serves the recording through the live providers,** so their keys must be set, for the steps before the cut as well as after it. Steps before the cut replay until a call misses, and go live from there.
-- Conflicting options, such as `--record` without a cut, exit with `1`.
+- **With `--allow-default-fallback`,** a step in the recording gets its recorded answer, even if its prompt changed, with a warning.
+- **A cut needs a provider and its key only for the steps that run live.** Steps before the cut replay until a call misses, and go live from there; one that goes live on a model with no provider fails, naming the model.
+- Conflicting options, such as `--record` without a cut, and a `--live-from` or `--force-live` step the workflow doesn't have, exit with `2`.
 
 ## `verify-determinism`
 
@@ -144,10 +145,12 @@ Replays the recording `--runs` times and compares the runs: the status, each ste
 | `-r, --recording FILE` | The recording. Required. |
 | `--runs N` | How many replays, at least 2. `2` by default. |
 | `-s, --state KEY=VALUE` | As in `run`. |
+| `-p, --provider NAME`, `-m, --model NAME` | As in `replay`: the provider and model the recording was made with. |
 | `--tools live\|replay\|verify` | As in `replay`. With `live`, tools run once per replay. |
 | `--events-out FILE` | Writes the first replay's event log as JSON Lines. |
+| `--allow-failed` | Accepts replays that agree without succeeding. |
 
-It prints `Deterministic: 2 replays of … give the same result` and exits with `0`, or prints the first difference as a diff and exits with `1`. It doesn't check that the replays succeed: replays that fail the same way agree, when the recording has no event log.
+It prints `Deterministic: 2 replays of … give the same result` and exits with `0`, or prints the first difference as a diff and exits with `1`. A replay that doesn't end in `success` also exits with `1`, unless you pass `--allow-failed`.
 
 ## `resume`
 
@@ -162,11 +165,14 @@ Continues a run from its checkpoint. [Checkpoints and resume](reliability.md#che
 | `--approve`, `--reject` | The decision for the paused [approval gate](steps.md#approval_gate). |
 | `--checkpoint-dir DIR` | Where the checkpoint is. `.agentloom/checkpoints` by default. |
 | `-p, --provider NAME`, `-m, --model NAME`, `--config FILE` | As in `run`. |
+| `-s, --state KEY=VALUE` | Sets a top-level state key over the checkpoint's, parsed as in `run`. It is how the keys [redacted](state-and-templates.md#redaction) from the checkpoint come back. |
+| `-b, --budget USD` | Sets `config.budget_usd`, what the run has already spent included. |
 | `--stream`, `--json`, `--lite` | As in `run`. |
 
 - A run whose workflow says `provider: mock` resumes against its recording.
-- `resume` has no `--budget` or `--state`.
-- An unknown run, `--approve` with `--reject`, or a decision for a run that isn't paused exits with `1`.
+- A value in `--state` is visible in the shell history and the process list, as any argument is.
+- `--state` reaches the run's own state. A subworkflow paused at a gate resumes from its own checkpoint, and its redacted keys stay redacted.
+- An unknown run, or a decision for a run that isn't paused, exits with `1`. `--approve` with `--reject` exits with `2`, and so does a subworkflow's own checkpoint, `<run id>.<step id>`: the error names the run to resume.
 - A decision for a gate that [expired](steps.md#when-nobody-decides) is ignored, and `resume` says so: the gate takes its `on_timeout`.
 
 ## `runs`
@@ -190,7 +196,7 @@ Lists the record of every run that ended, checkpointed or not, newest first.
 | `--runs-dir DIR` | Where the records are. `AGENTLOOM_RUNS_DIR`, else `./agentloom_runs`. |
 | `--workflow NAME` | Only that workflow. |
 | `--provider NAME` | Only runs that used that provider, by name alone: `anthropic`, not `anthropic/claude-…`. |
-| `--since DATE`, `--until DATE` | Only runs from `--since`, and before `--until`. A date is midnight UTC; a time without an offset is local time. |
+| `--since DATE`, `--until DATE` | Only runs from `--since`, and before `--until`. A date is midnight UTC, and a time without an offset is UTC too. |
 | `--min-cost USD`, `--max-cost USD` | Only runs within that cost. |
 | `--limit N` | At most N runs. `20` by default. |
 | `--json` | The records whole. |
@@ -223,6 +229,7 @@ An HTTP server that resumes paused runs from their checkpoints, for approvals th
 
 - `/approve` and `/reject` answer `202` and then resume the run. The outcome reaches the checkpoint and the run's record, not the caller. An unknown run answers `404`, a run that isn't paused `409`, and a config file that stopped loading after the server started `500`.
 - A decision for a run the server is already resuming answers `409`.
+- A gate [inside a subworkflow](steps.md#approval-gates-inside) is decided on the run at the top. The child's own run id, the one with a dot, answers `400` and names that run; a link whose `?gate=<path>` isn't where the run is paused answers `409`.
 - A decision for a gate that [expired](steps.md#when-nobody-decides) answers `202` with `expired_at`: the gate takes its `on_timeout`.
 - The server resumes each run whose gate expired, without a request: it looks every 30 seconds, and at the next expiry it knows of.
 - With `--token`, every endpoint but `/webhook` answers `401` without the right header. A server on an address other than loopback, without a token, prints a warning: anyone who reaches it can decide. The token is a command-line argument, visible to other users of the machine in its process list.

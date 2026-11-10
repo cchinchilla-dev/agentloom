@@ -82,6 +82,11 @@ class TracingManager:
             if token is not None:
                 otel_context.detach(token)
 
+    def set_error(self, span: Any, description: str) -> None:
+        """Mark *span* as failed; a no-op without OpenTelemetry."""
+        if self._enabled and span:
+            span.set_status(otel_api.Status(otel_api.StatusCode.ERROR, description))
+
     def shutdown(self) -> None:
         """Flush and shut down the tracer provider."""
         if self._enabled:

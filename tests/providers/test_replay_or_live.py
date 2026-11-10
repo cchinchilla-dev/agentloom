@@ -4,18 +4,25 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
+from agentloom.core.attempts import enter_step
 from agentloom.core.engine import WorkflowEngine
 from agentloom.core.models import StepDefinition, StepType, WorkflowConfig, WorkflowDefinition
 from agentloom.core.results import WorkflowResult, WorkflowStatus
+from agentloom.exceptions import UnsupportedRequestError
 from agentloom.providers.base import BaseProvider, EmbeddingResponse, ProviderResponse
 from agentloom.providers.gateway import ProviderGateway
 from agentloom.providers.mock import MockProvider
 from agentloom.providers.recorder import RecordingProvider
-from agentloom.providers.replay_or_live import ReplayCut, ReplayOrLiveProvider, cut_steps
+from agentloom.providers.replay_or_live import (
+    NoLiveProvider,
+    ReplayCut,
+    ReplayOrLiveProvider,
+    cut_steps,
+)
 
 
 class _Versioned(BaseProvider):
@@ -187,3 +194,47 @@ async def test_stream_and_embed_go_through_the_cut(recording: Path) -> None:
     assert _sources(cut) == [("a", 1, "replay", "hit"), ("e", 1, "live", "miss")]
     assert provider.supports_model("m")
     await provider.close()
+
+
+class TestNoLiveProvider:
+    """A model no live provider serves can still replay, and only its live calls fail."""
+
+    GO: ClassVar[list[dict[str, str]]] = [{"role": "user", "content": "go"}]
+
+    @staticmethod
+    def _recording(tmp_path: Path) -> MockProvider:
+        path = tmp_path / "rec.json"
+        path.write_text(json.dumps({"a": {"content": "recorded"}}))
+        return MockProvider(responses_file=path, strict=True)
+
+    def test_it_stands_in_only_for_models_nobody_serves(self) -> None:
+        class _OnlyGpt(BaseProvider):
+            name = "gpt"
+
+            async def complete(self, *a: Any, **k: Any) -> Any:  # pragma: no cover
+                raise AssertionError
+
+            def supports_model(self, model: str) -> bool:
+                return model == "gpt"
+
+        stand_in = NoLiveProvider([_OnlyGpt()])
+        assert not stand_in.supports_model("gpt")
+        assert stand_in.supports_model("claude")
+
+    async def test_a_replayed_call_is_served(self, tmp_path: Path) -> None:
+        cut = ReplayCut(self._recording(tmp_path))
+        gateway = ProviderGateway()
+        gateway.register(ReplayOrLiveProvider(NoLiveProvider([]), cut), priority=0)
+        response = await gateway.complete(self.GO, "m", step_id="a")
+        assert response.content == "recorded"
+
+    @pytest.mark.parametrize("call", ["complete", "stream", "embed"])
+    async def test_a_live_call_fails_clearly(self, tmp_path: Path, call: str) -> None:
+        cut = ReplayCut(self._recording(tmp_path), {"b"})
+        gateway = ProviderGateway()
+        gateway.register(ReplayOrLiveProvider(NoLiveProvider([]), cut), priority=0)
+        enter_step("b")
+        method = getattr(gateway, call)
+        args = (["x"], "m") if call == "embed" else (self.GO, "m")
+        with pytest.raises(UnsupportedRequestError, match="no provider is set up for model 'm'"):
+            await method(*args, step_id="b")

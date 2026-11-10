@@ -11,6 +11,11 @@ import typer
 from agentloom.history.writer import RunHistoryWriter, load_records
 
 
+def _as_utc(value: datetime) -> datetime:
+    """*value* in UTC; without an offset it counts as UTC, as ``RunHistoryWriter`` writes."""
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 def _parse_date(value: str | None) -> datetime | None:
     """Parse ``YYYY-MM-DD`` (or full ISO 8601) into a UTC ``datetime``.
 
@@ -23,7 +28,7 @@ def _parse_date(value: str | None) -> datetime | None:
     try:
         if len(value) == 10:  # YYYY-MM-DD
             return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC)
-        return datetime.fromisoformat(value).astimezone(UTC)
+        return _as_utc(datetime.fromisoformat(value))
     except ValueError as exc:
         raise typer.BadParameter(
             f"Invalid date '{value}' — expected YYYY-MM-DD or ISO 8601"
@@ -39,10 +44,7 @@ def _record_timestamp(record: dict[str, Any]) -> datetime | None:
         ts = datetime.fromisoformat(ts_raw)
     except ValueError:
         return None
-    # A naive timestamp counts as UTC, the zone ``RunHistoryWriter`` writes in.
-    if ts.tzinfo is None:
-        return ts.replace(tzinfo=UTC)
-    return ts.astimezone(UTC)
+    return _as_utc(ts)
 
 
 def _matches(
@@ -114,12 +116,12 @@ def history(
         if _matches(r, workflow, provider, since_dt, until_dt, min_cost, max_cost)
     ][:limit]
 
-    if not filtered:
-        typer.echo("No run records found.")
-        return
-
     if output_json:
         typer.echo(json.dumps(filtered, indent=2, default=str))
+        return
+
+    if not filtered:
+        typer.echo("No run records found.")
         return
 
     # Table output — keep columns stable; downstream grep/awk scripts depend on them.

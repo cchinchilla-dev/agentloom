@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import json
 import os
 import re
 import types
@@ -84,6 +85,11 @@ def is_redacted(value: Any) -> bool:
     return isinstance(value, str) and bool(_SENTINEL_RE.match(value))
 
 
+def carries_sentinel(value: object) -> bool:
+    """Return whether a redaction sentinel appears anywhere inside *value*."""
+    return _SENTINEL_PREFIX in json.dumps(value, default=str)
+
+
 def redact_state(state: dict[str, Any], policy: RedactionPolicy) -> dict[str, Any]:
     """Return a copy of *state* with sensitive keys replaced by sentinels.
 
@@ -113,6 +119,23 @@ def redact_state(state: dict[str, Any], policy: RedactionPolicy) -> dict[str, An
     return walked
 
 
+def redact_json_text(text: str, policy: RedactionPolicy) -> str:
+    """Return *text* with its sensitive keys masked, when it holds a JSON object or array.
+
+    Any other text comes back as it was: the policy matches keys, and plain text has none.
+    """
+    if not policy:
+        return text
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return text
+    if not isinstance(parsed, (dict, list)):
+        return text
+    walked = _walk(parsed, policy, prefix="", seen=set())
+    return json.dumps(walked) if walked != parsed else text
+
+
 _CYCLE_SENTINEL = "<cycle>"
 
 
@@ -123,6 +146,8 @@ def _walk(
     prefix: str,
     seen: set[int],
 ) -> Any:
+    if isinstance(value, BaseModel):
+        value = value.model_dump()
     if isinstance(value, (dict, list)):
         if id(value) in seen:
             return _CYCLE_SENTINEL
@@ -274,7 +299,9 @@ def _accepts_text(annotation: Any) -> bool:
 __all__ = [
     "ENV_VAR",
     "RedactionPolicy",
+    "carries_sentinel",
     "is_redacted",
+    "redact_json_text",
     "redact_model",
     "redact_state",
 ]

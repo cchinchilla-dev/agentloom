@@ -199,8 +199,8 @@ class MetricName:
 class GenAIOperationName(StrEnum):
     """Standard values for the ``gen_ai.operation.name`` attribute.
 
-    AgentLoom emits ``chat`` on inference spans and ``invoke_agent`` on
-    agent-step spans; the other values are listed so call sites don't have
+    AgentLoom emits ``chat`` and ``embeddings`` on inference spans and
+    ``invoke_agent`` on agent-step spans; the other values are listed so call sites don't have
     to invent strings.
     """
 

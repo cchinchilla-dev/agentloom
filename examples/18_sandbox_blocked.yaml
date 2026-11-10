@@ -30,6 +30,7 @@ steps:
     tool_name: shell_command
     tool_args:
       command: "curl https://example.com"
+      cwd: "/tmp/agentloom"
     output: curl_result
 
   # BLOCKED: /etc/hostname is outside allowed_paths.
@@ -54,4 +55,5 @@ steps:
     tool_name: shell_command
     tool_args:
       command: "echo hello | cat /etc/passwd"
+      cwd: "/tmp/agentloom"
     output: pipe_result

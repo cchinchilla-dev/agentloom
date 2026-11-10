@@ -12,7 +12,13 @@ import httpx
 
 from agentloom.core.results import TokenUsage
 from agentloom.exceptions import ProviderError, UnsupportedRequestError
-from agentloom.providers._http import format_http_error, raise_for_status, validate_extra_kwargs
+from agentloom.providers._http import (
+    format_http_error,
+    json_body,
+    raise_for_status,
+    validate_extra_kwargs,
+    wrap_stream_errors,
+)
 from agentloom.providers._meta import response_meta
 from agentloom.providers.base import (
     BaseProvider,
@@ -70,6 +76,14 @@ def _translate_thinking_config(extras: dict[str, Any]) -> bool:
     return capture
 
 
+def _max_tokens(requested: int | None, extras: dict[str, Any]) -> int:
+    """``max_tokens``, or a default that leaves the same room above a thinking budget."""
+    if requested:
+        return requested
+    budget = (extras.get("thinking") or {}).get("budget_tokens") or 0
+    return int(budget) + 4096
+
+
 class AnthropicProvider(BaseProvider):
     """Anthropic Messages API adapter via httpx."""
 
@@ -108,6 +122,9 @@ class AnthropicProvider(BaseProvider):
         model still sees who spoke instead of losing the attribution.
         System-turn names are ignored — there is no ambiguity there.
         """
+        from agentloom.steps._tools import wire_seeded_tool_turns
+
+        messages = wire_seeded_tool_turns("anthropic", messages)
         # Every system turn applies, in order: a speaker's prompt and a conversation summary both
         systems: list[str] = []
         formatted: list[dict[str, Any]] = []
@@ -213,7 +230,7 @@ class AnthropicProvider(BaseProvider):
         payload: dict[str, Any] = {
             "model": model,
             "messages": filtered_messages,
-            "max_tokens": max_tokens or 4096,
+            "max_tokens": _max_tokens(max_tokens, extras),
             **extras,
         }
         if system_prompt:
@@ -228,7 +245,7 @@ class AnthropicProvider(BaseProvider):
 
         raise_for_status("anthropic", response)
 
-        data = response.json()
+        data = json_body("anthropic", response)
 
         content_blocks = data.get("content", [])
         content = ""
@@ -291,8 +308,7 @@ class AnthropicProvider(BaseProvider):
         agentloom_response_schema = kwargs.pop("agentloom_response_schema", None)
         agentloom_step_id = kwargs.pop("agentloom_step_id", "") or ""
         extras = validate_extra_kwargs("anthropic", "stream", kwargs, _ANTHROPIC_EXTRA_PAYLOAD_KEYS)
-        # stream() ignores thinking deltas, so the capture flag goes unused.
-        _translate_thinking_config(extras)
+        capture_reasoning = _translate_thinking_config(extras)
         if agentloom_tools and agentloom_tool_choice != "none":
             from agentloom.steps._tools import (
                 translate_tool_choice_for_anthropic,
@@ -316,7 +332,7 @@ class AnthropicProvider(BaseProvider):
         payload: dict[str, Any] = {
             "model": model,
             "messages": filtered_messages,
-            "max_tokens": max_tokens or 4096,
+            "max_tokens": _max_tokens(max_tokens, extras),
             "stream": True,
             **extras,
         }
@@ -329,6 +345,7 @@ class AnthropicProvider(BaseProvider):
         prefill_json = agentloom_response_schema is not None
         prompt_tokens = 0
         completion_tokens = 0
+        reasoning_parts: list[str] = []
 
         async def _generate() -> AsyncIterator[str]:
             nonlocal prompt_tokens, completion_tokens
@@ -354,8 +371,16 @@ class AnthropicProvider(BaseProvider):
                         usage = data.get("message", {}).get("usage", {})
                         prompt_tokens = usage.get("input_tokens", 0)
                         sr.model = data.get("message", {}).get("model", model)
+                        # Billed from here on, even if the stream dies before ``message_delta``
+                        sr.usage = TokenUsage(
+                            prompt_tokens=prompt_tokens, total_tokens=prompt_tokens
+                        )
+                        sr.cost_usd = calculate_cost(model, prompt_tokens, 0)
                     elif event_type == "content_block_delta":
-                        text = data.get("delta", {}).get("text", "")
+                        delta = data.get("delta", {})
+                        if capture_reasoning and delta.get("type") == "thinking_delta":
+                            reasoning_parts.append(delta.get("thinking", ""))
+                        text = delta.get("text", "")
                         if text:
                             if (
                                 prefill_json
@@ -365,6 +390,11 @@ class AnthropicProvider(BaseProvider):
                                 text = "{" + text
                             first_text_chunk = False
                             yield text
+                    elif event_type == "error":
+                        # The API can report a failure as an event, after answering 200
+                        raise ProviderError(
+                            "anthropic", data.get("error", {}).get("message", "stream error")
+                        )
                     elif event_type == "message_delta":
                         delta = data.get("delta", {})
                         sr.finish_reason = delta.get("stop_reason")
@@ -377,8 +407,10 @@ class AnthropicProvider(BaseProvider):
                             total_tokens=prompt_tokens + completion_tokens,
                         )
                         sr.cost_usd = calculate_cost(model, prompt_tokens, completion_tokens)
+                if reasoning_parts:
+                    sr.reasoning_content = "".join(reasoning_parts)
 
-        sr._set_iterator(_generate())
+        sr._set_iterator(wrap_stream_errors("anthropic", _generate()))
         return sr
 
     async def embed(

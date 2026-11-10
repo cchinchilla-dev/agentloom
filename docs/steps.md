@@ -77,7 +77,7 @@ There are no bare names: `category == 'billing'` fails, `state.category == 'bill
 | Methods of strings and numbers | `state.category.strip().lower() == 'billing'`, `state.subject.startswith('RE:')` |
 | Indexes | literal keys and integer slices: `state['user']`, `state.items[-1]`, `len(state.items[1:3])` |
 
-Lists and dictionaries from the state work with `len`, `in` and indexes, but not with their own methods, and `==` against a literal list is always false.
+Lists and dictionaries from the state, or from `steps.<id>.output`, work with `len`, `in`, indexes and `==`, and with their read-only methods: `get`, `keys`, `values` and `items` on a dictionary, `count` and `index` on a list. A key wins over a method of the same name: with a key called `items`, `state.order.items` is its value. Without one it is `None`, like any missing key: only a call, `state.order.items()`, reaches the method.
 
 A comparison with a missing key raises an error rather than evaluating false: `state.priority > 3` fails when `priority` isn't set. Test for it first, as in `state.priority is not None and state.priority >= 3`.
 
@@ -85,7 +85,7 @@ Anything else, from imports and assignments to other functions and attributes th
 
 ### When a router fails
 
-A router fails when an expression raises, or when nothing matches and there is no `default`. That failure isn't retried: evaluating the same state again gives the same result. Expressions are only evaluated when the router runs, so `agentloom validate` doesn't catch their mistakes.
+A router fails when an expression raises, or when nothing matches and there is no `default`. That failure isn't retried: evaluating the same state again gives the same result. Expressions are only evaluated when the router runs, so `agentloom validate` doesn't catch their mistakes. A router that failed chose no branch, so its branches and everything after them are skipped, under `on_step_failure: continue` too.
 
 ## `subworkflow`
 
@@ -127,15 +127,16 @@ With both `workflow_path` and `workflow_inline`, the file wins.
 
 | Mode | The child starts with | `output` receives |
 |------|-----------------------|-------------------|
-| Default | A copy of the parent's state. The child's own `state:` block and `input` are ignored. | The child's final state, or only the keys in `return_keys`. |
-| `isolated_state: true` | Its own `state:` block, plus the keys in `input`. Nothing from the parent. | The child's final state, or only the keys in `return_keys`. |
+| Default | Its own `state:` block as defaults, with a copy of the parent's state over it. `input` is ignored. | The child's final state, or only the keys in `return_keys`. |
+| `isolated_state: true` | Its own `state:` block, plus the keys in `input`, rendered with the parent's state. Nothing else from the parent. | The child's final state, or only the keys in `return_keys`. |
 
 ```yaml
 - id: classify
   type: subworkflow
   isolated_state: true
   input:
-    threshold: 0.75             # copied as written
+    threshold: 0.75
+    topic: "{state.topic}"      # rendered with the parent's state
   return_keys: [label, score]
   workflow_path: workflows/classifier.yaml
   output: classification        # {label: ..., score: ...}
@@ -144,14 +145,14 @@ With both `workflow_path` and `workflow_inline`, the file wins.
 - The child never writes to the parent's state. What comes back lands under the step's `output` key, and only when the child succeeds.
 - In the default mode, the child's final state includes its copy of the parent's keys: `return_keys` keeps only what you need.
 - A key of `return_keys` that the child never set is left out, without an error.
-- `input` values are copied as written. A template such as `"{state.topic}"` reaches the child as that literal text, so the way to hand parent values to a child is the default mode.
+- `input` values render like a `tool` step's `tool_args`, with the parent's state: `"{state.topic}"` is a template, `"state.items"` hands over the value with its type and fails the step if the key is missing, lists and dictionaries render item by item, and `{value: "{literal}", template: false}` keeps a string as written.
 
 ### What the child inherits
 
 - **Its own `config`.** A child without one runs with the defaults, OpenAI and `gpt-4o-mini`, not with the parent's model. `--provider` and `--model` on the command line change only the parent.
 - **The parent's budget,** unless the child sets its own `budget_usd`. A child that goes over its own budget fails the step, which isn't retried.
-- **The parent's sandbox,** when the parent's is enabled; it replaces the child's. The built-in tools follow the top-level workflow's sandbox in any case: see [Subworkflows](tools-and-sandbox.md#subworkflows).
-- **The parent's redaction rules,** added to the child's `state_schema`.
+- **The stricter sandbox.** A child runs under what its sandbox and the parent's both allow, or under the only one enabled, for its built-in tools too: see [Subworkflows](tools-and-sandbox.md#subworkflows).
+- **The parent's redaction rules,** added to the child's `state_schema`. A key of `input` filled from a redacted key is redacted too, whatever its name: the child reads the value, its checkpoints don't hold it, and the parent gets the sentinel back in `output`.
 - **The same providers and tools,** with the same keys, rate limits and circuit breakers.
 
 ### Failures and retries
@@ -210,6 +211,7 @@ A rejection doesn't stop the run. The gate succeeds either way, and the steps af
 | `notify.url` | required with `notify` | Where the webhook goes, as a POST. |
 | `notify.headers` | none | Headers sent with it, as given. |
 | `notify.body_template` | none | The JSON body, as a template. Without it, a default body is sent. |
+| `notify.callback_base_url` | none | Where a [callback server](cli.md#callback-server) answers. The default body then links to approve and reject the run. |
 | `notify.timeout` | `30` | Seconds for each delivery attempt, within the overall limit below. |
 | `timeout_seconds` | none | Seconds the gate waits for a decision, from its first pause. See [When nobody decides](#when-nobody-decides). |
 | `on_timeout` | none | `approve` or `reject`: the decision the gate takes once its time runs out. Needs `timeout_seconds`. |
@@ -233,6 +235,8 @@ The default body names the run and the gate:
 ```json
 {"run_id": "3f2a9c1b7d4e", "step_id": "approve_send", "workflow_name": "outreach", "status": "awaiting_approval"}
 ```
+
+With `notify.callback_base_url`, the default body also holds `approve_url` and `reject_url`: `<base>/approve/<run_id>` and `<base>/reject/<run_id>`, which take a POST. A gate inside a subworkflow links to the run at the top, with the gate's path, `<base>/approve/<run_id>?gate=<step id>.<gate id>`, so one POST resumes the parent and the child together. A `body_template` replaces them with whatever it says.
 
 A `body_template` is rendered like a prompt, with the state, after [redaction](state-and-templates.md#redaction), plus `run_id`, `step_id` and `workflow_name`. Literal braces in the JSON are written twice:
 
@@ -273,7 +277,7 @@ Turns text from the state into vectors.
 | Ollama | Any embedding model you pulled, such as `nomic-embed-text` | Ignored |
 | Anthropic | None: the gateway skips it and tries the next provider | — |
 
-The model name picks the provider, as for a model call. The `mock` provider returns recorded vectors, or made-up ones that are the same on every run; see [Testing & Replay](testing-and-replay.md).
+The model name finds the provider, as for a model call. The `mock` provider returns recorded vectors, or made-up ones that are the same on every run; see [Testing & Replay](testing-and-replay.md).
 
 ## What's next
 

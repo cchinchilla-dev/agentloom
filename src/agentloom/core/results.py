@@ -71,6 +71,8 @@ class StepResult(BaseModel):
     time_to_first_token_ms: float | None = None
     prompt_metadata: PromptMetadata | None = None
     error_classification: str | None = None
+    # What the model wrote while reasoning, from an ``llm_call`` with ``capture_reasoning`` on
+    reasoning_content: str | None = None
     # By model, when the step's calls ran on several (an agent and the agents it calls), so
     # the token metrics count each under its own; empty otherwise, ``model`` holding them all
     usage_by_model: list[ModelUsage] = Field(default_factory=list)

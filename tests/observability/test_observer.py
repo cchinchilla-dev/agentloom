@@ -238,7 +238,7 @@ class TestProviderSpans:
             stream=True,
         )
         metrics.record_provider_call.assert_called_once_with(
-            "openai", "gpt-4o-mini", 1.5, stream=True
+            "openai", "gpt-4o-mini", 1.5, stream=True, operation="chat"
         )
         span.set_attribute.assert_any_call("gen_ai.response.model", "gpt-4o-mini")
         span.set_attribute.assert_any_call("gen_ai.usage.input_tokens", 10)
@@ -363,7 +363,7 @@ class TestProviderEvents:
         observer = WorkflowObserver(metrics=metrics)
         observer.on_tokens("openai", "gpt-4o-mini", 100, 200)
         metrics.record_tokens.assert_called_once_with(
-            "openai", "gpt-4o-mini", 100, 200, reasoning_tokens=0
+            "openai", "gpt-4o-mini", 100, 200, reasoning_tokens=0, operation="chat"
         )
 
     def test_on_tokens_reasoning(self) -> None:
@@ -372,7 +372,7 @@ class TestProviderEvents:
         observer = WorkflowObserver(metrics=metrics)
         observer.on_tokens("anthropic", "claude-opus-4", 100, 50, reasoning_tokens=200)
         metrics.record_tokens.assert_called_once_with(
-            "anthropic", "claude-opus-4", 100, 50, reasoning_tokens=200
+            "anthropic", "claude-opus-4", 100, 50, reasoning_tokens=200, operation="chat"
         )
 
 
@@ -388,6 +388,12 @@ class TestCircuitBreakerEvents:
         observer = WorkflowObserver(metrics=metrics)
         observer.on_circuit_state_change("p", "open", "half_open")
         metrics.set_circuit_state.assert_called_with("p", 2)
+
+    def test_on_circuit_state_refreshes_the_gauge(self) -> None:
+        metrics = MagicMock()
+        observer = WorkflowObserver(metrics=metrics)
+        observer.on_circuit_state("p", "open")
+        metrics.set_circuit_state.assert_called_once_with("p", 1)
 
 
 class TestHITLEvents:
@@ -496,3 +502,105 @@ class TestShutdown:
     def test_shutdown_no_tracing_no_error(self) -> None:
         observer = WorkflowObserver()
         observer.shutdown()
+
+
+class TestErrorStatus:
+    """An error reaches the span's status, through the tracing manager."""
+
+    def test_failed_step(self) -> None:
+        tracing = MagicMock()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_step_start("s1", "llm_call")
+        span = tracing.start_span.return_value
+        observer.on_step_end("s1", "llm_call", "failed", 10.0, error="boom")
+        tracing.set_error.assert_called_once_with(span, "boom")
+
+    def test_successful_step(self) -> None:
+        tracing = MagicMock()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_step_start("s1", "llm_call")
+        observer.on_step_end("s1", "llm_call", "success", 10.0)
+        tracing.set_error.assert_not_called()
+
+    def test_failed_provider_call(self) -> None:
+        tracing = MagicMock()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_provider_call_start("s1", "openai", "m")
+        span = tracing.start_span.return_value
+        observer.on_provider_call_end("s1", "openai", "m", 0.4, error="RateLimitError")
+        tracing.set_error.assert_called_once_with(span, "RateLimitError")
+
+    def test_successful_provider_call(self) -> None:
+        tracing = MagicMock()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_provider_call_start("s1", "openai", "m")
+        observer.on_provider_call_end("s1", "openai", "m", 0.4)
+        tracing.set_error.assert_not_called()
+
+    def test_dangling_provider_span(self) -> None:
+        tracing = MagicMock()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_provider_call_start("s1", "openai", "m")
+        span = tracing.start_span.return_value
+        observer.on_provider_error("openai", "Boom", step_id="s1")
+        tracing.set_error.assert_called_once_with(span, "Boom")
+
+    def test_a_tracer_without_the_method_still_ends_the_span(self) -> None:
+        span = MagicMock()
+        ended: list[object] = []
+
+        class _Plain:
+            def start_span(self, name: str, attributes: object = None) -> object:
+                return span
+
+            def end_span(self, ended_span: object) -> None:
+                ended.append(ended_span)
+
+        observer = WorkflowObserver(tracing=_Plain())
+        observer.on_step_start("s1", "llm_call")
+        observer.on_step_end("s1", "llm_call", "failed", 10.0, error="boom")
+        assert ended == [span]
+
+
+class TestEmbeddingOperation:
+    def test_span_and_metric_carry_it(self) -> None:
+        tracing = MagicMock()
+        metrics = MagicMock()
+        observer = WorkflowObserver(tracing=tracing, metrics=metrics)
+        observer.on_provider_call_start("s1", "openai", "embed-3", operation="embeddings")
+        assert tracing.start_span.call_args.args[0] == "embeddings embed-3"
+        assert tracing.start_span.call_args.kwargs["attributes"]["gen_ai.operation.name"] == (
+            "embeddings"
+        )
+        observer.on_provider_call_end("s1", "openai", "embed-3", 0.5, operation="embeddings")
+        metrics.record_provider_call.assert_called_once_with(
+            "openai", "embed-3", 0.5, stream=False, operation="embeddings"
+        )
+
+    def test_tokens_carry_it(self) -> None:
+        metrics = MagicMock()
+        observer = WorkflowObserver(metrics=metrics)
+        observer.on_tokens("openai", "embed-3", 7, 0, operation="embeddings")
+        metrics.record_tokens.assert_called_once_with(
+            "openai", "embed-3", 7, 0, reasoning_tokens=0, operation="embeddings"
+        )
+
+
+class TestNestedRuns:
+    def test_a_nested_end_records_neither_cost_nor_a_run(self) -> None:
+        metrics = MagicMock()
+        observer = WorkflowObserver(metrics=metrics)
+        observer.on_workflow_start("parent", run_id="r")
+        observer.on_workflow_start("child", run_id="r.sub")
+        observer.on_workflow_end("child", "success", 500.0, 10, 0.25)
+        metrics.record_workflow_run.assert_not_called()
+        observer.on_workflow_end("parent", "success", 1000.0, 30, 0.75)
+        metrics.record_workflow_run.assert_called_once_with("parent", "success", 1.0, 0.75)
+
+    def test_runs_one_after_another_each_count(self) -> None:
+        metrics = MagicMock()
+        observer = WorkflowObserver(metrics=metrics)
+        for name in ("first", "second"):
+            observer.on_workflow_start(name, run_id=name)
+            observer.on_workflow_end(name, "success", 1000.0, 10, 0.25)
+        assert metrics.record_workflow_run.call_count == 2

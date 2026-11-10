@@ -5,15 +5,17 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
 from agentloom.checkpointing.base import CheckpointData
 from agentloom.cli.main import app
 from agentloom.core.models import (
+    StateKeyConfig,
     StepDefinition,
     StepType,
     WorkflowConfig,
@@ -52,6 +54,7 @@ def _write_checkpoint(
     workflow: WorkflowDefinition | None = None,
     state: dict | None = None,
     step_results: dict | None = None,
+    spent_usd: float = 0.0,
 ) -> None:
     """Write a checkpoint file for testing."""
     wf = workflow or _make_workflow()
@@ -64,6 +67,7 @@ def _write_checkpoint(
         completed_steps=completed_steps or [],
         status=status,
         paused_step_id=paused_step_id,
+        spent_usd=spent_usd,
         created_at="2026-04-12T18:00:00+00:00",
         updated_at="2026-04-12T18:00:01+00:00",
     )
@@ -98,6 +102,17 @@ class TestResumeCommand:
         assert result.exit_code == 1
         assert isinstance(result.exception, SystemExit)
         assert "unreadable or corrupted" in (result.output + (result.stderr or ""))
+
+    def test_a_mock_recording_that_is_gone_exits_without_a_traceback(self, tmp_path: Path) -> None:
+        workflow = _make_workflow("mock")
+        workflow.config.responses_file = str(tmp_path / "gone.json")
+        _write_checkpoint(tmp_path, "run-mock", workflow=workflow)
+        result = runner.invoke(
+            app, ["resume", "run-mock", "--checkpoint-dir", str(tmp_path), "--lite"]
+        )
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "gone.json" in (result.output + (result.stderr or ""))
 
     def test_resume_success(self, tmp_path: Path) -> None:
         _write_checkpoint(tmp_path, "run-ok", status="failed")
@@ -219,7 +234,10 @@ class TestResumeCommand:
 
         assert result.exit_code == 0, f"stdout: {result.output}"
 
-    def test_resume_failed_workflow_exits_nonzero(self, tmp_path: Path) -> None:
+    def test_resume_failed_workflow_exits_nonzero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("agentloom.core.engine.compute_backoff", lambda *_args: 0.0)
         _write_checkpoint(tmp_path, "run-fail", status="failed")
 
         with patch("agentloom.cli.run._setup_providers") as mock_setup:
@@ -422,7 +440,7 @@ class TestResumeApproval:
             ],
         )
 
-        assert result.exit_code != 0
+        assert result.exit_code == 2
         assert "Cannot use --approve and --reject together" in (
             result.output + (result.stderr or "")
         )
@@ -515,3 +533,213 @@ class TestResumeApproval:
         assert result.exit_code == 0, result.output
         parsed = json.loads(result.output[result.output.index("{") :])
         assert parsed["final_state"]["result"] == "recorded send"
+
+
+class TestResumeState:
+    """``resume --state`` overrides the checkpoint's state, parsed as ``run --state`` is."""
+
+    _SENTINEL = "<REDACTED:sha256=0123456789abcdef>"
+
+    def _resume(self, tmp_path: Path, *argv: str) -> tuple[object, list[dict]]:
+        """Resume ``run1`` against a provider that keeps what it was sent."""
+        from tests.conftest import MockProvider
+
+        provider = MockProvider()
+
+        def _wire(gw: object, default: str, config_path: object = None) -> None:
+            gw.register(provider, priority=0)  # type: ignore[attr-defined]
+
+        with (
+            patch("agentloom.cli.run._setup_providers", side_effect=_wire),
+            patch("agentloom.cli.run._setup_observer", return_value=None),
+        ):
+            result = runner.invoke(
+                app, ["resume", "run1", "--checkpoint-dir", str(tmp_path), "--lite", *argv]
+            )
+        return result, provider.calls
+
+    def test_puts_back_a_redacted_key(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "run1", state={"input": self._SENTINEL})
+
+        result, calls = self._resume(tmp_path, "--state", "input=dummy-secret")
+
+        assert result.exit_code == 0, result.output  # type: ignore[attr-defined]
+        assert "Process: dummy-secret" in calls[0]["messages"][-1]["content"]
+        assert "redacted state keys" not in result.stderr  # type: ignore[attr-defined]
+
+    def test_without_it_the_step_reads_the_sentinel(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "run1", state={"input": self._SENTINEL})
+
+        result, calls = self._resume(tmp_path)
+
+        assert result.exit_code == 0, result.output  # type: ignore[attr-defined]
+        assert self._SENTINEL in calls[0]["messages"][-1]["content"]
+
+    def test_the_value_put_back_is_redacted_again_on_disk(self, tmp_path: Path) -> None:
+        workflow = _make_workflow()
+        workflow.state_schema = {"input": StateKeyConfig(redact=True)}
+        _write_checkpoint(tmp_path, "run1", workflow=workflow, state={"input": self._SENTINEL})
+
+        result, _ = self._resume(tmp_path, "--state", "input=dummy-secret")
+
+        assert result.exit_code == 0, result.output  # type: ignore[attr-defined]
+        assert "dummy-secret" not in (tmp_path / "run1.json").read_text()
+
+    def test_values_are_parsed_as_in_run(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "run1")
+
+        result, _ = self._resume(tmp_path, "--state", "items=[1, 2]", "--json")
+
+        assert result.exit_code == 0, result.output  # type: ignore[attr-defined]
+        assert json.loads(result.stdout)["final_state"]["items"] == [1, 2]  # type: ignore[attr-defined]
+
+    def test_the_key_is_taken_as_written(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "run1")
+
+        result, _ = self._resume(tmp_path, "--state", "a.b=1", "--json")
+
+        assert json.loads(result.stdout)["final_state"]["a.b"] == 1  # type: ignore[attr-defined]
+
+    def test_without_an_equals_sign_exits_2(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            app, ["resume", "nope", "--checkpoint-dir", str(tmp_path), "--state", "bad"]
+        )
+        assert result.exit_code == 2
+        assert "key=value" in result.stderr
+
+
+class TestResumeBudget:
+    def _over_budget(self, tmp_path: Path) -> None:
+        workflow = _make_workflow("mock")
+        workflow.config.budget_usd = 0.5
+        _write_checkpoint(
+            tmp_path, "run1", workflow=workflow, status="budget_exceeded", spent_usd=0.5
+        )
+
+    def _resume(self, tmp_path: Path, *argv: str) -> Any:
+        return runner.invoke(
+            app, ["resume", "run1", "--checkpoint-dir", str(tmp_path), "--lite", "--json", *argv]
+        )
+
+    def test_a_run_over_its_budget_stops_again_without_it(self, tmp_path: Path) -> None:
+        self._over_budget(tmp_path)
+        result = self._resume(tmp_path)
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["status"] == "budget_exceeded"
+
+    def test_a_higher_limit_lets_it_go_on(self, tmp_path: Path) -> None:
+        self._over_budget(tmp_path)
+        result = self._resume(tmp_path, "--budget", "5")
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["status"] == "success"
+        saved = json.loads((tmp_path / "run1.json").read_text())
+        assert saved["workflow_definition"]["config"]["budget_usd"] == 5.0
+
+    def test_the_spend_so_far_counts_against_it(self, tmp_path: Path) -> None:
+        self._over_budget(tmp_path)
+        result = self._resume(tmp_path, "-b", "0.4")
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["status"] == "budget_exceeded"
+
+
+GATED_GENERIC_YAML = """\
+name: gated
+config: {provider: generic_openai, model: local, base_url: "http://127.0.0.1:9/v1"}
+steps:
+  - {id: gate, type: approval_gate, output: decision}
+  - {id: answer, type: llm_call, prompt: hi, output: a, depends_on: [gate]}
+"""
+
+GATED_YAML = """\
+name: gated
+config: {{{config}}}
+steps:
+  - {{id: gate, type: approval_gate, output: decision}}
+  - {{id: answer, type: llm_call, prompt: hi, output: a, depends_on: [gate]}}
+"""
+
+
+def _paused_run(tmp_path: Path, yaml_text: str, *flags: str) -> str:
+    """Run a workflow that stops at its gate, and return the run id."""
+    workflow = tmp_path / "wf.yaml"
+    workflow.write_text(yaml_text)
+    args = ["run", str(workflow), "--checkpoint", "--checkpoint-dir", str(tmp_path), "--lite"]
+    result = runner.invoke(app, [*args, "--json", *flags])
+    assert result.exit_code == 0, result.output
+    return str(json.loads(result.stdout)["run_id"])
+
+
+class TestResumeAfterLeavingGenericOpenai:
+    def test_a_run_moved_with_provider_resumes(self, tmp_path: Path) -> None:
+        run_id = _paused_run(tmp_path, GATED_GENERIC_YAML, "--provider", "mock")
+        args = ["resume", run_id, "--approve", "--checkpoint-dir", str(tmp_path), "--lite"]
+        result = runner.invoke(app, args)
+        assert result.exit_code == 0, result.output
+
+    def test_a_run_on_a_recording_resumes(self, tmp_path: Path) -> None:
+        recording = tmp_path / "rec.json"
+        recording.write_text('{"_version": 2, "answer": {"content": "x"}}')
+        run_id = _paused_run(tmp_path, GATED_GENERIC_YAML, "--mock-responses", str(recording))
+        args = ["resume", run_id, "--approve", "--checkpoint-dir", str(tmp_path), "--lite"]
+        result = runner.invoke(app, args)
+        assert result.exit_code == 0, result.output
+
+
+class TestResumeProviderFlag:
+    @staticmethod
+    def _resume_on(tmp_path: Path, run_id: str, url: str, reply: dict[str, Any], flag: str) -> Any:
+        import httpx
+        import respx
+
+        args = ["resume", run_id, "--approve", "--checkpoint-dir", str(tmp_path), "--lite"]
+        with respx.mock:
+            route = respx.post(url).mock(return_value=httpx.Response(200, json=reply))
+            result = runner.invoke(app, [*args, "--provider", flag])
+        assert result.exit_code == 0, result.output
+        return json.loads(route.calls.last.request.content)
+
+    def test_a_model_the_file_did_not_set_follows_the_provider(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-key")
+        run_id = _paused_run(tmp_path, GATED_YAML.format(config="provider: mock"))
+        reply = {
+            "content": [{"type": "text", "text": "x"}],
+            "model": "m",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        sent = self._resume_on(
+            tmp_path, run_id, "https://api.anthropic.com/v1/messages", reply, "anthropic"
+        )
+        assert sent["model"] == "claude-haiku-4-5-20251001"
+
+    def test_a_model_the_file_set_stays(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "dummy-key")
+        run_id = _paused_run(tmp_path, GATED_YAML.format(config="provider: mock, model: gpt-4o"))
+        reply = {
+            "choices": [{"message": {"content": "x"}, "finish_reason": "stop"}],
+            "model": "m",
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        sent = self._resume_on(
+            tmp_path, run_id, "https://api.openai.com/v1/chat/completions", reply, "openai"
+        )
+        assert sent["model"] == "gpt-4o"
+
+
+class TestSubworkflowCheckpoints:
+    def test_its_own_checkpoint_is_refused_naming_the_root_run(self, tmp_path: Path) -> None:
+        _write_checkpoint(tmp_path, "abc123.child", status="paused", paused_step_id="step_a")
+        args = ["resume", "abc123.child", "--checkpoint-dir", str(tmp_path), "--lite"]
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2
+        assert "'abc123'" in result.stderr
+
+    def test_a_dotted_id_with_no_checkpoint_is_unknown(self, tmp_path: Path) -> None:
+        args = ["resume", "abc123.child", "--checkpoint-dir", str(tmp_path), "--lite"]
+        result = runner.invoke(app, args)
+        assert result.exit_code == 1
+        assert "No checkpoint found" in result.stderr

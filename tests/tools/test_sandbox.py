@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -54,9 +55,12 @@ class TestShellCommandSandbox:
         with pytest.raises(SandboxViolationError):
             sandbox.validate_command("echo hello")
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="shlex splits a Windows program path")
     def test_strips_path_prefix(self) -> None:
+        program = shutil.which("echo")
+        assert program is not None
         sandbox = ToolSandbox(enabled=True, allowed_commands=["echo"])
-        sandbox.validate_command("/usr/bin/echo hello")
+        sandbox.validate_command(f"{program} hello")
 
     def test_unparseable_command(self) -> None:
         sandbox = ToolSandbox(enabled=True, allowed_commands=["echo"])
@@ -133,7 +137,7 @@ class TestShellCommandSandbox:
 
     @pytest.mark.parametrize(
         "executable",
-        ["env", "sh", "bash", "zsh", "xargs", "python", "python3", "node"],
+        ["env", "sh", "bash", "zsh", "xargs", "python", "python3", "node", "find"],
     )
     def test_dangerous_executables_blocked_by_default(self, executable: str) -> None:
         sandbox = ToolSandbox(enabled=True, allowed_commands=[executable])
@@ -333,6 +337,17 @@ class TestNetworkSandbox:
         sandbox = ToolSandbox(enabled=True, allow_network=True)
         with pytest.raises(SandboxViolationError, match="internal address"):
             sandbox.validate_network(url)
+
+    def test_deny_internal_hosts_outlasts_a_listed_host(self) -> None:
+        sandbox = ToolSandbox(enabled=True, allowed_domains=["localhost"], deny_internal_hosts=True)
+        with pytest.raises(SandboxViolationError, match="internal"):
+            sandbox.validate_network("http://localhost:8000/x")
+
+    def test_deny_internal_hosts_leaves_a_listed_public_host(self, public_dns: str) -> None:
+        sandbox = ToolSandbox(
+            enabled=True, allowed_domains=["api.example.com"], deny_internal_hosts=True
+        )
+        assert sandbox.validate_network("https://api.example.com/x") == (public_dns,)
 
     def test_internal_host_listed_in_allowed_domains_passes(self) -> None:
         sandbox = ToolSandbox(enabled=True, allow_network=True, allowed_domains=["localhost"])
@@ -872,6 +887,30 @@ class TestValidateCommandFlagEmbeddedPath:
             with pytest.raises(SandboxViolationError):
                 sandbox.validate_command("tee --output=/etc/passwd")
 
+    @pytest.mark.parametrize(
+        "command",
+        ["grep -f/etc/shadow x", "grep -f../outside/list x", "cat /etc/secret=1"],
+        ids=["short-flag", "short-flag-relative", "equals-in-path"],
+    )
+    def test_path_hidden_in_a_token_blocked(self, command: str) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(
+                enabled=True,
+                allowed_commands=["grep", "cat"],
+                allowed_paths=[tmp],
+            )
+            with pytest.raises(SandboxViolationError):
+                sandbox.validate_command(command, cwd=tmp)
+
+    def test_path_attached_to_a_short_flag_inside_allowlist_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = ToolSandbox(
+                enabled=True,
+                allowed_commands=["grep"],
+                allowed_paths=[tmp],
+            )
+            sandbox.validate_command(f"grep -f{Path(tmp).as_posix()}/list x", cwd=tmp)
+
     def test_dd_style_flag_with_path_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             sandbox = ToolSandbox(
@@ -890,6 +929,36 @@ class TestValidateCommandFlagEmbeddedPath:
                 allowed_paths=[tmp],
             )
             sandbox.validate_command(f"tee --output={Path(tmp).as_posix()}/log")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges")
+class TestBareNameThatIsALink:
+    """A name with no ``/`` has no path shape, but a link of that name can point anywhere."""
+
+    def _lists_and_outside(self, tmp_path: Path) -> tuple[Path, ToolSandbox]:
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret").write_text("dummy-secret")
+        (allowed / "away").symlink_to(outside / "secret")
+        (allowed / "plain").write_text("x")
+        (allowed / "near").symlink_to(allowed / "plain")
+        sandbox = ToolSandbox(
+            enabled=True, allowed_commands=["cat", "dd"], allowed_paths=[str(allowed)]
+        )
+        return allowed, sandbox
+
+    @pytest.mark.parametrize("command", ["cat away", "dd if=away"])
+    def test_a_link_out_of_the_lists_is_refused(self, tmp_path: Path, command: str) -> None:
+        allowed, sandbox = self._lists_and_outside(tmp_path)
+        with pytest.raises(SandboxViolationError, match="Path argument"):
+            sandbox.validate_command(command, cwd=str(allowed))
+
+    @pytest.mark.parametrize("command", ["cat near", "cat plain", "cat missing", "dd if=near"])
+    def test_other_bare_names_pass(self, tmp_path: Path, command: str) -> None:
+        allowed, sandbox = self._lists_and_outside(tmp_path)
+        sandbox.validate_command(command, cwd=str(allowed))
 
 
 class TestSandboxHelperEdges:
@@ -1114,3 +1183,146 @@ class TestSendPinned:
             await send_pinned(client, client.build_request("GET", "http://api.example.com/x"), ())
         assert literal.called
         assert by_name.called
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs sh")
+class TestShellExpansionCannotLeaveTheLists:
+    """``sh`` expands the command after the check, so anything it would expand is refused."""
+
+    @pytest.fixture
+    def outside(self, tmp_path: Path) -> Path:
+        directory = tmp_path / "outside"
+        directory.mkdir()
+        (directory / "probe.txt").write_text("outside-the-sandbox")
+        return directory
+
+    @pytest.fixture
+    def allowed(self, tmp_path: Path) -> Path:
+        directory = tmp_path / "allowed"
+        directory.mkdir()
+        return directory
+
+    async def _assert_refused(self, allowed: Path, command: str) -> None:
+        sandbox = ToolSandbox(enabled=True, allowed_commands=["cat"], allowed_paths=[str(allowed)])
+        with pytest.raises(SandboxViolationError, match="Shell expansion"):
+            outcome = await ShellCommandTool(sandbox=sandbox).execute(
+                command=command, cwd=str(allowed)
+            )
+            pytest.fail(f"{command!r} ran: {outcome}")
+
+    async def test_variable(self, outside: Path, allowed: Path, monkeypatch: Any) -> None:
+        monkeypatch.setenv("PROBE_DIR", str(outside))
+        await self._assert_refused(allowed, "cat $PROBE_DIR/probe.txt")
+
+    async def test_tilde(self, outside: Path, allowed: Path, monkeypatch: Any) -> None:
+        monkeypatch.setenv("HOME", str(outside))
+        await self._assert_refused(allowed, "cat ~/probe.txt")
+
+    async def test_glob(self, outside: Path, allowed: Path) -> None:
+        await self._assert_refused(allowed, f"cat .*/{outside.name}/probe.txt")
+
+    async def test_brace_expansion(self, outside: Path, allowed: Path) -> None:
+        await self._assert_refused(allowed, f"cat {{{outside.as_posix()}/probe.txt,nothing}}")
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo $HOME",
+            "echo ${HOME}",
+            "echo '$HOME'",
+            'echo "a*"',
+            "echo a?",
+            "echo [ab]",
+            "echo ~",
+            "echo '~'",
+            "echo a=~/x",
+            "echo a:~/x",
+            "echo {a,b}",
+            "echo {1..3}",
+        ],
+    )
+    def test_refused_quoted_or_not(self, command: str) -> None:
+        sandbox = ToolSandbox(enabled=True, allowed_commands=["echo"])
+        with pytest.raises(SandboxViolationError, match="Shell expansion"):
+            sandbox.validate_command(command)
+
+    @pytest.mark.parametrize("command", ["echo RUNNER~1", "echo notes.txt~"])
+    def test_a_tilde_inside_a_word_passes(self, command: str) -> None:
+        ToolSandbox(enabled=True, allowed_commands=["echo"]).validate_command(command)
+
+    def test_a_brace_that_expands_nothing_passes(self) -> None:
+        ToolSandbox(enabled=True, allowed_commands=["echo"]).validate_command("""echo '{"a": 1}'""")
+
+    def test_disabled_sandbox_checks_nothing(self) -> None:
+        ToolSandbox().validate_command("echo $HOME *")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs sh")
+class TestSandboxedCommandEnvironment:
+    def _tool(self, tmp_path: Path) -> ShellCommandTool:
+        return ShellCommandTool(
+            sandbox=ToolSandbox(
+                enabled=True, allowed_commands=["printenv"], allowed_paths=[str(tmp_path)]
+            )
+        )
+
+    async def test_other_variables_do_not_reach_the_command(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("PROBE_VALUE", "dummy-value")
+        outcome = await self._tool(tmp_path).execute(
+            command="printenv PROBE_VALUE", cwd=str(tmp_path)
+        )
+        assert outcome == {"returncode": 1, "stdout": "", "stderr": ""}
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [("HOME", "/dummy/home"), ("LANG", "C"), ("LC_ALL", "C"), ("TZ", "UTC")],
+    )
+    async def test_the_minimal_set_reaches_it(
+        self, tmp_path: Path, monkeypatch: Any, name: str, value: str
+    ) -> None:
+        monkeypatch.setenv(name, value)
+        outcome = await self._tool(tmp_path).execute(command=f"printenv {name}", cwd=str(tmp_path))
+        assert outcome["stdout"].strip() == value
+
+    async def test_without_a_sandbox_the_command_inherits_it(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("PROBE_VALUE", "dummy-value")
+        outcome = await ShellCommandTool().execute(
+            command="printenv PROBE_VALUE", cwd=str(tmp_path)
+        )
+        assert outcome["stdout"].strip() == "dummy-value"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs sh")
+class TestCommandGivenAsAPath:
+    """A path must be the program the allowlisted name resolves to, not any file of that name."""
+
+    @pytest.fixture
+    def impostor(self, tmp_path: Path) -> Path:
+        script = tmp_path / "echo"
+        script.write_text("#!/bin/sh\nprintf impostor-ran\n")
+        script.chmod(0o755)
+        return script
+
+    @pytest.mark.parametrize("given", ["absolute", "relative"])
+    async def test_a_file_named_like_the_program_is_refused(
+        self, impostor: Path, given: str
+    ) -> None:
+        tool = ShellCommandTool(
+            sandbox=ToolSandbox(
+                enabled=True, allowed_commands=["echo"], allowed_paths=[str(impostor.parent)]
+            )
+        )
+        program = str(impostor) if given == "absolute" else "./echo"
+        with pytest.raises(SandboxViolationError, match="not what 'echo' resolves to"):
+            outcome = await tool.execute(command=f"{program} hi", cwd=str(impostor.parent))
+            pytest.fail(f"{program} ran: {outcome}")
+
+    def test_a_program_not_on_the_path_is_refused(self, tmp_path: Path, monkeypatch: Any) -> None:
+        monkeypatch.setattr("agentloom.tools.sandbox.shutil.which", lambda name: None)
+        sandbox = ToolSandbox(enabled=True, allowed_commands=["echo"])
+        with pytest.raises(SandboxViolationError, match="not what 'echo' resolves to"):
+            sandbox.validate_command("/bin/echo hi", cwd=str(tmp_path))

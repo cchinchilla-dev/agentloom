@@ -3,8 +3,9 @@
 These Protocols describe the ``Any`` seams in :class:`StepContext` (each field
 names its protocol) and keep the concrete implementations (``StateManager``,
 ``ProviderGateway``, ``ToolRegistry``, ``WorkflowObserver``, ``BaseCheckpointer``)
-decoupled from step executors. They only describe shape and import nothing at
-runtime, so importing them causes no cycle.
+decoupled from step executors. They only describe shape and import nothing of
+the package at runtime, so importing them causes no cycle. ``call_hook`` is the
+one way the engine and the gateway reach an observer.
 
 Only the methods that ``core/`` and ``steps/`` actually call on these
 collaborators are included. A concrete implementation can add more; a
@@ -14,10 +15,28 @@ not cast back to ``Any``.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from agentloom.core.results import StepResult
+
+logger = logging.getLogger("agentloom.observability")
+
+
+def call_hook(observer: object, hook: str, /, *args: object, **kwargs: object) -> None:
+    """Call *observer*'s *hook*, if it has one; an exception is logged, never raised.
+
+    Telemetry must not decide a run: a raising hook inside a step's attempt would retry its
+    paid calls.
+    """
+    method = getattr(observer, hook, None)
+    if method is None:
+        return
+    try:
+        method(*args, **kwargs)
+    except Exception:
+        logger.warning("Observer hook '%s' failed", hook, exc_info=True)
 
 
 @runtime_checkable
@@ -70,9 +89,10 @@ class ToolRegistryProtocol(Protocol):
 class ObserverProtocol(Protocol):
     """Workflow observer surface consumed by the engine.
 
-    The engine calls these methods directly, so an observer implements all of
-    them (:class:`NoopObserver` does, as no-ops). The protocol documents the
-    contract so observer authors can accept extra kwargs defensively.
+    The engine calls these through :func:`call_hook`, so one an observer lacks
+    is skipped (:class:`NoopObserver` has them all, as no-ops). The protocol
+    documents the contract so observer authors can accept extra kwargs
+    defensively.
     """
 
     def on_workflow_start(self, workflow_name: str, **kwargs: Any) -> None: ...
@@ -101,7 +121,7 @@ class ObserverProtocol(Protocol):
         **kwargs: Any,
     ) -> None: ...
 
-    # Provider hooks too, so ``isinstance`` rejects an observer that would crash mid-run
+    # Provider hooks too, so ``isinstance`` flags an observer that would miss token events
 
     def on_tokens(
         self,
@@ -137,6 +157,7 @@ class StreamCallbackProtocol(Protocol):
 
 
 __all__ = [
+    "call_hook",
     "CheckpointerProtocol",
     "GatewayProtocol",
     "ObserverProtocol",

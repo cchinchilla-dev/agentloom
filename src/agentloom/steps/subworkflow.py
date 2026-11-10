@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import anyio
 
 from agentloom.checkpointing.base import CheckpointData
 from agentloom.core.attempts import record_spend
+from agentloom.core.models import SandboxConfig
+from agentloom.core.redact import RedactionPolicy, redact_state
 from agentloom.core.results import (
     StepResult,
     StepStatus,
@@ -20,6 +23,10 @@ from agentloom.exceptions import BudgetExceededError, PauseRequestedError, StepE
 from agentloom.resilience.budget import BudgetEnforcer
 from agentloom.resilience.retry import classify_failure
 from agentloom.steps.base import BaseStep, StepContext
+from agentloom.steps.tool_step import ToolStep
+from agentloom.tools.builtins import with_sandbox
+from agentloom.tools.registry import ToolRegistry
+from agentloom.tools.sandbox import ToolSandbox
 
 
 class SubworkflowStep(BaseStep):
@@ -38,26 +45,40 @@ class SubworkflowStep(BaseStep):
                 sub_workflow = WorkflowParser.from_yaml(step.workflow_path)
             except Exception as e:
                 raise StepError(step.id, f"Failed to load subworkflow: {e}") from e
-        elif step.workflow_inline:
+        else:
+            assert step.workflow_inline  # a subworkflow without either fails validation
             try:
                 sub_workflow = WorkflowParser.from_dict(step.workflow_inline)
             except Exception as e:
                 raise StepError(step.id, f"Invalid inline subworkflow: {e}") from e
-        else:
-            raise StepError(
-                step.id,
-                "Subworkflow step requires 'workflow_path' or 'workflow_inline'",
-                is_retryable=False,
-            )
 
         parent_state = await context.state_manager.get_state_snapshot()
+        secret_inputs: list[str] = []
         if step.isolated_state:
             seed = dict(sub_workflow.state)
-            seed.update(step.input)
+            try:
+                rendered = ToolStep._resolve_args(
+                    step.input, parent_state, step.id, "input references"
+                )
+                if context.redaction_policy:
+                    # Patterns match key names, and ``input`` can give a secret another name
+                    masked = ToolStep._resolve_args(
+                        step.input,
+                        redact_state(parent_state, context.redaction_policy),
+                        step.id,
+                        "input references",
+                    )
+                    secret_inputs = [key for key, value in rendered.items() if value != masked[key]]
+                seed.update(rendered)
+            except (KeyError, ValueError, IndexError) as e:
+                raise StepError(step.id, f"Failed to resolve input: {e}", is_retryable=False) from e
             child_state = StateManager(initial_state=seed)
         else:
             # The parent's decisions answer its own gates, not a child gate that shares an id
-            seed = {key: value for key, value in parent_state.items() if key != "_approval"}
+            seed = {
+                **sub_workflow.state,
+                **{key: value for key, value in parent_state.items() if key != "_approval"},
+            }
             child_state = StateManager(initial_state=seed)
         decisions: dict[str, str] = {}
 
@@ -84,10 +105,12 @@ class SubworkflowStep(BaseStep):
             for pattern in context.redaction_policy.patterns:
                 if pattern not in sub_workflow.state_schema:
                     sub_workflow.state_schema[pattern] = StateKeyConfig(redact=True)
+            for key in secret_inputs:
+                sub_workflow.state_schema[key] = StateKeyConfig(redact=True)
 
-        # An enabled parent sandbox binds the child; a disabled one leaves a stricter child's alone.
-        if context.sandbox_config.enabled:
-            sub_workflow.config.sandbox = context.sandbox_config
+        sandbox = _effective_sandbox(context.sandbox_config, sub_workflow.config.sandbox)
+        sub_workflow.config.sandbox = sandbox
+        tool_registry = _child_registry(context.tool_registry, context.sandbox_config, sandbox)
 
         run_id = f"{context.run_id}.{step.id}" if context.run_id else step.id
         # Resume the child only from this step's pause, never from a checkpoint a past run left
@@ -110,7 +133,7 @@ class SubworkflowStep(BaseStep):
                 workflow=sub_workflow,
                 state_manager=child_state,
                 provider_gateway=context.provider_gateway,
-                tool_registry=context.tool_registry,
+                tool_registry=tool_registry,
                 observer=context.observer,
                 on_stream_chunk=context.on_stream_chunk,
                 checkpointer=context.checkpointer,
@@ -124,7 +147,7 @@ class SubworkflowStep(BaseStep):
                 paused,
                 checkpointer=context.checkpointer,
                 provider_gateway=context.provider_gateway,
-                tool_registry=context.tool_registry,
+                tool_registry=tool_registry,
                 observer=context.observer,
                 on_stream_chunk=context.on_stream_chunk,
                 approval_decisions=decisions,
@@ -204,6 +227,9 @@ class SubworkflowStep(BaseStep):
         child_final = result.final_state
         if step.return_keys is not None:
             child_final = {k: child_final[k] for k in step.return_keys if k in child_final}
+        # The parent has the value under its own key; its patterns don't know this name
+        if secret_inputs:
+            child_final = redact_state(child_final, RedactionPolicy(secret_inputs))
         # Only on success, like any step: a retry would see a failed attempt's output
         if step.output and result.status == WorkflowStatus.SUCCESS:
             await context.state_manager.set(step.output, child_final)
@@ -245,6 +271,79 @@ class SubworkflowStep(BaseStep):
             token_usage=token_usage,
             error_classification="permanent" if permanent else None,
         )
+
+
+def _common_limit(parent: list[str], child: list[str]) -> list[str] | None:
+    """The entries of two lists where empty means no limit; ``None`` when they share none."""
+    if not parent or not child:
+        return [entry.lower() for entry in parent or child]
+    theirs = {entry.lower() for entry in child}
+    return [entry.lower() for entry in parent if entry.lower() in theirs] or None
+
+
+def _common_dirs(parent: list[str], child: list[str]) -> list[str]:
+    """The directories both lists reach: of each nested pair, the deeper one."""
+    common: list[str] = []
+    for mine in (Path(entry).resolve() for entry in parent):
+        for theirs in (Path(entry).resolve() for entry in child):
+            if theirs.is_relative_to(mine):
+                common.append(str(theirs))
+            elif mine.is_relative_to(theirs):
+                common.append(str(mine))
+    return list(dict.fromkeys(common))
+
+
+def _effective_sandbox(parent: SandboxConfig, child: SandboxConfig) -> SandboxConfig:
+    """The sandbox a child workflow runs under: what both allow, or the only enabled one."""
+    if not parent.enabled:
+        return child
+    if not child.enabled:
+        return parent
+    domains = _common_limit(parent.allowed_domains, child.allowed_domains)
+    schemes = _common_limit(parent.allowed_schemes, child.allowed_schemes)
+    return SandboxConfig(
+        enabled=True,
+        allowed_commands=[c for c in parent.allowed_commands if c in child.allowed_commands],
+        # By access, not list by list: one side's allowed_paths may be the other's readable_paths
+        readable_paths=_common_dirs(
+            parent.allowed_paths + parent.readable_paths,
+            child.allowed_paths + child.readable_paths,
+        ),
+        writable_paths=_common_dirs(
+            parent.allowed_paths + parent.writable_paths,
+            child.allowed_paths + child.writable_paths,
+        ),
+        # An empty list of either means no limit, so sharing no entry has to refuse the network
+        allow_network=(
+            parent.allow_network
+            and child.allow_network
+            and domains is not None
+            and schemes is not None
+        ),
+        allowed_domains=domains or [],
+        allowed_schemes=schemes or [],
+        max_write_bytes=min(
+            (n for n in (parent.max_write_bytes, child.max_write_bytes) if n is not None),
+            default=None,
+        ),
+        danger_opt_in=[d for d in parent.danger_opt_in if d in child.danger_opt_in],
+        allow_internal_webhook_targets=(
+            parent.allow_internal_webhook_targets and child.allow_internal_webhook_targets
+        ),
+        deny_internal_hosts=(
+            parent.deny_internal_hosts
+            or child.deny_internal_hosts
+            # An empty list refuses internal hosts; the child's list must not reopen them
+            or (not parent.allowed_domains and bool(child.allowed_domains))
+        ),
+    )
+
+
+def _child_registry(registry: Any, parent: SandboxConfig, effective: SandboxConfig) -> Any:
+    """The child's tools: *registry*, with its built-ins rebound when the sandbox differs."""
+    if not effective.enabled or effective == parent or not isinstance(registry, ToolRegistry):
+        return registry
+    return with_sandbox(registry, ToolSandbox(**effective.model_dump()))
 
 
 async def _paused_child(checkpointer: Any, run_id: str) -> CheckpointData | None:

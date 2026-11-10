@@ -37,7 +37,7 @@ What `agentloom run workflow.yaml` does:
 2. **Set up.** The command applies its options to `config`, creates one `ProviderGateway`, registers the providers the [config file](providers.md#config-file) lists or, without one, those the environment sets up, or the mock, and adds an observer if the `observability` extra is installed, the built-in tools behind the sandbox, and a checkpointer with `--checkpoint`.
 3. **Layer.** The engine builds the graph again and sorts the steps into layers.
 4. **Run each layer.** Its steps start together, up to `max_concurrent_steps`, under the run's `timeout`.
-5. **Run each step.** The budget is checked, then each attempt calls the step's executor under the step's `timeout`. The executor takes a snapshot of the state, renders its templates and calls the gateway or its tool.
+5. **Run each step.** The budget is checked, then each attempt calls the step's executor under the step's `timeout`. The executor reads the state as the layer started, renders its templates and calls the gateway or its tool.
 6. **Call a provider.** The gateway tries the providers that serve the model in order, skipping those whose circuit is open, waiting for each one's rate limit, and records what the call cost.
 7. **Record.** A step that succeeds writes its `output` to the state. The engine stores its result, charges its cost to the budget and tells the observer.
 8. **Between layers,** the engine stops for a pause, skips the steps after a failure, and notes which branches the routers chose.
@@ -53,9 +53,9 @@ What `agentloom run workflow.yaml` does:
 
 ## State
 
-`StateManager` holds the state behind one lock. Each attempt of a step reads a copy of the state taken when it starts, and the step writes its `output` only when it succeeds, along with `steps.<id>`. A failed attempt writes nothing to the state, but what its tools did isn't undone.
+`StateManager` holds the state behind one lock. Each step reads a copy of the state taken when its layer starts, plus what it wrote itself, and the step writes its `output` only when it succeeds, along with `steps.<id>`. A failed attempt writes nothing to the state, but what its tools did isn't undone.
 
-Steps of the same layer don't see each other's writes, as each read the state when it started. With more steps in a layer than `max_concurrent_steps`, the steps that wait for a slot start after some siblings finished, and see their outputs: what they render can differ from run to run. Two steps of one layer that write the same `output` key get a warning when the workflow loads, or an error with `config.strict_outputs: true`.
+Steps of the same layer don't see each other's writes, as all of them read the state from when the layer started: a step waiting for a slot under `max_concurrent_steps` renders the same as one that started first. Two steps of one layer that write the same `output` key get a warning when the workflow loads, or an error with `config.strict_outputs: true`.
 
 ## Routers and skipped steps
 
@@ -75,12 +75,13 @@ The budget is checked before each step starts and charged after each attempt, fa
 
 ## The gateway
 
-`ProviderGateway.register(provider, priority=0, is_fallback=False, models=None, max_rpm=60, max_tpm=100_000, circuit_fail_threshold=5, circuit_reset_timeout=60.0)` adds a provider. For each model, the gateway picks its candidates:
+`ProviderGateway.register(provider, priority=0, is_fallback=False, models=None, max_rpm=60, max_tpm=100_000, circuit_fail_threshold=5, circuit_reset_timeout=60.0, is_primary=False, model_aliases=None)` adds a provider. For each model, the gateway picks its candidates:
 
-1. **A model listed in a provider's `models`** goes to those providers only, without fallbacks.
-2. **Any other model** goes to the providers that serve it, by `priority`, lowest first, and then to the fallback providers.
+1. **The primary provider** goes first, if it can serve the model.
+2. **A model listed in a provider's `models`** goes to those providers; **any other model** to the providers that serve it. Either way, by `priority`, lowest first, along with the providers with an alias for it.
+3. **The fallback providers** come last.
 
-For each candidate, an open circuit skips it, the rate limiter may make the call wait, and the call goes through the circuit breaker; a failure moves on to the next candidate. [Reliability](reliability.md#provider-failures) covers fallbacks, circuit breakers and rate limits from a workflow's side.
+Each candidate receives its own name for the model, from `model_aliases`. For each candidate, an open circuit skips it, the rate limiter may make the call wait, and the call goes through the circuit breaker; a failure moves on to the next candidate. [Reliability](reliability.md#provider-failures) covers fallbacks, circuit breakers and rate limits from a workflow's side.
 
 ## Where redaction applies
 

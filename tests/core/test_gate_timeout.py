@@ -141,6 +141,18 @@ class TestExpiry:
         decisions = [call.args[2] for call in observer.on_approval_gate.call_args_list]
         assert decisions == ["timeout"]  # once: no retry decides it
 
+    async def test_a_hook_that_raises_leaves_an_expired_gate_alone(
+        self, tmp_path: Path, clock: _Clock
+    ) -> None:
+        checkpointer, data = await _pause(tmp_path, _workflow())
+        clock.advance(60)
+        observer = MagicMock()
+        observer.on_approval_gate.side_effect = RuntimeError("hook bug")
+
+        result = await _resume(checkpointer, data, "approved", observer=observer)
+
+        assert result.step_results["approve"].status == StepStatus.TIMEOUT
+
     async def test_a_gate_before_its_expiry_pauses_again_with_the_same_deadline(
         self, tmp_path: Path, clock: _Clock
     ) -> None:

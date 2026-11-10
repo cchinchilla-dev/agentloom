@@ -154,7 +154,9 @@ def test_cli_refuses_a_key_variable_that_is_not_set(monkeypatch: pytest.MonkeyPa
     from agentloom.cli.run import _setup_generic_openai
 
     monkeypatch.delenv("VLLM_API_KEY", raising=False)
-    config = WorkflowConfig(provider="generic_openai", base_url=BASE, api_key_env="VLLM_API_KEY")
+    config = WorkflowConfig(
+        provider="generic_openai", base_url=BASE, model=MODEL, api_key_env="VLLM_API_KEY"
+    )
     with pytest.raises(ProviderError, match="VLLM_API_KEY"):
         _setup_generic_openai(ProviderGateway(), config)
 

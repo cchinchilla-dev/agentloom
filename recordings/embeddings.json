@@ -13,6 +13,7 @@
       "completion_tokens": 0,
       "total_tokens": 27
     },
-    "cost_usd": 0.00000054
+    "cost_usd": 0.00000054,
+    "request_hash": "9e8b9fcd9b6edd5e4474b61ea85add8de45f728f524f5b0c0c0d7788e70bdd7c"
   }
 }
