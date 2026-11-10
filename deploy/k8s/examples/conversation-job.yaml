@@ -87,9 +87,9 @@ data:
         # system + 3 user + 3 assistant = 7 messages
         assert len(chat.messages) == 7, f"expected 7 messages, got {len(chat.messages)}"
         assert chat.messages[0].role == "system"
-        # Multi-agent: user + assistant turns carry the speaker name.
-        assert chat.messages[1].name == "alice", chat.messages[1].name
-        assert chat.messages[3].name == "bob", chat.messages[3].name
+        # Multi-agent: the model's replies carry the speaker name.
+        assert chat.messages[2].name == "alice", chat.messages[2].name
+        assert chat.messages[4].name == "bob", chat.messages[4].name
         assert chat.messages[-1].content.startswith("echo::"), chat.messages[-1].content
         print("[ok] conversation-k8s validation passed:")
         for m in chat.messages:

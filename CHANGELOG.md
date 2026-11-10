@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python 3.14 (#192): tested in CI and declared in the classifiers. CI also runs the suite on macOS and Windows, with the lowest dependency versions `pyproject.toml` allows, and checks the documentation on every pull request. Python 3.15 waits for PyYAML, which publishes no wheels for it and whose source build fails.
 - Config file for the CLI (#212). `run`, `resume`, `replay` and `callback-server` take `--config FILE`, else read the file `AGENTLOOM_CONFIG` names, else `./agentloom.yaml` when it exists. Its `providers:` block replaces provider discovery: each entry sets `name`, `models`, `priority`, `base_url` and `is_fallback`, and takes its API key from the usual environment variable. An `api_key` in the file, an unknown provider or key, or a file that does not parse stops the command with a one-line error; `callback-server` reads the file once, at start.
 - `agentloom replay` and `verify-determinism` take `--provider` and `--model`, as `agentloom run` does, so a recording made with them replays.
+- `persistence.existingClaim` in the Helm chart: a PersistentVolumeClaim of yours, mounted on `/data`, keeps the run history and turns checkpoints on, so a run paused in one pod can be resumed from another. The deployment guide shows the same patch for Kustomize.
+- Grafana: a collapsed row for tools, agents, conversations and embeddings, and a panel for injected mock faults.
 
 ### Changed
 
@@ -51,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comments and docstrings follow one rule, written in `AGENTS.md` (#213): a comment states a non-obvious why on one line, with no history and no issue tags that only name where the code came from. A pre-commit hook, `no-history-comments`, rejects the unambiguous history markers in Python comments under `src/` and `tests/`.
 - `make docker-build-obs` is now `make docker-build-lite` (#213). The default image already ships the observability extra, so the target builds `production-lite`, the image without it. The `BUILD_OBSERVABILITY` build arg, which did nothing, is gone from `docker.yml` and the deploy guide, and `scripts/audit_approval_gate.py` and `scripts/observability-setup.sh`, referenced nowhere, are removed.
 - The documentation moved to https://cchinchilla.dev/agentloom/, which publishes the docs of the version PyPI serves. The pages under `docs/` are GitHub-flavored Markdown with a frontmatter, which read the same on GitHub; the workflow YAML reference is split into Workflow files, Steps, LLM calls, Agents, State & templates, Tools & sandbox and Reliability, with a Concepts page, and every page was checked against the code. MkDocs and its GitHub Pages site are gone; links to the old site no longer work. CI checks the pages with `scripts/check_docs.py` (frontmatter, title, links and headings), also part of `make check`, and a release starts the site's rebuild once PyPI serves it.
+- The Kustomize placeholder workflow uses the mock provider, so the Job runs in every overlay with no key and no Ollama.
+- The bundled OTel Collector keeps a series for 24 hours after its process last reported, not 30 minutes, so the dashboard's totals cover about a day of runs. A collector with many runs holds more series in memory.
+- The `production` overlay pins the current release, and the version-linearity check fails when it falls behind.
+- Grafana: a `Provider (calls)` selector filters the panels labelled with AgentLoom's provider names (`google`, `mock`), which the `Provider` selector, built from the token metrics, could leave empty.
 
 ### Breaking changes
 
@@ -245,6 +251,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WorkflowGraph.to_mermaid` keeps steps apart whose ids sanitise alike, such as `a-b` and `a_b`; ids don't change in a graph without such a collision.
 - `visualize --format mermaid` prints the whole router condition, escaped, instead of its first 20 characters.
 - Examples 16, 17, 18, 30 and 38 now show what they describe, and the README counts example 11 correctly.
+- Example Jobs: the approval, pause and webhook Jobs call the virtual environment's Python, `conversation-job.yaml` looks for the speaker on the model's replies, where it is recorded, and `array-index-job.yaml` checks a rendered prompt instead of only validating the workflow.
+- Examples 36 and 41 run inside the image: `/workflows/examples` points back at the bundled examples.
+- The `production` overlay sends telemetry to the collector's full name in the `observability` namespace, the only one its NetworkPolicy allows.
+- The Argo CD Application gives the run the provider keys' Secret and labels the namespace for the `restricted` Pod Security profile.
+- Helm: the default `resourceQuota` no longer sets `limits.cpu`, which every pod would have had to declare, and with `ollama.enabled` the run waits for Ollama to finish pulling the model. The chart's Ollama image is pinned.
+- Grafana: two panels shared one id, so a link to either could open the other.
 
 ### Security
 

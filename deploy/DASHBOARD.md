@@ -35,7 +35,7 @@ CLI (agentloom run)
 
 Each CLI invocation is an ephemeral process that creates its own
 `MeterProvider`. The OTel Collector aggregates metrics and exposes them
-to Prometheus with a 30-minute expiration window (`metric_expiration: 30m`),
+to Prometheus with a 24-hour expiration window (`metric_expiration: 24h`),
 so data remains visible after the CLI exits.
 
 ## Dashboard Variables
@@ -43,7 +43,8 @@ so data remains visible after the CLI exits.
 | Variable     | Label    | Default | Description                       |
 |-------------|----------|---------|-----------------------------------|
 | `$workflow` | Workflow | `.*`    | Filter panels by workflow name    |
-| `$provider` | Provider | `.*`    | Filter panels by provider (ollama, openai, etc.) |
+| `$provider` | Provider | `.*`    | Filter token and latency panels by provider (`gcp.gemini`, `openai`, etc.) |
+| `$call_provider` | Provider (calls) | `.*` | Filter call, error, circuit, streaming and embedding panels by AgentLoom's provider name (`google`, `mock`, etc.) |
 
 Use the dropdown selectors at the top of the dashboard to filter.
 
@@ -159,6 +160,7 @@ back to OPEN on failure.
 | **Replay Hit Ratio** | stat | Share of lookups that found a recorded response |
 | **Recording Captures by Provider** | timeseries | Real provider responses captured by the recorder |
 | **Captured Real-Provider Latency (p50 / p95)** | timeseries | Latency of the captured calls — what a replay simulates |
+| **Mock Faults** | timeseries | Faults a recording injected, by type |
 
 ### Row 12 — Streaming (collapsed)
 
@@ -171,7 +173,20 @@ back to OPEN on failure.
 | **Streaming Ratio** | stat | Share of LLM calls that stream |
 | **Stream vs Batch Duration** | bar gauge | Average step duration, streamed against batch |
 
-### Row 13 — Traces
+### Row 13 — Agents, Tools & Embeddings (collapsed)
+
+| Panel | Type | What it shows |
+|-------|------|---------------|
+| **Tool Calls** | timeseries | Tool calls by tool and outcome |
+| **Tool Latency (p50 / p95)** | timeseries | How long tool calls take |
+| **Agent Turns** | timeseries | Agent turns by agent and outcome |
+| **Model Calls per Turn (p50 / p95)** | timeseries | Model calls an agent makes in a turn |
+| **Conversation Length (p50 / p95)** | timeseries | Messages in a conversation after each turn |
+| **Conversation Trims** | timeseries | Turns that trimmed messages, by policy |
+| **Embedding Calls** | timeseries | Embedding calls by provider and model |
+| **Embedding Dimensions** | timeseries | Average size of the returned vectors |
+
+### Row 14 — Traces
 
 | Panel | Type | What it shows |
 |-------|------|---------------|
@@ -189,7 +204,7 @@ The dashboard reads the metrics listed, with their labels, in the
 ### Panels show "No data"
 
 Metrics are ephemeral — each CLI run exports data, then the process exits.
-The OTel Collector retains metrics for 30 minutes (`metric_expiration`).
+The OTel Collector retains metrics for 24 hours (`metric_expiration`).
 
 ```bash
 # Verify metrics reach Prometheus
@@ -207,14 +222,14 @@ uv run agentloom run examples/16_circuit_breaker_demo.yaml
 Each CLI invocation is a short-lived process that creates ephemeral
 counters. Timeseries panels show cumulative totals — run several
 workflows to see the values increase over time. Metrics expire from
-Prometheus after 30 minutes (`metric_expiration`), so run workflows
+Prometheus after 24 hours (`metric_expiration`), so run workflows
 periodically to keep data visible.
 
 ### Circuit Breaker shows OPEN unexpectedly
 
 If you ran `16_circuit_breaker_demo.yaml`, it intentionally trips the
 circuit breaker with a non-existent model. The OPEN state persists in
-Prometheus for 30 minutes. Run a successful workflow against the same
+Prometheus for 24 hours. Run a successful workflow against the same
 provider to reset it, or wait for the metric to expire.
 
 ### Traces not appearing in Jaeger

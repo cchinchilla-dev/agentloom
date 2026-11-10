@@ -191,3 +191,37 @@ def test_version_linearity_passes_without_a_chart(tmp_path: Path, script) -> Non
     assert not (tmp_path / "deploy").exists()
     code, _ = script.check(tmp_path)
     assert code == 0
+
+
+def _write_overlay(tmp_path: Path, body: str) -> None:
+    path = tmp_path / "deploy" / "k8s" / "overlays" / "production" / "kustomization.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(body)
+
+
+def test_version_linearity_fails_when_the_production_image_tag_differs(
+    tmp_path: Path, script
+) -> None:
+    _write_repo(tmp_path, py_version="1.2.3", changelog="## [1.2.3]\n")
+    _write_overlay(tmp_path, "images:\n  - name: x\n    newTag: 1.2.2  # Pin to release\n")
+    code, message = script.check(tmp_path)
+    assert code != 0
+    assert "kustomization.yaml newTag=1.2.2" in message
+
+
+def test_version_linearity_passes_when_the_production_image_tag_matches(
+    tmp_path: Path, script
+) -> None:
+    _write_repo(tmp_path, py_version="1.2.3", changelog="## [1.2.3]\n")
+    _write_overlay(tmp_path, 'images:\n  - name: x\n    newTag: "1.2.3"\n')
+    assert script.check(tmp_path)[0] == 0
+
+
+def test_version_linearity_fails_when_the_production_overlay_has_no_tag(
+    tmp_path: Path, script
+) -> None:
+    _write_repo(tmp_path, py_version="1.2.3", changelog="## [1.2.3]\n")
+    _write_overlay(tmp_path, "images: []\n")
+    code, message = script.check(tmp_path)
+    assert code != 0
+    assert "has no newTag" in message

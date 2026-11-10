@@ -17,10 +17,12 @@ spec:
     helm:
       valueFiles:
         - values.yaml
-      # The chart needs a workflow: create this ConfigMap, with a workflow.yaml key, before the first sync
+      # Create this ConfigMap, with a workflow.yaml key, and the provider keys' Secret before the first sync
       valuesObject:
         workflow:
           existingConfigMap: agentloom-workflows
+        provider:
+          existingSecret: agentloom-provider-keys
   destination:
     server: https://kubernetes.default.svc
     namespace: agentloom
@@ -36,6 +38,12 @@ spec:
     automated:
       prune: true
       selfHeal: true
+    # CreateNamespace alone leaves out the Pod Security labels that namespace.yaml sets
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
     syncOptions:
       - CreateNamespace=true
       - Replace=true  # Force replace for immutable resources (Jobs)

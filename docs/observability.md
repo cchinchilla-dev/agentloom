@@ -164,14 +164,14 @@ The collector turns metric names into Prometheus names: dots become underscores,
 | `agentloom_circuit_breaker_state` | `provider` | `0` closed, `1` open, `2` half open. |
 | `agentloom_budget_remaining_usd` | `workflow` | What the budget has left, for runs with `budget_usd`. |
 
-- **The circuit breaker gauge** is reported on each provider call and when a circuit changes state. A circuit left open by a process that has ended stays on the dashboard until the bundled collector drops its series, after 30 minutes.
+- **The circuit breaker gauge** is reported on each provider call and when a circuit changes state. A circuit left open by a process that has ended stays on the dashboard until the bundled collector drops its series, after 24 hours.
 - **The budget gauge** updates each time the run is charged, so a run that breaks its budget reports `0`.
 - `AGENTLOOM_METRICS_MAX_KEYS`, 1024 by default, caps how many providers and workflows each gauge tracks.
 
 ### Reading the numbers
 
 - **Histograms have explicit buckets,** the same over OTLP and with `prometheus-client`: `agentloom_step_duration_seconds` ends at 60 seconds, for instance, and `gen_ai.client.operation.duration` at 30. `agentloom_workflow_duration_seconds` and `gen_ai.client.token.usage` keep the SDK's default buckets, whose first one ends at 5.
-- **Each `agentloom` process exports series of its own,** told apart by a `service_instance_id` label, so totals are sums over series, as the dashboard's are. The bundled collector stops exporting a series 30 minutes after its process last reported: those totals cover about the last half hour of runs, while [run history](#run-history) counts every run.
+- **Each `agentloom` process exports series of its own,** told apart by a `service_instance_id` label, so totals are sums over series, as the dashboard's are. The bundled collector stops exporting a series 24 hours after its process last reported: those totals cover about the last day of runs, while [run history](#run-history) counts every run.
 - There are no metrics for rate-limit waits, routers, checkpoints or the sandbox.
 
 ## The Grafana dashboard
@@ -190,14 +190,14 @@ The collector turns metric names into Prometheus names: dots become underscores,
 | Cost Analysis | Cost over time and per workflow; cost, tokens and duration per run; budget remaining. |
 | Multi-modal | Attachments by step type. |
 | Human-in-the-Loop | Approval decisions; webhook deliveries, success rate and latency. |
-| Mock & Replay | Replays by how they matched, the share answered from the recording, recorded calls and their latency. |
+| Mock & Replay | Replays by how they matched, the share answered from the recording, recorded calls and their latency, injected faults. |
 | Streaming | Streamed responses, time to first token, streamed against whole responses. |
+| Agents, Tools & Embeddings | Tool calls and latency; agent turns and model calls per turn; conversation length and trims; embedding calls and dimensions. |
 | Traces | The latest traces, linked to Jaeger. |
 
-The last four rows start collapsed.
+The Human-in-the-Loop, Mock & Replay, Streaming and Agents, Tools & Embeddings rows start collapsed.
 
-- **The `provider` variable** takes its values from the token metrics, which name providers as the registry does (`gcp.gemini`), and as recorded on a replay. The call, error, circuit and streaming panels label providers by AgentLoom's name (`google`, `mock`), so picking a provider can empty them.
-- Tool, agent, conversation, embedding and fault metrics have no panel.
+- **Two selectors filter by provider.** `Provider` takes its values from the token metrics, which name providers as the registry does (`gcp.gemini`), and as recorded on a replay; it filters the token, latency and time-to-first-token panels. `Provider (calls)` uses AgentLoom's names (`google`, `mock`) and filters the call, error, circuit, streaming and embedding panels.
 
 ## Run history
 

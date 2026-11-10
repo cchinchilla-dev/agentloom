@@ -16,10 +16,10 @@ repos:
         types_or: [python, pyi]
         files: ^(src|tests)/  # same paths CI checks
       - id: version-linearity
-        name: version linearity (pyproject.toml, CHANGELOG.md, __version__, Chart appVersion)
+        name: version linearity (pyproject.toml, CHANGELOG.md, __version__, Chart appVersion, overlay newTag)
         entry: uv run python scripts/check_version_linearity.py
         language: system
-        files: ^(pyproject\.toml|CHANGELOG\.md|src/[^/]+/__init__\.py|deploy/helm/agentloom/Chart\.yaml)$
+        files: ^(pyproject\.toml|CHANGELOG\.md|src/[^/]+/__init__\.py|deploy/helm/agentloom/Chart\.yaml|deploy/k8s/overlays/production/kustomization\.yaml)$
         pass_filenames: false
       - id: no-history-comments
         name: no history in comments (SKIP=no-history-comments to bypass)
