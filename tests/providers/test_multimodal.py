@@ -248,6 +248,15 @@ class TestSandboxRestrictions:
         with pytest.raises(PermissionError, match="readable_paths"):
             await resolve_attachments([att], sandbox=sandbox)
 
+    async def test_file_path_that_is_no_link_names_one_path(self, tmp_path) -> None:
+        path = (tmp_path / "a.png").resolve()
+        path.write_bytes(_TINY_PNG)
+        sandbox = SandboxConfig(enabled=True, readable_paths=["/other/dir"])
+        att = Attachment(type="image", source=str(path))
+        with pytest.raises(PermissionError, match="not within sandbox") as refused:
+            await resolve_attachments([att], sandbox=sandbox)
+        assert "resolves to" not in str(refused.value)
+
     async def test_file_path_allowed_by_sandbox(self, tmp_path) -> None:
         path = tmp_path / "image.png"
         path.write_bytes(_TINY_PNG)

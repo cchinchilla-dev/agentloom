@@ -55,6 +55,7 @@ class TestShellCommandSandbox:
         with pytest.raises(SandboxViolationError):
             sandbox.validate_command("echo hello")
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="shlex splits a Windows program path")
     def test_strips_path_prefix(self) -> None:
         program = shutil.which("echo")
         assert program is not None
@@ -1233,6 +1234,9 @@ class TestShellExpansionCannotLeaveTheLists:
             "echo a?",
             "echo [ab]",
             "echo ~",
+            "echo '~'",
+            "echo a=~/x",
+            "echo a:~/x",
             "echo {a,b}",
             "echo {1..3}",
         ],
@@ -1241,6 +1245,10 @@ class TestShellExpansionCannotLeaveTheLists:
         sandbox = ToolSandbox(enabled=True, allowed_commands=["echo"])
         with pytest.raises(SandboxViolationError, match="Shell expansion"):
             sandbox.validate_command(command)
+
+    @pytest.mark.parametrize("command", ["echo RUNNER~1", "echo notes.txt~"])
+    def test_a_tilde_inside_a_word_passes(self, command: str) -> None:
+        ToolSandbox(enabled=True, allowed_commands=["echo"]).validate_command(command)
 
     def test_a_brace_that_expands_nothing_passes(self) -> None:
         ToolSandbox(enabled=True, allowed_commands=["echo"]).validate_command("""echo '{"a": 1}'""")

@@ -301,10 +301,8 @@ class MockProvider(BaseProvider):
                         f"call {idx + 1}. Re-record the fixture with `agentloom run --record`, "
                         f"or add the turns the step now makes."
                     )
-                turn = entry[min(idx, len(entry) - 1)]
+                turn: dict[str, Any] = entry[min(idx, len(entry) - 1)]
                 self._turn_cursor[key] = idx + 1
-                if not isinstance(turn, dict):
-                    return None
                 if comparable:
                     self._check_drift(f"Step {key!r}", turn, request_hash)
                 return turn

@@ -373,6 +373,35 @@ class TestReplayProviderAndModel:
         result = runner.invoke(app, [*args, "--provider", "anthropic"])
         assert result.exit_code == 0, result.output
 
+    def test_verify_determinism_takes_the_recorded_provider(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-key")
+        args = self._recorded(
+            tmp_path,
+            "https://api.anthropic.com/v1/messages",
+            ANTHROPIC_REPLY,
+            "--provider",
+            "anthropic",
+        )
+        monkeypatch.delenv("ANTHROPIC_API_KEY")
+        verify = ["verify-determinism", *args[1:]]
+        assert runner.invoke(app, verify).exit_code == 1
+        result = runner.invoke(app, [*verify, "--provider", "anthropic"])
+        assert result.exit_code == 0, result.output
+
+    def test_a_recording_that_cannot_be_replaced_exits_1(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "dummy-key")
+        workflow = tmp_path / "wf.yaml"
+        workflow.write_text(NO_MODEL_YAML)
+        taken = tmp_path / "a_directory"
+        taken.mkdir()
+        result = runner.invoke(app, ["run", str(workflow), "--record", str(taken), "--lite"])
+        assert result.exit_code == 1
+        assert "cannot replace" in result.output
+
     def test_verify_determinism_takes_the_recorded_model(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -29,7 +29,8 @@ from agentloom.exceptions import SandboxViolationError
 _SHELL_OPERATOR_RE = re.compile(r"[|;&`\n\r]|\$\(|<\(|>\(|[<>]")
 
 # sh expands these after the check, so a path could leave the lists; bash as sh expands {a,b} too
-_SHELL_EXPANSION_RE = re.compile(r"[$~*?\[]|\{[^{}]*(?:,|\.\.)[^{}]*\}")
+# A ``~`` counts only where sh expands it: inside a word it is a Windows short name (RUNNER~1)
+_SHELL_EXPANSION_RE = re.compile(r"[$*?\[]|(?:^|[\s=:'\"])~|\{[^{}]*(?:,|\.\.)[^{}]*\}")
 
 # All a sandboxed command gets: the rest of the environment holds provider keys
 _COMMAND_ENV_VARS = ("PATH", "HOME", "LANG", "LC_ALL", "TZ")

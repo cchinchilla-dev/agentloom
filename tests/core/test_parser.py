@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError as PydanticValidationError
@@ -452,6 +454,10 @@ class TestRequiredFieldsByType:
         step = {"id": "s", "type": "subworkflow", "workflow_inline": inline}
         assert WorkflowParser.from_dict(_workflow(step)).steps[0].workflow_inline == inline
 
+    def test_a_step_that_is_no_mapping_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="valid dictionary"):
+            WorkflowParser.from_dict(_workflow("not a step"))
+
     def test_a_field_of_another_type_does_not_count(self) -> None:
         with pytest.raises(ValidationError, match="'tool_name'"):
             WorkflowParser.from_dict(_workflow({"id": "s", "type": "tool", "prompt": "p"}))
@@ -571,6 +577,14 @@ class TestFromYamlSource:
         name = "n" * 300
         text = f"{{name: {name}, steps: [{{id: a, type: llm_call, prompt: hi}}]}}"
         assert WorkflowParser.from_yaml(text).name == name
+
+    def test_a_path_the_os_refuses_is_not_read_as_yaml(self) -> None:
+        refused = PermissionError(errno.EACCES, "denied")
+        with (
+            patch.object(Path, "is_file", side_effect=refused),
+            pytest.raises(PermissionError),
+        ):
+            WorkflowParser.from_yaml("workflow.yaml")
 
     def test_a_long_scalar_is_yaml_text_not_a_missing_file(self) -> None:
         with pytest.raises(ValidationError, match="must be a mapping"):

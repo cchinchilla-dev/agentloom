@@ -253,6 +253,9 @@ class TestMissingKeyNamedLikeAMethod:
     def test_the_call_still_reaches_the_method(self, expression: str) -> None:
         assert self._eval(expression) is True
 
+    def test_a_native_dict_keeps_its_own_method(self) -> None:
+        assert evaluate_expression("x.get('a') == 1", {"x": {"a": 1}}) is True
+
     async def test_a_router_on_the_missing_key_takes_the_default(self) -> None:
         step = StepDefinition(
             id="r",

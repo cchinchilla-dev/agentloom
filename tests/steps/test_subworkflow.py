@@ -229,6 +229,22 @@ class TestSubworkflowFailurePaths:
         with pytest.raises(StepError, match="Invalid inline subworkflow"):
             await SubworkflowStep().execute(ctx)
 
+    async def test_an_input_that_cannot_render_is_permanent(self) -> None:
+        child = {"name": "child", "steps": [{"id": "s", "type": "llm_call", "prompt": "hi"}]}
+        ctx = StepContext(
+            step_definition=StepDefinition(
+                id="sub",
+                type=StepType.SUBWORKFLOW,
+                workflow_inline=child,
+                isolated_state=True,
+                input={"n": "{topic:d}"},
+            ),
+            state_manager=StateManager({"topic": "billing"}),
+        )
+        with pytest.raises(StepError, match="Failed to resolve input") as failure:
+            await SubworkflowStep().execute(ctx)
+        assert failure.value.is_retryable is False
+
     async def test_child_engine_failure_returns_failed_result(self) -> None:
         gateway = ProviderGateway()
         gateway.register(MockProvider(), priority=0)
@@ -1171,6 +1187,14 @@ class TestEffectiveSandbox:
         assert merged.readable_paths == [str(inner.resolve())]
         assert merged.writable_paths == [str(inner.resolve())]
         assert merged.allowed_paths == []
+
+    def test_the_deeper_directory_can_be_the_parents(self, tmp_path: Path) -> None:
+        inner = tmp_path / "inner"
+        merged = _effective_sandbox(
+            self._on(allowed_paths=[str(inner)]), self._on(allowed_paths=[str(tmp_path)])
+        )
+        assert merged.readable_paths == [str(inner.resolve())]
+        assert merged.writable_paths == [str(inner.resolve())]
 
     def test_read_only_on_one_side_stays_read_only(self, tmp_path: Path) -> None:
         merged = _effective_sandbox(
