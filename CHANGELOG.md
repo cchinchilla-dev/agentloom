@@ -103,7 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A subworkflow's steps are recorded under their path (`sub/step`), LLM entries and `_tools`. Recordings holding them under the bare id still replay.
 - Recordings mask the keys of the run's redaction policy in tool call arguments and in tool results that are JSON objects or arrays. `request_hash` still covers the real request, so a later turn that holds a masked value is served in order, unchecked.
 - Embedding calls report `gen_ai.operation.name` `embeddings`: their spans are named `embeddings <model>` instead of `chat <model>`, and the `chat` series of `gen_ai.client.operation.duration` and `gen_ai.client.token.usage` lose those samples.
-- Failed steps and provider attempts set the span status to `ERROR`, so Jaeger's error filter and status queries now find them.
+- Failed runs, steps and provider attempts set the span status to `ERROR`, so Jaeger's error filter and status queries now find them. A run counts as failed when it fails, times out or breaks its budget, not when it pauses.
 - `gen_ai.request.model` on a step span is the model the step asked for, not the id the provider answered with.
 - A subworkflow no longer counts as a run of its own: `agentloom_workflow_runs_total`, `agentloom_workflow_duration_seconds` and `agentloom_cost_usd_total` record only the outermost run, so a subworkflow's cost is no longer counted twice.
 - OTLP metrics carry `service.name` `agentloom` instead of `unknown_service`.
@@ -257,6 +257,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Argo CD Application gives the run the provider keys' Secret and labels the namespace for the `restricted` Pod Security profile.
 - Helm: the default `resourceQuota` no longer sets `limits.cpu`, which every pod would have had to declare, and with `ollama.enabled` the run waits for Ollama to finish pulling the model. The chart's Ollama image is pinned.
 - Grafana: two panels shared one id, so a link to either could open the other.
+- Grafana: the recording and webhook panels read their counters directly, as `rate()` gives zero or `NaN` on the series of a process that has ended. `Total Gates` and `By Decision` leave out gates still pending, the success rate leaves out paused runs, and the circuit, time-to-first-token, stream against batch and budget panels show one value per provider or workflow rather than one per process. Totals in legends and stat panels show the counter's value instead of adding up its samples, which reported 279 runs for 14.
+- `agentloom_workflow_duration_seconds` has its own buckets, starting at 0.1 s: under the SDK's default, whose first bucket ends at 5 s, every shorter run read as a p50 of 2.5 s.
 
 ### Security
 

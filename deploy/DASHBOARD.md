@@ -57,7 +57,7 @@ Eight panels showing high-level aggregates.
 | Panel | Type | What it shows |
 |-------|------|---------------|
 | **Total Runs** | stat | Total workflow executions across all workflows |
-| **Success Rate** | gauge | Percentage of successful runs (green ≥95%, orange ≥80%, red <80%) |
+| **Success Rate** | gauge | Percentage of successful runs, paused ones left out (green ≥95%, orange ≥80%, red <80%) |
 | **Failed** | stat | Count of failed workflow runs |
 | **Total Tokens** | stat | Sum of all tokens consumed (input + output) |
 | **Reasoning Tokens** | stat | Reasoning tokens reported by the providers, billed at the output rate |
@@ -100,7 +100,7 @@ Eight panels showing high-level aggregates.
 |-------|------|---------------|
 | **Provider Errors** | timeseries | Cumulative error count per provider |
 | **Provider Availability** | gauge | Uptime percentage over last hour (green ≥99%, orange ≥95%, red <95%) |
-| **Circuit Breaker** | stat | Current circuit breaker state per provider |
+| **Circuit Breaker** | stat | Worst circuit breaker state per provider among the processes still exported |
 
 Circuit breaker value mappings:
 
@@ -228,9 +228,10 @@ periodically to keep data visible.
 ### Circuit Breaker shows OPEN unexpectedly
 
 If you ran `16_circuit_breaker_demo.yaml`, it intentionally trips the
-circuit breaker with a non-existent model. The OPEN state persists in
-Prometheus for 24 hours. Run a successful workflow against the same
-provider to reset it, or wait for the metric to expire.
+circuit breaker with a non-existent model. Each process has its own
+breaker, and the panel shows the worst state among them, so a later
+successful run doesn't clear it: the OPEN state goes when its series
+expires, after 24 hours.
 
 ### Traces not appearing in Jaeger
 

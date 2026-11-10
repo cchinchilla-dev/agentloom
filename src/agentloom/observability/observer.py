@@ -23,6 +23,8 @@ logger = logging.getLogger("agentloom.observability")
 
 # The values of the ``agentloom_circuit_breaker_state`` gauge.
 _CIRCUIT_GAUGE = {"closed": 0, "open": 1, "half_open": 2}
+# A paused run is waiting, not failing: it resumes as a run of its own
+_RUN_ERRORS = frozenset({"failed", "timeout", "budget_exceeded"})
 
 
 @dataclass
@@ -143,6 +145,8 @@ class WorkflowObserver:
             span.set_attribute(SpanAttr.WORKFLOW_TOTAL_COST_USD, total_cost)
             if self._run_id:
                 span.set_attribute(SpanAttr.WORKFLOW_RUN_ID, self._run_id)
+            if status in _RUN_ERRORS:
+                self._set_error(span, status)
             if self._tracing:
                 self._tracing.end_span(span)
             else:

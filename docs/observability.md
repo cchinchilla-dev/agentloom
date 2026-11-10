@@ -64,7 +64,7 @@ quality:<target>                  a trace of its own, from result.annotate()
 - **Tool spans** last no time: they are written once the tool returned, with its duration in `tool.duration_ms`, beside the `chat` spans. An agent used as a tool has its `chat` spans under the step, not under its tool span.
 - **Skipped steps** have no span.
 - **A resumed run** starts a new trace, with the same `workflow.run_id`.
-- **Errors are span statuses:** a failed step or attempt has status `ERROR`, so Jaeger's error filter finds it, and `step.error`, `error.type` and `agentloom.provider.attempt_outcome` say why. A step cancelled with its layer isn't an error.
+- **Errors are span statuses:** a run that failed, timed out or broke its budget, and a failed step or attempt, have status `ERROR`, so Jaeger's error filter finds them, and `step.error`, `error.type` and `agentloom.provider.attempt_outcome` say why. A step cancelled with its layer isn't an error.
 - **A call cut short** by a timeout or a cancel still ends its span, with status `ERROR` and the cancellation's class, such as `CancelledError`, in `error.type`.
 
 ### Span attributes
@@ -164,7 +164,7 @@ The collector turns metric names into Prometheus names: dots become underscores,
 | `agentloom_circuit_breaker_state` | `provider` | `0` closed, `1` open, `2` half open. |
 | `agentloom_budget_remaining_usd` | `workflow` | What the budget has left, for runs with `budget_usd`. |
 
-- **The circuit breaker gauge** is reported on each provider call and when a circuit changes state. A circuit left open by a process that has ended stays on the dashboard until the bundled collector drops its series, after 24 hours.
+- **The circuit breaker gauge** is reported on each provider call and when a circuit changes state. A circuit left open by a process that has ended stays on the dashboard, which shows each provider's worst state, until the bundled collector drops its series, after 24 hours.
 - **The budget gauge** updates each time the run is charged, so a run that breaks its budget reports `0`.
 - `AGENTLOOM_METRICS_MAX_KEYS`, 1024 by default, caps how many providers and workflows each gauge tracks.
 

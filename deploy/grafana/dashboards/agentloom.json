@@ -110,7 +110,7 @@
       },
       "targets": [
         {
-          "expr": "(sum(agentloom_workflow_runs_total{workflow=~\"$workflow\",status=\"success\"}) or vector(0)) / (sum(agentloom_workflow_runs_total{workflow=~\"$workflow\"}) or vector(1)) * 100",
+          "expr": "(sum(agentloom_workflow_runs_total{workflow=~\"$workflow\",status=\"success\"}) or vector(0)) / (sum(agentloom_workflow_runs_total{workflow=~\"$workflow\",status!=\"paused\"}) or vector(1)) * 100",
           "legendFormat": "Success %",
           "refId": "A"
         }
@@ -536,7 +536,6 @@
           "displayMode": "table",
           "placement": "bottom",
           "calcs": [
-            "sum",
             "lastNotNull"
           ]
         }
@@ -867,7 +866,7 @@
           "displayMode": "table",
           "placement": "bottom",
           "calcs": [
-            "sum",
+            "lastNotNull",
             "mean"
           ]
         }
@@ -1343,7 +1342,7 @@
       },
       "targets": [
         {
-          "expr": "agentloom_circuit_breaker_state{provider=~\"$call_provider\"}",
+          "expr": "max by(provider)(agentloom_circuit_breaker_state{provider=~\"$call_provider\"})",
           "legendFormat": "{{provider}}",
           "refId": "A"
         }
@@ -1701,7 +1700,7 @@
           "displayMode": "table",
           "placement": "bottom",
           "calcs": [
-            "sum"
+            "lastNotNull"
           ]
         }
       },
@@ -1992,7 +1991,7 @@
       },
       "targets": [
         {
-          "expr": "agentloom_budget_remaining_usd{workflow=~\"$workflow\"}",
+          "expr": "min by(workflow)(agentloom_budget_remaining_usd{workflow=~\"$workflow\"})",
           "legendFormat": "{{workflow}}",
           "refId": "A"
         }
@@ -2072,7 +2071,7 @@
       "options": {
         "legend": {
           "calcs": [
-            "sum"
+            "lastNotNull"
           ],
           "displayMode": "table",
           "placement": "bottom"
@@ -2123,7 +2122,7 @@
       "options": {
         "reduceOptions": {
           "calcs": [
-            "sum"
+            "lastNotNull"
           ]
         }
       },
@@ -2165,7 +2164,7 @@
         "pieType": "donut",
         "reduceOptions": {
           "calcs": [
-            "sum"
+            "lastNotNull"
           ]
         }
       },
@@ -2219,7 +2218,7 @@
           },
           "options": {
             "legend": {
-              "calcs": ["sum"],
+              "calcs": ["lastNotNull"],
               "displayMode": "table",
               "placement": "bottom"
             },
@@ -2268,12 +2267,12 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["sum"]
+              "calcs": ["lastNotNull"]
             }
           },
           "targets": [
             {
-              "expr": "sum(agentloom_approval_gates_total)",
+              "expr": "sum(agentloom_approval_gates_total{decision!=\"pending\"})",
               "legendFormat": "gates",
               "refId": "A"
             }
@@ -2308,12 +2307,12 @@
             },
             "pieType": "donut",
             "reduceOptions": {
-              "calcs": ["sum"]
+              "calcs": ["lastNotNull"]
             }
           },
           "targets": [
             {
-              "expr": "sum by (decision) (agentloom_approval_gates_total)",
+              "expr": "sum by (decision) (agentloom_approval_gates_total{decision!=\"pending\"})",
               "legendFormat": "{{decision}}",
               "refId": "A"
             }
@@ -2349,7 +2348,7 @@
           },
           "options": {
             "legend": {
-              "calcs": ["sum"],
+              "calcs": ["lastNotNull"],
               "displayMode": "table",
               "placement": "bottom"
             },
@@ -2449,12 +2448,12 @@
           },
           "targets": [
             {
-              "expr": "histogram_quantile(0.5, sum(rate(agentloom_webhook_latency_seconds_bucket[5m])) by (le))",
+              "expr": "histogram_quantile(0.5, sum(agentloom_webhook_latency_seconds_bucket) by (le))",
               "legendFormat": "p50",
               "refId": "A"
             },
             {
-              "expr": "histogram_quantile(0.95, sum(rate(agentloom_webhook_latency_seconds_bucket[5m])) by (le))",
+              "expr": "histogram_quantile(0.95, sum(agentloom_webhook_latency_seconds_bucket) by (le))",
               "legendFormat": "p95",
               "refId": "B"
             }
@@ -2525,7 +2524,7 @@
           },
           "targets": [
             {
-              "expr": "sum by (provider)(rate(agentloom_recording_captures_total[5m]))",
+              "expr": "sum by (provider)(agentloom_recording_captures_total)",
               "legendFormat": "{{provider}}",
               "refId": "A"
             }
@@ -2544,12 +2543,12 @@
           },
           "targets": [
             {
-              "expr": "histogram_quantile(0.5, sum(rate(agentloom_recording_latency_seconds_bucket[5m])) by (le, provider))",
+              "expr": "histogram_quantile(0.5, sum(agentloom_recording_latency_seconds_bucket) by (le, provider))",
               "legendFormat": "p50 {{provider}}",
               "refId": "A"
             },
             {
-              "expr": "histogram_quantile(0.95, sum(rate(agentloom_recording_latency_seconds_bucket[5m])) by (le, provider))",
+              "expr": "histogram_quantile(0.95, sum(agentloom_recording_latency_seconds_bucket) by (le, provider))",
               "legendFormat": "p95 {{provider}}",
               "refId": "B"
             }
@@ -2686,7 +2685,7 @@
           },
           "targets": [
             {
-              "expr": "gen_ai_client_operation_time_to_first_chunk_seconds_sum{gen_ai_provider_name=~\"$provider\"} / gen_ai_client_operation_time_to_first_chunk_seconds_count{gen_ai_provider_name=~\"$provider\"}",
+              "expr": "sum by(gen_ai_provider_name,gen_ai_request_model)(gen_ai_client_operation_time_to_first_chunk_seconds_sum{gen_ai_provider_name=~\"$provider\"}) / sum by(gen_ai_provider_name,gen_ai_request_model)(gen_ai_client_operation_time_to_first_chunk_seconds_count{gen_ai_provider_name=~\"$provider\"})",
               "legendFormat": "{{gen_ai_provider_name}}/{{gen_ai_request_model}}",
               "refId": "A",
               "instant": true
@@ -2738,7 +2737,7 @@
           },
           "targets": [
             {
-              "expr": "gen_ai_client_operation_time_to_first_chunk_seconds_sum{gen_ai_provider_name=~\"$provider\"} / gen_ai_client_operation_time_to_first_chunk_seconds_count{gen_ai_provider_name=~\"$provider\"}",
+              "expr": "sum by(gen_ai_provider_name,gen_ai_request_model)(gen_ai_client_operation_time_to_first_chunk_seconds_sum{gen_ai_provider_name=~\"$provider\"}) / sum by(gen_ai_provider_name,gen_ai_request_model)(gen_ai_client_operation_time_to_first_chunk_seconds_count{gen_ai_provider_name=~\"$provider\"})",
               "legendFormat": "{{gen_ai_provider_name}} / {{gen_ai_request_model}}",
               "refId": "A",
               "instant": true
@@ -2912,13 +2911,13 @@
           },
           "targets": [
             {
-              "expr": "agentloom_step_duration_seconds_sum{step_type=\"llm_call\",stream=\"true\"} / agentloom_step_duration_seconds_count{step_type=\"llm_call\",stream=\"true\"}",
+              "expr": "sum(agentloom_step_duration_seconds_sum{step_type=\"llm_call\",stream=\"true\"}) / sum(agentloom_step_duration_seconds_count{step_type=\"llm_call\",stream=\"true\"})",
               "legendFormat": "Streamed avg",
               "refId": "A",
               "instant": true
             },
             {
-              "expr": "agentloom_step_duration_seconds_sum{step_type=\"llm_call\",stream=\"false\"} / agentloom_step_duration_seconds_count{step_type=\"llm_call\",stream=\"false\"}",
+              "expr": "sum(agentloom_step_duration_seconds_sum{step_type=\"llm_call\",stream=\"false\"}) / sum(agentloom_step_duration_seconds_count{step_type=\"llm_call\",stream=\"false\"})",
               "legendFormat": "Batch avg",
               "refId": "B",
               "instant": true

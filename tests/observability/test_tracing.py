@@ -382,6 +382,23 @@ class TestSpanStatus:
         TracingManager(enabled=False).set_error(span, "boom")
         span.set_status.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("status", "code"),
+        [
+            ("failed", "ERROR"),
+            ("timeout", "ERROR"),
+            ("budget_exceeded", "ERROR"),
+            ("success", "UNSET"),
+            ("paused", "UNSET"),
+        ],
+    )
+    def test_the_run_span_says_whether_the_run_went_wrong(self, status: str, code: str) -> None:
+        tracing, exporter = _in_memory_tracing()
+        observer = WorkflowObserver(tracing=tracing)
+        observer.on_workflow_start("w", run_id="r")
+        observer.on_workflow_end("w", status, 1.0, 0, 0.0)
+        assert exporter.get_finished_spans()[0].status.status_code.name == code
+
     async def test_a_failed_attempt_and_step_are_errors_in_the_trace(self) -> None:
         tracing, exporter = _in_memory_tracing()
         workflow = WorkflowDefinition(
