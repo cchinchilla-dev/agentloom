@@ -52,6 +52,7 @@ So the commit message prefix (`bump version to`) is load-bearing. Don't paraphra
    - `version` in `pyproject.toml`
    - `__version__` in `src/agentloom/__init__.py`
    - `appVersion` in `deploy/helm/agentloom/Chart.yaml` (the image tag Helm installs by default), and the chart's own `version` up a patch
+   - `newTag` in `deploy/k8s/overlays/production/kustomization.yaml` (the image the `production` overlay pins)
    - `uv lock`, so `uv.lock` records the new version; include it in the same commit.
 
 6. **Branch + commit** — create `release/<X.Y.Z>` from an up-to-date `main`. Commit message **must** start with `bump version to <X.Y.Z>`. No type or scope on this one, unlike other commits; no Co-Authored-By. Do **not** run `git tag` locally — the workflow creates it on merge.

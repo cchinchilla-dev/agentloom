@@ -37,6 +37,7 @@ _HAS_PROM = is_available(prom)
 
 # One table for both backends, so OTLP and prometheus_client report the same ``le`` series.
 _BUCKETS: dict[str, list[float]] = {
+    "workflow_duration": [0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600],
     "step_duration": [0.1, 0.5, 1, 2, 5, 10, 30, 60],
     "operation_duration": [0.1, 0.5, 1, 2, 5, 10, 30],
     "tool_call_duration": [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60],
@@ -154,6 +155,7 @@ class MetricsManager:
         )
         self._workflow_histogram = meter.create_histogram(
             "agentloom_workflow_duration_seconds",
+            explicit_bucket_boundaries_advisory=_BUCKETS["workflow_duration"],
             description="Workflow execution duration",
             unit="s",
         )

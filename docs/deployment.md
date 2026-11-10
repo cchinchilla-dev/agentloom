@@ -17,7 +17,7 @@ docker run --rm agentloom run 40_fault_replay.yaml --lite
 docker run --rm -e OPENAI_API_KEY agentloom run 01_simple_qa.yaml --provider openai --model gpt-4o-mini
 ```
 
-The image's entrypoint is `agentloom`, and its working directory, `/workflows`, holds the examples, with their recordings under `/workflows/recordings`. Examples 35 and 37 to 40 run there offline. Example 36 fails, as it imports its schema from an `examples` package, and so does 41, which looks for its agent under `examples/agents/`.
+The image's entrypoint is `agentloom`, and its working directory, `/workflows`, holds the examples, with their recordings under `/workflows/recordings`. Examples 35 to 41 run there offline; `/workflows/examples` points back at the directory, for the ones that name their files under `examples/`.
 
 | Target | What it is |
 |--------|------------|
@@ -81,11 +81,11 @@ The Job and the CronJob run `agentloom run /workflows/workflow.yaml` with the Se
 |---------|-----------|--------------------------|-------------|---------------|----------------|
 | `dev` | `latest` | 64Mi / 128Mi | 50m | None | 2 |
 | `staging` | `main-abc1234`, a placeholder for a CI tag | 128Mi / 256Mi | 100m | The base's | 2 |
-| `production` | `0.1.2`, a placeholder for the release you deploy | 256Mi / 512Mi | 200m | Stricter: no Ollama | 1 |
+| `production` | The current release | 256Mi / 512Mi | 200m | Stricter: no Ollama | 1 |
 
 No overlay sets a CPU limit: the calls wait on the network, and a CPU limit would only throttle them.
 
-**Before deploying,** replace the workflow in the ConfigMap: the placeholder calls `phi4` on Ollama, and no overlay runs Ollama or sets `OLLAMA_BASE_URL`. Then create the namespace and the keys, and apply the overlay:
+**Before deploying,** replace the workflow in the ConfigMap: the placeholder answers from the mock provider, so it only shows that the Job runs. Then create the namespace and the keys, and apply the overlay:
 
 ```bash
 kubectl apply -f deploy/k8s/base/namespace.yaml
@@ -96,10 +96,39 @@ kubectl logs job/agentloom-workflow -n agentloom
 
 `provider-keys.env` holds one `NAME=value` line per key, such as `OPENAI_API_KEY`; every line becomes a variable of the run. Created this way, the Secret keeps its keys when the overlay is applied again. Filled after the overlay with `kubectl apply`, it loses them at the next `kubectl apply -k`.
 
-- **Traces and metrics** go to `http://otel-collector:4317`, a name that only resolves to a collector in the `agentloom` namespace, which the manifests don't create. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector's full name, such as `http://otel-collector.observability.svc.cluster.local:4317`. A run whose export fails still succeeds.
-- **The run history and checkpoints** have no writable volume: see [Docker](#docker).
+- **Traces and metrics** go to `http://otel-collector:4317`, a name that only resolves to a collector in the `agentloom` namespace, which the manifests don't create. The `production` overlay sends them to `http://otel-collector.observability.svc.cluster.local:4317`, in the namespace its NetworkPolicy allows. For another collector, set `OTEL_EXPORTER_OTLP_ENDPOINT` to its full name. A run whose export fails still succeeds.
+- **The run history and checkpoints** need a volume that outlives the pod: see [Keeping runs](#keeping-runs).
 - **A Job that is stopped,** deleted or past its `activeDeadlineSeconds`, gets SIGTERM, which AgentLoom takes as Ctrl-C: with `--checkpoint` on a volume, the run saves a `cancelled` checkpoint that `agentloom resume` continues.
 - `kubectl delete -k deploy/k8s/overlays/dev` removes everything, the namespace included.
+
+### Keeping runs
+
+A pod's `/tmp` goes with it, so without a volume a run paused at an approval gate can't be resumed. Add one with a patch in your overlay, on a PersistentVolumeClaim of yours:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agentloom-workflow
+spec:
+  template:
+    spec:
+      containers:
+        - name: agentloom
+          args: ["run", "/workflows/workflow.yaml", "--checkpoint", "--checkpoint-dir", "/data/checkpoints"]
+          env:
+            - name: AGENTLOOM_RUNS_DIR
+              value: /data/runs
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: agentloom-data
+```
+
+The chart does the same with `persistence.existingClaim`.
 
 ### Example Jobs
 
@@ -112,12 +141,9 @@ kubectl logs job/agentloom-workflow -n agentloom
 | `webhook-approval-job.yaml` | A gate's notification reaches a server in the pod, and the run resumes. | `agentloom:dev` |
 | `mock-provider-job.yaml` | Recording two calls and replaying them. | `agentloom:dev` |
 | `conversation-job.yaml` | Three steps sharing a conversation, each with its `speaker`. | The published image |
-| `array-index-job.yaml` | That a workflow reading `{state.items[0]}` validates. | The published image |
+| `array-index-job.yaml` | That `{state.items[0]}` in a prompt renders the item. | The published image |
 
 The `agentloom:dev` Jobs use an image you build and load into the cluster yourself, as they never pull it: `docker build --target dev -t agentloom:dev .`.
-
-> [!NOTE]
-> Four of these Jobs fail against this release. `approval-gate-job.yaml`, `pause-resume-job.yaml` and `webhook-approval-job.yaml` run `python3`, which in `agentloom:dev` can't import AgentLoom: it is installed in `/build/.venv`, which `mock-provider-job.yaml` calls. `conversation-job.yaml` expects each user turn to carry its speaker's name, which only the model's replies carry.
 
 ## Helm
 
@@ -146,16 +172,17 @@ The chart refuses to render without a workflow, or with both `workflow.definitio
 | `provider.existingSecret` | | A Secret whose every key becomes a variable of the run. |
 | `provider.openaiApiKey`, `anthropicApiKey`, `googleApiKey` | | Keys for a Secret the chart creates. They end up in the release's stored values: prefer `existingSecret`. |
 | `observability.enabled`, `observability.otelEndpoint` | `true`, `http://otel-collector:4317` | Sets `OTEL_EXPORTER_OTLP_ENDPOINT`. Use the collector's full name. |
+| `persistence.existingClaim` | | A PersistentVolumeClaim of yours, mounted on `/data`. It keeps the run history and turns checkpoints on, so a run paused in one pod can be resumed from another. |
 | `resources` | 128Mi and 100m requested, 256Mi limit | |
 | `serviceAccount.create` | `true` | A ServiceAccount without an API token. |
 | `namespace.create` | `false` | A namespace with the Pod Security labels. |
 | `networkPolicy.enabled`, `networkPolicy.allowOllama` | `true`, `true` | The NetworkPolicy, and egress to port 11434. |
-| `resourceQuota.enabled` | `false` | A ResourceQuota. Its default sets `limits.cpu`, which every pod must then declare, and the chart's don't. |
+| `resourceQuota.enabled` | `false` | A ResourceQuota. Its 2Gi of `limits.memory` is below Ollama's limit: with `ollama.enabled`, raise `resourceQuota.hard` or lower `ollama.resources`. |
 | `ollama.enabled`, `ollama.model` | `false`, `phi4` | An Ollama Deployment and Service in the release. |
 
 The chart names everything after the release, adding `-agentloom` unless the release name contains `agentloom`.
 
-**With `ollama.enabled`,** the release runs Ollama, which pulls the model when its pod starts, onto an `emptyDir`, so again after each restart. The run gets `OLLAMA_BASE_URL` pointing at it and `AGENTLOOM_OLLAMA_FALLBACK=1`, so Ollama also answers models no other provider takes. Ollama may use up to 10Gi of memory; `phi4` takes about 9 GB. The Job doesn't wait for the pull to finish: a run that starts before Ollama is ready fails, and the Job retries it up to `job.backoffLimit` times.
+**With `ollama.enabled`,** the release runs Ollama, which pulls the model when its pod starts, onto an `emptyDir`, so again after each restart. The run gets `OLLAMA_BASE_URL` pointing at it and `AGENTLOOM_OLLAMA_FALLBACK=1`, so Ollama also answers models no other provider takes. Ollama may use up to 10Gi of memory; `phi4` takes about 9 GB. The run waits for Ollama to be ready, up to 30 minutes, and fails if it isn't by then.
 
 ## Terraform
 
@@ -180,18 +207,18 @@ Grafana is on `http://localhost:3000`, Prometheus on `http://localhost:9090` and
 
 ## Argo CD
 
-`deploy/argocd/application.yaml` syncs the Helm chart from the repository's `HEAD`, with automated sync, pruning and self-heal. It mounts the ConfigMap `agentloom-workflows` as the workflow, so create it before the first sync:
+`deploy/argocd/application.yaml` syncs the Helm chart from the repository's `HEAD`, with automated sync, pruning and self-heal. It mounts the ConfigMap `agentloom-workflows` as the workflow and gives the run the keys in the Secret `agentloom-provider-keys`, so create both before the first sync:
 
 ```bash
 kubectl apply -f deploy/k8s/base/namespace.yaml
 kubectl create configmap agentloom-workflows -n agentloom --from-file=workflow.yaml=workflows/report.yaml
+kubectl create secret generic agentloom-provider-keys -n agentloom --from-env-file=provider-keys.env
 kubectl apply -f deploy/argocd/application.yaml
 ```
 
-- **Provider keys** don't reach the run: the Application names no Secret. Create one, and name it in `provider.existingSecret` under `valuesObject`.
 - **`Replace=true`** replaces the Job on each change, as a Job can't be patched, and `ignoreDifferences` keeps its generated selector and labels from showing as out of sync.
 - **Failed syncs** are retried 5 times, waiting from 5 seconds up to 3 minutes.
-- `CreateNamespace=true` creates the namespace without the Pod Security labels, hence `namespace.yaml` first.
+- `managedNamespaceMetadata` labels the namespace for the `restricted` Pod Security profile, even if Argo CD creates it.
 - The Application uses the `default` project; a dedicated AppProject suits production better.
 
 ## Environment variables
@@ -246,7 +273,7 @@ The Kustomize manifests and the chart run AgentLoom under the Kubernetes `restri
 - **Egress** to DNS in `kube-system`, HTTPS anywhere, and ports 4317 and 11434 in the cluster; production drops 11434 and allows 4317 only to the `observability` namespace. No ingress. Traffic leaving the cluster may use port 443 only, so an Ollama or an OpenAI-compatible server outside it on another port is blocked.
 - **Keys** live in Secrets, never in the image.
 
-The profile is enforced only in a namespace labelled for it: the one `namespace.yaml`, Terraform or the chart's `namespace.create` creates. The example Jobs and the chart's Ollama don't use a read-only root filesystem.
+The profile is enforced only in a namespace labelled for it: the one `namespace.yaml`, Terraform, the chart's `namespace.create` or the Argo CD Application creates. The example Jobs, except `array-index-job.yaml`, and the chart's Ollama don't use a read-only root filesystem.
 
 ## What's next
 

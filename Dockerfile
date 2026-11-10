@@ -58,6 +58,8 @@ COPY --from=builder /build/dist/*.whl /tmp/
 # Bundled so validate runs out of the box; mock examples resolve recordings/ against WORKDIR
 COPY examples/ /workflows/
 COPY recordings/ /workflows/recordings/
+# Examples 36 and 41 name their files under examples/, as from a checkout of the repository
+RUN ln -s . /workflows/examples
 
 WORKDIR /workflows
 

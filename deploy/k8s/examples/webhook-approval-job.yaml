@@ -8,6 +8,7 @@ data:
     """Functional validation of webhook notifications in Kubernetes."""
 
     import json
+    import re
     import tempfile
     from pathlib import Path
 
@@ -71,15 +72,15 @@ data:
         received_webhooks = []
 
         async def _capture(stream):
-            data = await stream.receive(8192)
-            text = data.decode("utf-8", errors="replace")
-            body_start = text.find("\r\n\r\n")
-            if body_start > 0:
-                body = text[body_start + 4:]
-                try:
-                    received_webhooks.append(json.loads(body))
-                except json.JSONDecodeError:
-                    received_webhooks.append({"raw": body})
+            # Headers and body can arrive in separate reads
+            data = b""
+            while True:
+                data += await stream.receive(8192)
+                head, sep, body = data.partition(b"\r\n\r\n")
+                length = re.search(rb"content-length: (\d+)", head, re.I)
+                if sep and length and len(body) >= int(length.group(1)):
+                    break
+            received_webhooks.append(json.loads(body))
             resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
             await stream.send(resp.encode())
             await stream.aclose()
@@ -156,7 +157,7 @@ spec:
         - name: runner
           image: agentloom:dev
           imagePullPolicy: Never
-          command: ["python3"]
+          command: ["/build/.venv/bin/python3"]
           args: ["/scripts/validate_webhook.py"]
           env:
             - name: UV_CACHE_DIR

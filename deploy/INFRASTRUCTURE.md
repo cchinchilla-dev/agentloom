@@ -328,6 +328,7 @@ LLM API calls (which are I/O-bound, not CPU-bound). CPU requests are set for sch
 | `provider.openaiApiKey` | OpenAI key (not recommended, use secret) | `""` |
 | `observability.enabled` | Enable OTel endpoint env var | `true` |
 | `observability.otelEndpoint` | OTel Collector endpoint | `http://otel-collector:4317` |
+| `persistence.existingClaim` | PersistentVolumeClaim for run history and checkpoints, on `/data` | `""` |
 | `job.backoffLimit` | Retry attempts on failure | `2` |
 | `job.ttlSecondsAfterFinished` | Cleanup delay after completion | `3600` |
 | `job.activeDeadlineSeconds` | Hard timeout | `null` |

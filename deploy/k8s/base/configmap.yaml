@@ -7,13 +7,13 @@ metadata:
     app.kubernetes.io/name: agentloom
     app.kubernetes.io/component: config
 data:
-  # Replace with your workflow definition.
+  # Replace with your workflow definition. The mock provider needs no key, and no Ollama.
   workflow.yaml: |
     name: placeholder
     version: "1.0"
     config:
-      provider: ollama
-      model: phi4
+      provider: mock
+      model: mock-model
     state:
       question: "What is Python in one sentence?"
     steps:

@@ -110,7 +110,7 @@
       },
       "targets": [
         {
-          "expr": "(sum(agentloom_workflow_runs_total{workflow=~\"$workflow\",status=\"success\"}) or vector(0)) / (sum(agentloom_workflow_runs_total{workflow=~\"$workflow\"}) or vector(1)) * 100",
+          "expr": "(sum(agentloom_workflow_runs_total{workflow=~\"$workflow\",status=\"success\"}) or vector(0)) / (sum(agentloom_workflow_runs_total{workflow=~\"$workflow\",status!=\"paused\"}) or vector(1)) * 100",
           "legendFormat": "Success %",
           "refId": "A"
         }
@@ -394,7 +394,7 @@
       },
       "targets": [
         {
-          "expr": "count(sum by(provider)(agentloom_provider_calls_total{provider=~\"$provider\"})) or vector(0)",
+          "expr": "count(sum by(provider)(agentloom_provider_calls_total{provider=~\"$call_provider\"})) or vector(0)",
           "legendFormat": "Providers",
           "refId": "A"
         }
@@ -536,7 +536,6 @@
           "displayMode": "table",
           "placement": "bottom",
           "calcs": [
-            "sum",
             "lastNotNull"
           ]
         }
@@ -867,7 +866,7 @@
           "displayMode": "table",
           "placement": "bottom",
           "calcs": [
-            "sum",
+            "lastNotNull",
             "mean"
           ]
         }
@@ -1149,7 +1148,7 @@
       },
       "targets": [
         {
-          "expr": "sum by(provider)(agentloom_provider_calls_total{provider=~\"$provider\",stream=~\"$stream\"})",
+          "expr": "sum by(provider)(agentloom_provider_calls_total{provider=~\"$call_provider\",stream=~\"$stream\"})",
           "legendFormat": "{{provider}}",
           "refId": "A"
         }
@@ -1214,7 +1213,7 @@
       },
       "targets": [
         {
-          "expr": "sum by(provider)(agentloom_provider_errors_total{provider=~\"$provider\"})",
+          "expr": "sum by(provider)(agentloom_provider_errors_total{provider=~\"$call_provider\"})",
           "legendFormat": "{{provider}} / {{error_type}}",
           "refId": "A"
         }
@@ -1282,7 +1281,7 @@
       },
       "targets": [
         {
-          "expr": "(1 - (sum by(provider)(agentloom_provider_errors_total{provider=~\"$provider\"}) / sum by(provider)(agentloom_provider_calls_total{provider=~\"$provider\"}))) * 100 or vector(100)",
+          "expr": "(1 - (sum by(provider)(agentloom_provider_errors_total{provider=~\"$call_provider\"}) / sum by(provider)(agentloom_provider_calls_total{provider=~\"$call_provider\"}))) * 100 or vector(100)",
           "legendFormat": "{{provider}}",
           "refId": "A"
         }
@@ -1343,7 +1342,7 @@
       },
       "targets": [
         {
-          "expr": "agentloom_circuit_breaker_state{provider=~\"$provider\"}",
+          "expr": "max by(provider)(agentloom_circuit_breaker_state{provider=~\"$call_provider\"})",
           "legendFormat": "{{provider}}",
           "refId": "A"
         }
@@ -1550,7 +1549,7 @@
       },
       "targets": [
         {
-          "expr": "sum by(provider,model)(agentloom_provider_calls_total{provider=~\"$provider\"})",
+          "expr": "sum by(provider,model)(agentloom_provider_calls_total{provider=~\"$call_provider\"})",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -1701,7 +1700,7 @@
           "displayMode": "table",
           "placement": "bottom",
           "calcs": [
-            "sum"
+            "lastNotNull"
           ]
         }
       },
@@ -1992,7 +1991,7 @@
       },
       "targets": [
         {
-          "expr": "agentloom_budget_remaining_usd{workflow=~\"$workflow\"}",
+          "expr": "min by(workflow)(agentloom_budget_remaining_usd{workflow=~\"$workflow\"})",
           "legendFormat": "{{workflow}}",
           "refId": "A"
         }
@@ -2072,7 +2071,7 @@
       "options": {
         "legend": {
           "calcs": [
-            "sum"
+            "lastNotNull"
           ],
           "displayMode": "table",
           "placement": "bottom"
@@ -2123,7 +2122,7 @@
       "options": {
         "reduceOptions": {
           "calcs": [
-            "sum"
+            "lastNotNull"
           ]
         }
       },
@@ -2165,7 +2164,7 @@
         "pieType": "donut",
         "reduceOptions": {
           "calcs": [
-            "sum"
+            "lastNotNull"
           ]
         }
       },
@@ -2219,7 +2218,7 @@
           },
           "options": {
             "legend": {
-              "calcs": ["sum"],
+              "calcs": ["lastNotNull"],
               "displayMode": "table",
               "placement": "bottom"
             },
@@ -2268,12 +2267,12 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["sum"]
+              "calcs": ["lastNotNull"]
             }
           },
           "targets": [
             {
-              "expr": "sum(agentloom_approval_gates_total)",
+              "expr": "sum(agentloom_approval_gates_total{decision!=\"pending\"})",
               "legendFormat": "gates",
               "refId": "A"
             }
@@ -2308,12 +2307,12 @@
             },
             "pieType": "donut",
             "reduceOptions": {
-              "calcs": ["sum"]
+              "calcs": ["lastNotNull"]
             }
           },
           "targets": [
             {
-              "expr": "sum by (decision) (agentloom_approval_gates_total)",
+              "expr": "sum by (decision) (agentloom_approval_gates_total{decision!=\"pending\"})",
               "legendFormat": "{{decision}}",
               "refId": "A"
             }
@@ -2349,7 +2348,7 @@
           },
           "options": {
             "legend": {
-              "calcs": ["sum"],
+              "calcs": ["lastNotNull"],
               "displayMode": "table",
               "placement": "bottom"
             },
@@ -2417,7 +2416,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "id": 56,
+          "id": 95,
           "gridPos": {
             "h": 8,
             "w": 6,
@@ -2449,12 +2448,12 @@
           },
           "targets": [
             {
-              "expr": "histogram_quantile(0.5, sum(rate(agentloom_webhook_latency_seconds_bucket[5m])) by (le))",
+              "expr": "histogram_quantile(0.5, sum(agentloom_webhook_latency_seconds_bucket) by (le))",
               "legendFormat": "p50",
               "refId": "A"
             },
             {
-              "expr": "histogram_quantile(0.95, sum(rate(agentloom_webhook_latency_seconds_bucket[5m])) by (le))",
+              "expr": "histogram_quantile(0.95, sum(agentloom_webhook_latency_seconds_bucket) by (le))",
               "legendFormat": "p95",
               "refId": "B"
             }
@@ -2525,7 +2524,7 @@
           },
           "targets": [
             {
-              "expr": "sum by (provider)(rate(agentloom_recording_captures_total[5m]))",
+              "expr": "sum by (provider)(agentloom_recording_captures_total)",
               "legendFormat": "{{provider}}",
               "refId": "A"
             }
@@ -2544,16 +2543,69 @@
           },
           "targets": [
             {
-              "expr": "histogram_quantile(0.5, sum(rate(agentloom_recording_latency_seconds_bucket[5m])) by (le, provider))",
+              "expr": "histogram_quantile(0.5, sum(agentloom_recording_latency_seconds_bucket) by (le, provider))",
               "legendFormat": "p50 {{provider}}",
               "refId": "A"
             },
             {
-              "expr": "histogram_quantile(0.95, sum(rate(agentloom_recording_latency_seconds_bucket[5m])) by (le, provider))",
+              "expr": "histogram_quantile(0.95, sum(agentloom_recording_latency_seconds_bucket) by (le, provider))",
               "legendFormat": "p95 {{provider}}",
               "refId": "B"
             }
           ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Mock Faults",
+          "description": "Faults a recording injected, by type",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 94,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 103
+          },
+          "targets": [
+            {
+              "expr": "sum by(workflow,fault_type)(agentloom_mock_faults_total{workflow=~\"$workflow\"})",
+              "legendFormat": "{{workflow}} {{fault_type}}",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "drawStyle": "line",
+                "spanNulls": false,
+                "showPoints": "auto",
+                "pointSize": 5
+              }
+            },
+            "overrides": []
+          }
         }
       ]
     },
@@ -2586,7 +2638,7 @@
           },
           "targets": [
             {
-              "expr": "sum by (provider)(agentloom_stream_responses_total{provider=~\"$provider\"})",
+              "expr": "sum by (provider)(agentloom_stream_responses_total{provider=~\"$call_provider\"})",
               "legendFormat": "{{provider}}",
               "refId": "A",
               "instant": true
@@ -2633,7 +2685,7 @@
           },
           "targets": [
             {
-              "expr": "gen_ai_client_operation_time_to_first_chunk_seconds_sum{gen_ai_provider_name=~\"$provider\"} / gen_ai_client_operation_time_to_first_chunk_seconds_count{gen_ai_provider_name=~\"$provider\"}",
+              "expr": "sum by(gen_ai_provider_name,gen_ai_request_model)(gen_ai_client_operation_time_to_first_chunk_seconds_sum{gen_ai_provider_name=~\"$provider\"}) / sum by(gen_ai_provider_name,gen_ai_request_model)(gen_ai_client_operation_time_to_first_chunk_seconds_count{gen_ai_provider_name=~\"$provider\"})",
               "legendFormat": "{{gen_ai_provider_name}}/{{gen_ai_request_model}}",
               "refId": "A",
               "instant": true
@@ -2685,7 +2737,7 @@
           },
           "targets": [
             {
-              "expr": "gen_ai_client_operation_time_to_first_chunk_seconds_sum{gen_ai_provider_name=~\"$provider\"} / gen_ai_client_operation_time_to_first_chunk_seconds_count{gen_ai_provider_name=~\"$provider\"}",
+              "expr": "sum by(gen_ai_provider_name,gen_ai_request_model)(gen_ai_client_operation_time_to_first_chunk_seconds_sum{gen_ai_provider_name=~\"$provider\"}) / sum by(gen_ai_provider_name,gen_ai_request_model)(gen_ai_client_operation_time_to_first_chunk_seconds_count{gen_ai_provider_name=~\"$provider\"})",
               "legendFormat": "{{gen_ai_provider_name}} / {{gen_ai_request_model}}",
               "refId": "A",
               "instant": true
@@ -2859,13 +2911,13 @@
           },
           "targets": [
             {
-              "expr": "agentloom_step_duration_seconds_sum{step_type=\"llm_call\",stream=\"true\"} / agentloom_step_duration_seconds_count{step_type=\"llm_call\",stream=\"true\"}",
+              "expr": "sum(agentloom_step_duration_seconds_sum{step_type=\"llm_call\",stream=\"true\"}) / sum(agentloom_step_duration_seconds_count{step_type=\"llm_call\",stream=\"true\"})",
               "legendFormat": "Streamed avg",
               "refId": "A",
               "instant": true
             },
             {
-              "expr": "agentloom_step_duration_seconds_sum{step_type=\"llm_call\",stream=\"false\"} / agentloom_step_duration_seconds_count{step_type=\"llm_call\",stream=\"false\"}",
+              "expr": "sum(agentloom_step_duration_seconds_sum{step_type=\"llm_call\",stream=\"false\"}) / sum(agentloom_step_duration_seconds_count{step_type=\"llm_call\",stream=\"false\"})",
               "legendFormat": "Batch avg",
               "refId": "B",
               "instant": true
@@ -2905,13 +2957,466 @@
     },
     {
       "type": "row",
+      "title": "Agents, Tools & Embeddings",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 96
+      },
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Tool Calls",
+          "description": "Tool calls by tool and outcome",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 86,
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 97
+          },
+          "targets": [
+            {
+              "expr": "sum by(tool_name,status)(agentloom_tool_calls_total)",
+              "legendFormat": "{{tool_name}} {{status}}",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "drawStyle": "line",
+                "spanNulls": false,
+                "showPoints": "auto",
+                "pointSize": 5
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Tool Latency (p50 / p95)",
+          "description": "How long tool calls take",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 87,
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 97
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by(le,tool_name)(agentloom_tool_call_duration_seconds_bucket))",
+              "legendFormat": "p50 {{tool_name}}",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by(le,tool_name)(agentloom_tool_call_duration_seconds_bucket))",
+              "legendFormat": "p95 {{tool_name}}",
+              "refId": "B"
+            }
+          ],
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "drawStyle": "line",
+                "spanNulls": false,
+                "showPoints": "auto",
+                "pointSize": 5
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Agent Turns",
+          "description": "Agent turns by agent and outcome",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 88,
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 97
+          },
+          "targets": [
+            {
+              "expr": "sum by(name,status)(agentloom_agent_invocations_total)",
+              "legendFormat": "{{name}} {{status}}",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "drawStyle": "line",
+                "spanNulls": false,
+                "showPoints": "auto",
+                "pointSize": 5
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Model Calls per Turn (p50 / p95)",
+          "description": "Model calls an agent makes in a turn",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 89,
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 105
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by(le,name)(agentloom_agent_iterations_bucket))",
+              "legendFormat": "p50 {{name}}",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by(le,name)(agentloom_agent_iterations_bucket))",
+              "legendFormat": "p95 {{name}}",
+              "refId": "B"
+            }
+          ],
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "drawStyle": "line",
+                "spanNulls": false,
+                "showPoints": "auto",
+                "pointSize": 5
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Conversation Length (p50 / p95)",
+          "description": "Messages in a conversation after each turn",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 90,
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 105
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by(le,conversation_key)(agentloom_conversation_message_count_bucket))",
+              "legendFormat": "p50 {{conversation_key}}",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by(le,conversation_key)(agentloom_conversation_message_count_bucket))",
+              "legendFormat": "p95 {{conversation_key}}",
+              "refId": "B"
+            }
+          ],
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "drawStyle": "line",
+                "spanNulls": false,
+                "showPoints": "auto",
+                "pointSize": 5
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Conversation Trims",
+          "description": "Turns that trimmed messages, by policy",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 91,
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 105
+          },
+          "targets": [
+            {
+              "expr": "sum by(policy,conversation_key)(agentloom_conversation_trims_total)",
+              "legendFormat": "{{policy}} {{conversation_key}}",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "drawStyle": "line",
+                "spanNulls": false,
+                "showPoints": "auto",
+                "pointSize": 5
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Embedding Calls",
+          "description": "Embedding calls by provider and model",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 92,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 113
+          },
+          "targets": [
+            {
+              "expr": "sum by(provider,model)(agentloom_embedding_calls_total{provider=~\"$call_provider\"})",
+              "legendFormat": "{{provider}} {{model}}",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "drawStyle": "line",
+                "spanNulls": false,
+                "showPoints": "auto",
+                "pointSize": 5
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Embedding Dimensions",
+          "description": "Average size of the returned vectors",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "id": 93,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 113
+          },
+          "targets": [
+            {
+              "expr": "sum by(provider,model)(agentloom_embedding_dimensions_sum{provider=~\"$call_provider\"}) / sum by(provider,model)(agentloom_embedding_dimensions_count{provider=~\"$call_provider\"})",
+              "legendFormat": "{{provider}} {{model}}",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "gradientMode": "opacity",
+                "drawStyle": "line",
+                "spanNulls": false,
+                "showPoints": "auto",
+                "pointSize": 5
+              }
+            },
+            "overrides": []
+          }
+        }
+      ],
+      "id": 85
+    },
+    {
+      "type": "row",
       "title": "Traces",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 96
+        "y": 97
       },
       "panels": [],
       "id": 36
@@ -2929,7 +3434,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 97
+        "y": 98
       },
       "targets": [
         {
@@ -3019,6 +3524,27 @@
           "refId": "StandardVariableQuery"
         },
         "definition": "label_values(gen_ai_client_token_usage_sum, gen_ai_provider_name)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {},
+        "hide": 0,
+        "sort": 1
+      },
+      {
+        "name": "call_provider",
+        "type": "query",
+        "label": "Provider (calls)",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(agentloom_provider_calls_total, provider)",
+          "refId": "StandardVariableQuery"
+        },
+        "definition": "label_values(agentloom_provider_calls_total, provider)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,

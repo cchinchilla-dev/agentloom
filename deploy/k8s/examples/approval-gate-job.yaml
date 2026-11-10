@@ -108,7 +108,7 @@ spec:
         - name: runner
           image: agentloom:dev
           imagePullPolicy: Never
-          command: ["python3"]
+          command: ["/build/.venv/bin/python3"]
           args: ["/scripts/validate_approval_gate.py"]
           env:
             - name: UV_CACHE_DIR

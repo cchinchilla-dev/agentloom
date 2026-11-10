@@ -40,6 +40,11 @@ observability:
   enabled: true
   otelEndpoint: "http://otel-collector:4317"
 
+persistence:
+  # A PersistentVolumeClaim of yours, mounted on /data. It keeps the run history and turns
+  # checkpoints on, so a run paused in one pod can be resumed from another.
+  existingClaim: ""
+
 resources:
   requests:
     memory: 128Mi
@@ -83,7 +88,7 @@ ollama:
   # must have enough RAM allocated. Example for Colima:
   #   colima start --memory 12 --cpu 4
   enabled: false
-  image: ollama/ollama:latest
+  image: ollama/ollama:0.40.15
   model: phi4
   resources:
     requests:
@@ -102,7 +107,6 @@ resourceQuota:
   hard:
     requests.cpu: "2"
     requests.memory: 1Gi
-    limits.cpu: "4"
     limits.memory: 2Gi
     pods: "10"
 

@@ -22,3 +22,10 @@ provider:
 observability:
   enabled: true
   otelEndpoint: "http://otel-collector:4317"
+
+# So the optional templates render in CI too
+ollama:
+  enabled: true
+
+persistence:
+  existingClaim: "ci-placeholder-claim"

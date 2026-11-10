@@ -1,4 +1,4 @@
-"""Fail CI if pyproject.toml, CHANGELOG.md, `__version__` and Helm's `appVersion` disagree.
+"""Fail CI if pyproject.toml, CHANGELOG.md, `__version__`, Helm's and the overlay's tag disagree.
 
 Invoked from `.github/workflows/ci.yml` job `version-linearity`. Also runnable
 locally as a pre-commit check. Mirrors the same gate used in agentanvil so
@@ -17,6 +17,9 @@ INIT_VERSION_RE = re.compile(r"^__version__\s*=\s*[\"']([^\"']+)[\"']", re.M)
 CHART_APP_VERSION_RE = re.compile(r"^appVersion:\s*[\"']?([^\"'\s#]+)", re.M)
 # Helm installs the image tagged with the chart's appVersion unless image.tag says otherwise
 CHART = Path("deploy") / "helm" / "agentloom" / "Chart.yaml"
+OVERLAY_NEW_TAG_RE = re.compile(r"^\s*newTag:\s*[\"']?([^\"'\s#]+)", re.M)
+# The production overlay pins its image by hand: nothing else moves it on a release
+OVERLAY = Path("deploy") / "k8s" / "overlays" / "production" / "kustomization.yaml"
 
 
 def latest_changelog_version(text: str) -> str | None:
@@ -44,6 +47,15 @@ def chart_app_version(root: Path) -> tuple[str, str | None] | None:
         return None
     match = CHART_APP_VERSION_RE.search(chart.read_text())
     return CHART.as_posix(), match.group(1) if match else None
+
+
+def overlay_image_tag(root: Path) -> tuple[str, str | None] | None:
+    """Return (path, `newTag`) of the production overlay; None if the repo has no overlay."""
+    overlay = root / OVERLAY
+    if not overlay.exists():
+        return None
+    match = OVERLAY_NEW_TAG_RE.search(overlay.read_text())
+    return OVERLAY.as_posix(), match.group(1) if match else None
 
 
 def check(root: Path) -> tuple[int, str]:
@@ -83,6 +95,13 @@ def check(root: Path) -> tuple[int, str]:
             return 1, f"{path} has no appVersion"
         if version != declared:
             return 1, f"version mismatch: pyproject.toml={declared} vs {path} appVersion={version}"
+    overlay = overlay_image_tag(root)
+    if overlay is not None:
+        path, version = overlay
+        if version is None:
+            return 1, f"{path} has no newTag"
+        if version != declared:
+            return 1, f"version mismatch: pyproject.toml={declared} vs {path} newTag={version}"
     return 0, f"version-linearity OK: {declared}"
 
 

@@ -198,7 +198,7 @@ resource "helm_release" "otel_collector" {
         }
         prometheus = {
           endpoint                         = "0.0.0.0:8889"
-          metric_expiration                = "30m"
+          metric_expiration                = "24h"
           resource_to_telemetry_conversion = { enabled = true }
         }
       }

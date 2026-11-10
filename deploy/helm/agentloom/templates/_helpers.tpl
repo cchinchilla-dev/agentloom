@@ -73,6 +73,34 @@ securityContext:
 imagePullSecrets:
   {{- toYaml . | nindent 2 }}
 {{- end }}
+{{- if .Values.ollama.enabled }}
+initContainers:
+  # Ollama turns ready once its pull is done: a run that starts sooner fails against it
+  - name: wait-for-ollama
+    image: {{ include "agentloom.image" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    {{- with .Values.containerSecurityContext }}
+    securityContext:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    command: ["python", "-c"]
+    args:
+      - |
+        import time
+        import urllib.request
+
+        url = "http://{{ include "agentloom.fullname" . }}-ollama.{{ .Release.Namespace }}.svc.cluster.local:11434/api/tags"
+        for _ in range(360):
+            try:
+                urllib.request.urlopen(url, timeout=5)
+                break
+            except OSError:
+                time.sleep(5)
+        else:
+            raise SystemExit(f"{url} not ready after 30 minutes")
+    resources:
+      {{- toYaml .Values.resources | nindent 6 }}
+{{- end }}
 containers:
   - name: agentloom
     image: {{ include "agentloom.image" . }}
@@ -84,6 +112,11 @@ containers:
     args:
       - run
       - /workflows/workflow.yaml
+      {{- if .Values.persistence.existingClaim }}
+      - --checkpoint
+      - --checkpoint-dir
+      - /data/checkpoints
+      {{- end }}
       {{- range .Values.workflow.args }}
       - {{ . | quote }}
       {{- end }}
@@ -92,8 +125,12 @@ containers:
       - secretRef:
           name: {{ .Values.provider.existingSecret | default (printf "%s-provider-keys" (include "agentloom.fullname" .)) }}
     {{- end }}
-    {{- if or .Values.observability.enabled .Values.ollama.enabled }}
+    {{- if or .Values.observability.enabled .Values.ollama.enabled .Values.persistence.existingClaim }}
     env:
+      {{- if .Values.persistence.existingClaim }}
+      - name: AGENTLOOM_RUNS_DIR
+        value: /data/runs
+      {{- end }}
       {{- if .Values.observability.enabled }}
       - name: OTEL_EXPORTER_OTLP_ENDPOINT
         value: {{ .Values.observability.otelEndpoint | quote }}
@@ -114,6 +151,10 @@ containers:
         readOnly: true
       - name: tmp
         mountPath: /tmp
+      {{- if .Values.persistence.existingClaim }}
+      - name: data
+        mountPath: /data
+      {{- end }}
 {{- with .Values.nodeSelector }}
 nodeSelector:
   {{- toYaml . | nindent 2 }}
@@ -132,4 +173,9 @@ volumes:
       name: {{ .Values.workflow.existingConfigMap | default (printf "%s-workflow" (include "agentloom.fullname" .)) }}
   - name: tmp
     emptyDir: {}
+  {{- if .Values.persistence.existingClaim }}
+  - name: data
+    persistentVolumeClaim:
+      claimName: {{ .Values.persistence.existingClaim }}
+  {{- end }}
 {{- end }}

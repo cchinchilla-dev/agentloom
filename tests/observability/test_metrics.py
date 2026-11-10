@@ -367,6 +367,8 @@ class TestOTelExport:
 
         assert len(exported) == 9
         assert otel["agentloom_step_duration_seconds"] == [0.1, 0.5, 1, 2, 5, 10, 30, 60]
+        # A run under the SDK's first bucket, 5 s, would always read as a p50 of 2.5 s
+        assert otel["agentloom_workflow_duration_seconds"][0] == 0.1
         for name, buckets in otel.items():
             prom_name = name.replace(".", "_")
             if prom_name.startswith("gen_ai_client_operation"):
