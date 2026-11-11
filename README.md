@@ -17,6 +17,7 @@
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
   <a href="https://cchinchilla.dev/agentloom/"><img src="https://img.shields.io/badge/docs-cchinchilla.dev-blue.svg" alt="Docs"></a>
+  <a href="https://doi.org/10.5281/zenodo.24132817"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.24132817.svg" alt="DOI"></a>
 </p>
 
 ---
