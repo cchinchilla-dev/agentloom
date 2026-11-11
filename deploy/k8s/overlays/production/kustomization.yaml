@@ -8,7 +8,7 @@ resources:
 
 images:
   - name: ghcr.io/cchinchilla-dev/agentloom
-    newTag: 0.4.0  # Pin to release version; use digest in real production
+    newTag: 0.5.0  # Pin to release version; use digest in real production
 
 patches:
   - path: patch-resources.yaml

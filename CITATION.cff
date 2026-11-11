@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use AgentLoom, please cite it as below."
+type: software
+title: AgentLoom
+abstract: "Production-ready agentic workflow orchestrator with native observability, resilience, and cost control."
+authors:
+  - given-names: Carlos
+    family-names: Chinchilla Corbacho
+    orcid: "https://orcid.org/0009-0001-4495-8179"
+repository-code: "https://github.com/cchinchilla-dev/agentloom"
+url: "https://cchinchilla.dev/agentloom/"
+license: MIT
+keywords:
+  - llm
+  - agents
+  - workflows
+  - orchestration
+  - observability
+# No version or date-released: Zenodo takes them from each GitHub release

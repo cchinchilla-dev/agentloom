@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 if TYPE_CHECKING:
     from agentloom.core.agent import Agent, AgentResult

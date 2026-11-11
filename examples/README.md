@@ -249,18 +249,18 @@ plain `agentloom run` replays the recording you captured with 31. Without that
 recording the run stops with an error.
 Demonstrates: `provider: mock`, `responses_file`, `latency_model: replay`.
 
-### 35–39 — Tool calling, structured output, embeddings, conversations (0.5.0, unreleased)
+### 35–39 — Tool calling, structured output, embeddings, conversations
 Native tool calling (35), structured output with a Pydantic schema (36), the
 `embed` step (37), a chatbot sharing history through `conversation` (38), and a
 multi-agent conversation (39). Each runs offline against a recording committed
 under `recordings/`; pass `--provider` and `--model` to call a live model.
 
-### 40 — Fault replay (0.5.0, unreleased)
+### 40 — Fault replay
 A recording that fails `draft` with a 429 and a 503 before it answers; the step's
 retry policy recovers on the third attempt, the same way on every run.
 Demonstrates: `fault` entries in a recording, deterministic failure replay.
 
-### 41 — Agent (0.5.0, unreleased)
+### 41 — Agent
 A support desk defined once under `agents/` (system prompt, tools, a refunds agent
 called as a tool, memory, loop policy, typed reply, constraints) and run by two
 `agent` steps on one conversation, offline against `recordings/agent.json`.
