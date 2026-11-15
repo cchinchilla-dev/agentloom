@@ -232,6 +232,7 @@ kubectl apply -f deploy/argocd/application.yaml
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Where traces and metrics go, over gRPC. Without the `observability` extra, or with `--lite`, nothing is sent. |
 | `AGENTLOOM_RUNS_DIR` | Where run history records go; `./agentloom_runs` by default. |
 | `AGENTLOOM_REDACT_STATE_KEYS` | State keys to mask in checkpoints and results. See [Redaction](state-and-templates.md#redaction). |
+| `AGENTLOOM_CALLBACK_TOKEN` | The shared secret of `agentloom callback-server`, when it has no `--token`. See [Approval callback server](#approval-callback-server). |
 | `AGENTLOOM_LOG_LEVEL`, `AGENTLOOM_LOG_FORMAT` | The level and format of the CLI's logs, on stderr. See [Logs](observability.md#logs). |
 
 [Providers](providers.md#environment-variables) lists every variable AgentLoom reads. In Kubernetes, the provider keys come from a Secret, and the other variables are set in the pod spec.
@@ -243,7 +244,7 @@ kubectl apply -f deploy/argocd/application.yaml
 - It resumes runs in its own process, so it needs the provider keys and the paused runs' checkpoint files, on a volume shared with the Jobs that paused, set with `--checkpoint-dir`.
 - The shipped NetworkPolicies deny all ingress to pods labelled `app.kubernetes.io/name: agentloom`: give the server other labels, or a policy of its own.
 - A gate notifying a Service in the cluster needs `sandbox.allow_internal_webhook_targets: true`, as cluster addresses are internal, and egress to the Service's port.
-- `--token` is a command-line option, so it shows in the pod spec.
+- Give it the token through `AGENTLOOM_CALLBACK_TOKEN`, from a Secret with `secretKeyRef`: `--token` is a command-line option, so it shows in the pod spec.
 
 A Job running `agentloom resume <run_id> --approve --checkpoint-dir <dir>` resumes a run without a server.
 

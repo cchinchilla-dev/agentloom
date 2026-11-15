@@ -1009,6 +1009,14 @@ class TestCallbackServerLimits:
 
         assert (_exposure_warning(host, token) is not None) is warns
 
+    def test_exposure_warning_names_both_ways_to_set_the_token(self) -> None:
+        from agentloom.cli.callback_server import _exposure_warning
+
+        warning = _exposure_warning("0.0.0.0", None)
+        assert warning is not None
+        assert "--token" in warning
+        assert "AGENTLOOM_CALLBACK_TOKEN" in warning
+
     def test_token_comparison_accepts_any_text(self) -> None:
         from agentloom.cli.callback_server import _token_matches
 
@@ -1016,6 +1024,35 @@ class TestCallbackServerLimits:
         assert not _token_matches("señal", "s3cret")
         assert not _token_matches(None, "s3cret")
         assert _token_matches(None, None)
+
+    @pytest.mark.parametrize(
+        ("args", "env", "expected"),
+        [
+            ([], {"AGENTLOOM_CALLBACK_TOKEN": "from-env"}, "from-env"),
+            (["--token", "from-flag"], {"AGENTLOOM_CALLBACK_TOKEN": "from-env"}, "from-flag"),
+            ([], {"AGENTLOOM_CALLBACK_TOKEN": ""}, None),
+            ([], {}, None),
+        ],
+    )
+    def test_the_token_comes_from_the_option_or_the_environment(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        args: list[str],
+        env: dict[str, str],
+        expected: str | None,
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from agentloom.cli.main import app
+
+        monkeypatch.chdir(tmp_path)  # no agentloom.yaml to pick up
+        monkeypatch.delenv("AGENTLOOM_CONFIG", raising=False)
+        monkeypatch.delenv("AGENTLOOM_CALLBACK_TOKEN", raising=False)
+        with patch("agentloom.cli.callback_server.anyio.run") as serve:
+            result = CliRunner().invoke(app, ["callback-server", *args], env=env)
+        assert result.exit_code == 0
+        assert serve.call_args.args[5] == expected
 
 
 class TestConfigFile:

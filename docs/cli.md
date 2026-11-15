@@ -215,7 +215,7 @@ An HTTP server that resumes paused runs from their checkpoints, for approvals th
 |--------|--------------|
 | `--host HOST` | The address to listen on. `0.0.0.0` by default. |
 | `--port PORT` | The port. `8642` by default; `0` picks a free one. |
-| `--token TOKEN` | A shared secret that requests must send in the `X-AgentLoom-Token` header. |
+| `--token TOKEN` | A shared secret that requests must send in the `X-AgentLoom-Token` header. `AGENTLOOM_CALLBACK_TOKEN`, else none. |
 | `--checkpoint-dir DIR` | Where the checkpoints are. `.agentloom/checkpoints` by default. |
 | `--config FILE` | As in `run`, for the runs it resumes. The server reads it when it starts, and stops if it doesn't load. |
 | `--lite` | As in `run`. |
@@ -232,7 +232,7 @@ An HTTP server that resumes paused runs from their checkpoints, for approvals th
 - A gate [inside a subworkflow](steps.md#approval-gates-inside) is decided on the run at the top. The child's own run id, the one with a dot, answers `400` and names that run; a link whose `?gate=<path>` isn't where the run is paused answers `409`.
 - A decision for a gate that [expired](steps.md#when-nobody-decides) answers `202` with `expired_at`: the gate takes its `on_timeout`.
 - The server resumes each run whose gate expired, without a request: it looks every 30 seconds, and at the next expiry it knows of.
-- With `--token`, every endpoint but `/webhook` answers `401` without the right header. A server on an address other than loopback, without a token, prints a warning: anyone who reaches it can decide. The token is a command-line argument, visible to other users of the machine in its process list.
+- With a token, every endpoint but `/webhook` answers `401` without the right header. A server on an address other than loopback, without a token, prints a warning: anyone who reaches it can decide. Set the token with `AGENTLOOM_CALLBACK_TOKEN`: `--token` is a command-line argument, visible to other users of the machine in its process list.
 - Runs with `provider: mock` can't resume here: the server sets up only live providers. Use `agentloom resume`.
 - A gate's webhook can't reach a server on `localhost` or a private address unless the workflow sets `sandbox.allow_internal_webhook_targets: true`. See [The webhook](steps.md#the-webhook).
 
