@@ -42,10 +42,12 @@ def callback_server(
     token: str | None = typer.Option(
         None,
         "--token",
+        envvar="AGENTLOOM_CALLBACK_TOKEN",
         help=(
             "Optional shared secret. When set, POST /approve, POST /reject and "
             "GET /pending require a matching `X-AgentLoom-Token` header — defence "
-            "in depth for a server reachable beyond loopback."
+            "in depth for a server reachable beyond loopback. Prefer the variable: "
+            "an argument shows in the process list."
         ),
     ),
     config_file: Path | None = typer.Option(
@@ -134,8 +136,9 @@ def _exposure_warning(host: str, token: str | None) -> str | None:
     if loopback:
         return None
     return (
-        f"Warning: listening on {host} without --token: anyone who reaches this "
-        f"port can approve or reject a paused run."
+        f"Warning: listening on {host} without a token (--token or "
+        f"AGENTLOOM_CALLBACK_TOKEN): anyone who reaches this port can approve or "
+        f"reject a paused run."
     )
 
 
