@@ -1,4 +1,4 @@
-# Model pricing (USD per 1K tokens) — updated 2026-11-07.
+# Model pricing (USD per 1K tokens) — updated 2026-11-16.
 # Override with AGENTLOOM_PRICING_FILE=/path/to/your.yaml.
 #
 # scripts/update_pricing.py refreshes the OpenAI, Anthropic and Gemini entries
@@ -270,6 +270,12 @@ claude-opus-5-5:
 claude-sonnet-5-5:
   input: 0.00200
   output: 0.01000
+claude-fable-5-2:
+  input: 0.00800
+  output: 0.04000
+claude-mythos-5-2:
+  input: 0.00800
+  output: 0.04000
 
 # --- Google Gemini ---
 gemini-3.5-flash:
@@ -329,6 +335,12 @@ gemini-omni-1.2-flash:
 gemini-omni-flash-preview:
   input: 0.00150
   output: 0.00900
+gemini-4-carbon:
+  input: 0.00200
+  output: 0.01000
+gemini-4-hydrogen:
+  input: 0.00150
+  output: 0.00750
 
 # --- Ollama (local — free) ---
 qwen3:
