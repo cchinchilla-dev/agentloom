@@ -1,4 +1,4 @@
-# Model pricing (USD per 1K tokens) — updated 2026-11-16.
+# Model pricing (USD per 1K tokens) — updated 2026-11-23.
 # Override with AGENTLOOM_PRICING_FILE=/path/to/your.yaml.
 #
 # scripts/update_pricing.py refreshes the OpenAI, Anthropic and Gemini entries
@@ -169,8 +169,8 @@ gpt-6-luna:
   input: 0.00010
   output: 0.00050
 gpt-6-rosalind:
-  input: 0.01500
-  output: 0.07500
+  input: 0.01000
+  output: 0.05000
 gpt-6-sol:
   input: 0.00200
   output: 0.01000
@@ -183,6 +183,15 @@ gpt-6.1-terra:
 gpt-rosalind-discovery:
   input: 0.00500
   output: 0.02500
+gpt-6.2-astra:
+  input: 0.00800
+  output: 0.04000
+gpt-6.2-astra-law:
+  input: 0.00800
+  output: 0.04000
+gpt-6.2-sol:
+  input: 0.00200
+  output: 0.01000
 
 # --- Anthropic ---
 # A dated id with no entry of its own (``claude-opus-4-6-<date>``) prices as its undated key.
@@ -341,6 +350,12 @@ gemini-4-carbon:
 gemini-4-hydrogen:
   input: 0.00150
   output: 0.00750
+gemini-4-neon:
+  input: 0.00300
+  output: 0.01500
+genie-4:
+  input: 0.00150
+  output: 0.00900
 
 # --- Ollama (local — free) ---
 qwen3:
